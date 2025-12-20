@@ -82,14 +82,14 @@ pacemaker_netnsvlan_mtu: 9000
 pacemaker_ganesha_instance: "tenant_a"
 
 # NFS-Ganesha
-nfs_ganesha_packages:
-  - nfs-ganesha
-  - nfs-ganesha-utils
 nfs_ganesha_export_dir: /exports
 nfs_ganesha_export_id: 101
 nfs_ganesha_export_clients: "10.0.0.0/24"
 nfs_ganesha_tenants:
   - tenant_a
+
+# Enable NFSv3 support (default: false, NFSv4 only)
+# nfs_ganesha_enable_v3: true
 
 # arca CLI
 arca_cli_package_name: arca-cli

@@ -4,6 +4,13 @@
     name: "{{ nfs_ganesha_packages }}"
     state: present
 
+- name: Enable and start rpcbind service
+  ansible.builtin.service:
+    name: rpcbind
+    state: started
+    enabled: true
+  when: nfs_ganesha_enable_v3 | bool
+
 - name: Ensure export directory exists
   ansible.builtin.file:
     path: "{{ nfs_ganesha_export_dir }}"

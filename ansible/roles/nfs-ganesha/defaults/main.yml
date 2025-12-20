@@ -1,0 +1,35 @@
+---
+# NFS-Ganesha role defaults
+
+# NFSv3 support (opt-in, default: NFSv4 only)
+nfs_ganesha_enable_v3: false
+
+# Protocol configuration
+nfs_ganesha_protocols_v4: [4]
+nfs_ganesha_protocols_v3v4: [3, 4]
+nfs_ganesha_protocols: "{{ nfs_ganesha_enable_v3 | bool | ternary(nfs_ganesha_protocols_v3v4, nfs_ganesha_protocols_v4) }}"
+
+# Transport configuration
+nfs_ganesha_transports: ["TCP"]
+
+# Fixed ports for NFSv3 (simplifies firewall rules)
+nfs_ganesha_mountd_port: 20048
+nfs_ganesha_nlm_port: 32768
+
+# Package management
+nfs_ganesha_base_packages:
+  - nfs-ganesha
+  - nfs-ganesha-utils
+
+nfs_ganesha_v3_packages:
+  - rpcbind
+
+# Conditional package list (includes rpcbind when v3 enabled)
+nfs_ganesha_packages: "{{ nfs_ganesha_base_packages + (nfs_ganesha_enable_v3 | bool | ternary(nfs_ganesha_v3_packages, [])) }}"
+
+# Export configuration defaults
+nfs_ganesha_export_dir: /exports
+nfs_ganesha_export_id: 101
+nfs_ganesha_export_clients: "10.0.0.0/24"
+nfs_ganesha_tenants:
+  - tenant_a

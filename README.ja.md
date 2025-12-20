@@ -10,7 +10,7 @@ Linux標準技術を使用して構築された、Storage Virtual Machine (SVM) 
 
 Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機能を提供するソフトウェア・デファインド・ストレージシステムです：
 
-- **マルチプロトコル**: NFS v4.1 / v4.2
+- **マルチプロトコル**: NFS v4.1 / v4.2 (デフォルト)、オプションでNFSv3サポート
 - **マルチテナンシー**: Network Namespaceベースのネットワーク分離
 - **高可用性**: Pacemakerベースのアクティブ/アクティブ・フェイルオーバー
 - **データ効率**: LVM Thin Provisioningによるオーバーコミット
@@ -53,6 +53,42 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
 3. **MVPセットアップガイドに従う:**
 
    詳細なセットアップ手順については [docs/mvp-setup.md](docs/mvp-setup.md) を参照してください。
+
+## 設定
+
+### NFSv3サポート (オプション)
+
+デフォルトでは、Arca StorageはNFSv4のみを使用します。NFSv3サポートを有効にするには：
+
+1. **Ansible変数の編集:**
+
+   `ansible/group_vars/all.yml` または各ホスト固有の変数ファイルに以下を設定：
+
+   ```yaml
+   # NFSv3サポートを有効化 (デフォルト: false、NFSv4のみ)
+   nfs_ganesha_enable_v3: true
+   ```
+
+2. **NFSv3有効時に必要なファイアウォールポート:**
+
+   ```
+   111/tcp,udp   (rpcbind/portmapper)
+   2049/tcp,udp  (NFS)
+   20048/tcp,udp (mountd)
+   32768/tcp,udp (NLM)
+   ```
+
+3. **クライアントマウント例:**
+
+   ```bash
+   # NFSv4 (デフォルト)
+   mount -t nfs4 server:/101 /mnt
+
+   # NFSv3 (有効時)
+   mount -t nfs -o vers=3 server:/exports /mnt
+   ```
+
+**注意**: NFSv3を有効にすると、`rpcbind` パッケージが自動的にインストールされ、サービスが起動します。NFSv3とNFSv4の両プロトコルが同時に利用可能になります。
 
 ## 使い方
 

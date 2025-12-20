@@ -1,8 +1,11 @@
 # Managed by Ansible
 
 NFS_Core_Param {
-  NFS_Protocols = 4;
-  MNT_Port = 20048;
+  NFS_Protocols = {{ nfs_ganesha_protocols | join(',') }};
+  MNT_Port = {{ nfs_ganesha_mountd_port }};
+{% if nfs_ganesha_enable_v3 | bool %}
+  NLM_Port = {{ nfs_ganesha_nlm_port }};
+{% endif %}
 }
 
 EXPORT {
@@ -11,8 +14,8 @@ EXPORT {
   Pseudo = "/{{ nfs_ganesha_export_id }}";
   Access_Type = RW;
   Squash = Root_Squash;
-  Protocols = 4;
-  Transports = TCP;
+  Protocols = {{ nfs_ganesha_protocols | join(',') }};
+  Transports = {{ nfs_ganesha_transports | join(',') }};
   Clients = {{ nfs_ganesha_export_clients }};
   FSAL {
     Name = VFS;

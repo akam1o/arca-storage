@@ -10,7 +10,7 @@ Software-Defined Storage system with Storage Virtual Machine (SVM) functionality
 
 Arca Storage is a Software-Defined Storage system that provides NetApp ONTAP-like SVM functionality using Linux standard technologies:
 
-- **Multi-protocol**: NFS v4.1 / v4.2
+- **Multi-protocol**: NFS v4.1 / v4.2 (default), with optional NFSv3 support
 - **Multi-tenancy**: Network Namespace-based network isolation
 - **High Availability**: Pacemaker-based Active/Active failover
 - **Data Efficiency**: LVM Thin Provisioning with overcommit
@@ -53,6 +53,42 @@ The system combines:
 3. **Follow MVP setup guide:**
 
    See [docs/mvp-setup.md](docs/mvp-setup.md) for detailed setup instructions.
+
+## Configuration
+
+### NFSv3 Support (Optional)
+
+By default, Arca Storage uses NFSv4 only. To enable NFSv3 support:
+
+1. **Edit Ansible variables:**
+
+   In `ansible/group_vars/all.yml` or your host-specific variables:
+
+   ```yaml
+   # Enable NFSv3 support (default: false, NFSv4 only)
+   nfs_ganesha_enable_v3: true
+   ```
+
+2. **Required firewall ports when NFSv3 is enabled:**
+
+   ```
+   111/tcp,udp   (rpcbind/portmapper)
+   2049/tcp,udp  (NFS)
+   20048/tcp,udp (mountd)
+   32768/tcp,udp (NLM)
+   ```
+
+3. **Client mount examples:**
+
+   ```bash
+   # NFSv4 (default)
+   mount -t nfs4 server:/101 /mnt
+
+   # NFSv3 (when enabled)
+   mount -t nfs -o vers=3 server:/exports /mnt
+   ```
+
+**Note**: When NFSv3 is enabled, the `rpcbind` package is automatically installed and the service is started. Both NFSv3 and NFSv4 protocols will be available simultaneously.
 
 ## Usage
 
