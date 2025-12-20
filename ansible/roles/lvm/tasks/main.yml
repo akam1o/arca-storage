@@ -6,7 +6,7 @@
 
 - name: Check if physical volume exists
   ansible.builtin.command: pvs {{ item }}
-  register: pv_checks
+  register: lvm_pv_checks
   changed_when: false
   failed_when: false
   loop: "{{ lvm_pv_devices }}"
@@ -19,7 +19,7 @@
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
     - item.rc != 0
-  loop: "{{ pv_checks.results | default([]) }}"
+  loop: "{{ lvm_pv_checks.results | default([]) }}"
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
@@ -55,7 +55,7 @@
 
 - name: Check if thin pool exists
   ansible.builtin.command: lvs {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
-  register: thinpool_check
+  register: lvm_thinpool_check
   changed_when: false
   failed_when: false
   run_once: true
@@ -68,18 +68,18 @@
     -c {{ lvm_thinpool_chunk_size | default('256K') }}
     --poolmetadatasize {{ lvm_thinpool_metadata_size | default('15.8G') }}
     -Z y
-  register: thinpool_create
-  changed_when: thinpool_create.rc == 0
-  failed_when: thinpool_create.rc != 0 and 'already exists' not in thinpool_create.stderr
+  register: lvm_thinpool_create
+  changed_when: lvm_thinpool_create.rc == 0
+  failed_when: lvm_thinpool_create.rc != 0 and 'already exists' not in lvm_thinpool_create.stderr
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
-    - thinpool_check.rc != 0
+    - lvm_thinpool_check.rc != 0
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Check if thin volume exists
   ansible.builtin.command: lvs {{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
-  register: thinvol_check
+  register: lvm_thinvol_check
   changed_when: false
   failed_when: false
   run_once: true
@@ -90,18 +90,18 @@
   ansible.builtin.command: >
     lvcreate -V {{ lvm_thin_volume_size | default('100G') }} -T {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
     -n {{ lvm_thin_volume_name | default('vol_tenant_a') }}
-  register: thinvol_create
-  changed_when: thinvol_create.rc == 0
-  failed_when: thinvol_create.rc != 0 and 'already exists' not in thinvol_create.stderr
+  register: lvm_thinvol_create
+  changed_when: lvm_thinvol_create.rc == 0
+  failed_when: lvm_thinvol_create.rc != 0 and 'already exists' not in lvm_thinvol_create.stderr
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
-    - thinvol_check.rc != 0
+    - lvm_thinvol_check.rc != 0
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Check if filesystem exists
   ansible.builtin.command: blkid /dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
-  register: fs_check
+  register: lvm_fs_check
   changed_when: false
   failed_when: false
   run_once: true
@@ -111,10 +111,10 @@
 - name: Create XFS filesystem
   ansible.builtin.command: >
     mkfs.xfs -f /dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
-  register: mkfs_result
-  changed_when: mkfs_result.rc == 0
+  register: lvm_mkfs_result
+  changed_when: lvm_mkfs_result.rc == 0
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
-    - fs_check.rc != 0
+    - lvm_fs_check.rc != 0
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"

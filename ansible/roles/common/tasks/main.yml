@@ -5,7 +5,7 @@
     state: present
 
 - name: Ensure sysctl settings
-  ansible.builtin.sysctl:
+  ansible.posix.sysctl:
     name: "{{ item.name }}"
     value: "{{ item.value }}"
     sysctl_set: true

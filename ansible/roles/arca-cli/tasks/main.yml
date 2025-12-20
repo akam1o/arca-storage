@@ -6,6 +6,7 @@
   when: arca_cli_install_method == 'package'
 
 - name: Install arca CLI via URL
+  when: arca_cli_install_method == 'url'
   block:
     - name: Validate download URL
       ansible.builtin.assert:
@@ -40,7 +41,6 @@
         src: "{{ arca_cli_extract_dir }}/{{ arca_cli_binary_name }}"
         dest: "{{ arca_cli_bin_path }}"
         state: link
-  when: arca_cli_install_method == 'url'
   rescue:
     - name: Report arca CLI installation failure
       ansible.builtin.fail:

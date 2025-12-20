@@ -9,7 +9,17 @@ rules:
     spaces: 2
   comments:
     min-spaces-from-content: 1
-  comments-indentation: {}
+  comments-indentation: false
   document-start: disable
   truthy:
     allowed-values: ['true', 'false', 'yes', 'no']
+  octal-values:
+    forbid-implicit-octal: true
+    forbid-explicit-octal: true
+  # Add these for ansible-lint compatibility
+  braces:
+    max-spaces-inside: 1
+    level: error
+  brackets:
+    max-spaces-inside: 1
+    level: error

@@ -18,13 +18,15 @@
 
 # Bootstrap cluster once from a designated node to avoid race conditions.
 - name: Bootstrap Pacemaker cluster configuration
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
   block:
     - name: Authenticate nodes for pcs
       ansible.builtin.command: >-
         pcs host auth {{ pacemaker_nodes | map(attribute='name') | join(' ') }}
         -u hacluster -p {{ pacemaker_hacluster_password }}
-      register: pcs_host_auth
-      changed_when: pcs_host_auth.stdout is search("Authorized")
+      register: pacemaker_pcs_host_auth
+      changed_when: pacemaker_pcs_host_auth.stdout is search("Authorized")
 
     - name: Check existing cluster authkey
       ansible.builtin.stat:
@@ -36,14 +38,12 @@
         pcs cluster setup --name {{ pacemaker_cluster_name }}
         {{ pacemaker_nodes | map(attribute='name') | join(' ') }}
       when: not pacemaker_authkey.stat.exists
-      register: pcs_cluster_setup
-      changed_when: pcs_cluster_setup.rc == 0
+      register: pacemaker_pcs_cluster_setup
+      changed_when: pacemaker_pcs_cluster_setup.rc == 0
   rescue:
     - name: Report Pacemaker bootstrap failure
       ansible.builtin.fail:
         msg: "Pacemaker cluster bootstrap failed. Check pcs authentication, corosync configuration, and node connectivity."
-  run_once: true
-  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Ensure Corosync configuration
   ansible.builtin.template:
@@ -96,35 +96,37 @@
 
 # Ensure cluster services are running and properties are applied once.
 - name: Start Pacemaker cluster services
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
   block:
     - name: Start cluster on all nodes
       ansible.builtin.command: pcs cluster start --all
-      register: pcs_cluster_start
-      changed_when: pcs_cluster_start.stdout is not search("already running")
+      register: pacemaker_pcs_cluster_start
+      changed_when: pacemaker_pcs_cluster_start.stdout is not search("already running")
 
     - name: Enable cluster to start on boot
       ansible.builtin.command: pcs cluster enable --all
-      register: pcs_cluster_enable
-      changed_when: pcs_cluster_enable.stdout is not search("already enabled")
+      register: pacemaker_pcs_cluster_enable
+      changed_when: pacemaker_pcs_cluster_enable.stdout is not search("already enabled")
 
     - name: Ensure STONITH property matches desired state
       ansible.builtin.command: pcs property show stonith-enabled
-      register: pcs_stonith_property
+      register: pacemaker_pcs_stonith_property
       changed_when: false
       failed_when: false
 
     - name: Configure STONITH enabled property
       ansible.builtin.command: >-
-        pcs property set stonith-enabled={{ pacemaker_enable_stonith | default(false) | bool | ternary('true','false') }}
-      when: pcs_stonith_property.stdout is not search("stonith-enabled:\\s*{{ pacemaker_enable_stonith | default(false) | bool | ternary('true','false') }}")
-      register: pcs_stonith_set
-      changed_when: pcs_stonith_set.rc == 0
+        pcs property set stonith-enabled={{ pacemaker_enable_stonith | default(false) | bool | ternary('true', 'false') }}
+      when: >-
+        (pacemaker_enable_stonith | default(false) | bool and 'stonith-enabled: true' not in pacemaker_pcs_stonith_property.stdout) or
+        (not (pacemaker_enable_stonith | default(false) | bool) and 'stonith-enabled: false' not in pacemaker_pcs_stonith_property.stdout)
+      register: pacemaker_pcs_stonith_set
+      changed_when: pacemaker_pcs_stonith_set.rc == 0
   rescue:
     - name: Report Pacemaker service startup failure
       ansible.builtin.fail:
         msg: "Pacemaker cluster start/enable failed. Verify corosync health and node connectivity."
-  run_once: true
-  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Include resource creation tasks
   ansible.builtin.include_tasks: resources.yml
