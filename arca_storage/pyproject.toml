@@ -47,11 +47,9 @@ Homepage = "https://github.com/akam1o/arca-storage"
 [project.scripts]
 arca = "arca_storage.cli.cli:main"
 
-[tool.setuptools]
-package-dir = {"" = "src"}
-
 [tool.setuptools.packages.find]
-where = ["src"]
+where = ["."]
+include = ["arca_storage", "arca_storage.*"]
 
 [tool.setuptools.package-data]
 arca_storage = ["templates/**/*", "resources/**/*"]

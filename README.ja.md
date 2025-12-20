@@ -46,7 +46,7 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
 2. **Pacemaker Resource Agentのインストール:**
 
    ```bash
-   sudo cp arca_storage/src/arca_storage/resources/pacemaker/NetnsVlan /usr/lib/ocf/resource.d/local/NetnsVlan
+   sudo cp arca_storage/arca_storage/resources/pacemaker/NetnsVlan /usr/lib/ocf/resource.d/local/NetnsVlan
    sudo chmod +x /usr/lib/ocf/resource.d/local/NetnsVlan
    ```
 
@@ -99,7 +99,7 @@ APIエンドポイント:
 ```
 arca-storage/
 ├── arca_storage/               # Pythonパッケージ
-│   ├── src/arca_storage/       # パッケージソースコード
+│   ├── arca_storage/           # パッケージソースコード
 │   │   ├── api/                # FastAPI REST API
 │   │   │   ├── main.py         # APIアプリケーション
 │   │   │   ├── models.py       # Pydanticモデル
@@ -164,8 +164,8 @@ Pythonコードは PEP 8 に従ってください。
 ## ドキュメント
 
 - [docs/mvp-setup.md](docs/mvp-setup.md) - MVPセットアップガイド
-- [arca_storage/src/arca_storage/resources/pacemaker/](arca_storage/src/arca_storage/resources/pacemaker/) - Pacemaker RAドキュメント
-- [arca_storage/src/arca_storage/templates/](arca_storage/src/arca_storage/templates/) - テンプレートドキュメント
+- [arca_storage/arca_storage/resources/pacemaker/](arca_storage/arca_storage/resources/pacemaker/) - Pacemaker RAドキュメント
+- [arca_storage/arca_storage/templates/](arca_storage/arca_storage/templates/) - テンプレートドキュメント
 
 ## ライセンス
 

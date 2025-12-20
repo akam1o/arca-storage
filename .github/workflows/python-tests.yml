@@ -20,8 +20,13 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
+      # Run only on Python 3.8 to reduce CI usage (others commented out)
       matrix:
-        python-version: ['3.8', '3.9', '3.10', '3.11']
+        python-version:
+          - '3.8'
+          # - '3.9'
+          # - '3.10'
+          # - '3.11'
 
     steps:
       - uses: actions/checkout@v4
@@ -33,17 +38,57 @@ jobs:
           cache: 'pip'
           cache-dependency-path: 'arca_storage/requirements.txt'
 
-      - name: Install dependencies
+      - name: Build sdist and wheel
         working-directory: ./arca_storage
         run: |
           python -m pip install --upgrade pip
-          pip install -e ".[dev]"
-          pip list | grep arca-storage
+          python -m pip install build
+          python -m build --sdist --wheel
+          echo "=== dist tree ==="
+          ls -l dist
+          echo "=== Listing sdist contents ==="
+          tar -tzf dist/*.tar.gz | egrep "cli/(lib|__init__)" || echo "WARNING: cli or cli/lib not found in sdist!"
+          echo "=== Listing wheel contents ==="
+          python - <<'PY'
+          import zipfile, glob
+          whl = glob.glob('dist/*.whl')[0]
+          with zipfile.ZipFile(whl) as z:
+              members = [m for m in z.namelist() if 'cli/' in m]
+              print('\\n'.join(members) or 'WARNING: cli not found in wheel!')
+          PY
 
-      - name: Run tests with pytest
+      - name: Install package and test deps
         working-directory: ./arca_storage
         run: |
+          python -m pip install dist/*.tar.gz
+          python -m pip install -r test-requirements.txt
+          cd /tmp
+          python - <<'PY'
+          import sys, arca_storage
+          from pathlib import Path
+          print('Package location:', arca_storage.__file__)
+          print('sys.path:', sys.path)
+          import pkgutil
+          print('packages:', [m.name for m in pkgutil.iter_modules(arca_storage.__path__)])
+          from arca_storage import cli
+          print('cli ok:', cli.__file__)
+          from arca_storage.cli import lib
+          print('cli.lib ok:', lib.__file__)
+          # Show files on disk for debugging
+          root = Path(lib.__file__).parent
+          for p in sorted(root.iterdir()):
+              print('lib content:', p)
+          PY
+
+      - name: Run tests with pytest
+        run: |
+          # Copy tests and config to a temp directory to avoid importing from source
+          cp -r arca_storage/tests /tmp/tests
+          cp arca_storage/pytest.ini /tmp/pytest.ini
+          cd /tmp
           python -m pytest tests/unit -v --cov=arca_storage --cov-report=xml --cov-report=term
+          # Copy coverage results back
+          cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 
       - name: Upload coverage reports
         if: matrix.python-version == '3.11'

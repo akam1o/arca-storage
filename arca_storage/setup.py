@@ -11,6 +11,8 @@ with open("README.md", "r", encoding="utf-8") as fh:
 with open("requirements.txt", "r", encoding="utf-8") as fh:
     requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
 
+packages = find_packages(where=".")
+
 setup(
     name="arca-storage",
     version="0.1.0",
@@ -20,8 +22,8 @@ setup(
     long_description_content_type="text/markdown",
     url="https://github.com/akam1o/arca-storage",
     license="Apache-2.0",
-    packages=find_packages(where="src"),
-    package_dir={"": "src"},
+    packages=packages,
+    package_dir={"": "."},
     package_data={
         "arca_storage": ["templates/**/*", "resources/**/*"],
     },

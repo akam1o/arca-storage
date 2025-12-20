@@ -6,7 +6,7 @@ Software-Defined Storage system with SVM (Storage Virtual Machine) functionality
 
 ```
 arca_storage/
-├── src/arca_storage/    # Main package source code
+├── arca_storage/        # Main package source code
 │   ├── api/             # REST API (FastAPI)
 │   ├── cli/             # CLI tool (Typer)
 │   ├── templates/       # Configuration templates
@@ -90,9 +90,9 @@ pytest --cov=arca_storage --cov-report=html
 
 ### Code Structure
 
-- **CLI** (`src/arca_storage/cli/`): Command-line interface using Typer
-- **API** (`src/arca_storage/api/`): REST API using FastAPI
-- **Lib** (`src/arca_storage/cli/lib/`): Core functionality modules
+- **CLI** (`arca_storage/cli/`): Command-line interface using Typer
+- **API** (`arca_storage/api/`): REST API using FastAPI
+- **Lib** (`arca_storage/cli/lib/`): Core functionality modules
   - `ganesha.py`: NFS-Ganesha configuration
   - `lvm.py`: LVM management
   - `netns.py`: Network namespace management

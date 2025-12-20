@@ -1,0 +1,79 @@
+"""
+Input validation functions.
+"""
+
+import ipaddress
+import re
+from typing import Tuple
+
+
+def validate_name(name: str) -> None:
+    """
+    Validate a name (SVM, volume, etc.).
+    
+    Args:
+        name: Name to validate
+        
+    Raises:
+        ValueError: If name is invalid
+    """
+    if not name:
+        raise ValueError("Name cannot be empty")
+    
+    if len(name) < 1 or len(name) > 64:
+        raise ValueError("Name must be between 1 and 64 characters")
+    
+    # Allow alphanumeric, dots, underscores, hyphens
+    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', name):
+        raise ValueError("Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens")
+
+
+def validate_vlan(vlan_id: int) -> None:
+    """
+    Validate a VLAN ID.
+    
+    Args:
+        vlan_id: VLAN ID to validate
+        
+    Raises:
+        ValueError: If VLAN ID is invalid
+    """
+    if vlan_id < 1 or vlan_id > 4094:
+        raise ValueError("VLAN ID must be between 1 and 4094")
+
+
+def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
+    """
+    Validate an IP address with CIDR notation.
+    
+    Args:
+        cidr: IP address with CIDR (e.g., "192.168.10.5/24")
+        
+    Returns:
+        Tuple of (ip_address, prefix_length)
+        
+    Raises:
+        ValueError: If CIDR is invalid
+    """
+    try:
+        parts = cidr.split("/")
+        if len(parts) != 2:
+            raise ValueError("CIDR must be in format IP/PREFIX (e.g., 192.168.10.5/24)")
+        
+        ip_addr = parts[0]
+        prefix = int(parts[1])
+        
+        # Validate IP address
+        ipaddress.IPv4Address(ip_addr)
+        
+        # Validate prefix
+        if prefix < 0 or prefix > 32:
+            raise ValueError("Prefix length must be between 0 and 32")
+        
+        return ip_addr, prefix
+        
+    except ValueError as e:
+        raise ValueError(f"Invalid CIDR format: {e}")
+    except Exception as e:
+        raise ValueError(f"Invalid IP address: {e}")
+

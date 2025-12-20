@@ -10,7 +10,9 @@ dist/
 downloads/
 eggs/
 .eggs/
+# Ignore top-level lib directories from builds/venvs, but keep package code
 lib/
+!/arca_storage/arca_storage/cli/lib/
 lib64/
 parts/
 sdist/
@@ -59,4 +61,3 @@ arca_storage/coverage.xml
 ansible/.cache/
 ansible/molecule/**/.molecule/
 ansible/**/__pycache__/
-
