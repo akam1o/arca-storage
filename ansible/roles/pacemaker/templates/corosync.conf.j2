@@ -1,0 +1,33 @@
+# Managed by Ansible
+
+totem {
+  version: 2
+  cluster_name: {{ pacemaker_cluster_name }}
+  transport: udpu
+  interface {
+    ringnumber: 0
+    bindnetaddr: {{ pacemaker_corosync_bindnetaddr }}
+    mcastport: {{ pacemaker_corosync_mcastport }}
+  }
+}
+
+nodelist {
+{% for node in pacemaker_nodes %}
+  node {
+    ring0_addr: {{ node.ring0_addr }}
+    name: {{ node.name }}
+    nodeid: {{ loop.index }}
+  }
+{% endfor %}
+}
+
+quorum {
+  provider: corosync_votequorum
+  expected_votes: {{ pacemaker_nodes | length }}
+}
+
+logging {
+  to_logfile: yes
+  logfile: /var/log/corosync/corosync.log
+  to_syslog: yes
+}

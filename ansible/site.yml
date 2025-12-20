@@ -1,0 +1,19 @@
+---
+- name: Configure HA storage and services
+  hosts: all
+  become: true
+  vars:
+    ansible_python_interpreter: auto_silent
+  roles:
+    - role: common
+      tags: [common]
+    - role: drbd
+      tags: [drbd]
+    - role: lvm
+      tags: [lvm]
+    - role: pacemaker
+      tags: [pacemaker]
+    - role: nfs-ganesha
+      tags: [nfs_ganesha]
+    - role: arca-cli
+      tags: [arca_cli]

@@ -1,0 +1,43 @@
+---
+- name: Install NFS-Ganesha packages
+  ansible.builtin.package:
+    name: "{{ nfs_ganesha_packages }}"
+    state: present
+
+- name: Ensure export directory exists
+  ansible.builtin.file:
+    path: "{{ nfs_ganesha_export_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render NFS-Ganesha configuration
+  ansible.builtin.template:
+    src: ganesha.conf.j2
+    dest: /etc/ganesha/ganesha.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Restart NFS-Ganesha
+
+- name: Install NFS-Ganesha systemd unit template
+  ansible.builtin.template:
+    src: nfs-ganesha.service.j2
+    dest: /etc/systemd/system/nfs-ganesha@.service
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload systemd
+
+- name: Render per-tenant NFS-Ganesha configuration
+  ansible.builtin.template:
+    src: ganesha.conf.j2
+    dest: "/etc/ganesha/ganesha.{{ item }}.conf"
+    owner: root
+    group: root
+    mode: "0644"
+  loop: "{{ nfs_ganesha_tenants | default(['tenant_a']) }}"
+  vars:
+    svm_name: "{{ item }}"
+  notify: Restart NFS-Ganesha

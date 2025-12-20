@@ -1,0 +1,120 @@
+---
+- name: Install LVM packages
+  ansible.builtin.package:
+    name: lvm2
+    state: present
+
+- name: Check if physical volume exists
+  ansible.builtin.command: pvs {{ item }}
+  register: pv_checks
+  changed_when: false
+  failed_when: false
+  loop: "{{ lvm_pv_devices }}"
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+
+- name: Create physical volume
+  ansible.builtin.command: pvcreate {{ item.item }}
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - item.rc != 0
+  loop: "{{ pv_checks.results | default([]) }}"
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create volume group
+  community.general.lvg:
+    vg: "{{ lvm_vg_name }}"
+    pvs: "{{ lvm_pv_devices }}"
+    state: present
+  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Configure LVM autoextend settings
+  ansible.builtin.replace:
+    path: /etc/lvm/lvm.conf
+    regexp: "{{ item.regexp }}"
+    replace: "{{ item.replace }}"
+    backup: true
+  loop:
+    - regexp: "^\\s*thin_pool_autoextend_threshold\\s*=\\s*.*"
+      replace: "    thin_pool_autoextend_threshold = 80"
+    - regexp: "^\\s*thin_pool_autoextend_percent\\s*=\\s*.*"
+      replace: "    thin_pool_autoextend_percent = 5"
+  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Enable and start lvm2-monitor service
+  ansible.builtin.service:
+    name: lvm2-monitor
+    state: started
+    enabled: true
+
+- name: Check if thin pool exists
+  ansible.builtin.command: lvs {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
+  register: thinpool_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+
+- name: Create thin pool
+  ansible.builtin.command: >
+    lvcreate -L {{ lvm_thinpool_size }} -T {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
+    -c {{ lvm_thinpool_chunk_size | default('256K') }}
+    --poolmetadatasize {{ lvm_thinpool_metadata_size | default('15.8G') }}
+    -Z y
+  register: thinpool_create
+  changed_when: thinpool_create.rc == 0
+  failed_when: thinpool_create.rc != 0 and 'already exists' not in thinpool_create.stderr
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - thinpool_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if thin volume exists
+  ansible.builtin.command: lvs {{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  register: thinvol_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+
+- name: Create thin volume
+  ansible.builtin.command: >
+    lvcreate -V {{ lvm_thin_volume_size | default('100G') }} -T {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
+    -n {{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  register: thinvol_create
+  changed_when: thinvol_create.rc == 0
+  failed_when: thinvol_create.rc != 0 and 'already exists' not in thinvol_create.stderr
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - thinvol_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if filesystem exists
+  ansible.builtin.command: blkid /dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  register: fs_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+
+- name: Create XFS filesystem
+  ansible.builtin.command: >
+    mkfs.xfs -f /dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  register: mkfs_result
+  changed_when: mkfs_result.rc == 0
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - fs_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"

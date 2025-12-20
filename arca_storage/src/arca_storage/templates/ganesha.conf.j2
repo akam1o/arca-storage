@@ -1,0 +1,31 @@
+# Managed by arca
+# Template version: {{ template_version }}
+# Config version: {{ config_version }}
+
+NFS_CORE_PARAM {
+    Protocols = 4;
+    NFS_Port = 2049;
+}
+
+EXPORT_DEFAULTS {
+    Access_Type = RW;
+    Squash = Root_Squash;
+}
+
+{% for exp in exports %}
+EXPORT {
+    Export_Id = {{ exp.export_id }};
+    Path = "{{ exp.path }}";
+    Pseudo = "{{ exp.pseudo }}";
+    Protocols = 4;
+    Access_Type = {{ exp.access }};
+    Squash = {{ exp.squash }};
+    SecType = {{ exp.sec }};
+    CLIENT {
+        Clients = {{ exp.client }};
+    }
+    FSAL {
+        Name = VFS;
+    }
+}
+{% endfor %}

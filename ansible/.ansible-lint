@@ -1,0 +1,18 @@
+---
+skip_list:
+  - yaml[line-length]
+  - no-changed-when
+  - command-instead-of-shell
+  - risky-file-permissions
+
+warn_list:
+  - experimental
+  - ignore-errors
+  - no-handler
+
+exclude_paths:
+  - .cache/
+  - .github/
+  - molecule/
+
+use_default_rules: true

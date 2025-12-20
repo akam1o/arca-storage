@@ -1,0 +1,47 @@
+---
+- name: Install arca CLI via package
+  ansible.builtin.package:
+    name: "{{ arca_cli_package_name }}"
+    state: present
+  when: arca_cli_install_method == 'package'
+
+- name: Install arca CLI via URL
+  block:
+    - name: Validate download URL
+      ansible.builtin.assert:
+        that:
+          - arca_cli_download_url | length > 0
+        fail_msg: "arca_cli_download_url must be set when using url method."
+
+    - name: Download arca CLI archive
+      ansible.builtin.get_url:
+        url: "{{ arca_cli_download_url }}"
+        dest: "{{ arca_cli_archive_dest }}"
+        mode: "0644"
+        checksum: "{{ arca_cli_download_checksum | default(omit) }}"
+
+    - name: Ensure arca CLI install directory
+      ansible.builtin.file:
+        path: "{{ arca_cli_extract_dir }}"
+        state: directory
+        owner: root
+        group: root
+        mode: "0755"
+
+    - name: Extract arca CLI archive
+      ansible.builtin.unarchive:
+        src: "{{ arca_cli_archive_dest }}"
+        dest: "{{ arca_cli_extract_dir }}"
+        remote_src: true
+        creates: "{{ arca_cli_extract_dir }}/{{ arca_cli_binary_name }}"
+
+    - name: Ensure arca CLI is in PATH
+      ansible.builtin.file:
+        src: "{{ arca_cli_extract_dir }}/{{ arca_cli_binary_name }}"
+        dest: "{{ arca_cli_bin_path }}"
+        state: link
+  when: arca_cli_install_method == 'url'
+  rescue:
+    - name: Report arca CLI installation failure
+      ansible.builtin.fail:
+        msg: "arca CLI installation failed. Verify URL and archive contents."

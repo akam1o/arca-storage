@@ -1,0 +1,103 @@
+---
+- name: Install DRBD packages
+  ansible.builtin.package:
+    name: "{{ drbd_packages }}"
+    state: present
+  when: drbd_packages is defined
+
+- name: Ensure DRBD config directory
+  ansible.builtin.file:
+    path: /etc/drbd.d
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure DRBD state directory
+  ansible.builtin.file:
+    path: "{{ drbd_state_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render DRBD main config
+  ansible.builtin.template:
+    src: drbd.conf.j2
+    dest: /etc/drbd.conf
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload DRBD
+
+- name: Render DRBD resource config
+  ansible.builtin.template:
+    src: drbd.res.j2
+    dest: "/etc/drbd.d/{{ drbd_resource_name }}.res"
+    owner: root
+    group: root
+    mode: "0644"
+  notify: Reload DRBD
+
+- name: DRBD bootstrap
+  block:
+    - name: Check DRBD metadata marker
+      ansible.builtin.stat:
+        path: "{{ drbd_state_dir }}/{{ drbd_resource_name }}.md-created"
+      register: drbd_md_marker
+
+    # Validate resource configuration before (re)creating metadata.
+    - name: Dump DRBD resource configuration
+      ansible.builtin.command: "drbdadm dump {{ drbd_resource_name }}"
+      register: drbd_dump
+      changed_when: false
+
+    - name: Check existing DRBD metadata
+      ansible.builtin.command: "drbdadm dump-md {{ drbd_resource_name }}"
+      register: drbd_dump_md
+      changed_when: false
+      failed_when: false
+
+    - name: Create DRBD metadata
+      ansible.builtin.command: "drbdadm create-md {{ drbd_resource_name }}"
+      when:
+        - not drbd_md_marker.stat.exists
+        - drbd_dump.rc == 0
+        - drbd_dump_md.rc != 0
+      register: drbd_create_md
+      changed_when: drbd_create_md.rc == 0
+
+    - name: Mark DRBD metadata created
+      ansible.builtin.file:
+        path: "{{ drbd_state_dir }}/{{ drbd_resource_name }}.md-created"
+        state: touch
+        owner: root
+        group: root
+        mode: "0644"
+      when:
+        - not drbd_md_marker.stat.exists
+        - drbd_dump_md.rc == 0 or drbd_create_md is succeeded
+
+    - name: Check DRBD resource status
+      ansible.builtin.command: "drbdadm status {{ drbd_resource_name }}"
+      register: drbd_status
+      changed_when: false
+      failed_when: false
+
+    - name: Bring up DRBD resource if needed
+      ansible.builtin.command: "drbdadm up {{ drbd_resource_name }}"
+      when: drbd_status.rc != 0
+      register: drbd_up
+      changed_when: drbd_up.rc == 0
+
+    - name: Promote DRBD primary on designated node
+      ansible.builtin.command: "drbdadm primary --force {{ drbd_resource_name }}"
+      when:
+        - drbd_primary | bool
+        - drbd_status.stdout is not search("Primary")
+      register: drbd_primary_set
+      changed_when: drbd_primary_set.rc == 0
+  rescue:
+    - name: Report DRBD bootstrap failure
+      ansible.builtin.fail:
+        msg: "DRBD bootstrap failed. Check configuration and device readiness."

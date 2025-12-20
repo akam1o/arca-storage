@@ -1,0 +1,13 @@
+# Managed by Ansible
+
+global {
+  usage-count no;
+}
+
+common {
+  syncer {
+    rate {{ drbd_sync_rate }};
+  }
+}
+
+include "drbd.d/*.res";

@@ -1,0 +1,27 @@
+# Managed by Ansible
+resource {{ drbd_resource_name }} {
+  protocol C;
+
+  startup {
+    wfc-timeout 0;
+    degr-wfc-timeout 120;
+  }
+
+  net {
+    cram-hmac-alg sha1;
+    shared-secret "{{ drbd_shared_secret }}";
+  }
+
+  disk {
+    on-io-error detach;
+  }
+
+{% for node in drbd_nodes %}
+  on {{ node.name }} {
+    device {{ drbd_device }};
+    disk {{ drbd_disk }};
+    address {{ node.addr }}:{{ drbd_port }};
+    meta-disk internal;
+  }
+{% endfor %}
+}

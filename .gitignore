@@ -1,0 +1,62 @@
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+
+# Virtual environments
+venv/
+env/
+ENV/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Project specific
+/var/lib/arca/
+*.log
+
+# Test coverage
+htmlcov/
+.coverage
+coverage.xml
+.pytest_cache/
+
+# Arca Storage package build artifacts
+arca_storage/build/
+arca_storage/dist/
+arca_storage/*.egg-info/
+arca_storage/.pytest_cache/
+arca_storage/htmlcov/
+arca_storage/.coverage
+arca_storage/coverage.xml
+
+# Ansible/Molecule
+ansible/.cache/
+ansible/molecule/**/.molecule/
+ansible/**/__pycache__/
+

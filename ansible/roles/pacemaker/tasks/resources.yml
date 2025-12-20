@@ -1,0 +1,148 @@
+---
+# Create Pacemaker resources for Arca Storage
+# This file is included from main.yml after cluster is started
+
+- name: Check if DRBD master resource exists
+  ansible.builtin.command: pcs resource show p_drbd_r0
+  register: drbd_resource_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create DRBD master resource
+  block:
+    - name: Create DRBD resource
+      ansible.builtin.command: >
+        pcs resource create p_drbd_r0 ocf:linbit:drbd
+        drbd_resource={{ drbd_resource_name }}
+        op monitor interval=15s role=Master
+      register: pcs_drbd_create
+      changed_when: pcs_drbd_create.rc == 0
+
+    - name: Create DRBD master resource group
+      ansible.builtin.command: >
+        pcs resource master ms_drbd_r0 p_drbd_r0
+        master-max=1 master-node-max=1 clone-max=2 clone-node-max=1
+      register: pcs_drbd_master
+      changed_when: pcs_drbd_master.rc == 0
+  when: drbd_resource_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if Filesystem resource exists
+  ansible.builtin.command: pcs resource show fs_tenant_a
+  register: fs_resource_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create Filesystem resource
+  ansible.builtin.command: >
+    pcs resource create fs_tenant_a ocf:heartbeat:Filesystem
+    device={{ pacemaker_fs_device | default('/dev/' + lvm_vg_name + '/' + lvm_thin_volume_name | default('vol_tenant_a')) }}
+    directory={{ pacemaker_fs_directory | default('/exports/tenant_a') }}
+    fstype=xfs
+    op monitor interval=10s
+  register: pcs_fs_create
+  changed_when: pcs_fs_create.rc == 0
+  when: fs_resource_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if NetnsVlan resource exists
+  ansible.builtin.command: pcs resource show netns_tenant_a
+  register: netns_resource_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create NetnsVlan resource
+  ansible.builtin.command: >
+    pcs resource create netns_tenant_a ocf:local:NetnsVlan
+    ns={{ pacemaker_netnsvlan_ns | default('tenant_a') }}
+    vlan_id={{ pacemaker_netnsvlan_vlan_id | default(100) }}
+    parent_if={{ pacemaker_netnsvlan_parent_if | default('bond0') }}
+    ip={{ pacemaker_netnsvlan_ip | default('192.168.10.5') }}
+    prefix={{ pacemaker_netnsvlan_prefix | default(24) }}
+    gw={{ pacemaker_netnsvlan_gw | default('192.168.10.1') }}
+    mtu={{ pacemaker_netnsvlan_mtu | default(9000) }}
+    op monitor interval=10s
+  register: pcs_netns_create
+  changed_when: pcs_netns_create.rc == 0
+  when: netns_resource_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if NFS-Ganesha resource exists
+  ansible.builtin.command: pcs resource show ganesha_tenant_a
+  register: ganesha_resource_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create NFS-Ganesha resource
+  ansible.builtin.command: >
+    pcs resource create ganesha_tenant_a systemd:nfs-ganesha@{{ pacemaker_ganesha_instance | default('tenant_a') }}
+    op monitor interval=10s
+  register: pcs_ganesha_create
+  changed_when: pcs_ganesha_create.rc == 0
+  when: ganesha_resource_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if resource group exists
+  ansible.builtin.command: pcs resource group show g_svm_tenant_a
+  register: group_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create resource group
+  ansible.builtin.command: >
+    pcs resource group add g_svm_tenant_a
+    fs_tenant_a netns_tenant_a ganesha_tenant_a
+  register: pcs_group_create
+  changed_when: pcs_group_create.rc == 0
+  when: group_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if order constraint exists
+  ansible.builtin.command: pcs constraint show order ms_drbd_r0:promote fs_tenant_a:start
+  register: order_constraint_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create order constraint (DRBD before Filesystem)
+  ansible.builtin.command: >
+    pcs constraint order ms_drbd_r0:promote fs_tenant_a:start
+  register: pcs_order_constraint
+  changed_when: pcs_order_constraint.rc == 0
+  when: order_constraint_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Check if colocation constraint exists
+  ansible.builtin.command: pcs constraint show colocation g_svm_tenant_a with ms_drbd_r0:Master
+  register: colocation_constraint_check
+  changed_when: false
+  failed_when: false
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
+- name: Create colocation constraint (SVM group with DRBD)
+  ansible.builtin.command: >
+    pcs constraint colocation add g_svm_tenant_a with ms_drbd_r0:Master
+  register: pcs_colocation_constraint
+  changed_when: pcs_colocation_constraint.rc == 0
+  when: colocation_constraint_check.rc != 0
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+

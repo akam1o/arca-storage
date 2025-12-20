@@ -1,0 +1,20 @@
+# Managed by Ansible
+
+NFS_Core_Param {
+  NFS_Protocols = 4;
+  MNT_Port = 20048;
+}
+
+EXPORT {
+  Export_Id = {{ nfs_ganesha_export_id }};
+  Path = "{{ nfs_ganesha_export_dir }}";
+  Pseudo = "/{{ nfs_ganesha_export_id }}";
+  Access_Type = RW;
+  Squash = Root_Squash;
+  Protocols = 4;
+  Transports = TCP;
+  Clients = {{ nfs_ganesha_export_clients }};
+  FSAL {
+    Name = VFS;
+  }
+}

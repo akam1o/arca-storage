@@ -1,0 +1,40 @@
+---
+- name: Verify
+  hosts: all
+  become: true
+  gather_facts: true
+
+  tasks:
+    - name: Check if common packages are installed
+      ansible.builtin.package_facts:
+        manager: auto
+
+    - name: Verify essential packages (when not in test_mode or packages should be installed)
+      ansible.builtin.assert:
+        that:
+          - "'iproute' in ansible_facts.packages or 'iproute-tc' in ansible_facts.packages"
+        fail_msg: "Essential packages are not installed"
+        success_msg: "Essential packages are installed"
+
+    - name: Check if systemd is running
+      ansible.builtin.command: systemctl is-system-running
+      register: systemd_status
+      changed_when: false
+      failed_when: false
+
+    - name: Verify systemd is operational
+      ansible.builtin.assert:
+        that:
+          - systemd_status.rc == 0 or 'degraded' in systemd_status.stdout or 'running' in systemd_status.stdout
+        fail_msg: "Systemd is not running properly"
+        success_msg: "Systemd is operational"
+
+    - name: Check if configuration files were created (templates test)
+      ansible.builtin.stat:
+        path: /etc/ansible-test-marker
+      register: test_marker
+      failed_when: false
+
+    - name: Report test mode status
+      ansible.builtin.debug:
+        msg: "Test completed in test_mode={{ test_mode | default(false) }}"

@@ -1,0 +1,22 @@
+---
+- name: Install common packages
+  ansible.builtin.package:
+    name: "{{ common_packages }}"
+    state: present
+
+- name: Ensure sysctl settings
+  ansible.builtin.sysctl:
+    name: "{{ item.name }}"
+    value: "{{ item.value }}"
+    sysctl_set: true
+    state: present
+    reload: true
+  loop: "{{ common_sysctl }}"
+  when: common_sysctl is defined
+
+- name: Ensure chronyd is enabled and running
+  ansible.builtin.service:
+    name: chronyd
+    state: started
+    enabled: true
+  when: "'chrony' in common_packages"

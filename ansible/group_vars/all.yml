@@ -1,0 +1,105 @@
+---
+# Common
+common_packages:
+  - vim
+  - rsync
+  - curl
+  - lvm2
+  - chrony
+common_sysctl:
+  - name: net.ipv4.ip_nonlocal_bind
+    value: 1
+  - name: vm.swappiness
+    value: 10
+
+# LVM
+lvm_vg_name: vg_pool_01
+lvm_pv_devices:
+  - /dev/drbd0
+lvm_thinpool_name: pool
+lvm_thinpool_size: 80%VG
+lvm_thinpool_metadata_size: 15.8G
+lvm_thinpool_chunk_size: 256K
+lvm_thin_volume_name: vol_tenant_a
+lvm_thin_volume_size: 100G
+
+# DRBD
+drbd_resource_name: r0
+drbd_device: /dev/drbd0
+drbd_disk: /dev/nvme0n1p1
+# NOTE: Set the same value on all DRBD nodes; change for production use.
+# Consider using ansible-vault for sensitive data.
+drbd_shared_secret: "changeme"
+_drbd_node1_ip: 192.0.2.11
+_drbd_node2_ip: 192.0.2.12
+drbd_nodes:
+  - name: node1
+    addr: "{{ _drbd_node1_ip }}"
+  - name: node2
+    addr: "{{ _drbd_node2_ip }}"
+drbd_state_dir: /var/lib/drbd
+
+drbd_port: 7788
+drbd_sync_rate: 100M
+
+drbd_primary: "{{ inventory_hostname == 'node1' }}"
+
+# Pacemaker/Corosync
+pacemaker_cluster_name: ha_cluster
+pacemaker_hacluster_password: changeme
+pacemaker_hacluster_password_salt: ha_cluster_salt
+pacemaker_corosync_bindnetaddr: 192.0.2.0
+pacemaker_corosync_mcastport: 5405
+pacemaker_nodes:
+  - name: node1
+    ring0_addr: 192.0.2.11
+  - name: node2
+    ring0_addr: 192.0.2.12
+pacemaker_packages:
+  - pacemaker
+  - corosync
+  - pcs
+  - resource-agents
+pacemaker_custom_ra: []
+pacemaker_ra_vendor: local
+pacemaker_cluster_bootstrap_node: "{{ pacemaker_nodes[0].name }}"
+# NOTE: STONITH is disabled by default. To enable, set to true and configure
+# appropriate STONITH devices for your environment (e.g., fence_ipmilan, fence_aws, etc.)
+pacemaker_enable_stonith: false
+pacemaker_install_netnsvlan_ra: true
+pacemaker_create_resources: true
+
+# Pacemaker resource variables
+pacemaker_fs_device: "/dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}"
+pacemaker_fs_directory: "/exports/tenant_a"
+pacemaker_netnsvlan_ns: "tenant_a"
+pacemaker_netnsvlan_vlan_id: 100
+pacemaker_netnsvlan_parent_if: "bond0"
+pacemaker_netnsvlan_ip: "192.168.10.5"
+pacemaker_netnsvlan_prefix: 24
+pacemaker_netnsvlan_gw: "192.168.10.1"
+pacemaker_netnsvlan_mtu: 9000
+pacemaker_ganesha_instance: "tenant_a"
+
+# NFS-Ganesha
+nfs_ganesha_packages:
+  - nfs-ganesha
+  - nfs-ganesha-utils
+nfs_ganesha_export_dir: /exports
+nfs_ganesha_export_id: 101
+nfs_ganesha_export_clients: "10.0.0.0/24"
+nfs_ganesha_tenants:
+  - tenant_a
+
+# arca CLI
+arca_cli_package_name: arca-cli
+arca_cli_install_method: package  # package|url
+arca_cli_download_url: ""
+arca_cli_download_checksum: ""
+arca_cli_bin_path: /usr/local/bin/arca
+arca_cli_archive_dest: /tmp/arca-cli.tgz
+arca_cli_extract_dir: /opt/arca-cli
+arca_cli_binary_name: arca
+drbd_packages:
+  - drbd-utils
+  - kmod-drbd

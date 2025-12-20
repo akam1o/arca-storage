@@ -1,0 +1,5 @@
+---
+- name: Restart Corosync
+  ansible.builtin.service:
+    name: corosync
+    state: restarted

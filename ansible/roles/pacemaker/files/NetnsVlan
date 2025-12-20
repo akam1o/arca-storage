@@ -1,0 +1,286 @@
+#!/bin/sh
+#
+# OCF Resource Agent: NetnsVlan
+# Manages Network Namespace with VLAN interface and VIP
+#
+# Copyright (c) 2025 Arca Storage Project
+# License: GPL-2.0
+#
+
+: ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
+. ${OCF_FUNCTIONS_DIR}/ocf-shellfuncs
+
+# OCF return codes
+# OCF_SUCCESS=0
+# OCF_ERR_GENERIC=1
+# OCF_ERR_ARGS=2
+# OCF_ERR_UNIMPLEMENTED=3
+# OCF_ERR_PERM=9
+# OCF_NOT_RUNNING=7
+
+# Resource parameters
+: "${OCF_RESKEY_ns?}"
+: "${OCF_RESKEY_vlan_id?}"
+: "${OCF_RESKEY_parent_if?}"
+: "${OCF_RESKEY_ip?}"
+: "${OCF_RESKEY_prefix?}"
+: "${OCF_RESKEY_gw?}"
+
+vlan_if="${OCF_RESKEY_parent_if}.${OCF_RESKEY_vlan_id}"
+
+meta_data() {
+    cat <<'EOF'
+<?xml version="1.0"?>
+<!DOCTYPE resource-agent SYSTEM "ra-api-1.dtd">
+<resource-agent name="NetnsVlan">
+  <version>1.0</version>
+  <longdesc lang="en">
+    Manages Network Namespace with VLAN interface and VIP.
+    Creates a network namespace, adds a VLAN interface to it,
+    and configures the VIP and default gateway.
+  </longdesc>
+  <shortdesc lang="en">Network Namespace with VLAN and VIP</shortdesc>
+  <parameters>
+    <parameter name="ns" unique="1" required="1">
+      <longdesc lang="en">Network namespace name</longdesc>
+      <shortdesc lang="en">Namespace name</shortdesc>
+      <content type="string" />
+    </parameter>
+    <parameter name="vlan_id" unique="0" required="1">
+      <longdesc lang="en">VLAN ID (1-4094)</longdesc>
+      <shortdesc lang="en">VLAN ID</shortdesc>
+      <content type="integer" default="" />
+    </parameter>
+    <parameter name="parent_if" unique="0" required="1">
+      <longdesc lang="en">Parent interface name (e.g., bond0)</longdesc>
+      <shortdesc lang="en">Parent interface</shortdesc>
+      <content type="string" default="" />
+    </parameter>
+    <parameter name="ip" unique="0" required="1">
+      <longdesc lang="en">VIP IP address</longdesc>
+      <shortdesc lang="en">VIP IP</shortdesc>
+      <content type="string" default="" />
+    </parameter>
+    <parameter name="prefix" unique="0" required="1">
+      <longdesc lang="en">IP prefix length (e.g., 24)</longdesc>
+      <shortdesc lang="en">Prefix length</shortdesc>
+      <content type="integer" default="" />
+    </parameter>
+    <parameter name="gw" unique="0" required="0">
+      <longdesc lang="en">Default gateway IP address (optional)</longdesc>
+      <shortdesc lang="en">Gateway IP</shortdesc>
+      <content type="string" default="" />
+    </parameter>
+    <parameter name="mtu" unique="0" required="0">
+      <longdesc lang="en">MTU size (optional, default: 1500)</longdesc>
+      <shortdesc lang="en">MTU</shortdesc>
+      <content type="integer" default="1500" />
+    </parameter>
+  </parameters>
+  <actions>
+    <action name="start" timeout="20s" />
+    <action name="stop" timeout="20s" />
+    <action name="monitor" timeout="10s" interval="10s" />
+    <action name="meta-data" timeout="5s" />
+    <action name="validate-all" timeout="5s" />
+  </actions>
+</resource-agent>
+EOF
+}
+
+validate_all() {
+    # Validate namespace name
+    if [ -z "$OCF_RESKEY_ns" ]; then
+        ocf_exit_reason "Namespace name (ns) is required"
+        return $OCF_ERR_ARGS
+    fi
+
+    # Validate VLAN ID
+    if [ -z "$OCF_RESKEY_vlan_id" ] || [ "$OCF_RESKEY_vlan_id" -lt 1 ] || [ "$OCF_RESKEY_vlan_id" -gt 4094 ]; then
+        ocf_exit_reason "VLAN ID must be between 1 and 4094"
+        return $OCF_ERR_ARGS
+    fi
+
+    # Validate parent interface
+    if [ -z "$OCF_RESKEY_parent_if" ]; then
+        ocf_exit_reason "Parent interface (parent_if) is required"
+        return $OCF_ERR_ARGS
+    fi
+
+    if ! ip link show "$OCF_RESKEY_parent_if" >/dev/null 2>&1; then
+        ocf_exit_reason "Parent interface %s does not exist" "$OCF_RESKEY_parent_if"
+        return $OCF_ERR_ARGS
+    fi
+
+    # Validate IP address
+    if [ -z "$OCF_RESKEY_ip" ]; then
+        ocf_exit_reason "IP address (ip) is required"
+        return $OCF_ERR_ARGS
+    fi
+
+    # Validate prefix
+    if [ -z "$OCF_RESKEY_prefix" ] || [ "$OCF_RESKEY_prefix" -lt 0 ] || [ "$OCF_RESKEY_prefix" -gt 32 ]; then
+        ocf_exit_reason "Prefix length must be between 0 and 32"
+        return $OCF_ERR_ARGS
+    fi
+
+    return $OCF_SUCCESS
+}
+
+start() {
+    # Check if namespace already exists
+    if ip netns list | awk '{print $1}' | grep -qx "$OCF_RESKEY_ns"; then
+        ocf_log info "Namespace %s already exists" "$OCF_RESKEY_ns"
+        # Check if VLAN interface is already in the namespace
+        if ip netns exec "$OCF_RESKEY_ns" ip link show "$vlan_if" >/dev/null 2>&1; then
+            ocf_log info "VLAN interface %s already exists in namespace %s" "$vlan_if" "$OCF_RESKEY_ns"
+            # Verify IP is configured
+            if ip netns exec "$OCF_RESKEY_ns" ip addr show dev "$vlan_if" | grep -q "$OCF_RESKEY_ip"; then
+                ocf_log info "IP %s already configured on %s" "$OCF_RESKEY_ip" "$vlan_if"
+                return $OCF_SUCCESS
+            fi
+        fi
+    else
+        # Create namespace
+        if ! ip netns add "$OCF_RESKEY_ns"; then
+            ocf_exit_reason "Failed to create namespace %s" "$OCF_RESKEY_ns"
+            return $OCF_ERR_GENERIC
+        fi
+        ocf_log info "Created namespace %s" "$OCF_RESKEY_ns"
+    fi
+
+    # Check if VLAN interface already exists in global namespace
+    if ip link show "$vlan_if" >/dev/null 2>&1; then
+        ocf_log info "VLAN interface %s already exists, moving to namespace" "$vlan_if"
+        # Move existing interface to namespace
+        if ! ip link set "$vlan_if" netns "$OCF_RESKEY_ns"; then
+            ocf_exit_reason "Failed to move VLAN interface %s to namespace %s" "$vlan_if" "$OCF_RESKEY_ns"
+            return $OCF_ERR_GENERIC
+        fi
+    else
+        # Create VLAN interface
+        if ! ip link add link "$OCF_RESKEY_parent_if" name "$vlan_if" type vlan id "$OCF_RESKEY_vlan_id"; then
+            ocf_exit_reason "Failed to create VLAN interface %s on %s" "$vlan_if" "$OCF_RESKEY_parent_if"
+            # Cleanup: remove namespace if we created it
+            if ip netns list | awk '{print $1}' | grep -qx "$OCF_RESKEY_ns"; then
+                ip netns del "$OCF_RESKEY_ns" 2>/dev/null
+            fi
+            return $OCF_ERR_GENERIC
+        fi
+        ocf_log info "Created VLAN interface %s" "$vlan_if"
+
+        # Move VLAN interface to namespace
+        if ! ip link set "$vlan_if" netns "$OCF_RESKEY_ns"; then
+            ocf_exit_reason "Failed to move VLAN interface %s to namespace %s" "$vlan_if" "$OCF_RESKEY_ns"
+            # Cleanup
+            ip link del "$vlan_if" 2>/dev/null
+            if ip netns list | awk '{print $1}' | grep -qx "$OCF_RESKEY_ns"; then
+                ip netns del "$OCF_RESKEY_ns" 2>/dev/null
+            fi
+            return $OCF_ERR_GENERIC
+        fi
+    fi
+
+    # Configure MTU if specified
+    if [ -n "$OCF_RESKEY_mtu" ] && [ "$OCF_RESKEY_mtu" != "1500" ]; then
+        if ! ip netns exec "$OCF_RESKEY_ns" ip link set "$vlan_if" mtu "$OCF_RESKEY_mtu"; then
+            ocf_log warn "Failed to set MTU %s on %s" "$OCF_RESKEY_mtu" "$vlan_if"
+        fi
+    fi
+
+    # Configure IP address
+    if ! ip netns exec "$OCF_RESKEY_ns" ip addr add "$OCF_RESKEY_ip/$OCF_RESKEY_prefix" dev "$vlan_if"; then
+        # Check if IP is already configured
+        if ! ip netns exec "$OCF_RESKEY_ns" ip addr show dev "$vlan_if" | grep -q "$OCF_RESKEY_ip"; then
+            ocf_exit_reason "Failed to configure IP %s/%s on %s" "$OCF_RESKEY_ip" "$OCF_RESKEY_prefix" "$vlan_if"
+            return $OCF_ERR_GENERIC
+        fi
+        ocf_log info "IP %s/%s already configured on %s" "$OCF_RESKEY_ip" "$OCF_RESKEY_prefix" "$vlan_if"
+    else
+        ocf_log info "Configured IP %s/%s on %s" "$OCF_RESKEY_ip" "$OCF_RESKEY_prefix" "$vlan_if"
+    fi
+
+    # Bring interface up
+    if ! ip netns exec "$OCF_RESKEY_ns" ip link set "$vlan_if" up; then
+        ocf_exit_reason "Failed to bring interface %s up" "$vlan_if"
+        return $OCF_ERR_GENERIC
+    fi
+
+    # Set default gateway if provided
+    if [ -n "$OCF_RESKEY_gw" ]; then
+        if ! ip netns exec "$OCF_RESKEY_ns" ip route add default via "$OCF_RESKEY_gw"; then
+            # Ignore if route already exists
+            if ! ip netns exec "$OCF_RESKEY_ns" ip route show default | grep -q "$OCF_RESKEY_gw"; then
+                ocf_exit_reason "Failed to set default gateway %s" "$OCF_RESKEY_gw"
+                return $OCF_ERR_GENERIC
+            fi
+        fi
+    fi
+
+    return $OCF_SUCCESS
+}
+
+stop() {
+    if ! ip netns list | awk '{print $1}' | grep -qx "$OCF_RESKEY_ns"; then
+        ocf_log info "Namespace %s does not exist" "$OCF_RESKEY_ns"
+        return $OCF_SUCCESS
+    fi
+
+    # Delete VLAN interface inside namespace if it exists
+    if ip netns exec "$OCF_RESKEY_ns" ip link show "$vlan_if" >/dev/null 2>&1; then
+        ip netns exec "$OCF_RESKEY_ns" ip link set "$vlan_if" down 2>/dev/null
+        ip netns exec "$OCF_RESKEY_ns" ip link delete "$vlan_if" 2>/dev/null
+    fi
+
+    # Delete namespace
+    if ! ip netns del "$OCF_RESKEY_ns"; then
+        ocf_exit_reason "Failed to delete namespace %s" "$OCF_RESKEY_ns"
+        return $OCF_ERR_GENERIC
+    fi
+
+    return $OCF_SUCCESS
+}
+
+monitor() {
+    if ! ip netns list | awk '{print $1}' | grep -qx "$OCF_RESKEY_ns"; then
+        return $OCF_NOT_RUNNING
+    fi
+
+    if ! ip netns exec "$OCF_RESKEY_ns" ip link show "$vlan_if" >/dev/null 2>&1; then
+        return $OCF_NOT_RUNNING
+    fi
+
+    if ! ip netns exec "$OCF_RESKEY_ns" ip addr show dev "$vlan_if" | grep -q "$OCF_RESKEY_ip"; then
+        return $OCF_NOT_RUNNING
+    fi
+
+    return $OCF_SUCCESS
+}
+
+case "$1" in
+    meta-data)
+        meta_data
+        exit $OCF_SUCCESS
+        ;;
+    validate-all)
+        validate_all
+        exit $?
+        ;;
+    start)
+        validate_all || exit $?
+        start
+        exit $?
+        ;;
+    stop)
+        stop
+        exit $?
+        ;;
+    monitor)
+        monitor
+        exit $?
+        ;;
+    *)
+        ocf_log err "Usage: $0 {start|stop|monitor|meta-data|validate-all}"
+        exit $OCF_ERR_UNIMPLEMENTED
+        ;;
+esac

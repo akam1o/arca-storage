@@ -1,0 +1,6 @@
+---
+- name: Reload DRBD
+  ansible.builtin.service:
+    name: drbd
+    state: restarted
+  failed_when: false

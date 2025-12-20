@@ -1,0 +1,11 @@
+---
+- name: Reload systemd
+  ansible.builtin.systemd:
+    daemon_reload: true
+
+- name: Restart NFS-Ganesha
+  ansible.builtin.systemd:
+    name: "nfs-ganesha@{{ item }}"
+    state: restarted
+    daemon_reload: true
+  loop: "{{ nfs_ganesha_tenants | default(['tenant_a']) }}"
