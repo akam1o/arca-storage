@@ -9,9 +9,15 @@ from arca_storage.api.models import SVMCreate, SVMStatus
 from arca_storage.cli.lib.ganesha import render_config
 from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace
 from arca_storage.cli.lib.pacemaker import create_group, delete_group
+from arca_storage.cli.lib.state import delete_svm as state_delete_svm
+from arca_storage.cli.lib.state import list_svms as state_list_svms
+from arca_storage.cli.lib.state import upsert_svm as state_upsert_svm
 from arca_storage.cli.lib.systemd import stop_unit
 from arca_storage.cli.lib.validators import (validate_ip_cidr, validate_name,
                                    validate_vlan)
+from arca_storage.cli.lib.lvm import create_lv
+from arca_storage.cli.lib.xfs import format_xfs
+from arca_storage.cli.lib.config import load_config
 
 
 async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
@@ -33,13 +39,52 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     create_namespace(svm_data.name)
 
     # Attach VLAN
-    attach_vlan(svm_data.name, "bond0", svm_data.vlan_id, svm_data.ip_cidr, svm_data.gateway, svm_data.mtu)
+    cfg = load_config()
+    attach_vlan(svm_data.name, cfg.parent_if, svm_data.vlan_id, svm_data.ip_cidr, svm_data.gateway, svm_data.mtu)
 
     # Generate ganesha config
     render_config(svm_data.name, [])
 
+    # Optional root LV (for Pacemaker Filesystem resource)
+    if svm_data.root_volume_size_gib:
+        vg_name = cfg.vg_name
+        lv_name = f"vol_{svm_data.name}"
+        try:
+            lv_path = create_lv(vg_name, lv_name, svm_data.root_volume_size_gib, thin=True)
+            format_xfs(lv_path)
+        except Exception as e:
+            if "already exists" not in str(e).lower():
+                raise
+
+    export_dir = cfg.export_dir.rstrip("/")
+
     # Create Pacemaker resource group
-    create_group(svm_data.name, f"/exports/{svm_data.name}", svm_data.name, f"nfs-ganesha@{svm_data.name}")
+    create_group(
+        svm_data.name,
+        f"{export_dir}/{svm_data.name}",
+        vlan_id=svm_data.vlan_id,
+        ip=ip_addr,
+        prefix=prefix,
+        gw=svm_data.gateway,
+        mtu=svm_data.mtu,
+        parent_if=cfg.parent_if,
+        vg_name=cfg.vg_name,
+        drbd_resource_name=cfg.drbd_resource,
+        create_filesystem=bool(svm_data.root_volume_size_gib),
+    )
+
+    state_upsert_svm(
+        {
+            "name": svm_data.name,
+            "vlan_id": svm_data.vlan_id,
+            "ip_cidr": svm_data.ip_cidr,
+            "gateway": svm_data.gateway,
+            "mtu": svm_data.mtu,
+            "namespace": svm_data.name,
+            "vip": ip_addr,
+            "status": SVMStatus.AVAILABLE.value,
+        }
+    )
 
     # Build response
     return {
@@ -67,9 +112,8 @@ async def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Option
     Returns:
         Dictionary with items and next_cursor
     """
-    # TODO: Implement actual listing from state file or Pacemaker
-    # For now, return empty list
-    return {"items": [], "next_cursor": None}
+    items = state_list_svms(name=name)
+    return {"items": items[:limit], "next_cursor": None}
 
 
 async def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> None:
@@ -93,3 +137,5 @@ async def delete_svm(name: str, force: bool = False, delete_volumes: bool = Fals
 
     # Delete namespace
     delete_namespace(name)
+
+    state_delete_svm(name)

@@ -1,0 +1,36 @@
+---
+# Runtime provisioning via `arca` (disabled by default).
+arca_runtime_enabled: false
+
+# SVMs to create.
+# Example:
+# arca_runtime_svms:
+#   - name: tenant_a
+#     vlan_id: 100
+#     ip_cidr: 192.168.10.5/24
+#     gateway: 192.168.10.1
+#     mtu: 9000
+arca_runtime_svms: []
+
+# Volumes to create.
+# Example:
+# arca_runtime_volumes:
+#   - name: vol1
+#     svm: tenant_a
+#     size_gib: 100
+#     thin: true
+arca_runtime_volumes: []
+
+# Exports to add.
+# Example:
+# arca_runtime_exports:
+#   - svm: tenant_a
+#     volume: vol1
+#     client: 10.0.0.0/24
+#     access: rw
+#     root_squash: true
+arca_runtime_exports: []
+
+# API service management (package installs are assumed).
+arca_runtime_enable_api_service: false
+arca_runtime_api_service_name: arca-storage-api

@@ -64,11 +64,10 @@ arca export delete <svm_name> <export_id>
 
 ```bash
 # Start API server
-cd arca_storage
-uvicorn arca_storage.api.main:app --reload
+arca-storage-api --host 127.0.0.1 --port 8080
 
-# API will be available at http://localhost:8000
-# API documentation: http://localhost:8000/docs
+# API will be available at http://localhost:8080
+# API documentation: http://localhost:8080/docs
 ```
 
 ## Testing

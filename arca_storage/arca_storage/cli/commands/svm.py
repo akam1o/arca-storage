@@ -10,9 +10,15 @@ from arca_storage.cli.lib.ganesha import reload as reload_ganesha
 from arca_storage.cli.lib.ganesha import render_config
 from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace
 from arca_storage.cli.lib.pacemaker import create_group, delete_group
+from arca_storage.cli.lib.state import delete_svm as state_delete_svm
+from arca_storage.cli.lib.state import list_svms as state_list_svms
+from arca_storage.cli.lib.state import upsert_svm as state_upsert_svm
 from arca_storage.cli.lib.systemd import start_unit, stop_unit
 from arca_storage.cli.lib.validators import (validate_ip_cidr, validate_name,
                                    validate_vlan)
+from arca_storage.cli.lib.lvm import create_lv
+from arca_storage.cli.lib.xfs import format_xfs
+from arca_storage.cli.lib.config import load_config
 
 app = typer.Typer(help="SVM management commands")
 
@@ -24,6 +30,10 @@ def create(
     ip: str = typer.Option(..., "--ip", help="IP address with CIDR (e.g., 192.168.10.5/24)"),
     gateway: Optional[str] = typer.Option(None, "--gateway", help="Default gateway IP"),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
+    root_size: Optional[int] = typer.Option(None, "--root-size", help="Create root LV size in GiB (optional)"),
+    drbd_resource: Optional[str] = typer.Option(
+        None, "--drbd-resource", help="DRBD resource name for Pacemaker (default: from config or r0)"
+    ),
 ):
     """
     Create a new SVM.
@@ -41,21 +51,63 @@ def create(
 
         typer.echo(f"Creating SVM: {name}")
 
+        cfg = load_config()
+
         # Create namespace
         create_namespace(name)
         typer.echo(f"  Created namespace: {name}")
 
         # Attach VLAN
-        attach_vlan(name, "bond0", vlan_id, ip, gateway, mtu)
+        attach_vlan(name, cfg.parent_if, vlan_id, ip, gateway, mtu)
         typer.echo(f"  Configured VLAN {vlan_id} with IP {ip}")
 
         # Generate ganesha config
         config_path = render_config(name, [])
         typer.echo(f"  Generated ganesha config: {config_path}")
 
+        # Optionally create root LV (used by Pacemaker Filesystem resource)
+        if root_size:
+            vg_name = cfg.vg_name
+            lv_name = f"vol_{name}"
+            try:
+                lv_path = create_lv(vg_name, lv_name, root_size, thin=True)
+                format_xfs(lv_path)
+                typer.echo(f"  Created root LV: {lv_path}")
+            except Exception as e:
+                # Keep idempotent-ish behavior if it already exists.
+                if "already exists" not in str(e).lower():
+                    raise
+
+        export_dir = cfg.export_dir.rstrip("/")
+
         # Create Pacemaker resource group
-        create_group(name, f"/exports/{name}", name, f"nfs-ganesha@{name}")
+        create_group(
+            name,
+            f"{export_dir}/{name}",
+            vlan_id=vlan_id,
+            ip=ip_addr,
+            prefix=int(prefix),
+            gw=gateway,
+            mtu=mtu,
+            parent_if=cfg.parent_if,
+            vg_name=cfg.vg_name,
+            drbd_resource_name=(drbd_resource or cfg.drbd_resource),
+            create_filesystem=bool(root_size),
+        )
         typer.echo(f"  Created Pacemaker resource group: g_svm_{name}")
+
+        state_upsert_svm(
+            {
+                "name": name,
+                "vlan_id": vlan_id,
+                "ip_cidr": ip,
+                "gateway": gateway,
+                "mtu": mtu,
+                "namespace": name,
+                "vip": ip_addr,
+                "status": "available",
+            }
+        )
 
         typer.echo(f"SVM {name} created successfully")
 
@@ -91,6 +143,8 @@ def delete(
         delete_namespace(name)
         typer.echo(f"  Deleted namespace: {name}")
 
+        state_delete_svm(name)
+
         typer.echo(f"SVM {name} deleted successfully")
 
     except Exception as e:
@@ -106,9 +160,14 @@ def list():
     Shows all configured SVMs with their status.
     """
     try:
-        # TODO: Implement listing from state file or Pacemaker
-        typer.echo("Listing SVMs...")
-        typer.echo("(Implementation pending)")
+        svms = state_list_svms()
+        if not svms:
+            typer.echo("No SVMs found")
+            return
+        for svm in svms:
+            typer.echo(
+                f"{svm.get('name')} vlan={svm.get('vlan_id')} ip={svm.get('ip_cidr')} status={svm.get('status')}"
+            )
 
     except Exception as e:
         typer.echo(f"Error listing SVMs: {e}", err=True)

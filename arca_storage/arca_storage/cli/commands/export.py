@@ -9,7 +9,10 @@ import typer
 from arca_storage.cli.lib.ganesha import add_export
 from arca_storage.cli.lib.ganesha import reload as reload_ganesha
 from arca_storage.cli.lib.ganesha import remove_export, render_config
+from arca_storage.cli.lib.ganesha import sync as sync_ganesha
+from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
+from arca_storage.cli.lib.ganesha import list_exports as ganesha_list_exports
 
 app = typer.Typer(help="Export management commands")
 
@@ -96,9 +99,53 @@ def list(
     Shows all configured exports, optionally filtered by SVM or volume.
     """
     try:
-        typer.echo("Listing exports...")
-        typer.echo("(Implementation pending)")
+        exports = ganesha_list_exports(svm_name=svm, volume_name=volume)
+        if not exports:
+            typer.echo("No exports found")
+            return
+        for exp in exports:
+            typer.echo(
+                f"{exp.get('svm')}/{exp.get('volume')} client={exp.get('client')} access={exp.get('access')} export_id={exp.get('export_id')}"
+            )
 
     except Exception as e:
         typer.echo(f"Error listing exports: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def sync(
+    svm: Optional[str] = typer.Option(None, "--svm", help="SVM name"),
+    all_svms: bool = typer.Option(False, "--all", help="Sync all SVMs found in state"),
+):
+    """
+    Re-render ganesha.conf from current state and reload service.
+
+    Useful after changing runtime configuration (e.g., enabling NFSv3).
+    """
+    try:
+        targets: List[str] = []
+        if all_svms:
+            state_dir = get_state_dir()
+            if state_dir.exists():
+                for path in sorted(state_dir.glob("exports.*.json")):
+                    name = path.name[len("exports.") : -len(".json")]
+                    if name:
+                        targets.append(name)
+        else:
+            if not svm:
+                raise ValueError("Specify --svm or --all")
+            validate_name(svm)
+            targets = [svm]
+
+        if not targets:
+            typer.echo("No SVMs found to sync")
+            return
+
+        for name in targets:
+            path = sync_ganesha(name)
+            typer.echo(f"Synced: {name} -> {path}")
+
+    except Exception as e:
+        typer.echo(f"Error syncing exports: {e}", err=True)
         raise typer.Exit(1)

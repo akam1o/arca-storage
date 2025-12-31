@@ -3,8 +3,8 @@
 # OCF Resource Agent: NetnsVlan
 # Manages Network Namespace with VLAN interface and VIP
 #
-# Copyright (c) 2025 Arca Storage Project
-# License: GPL-2.0
+# Copyright (c) 2025 Arca Project
+# License: Apache-2.0
 #
 
 : ${OCF_FUNCTIONS_DIR=${OCF_ROOT}/lib/heartbeat}
@@ -301,4 +301,3 @@ case "$1" in
         exit $OCF_ERR_UNIMPLEMENTED
         ;;
 esac
-

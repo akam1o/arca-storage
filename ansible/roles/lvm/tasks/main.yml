@@ -86,6 +86,15 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
   when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
 
+- name: Skip tenant thin volume creation (bootstrap-only)
+  ansible.builtin.debug:
+    msg: "Skipping tenant LV creation; set lvm_create_tenant_volume=true to enable."
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - not (lvm_create_tenant_volume | default(false) | bool)
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
+
 - name: Create thin volume
   ansible.builtin.command: >
     lvcreate -V {{ lvm_thin_volume_size | default('100G') }} -T {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
@@ -96,6 +105,7 @@
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
     - lvm_thinvol_check.rc != 0
+    - lvm_create_tenant_volume | default(false) | bool
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
@@ -106,7 +116,19 @@
   failed_when: false
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
-  when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - lvm_create_tenant_volume | default(false) | bool
+
+- name: Skip tenant filesystem format (bootstrap-only)
+  ansible.builtin.debug:
+    msg: "Skipping filesystem format; set lvm_format_tenant_filesystem=true to enable."
+  when:
+    - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
+    - lvm_create_tenant_volume | default(false) | bool
+    - not (lvm_format_tenant_filesystem | default(false) | bool)
+  run_once: true
+  delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Create XFS filesystem
   ansible.builtin.command: >
@@ -116,5 +138,6 @@
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
     - lvm_fs_check.rc != 0
+    - lvm_format_tenant_filesystem | default(false) | bool
   run_once: true
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"

@@ -7,7 +7,7 @@ from unittest.mock import MagicMock, mock_open, patch
 
 import pytest
 
-from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config
+from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config, sync
 
 
 class TestRenderConfig:
@@ -139,4 +139,21 @@ class TestRemoveExport:
         # Should not raise error, just remove nothing
         remove_export("tenant_a", "vol1", "10.0.0.0/24")
 
+        mock_reload.assert_called_once_with("tenant_a")
+
+
+class TestSync:
+    @pytest.mark.unit
+    @patch("arca_storage.cli.lib.ganesha._load_exports")
+    @patch("arca_storage.cli.lib.ganesha.render_config")
+    @patch("arca_storage.cli.lib.ganesha.reload")
+    def test_sync_renders_and_reloads(self, mock_reload, mock_render, mock_load):
+        mock_load.return_value = []
+        mock_render.return_value = "/etc/ganesha/ganesha.tenant_a.conf"
+
+        path = sync("tenant_a")
+
+        assert path == "/etc/ganesha/ganesha.tenant_a.conf"
+        mock_load.assert_called_once_with("tenant_a")
+        mock_render.assert_called_once_with("tenant_a", [])
         mock_reload.assert_called_once_with("tenant_a")

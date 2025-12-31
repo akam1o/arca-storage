@@ -9,14 +9,21 @@ from typing import Dict, List, Optional
 
 from jinja2 import Template
 
+from arca_storage.cli.lib.config import load_config
+from arca_storage.cli.lib.state import get_state_dir
+
 # Template for ganesha.conf
-GANESHA_CONF_TEMPLATE = """# Managed by svmctl
+GANESHA_CONF_TEMPLATE = """# Managed by arca
 # Template version: {{ template_version }}
 # Config version: {{ config_version }}
 
 NFS_CORE_PARAM {
-    Protocols = 4;
+    Protocols = {{ protocols }};
     NFS_Port = 2049;
+    MNT_Port = {{ mountd_port }};
+{% if enable_v3 %}
+    NLM_Port = {{ nlm_port }};
+{% endif %}
 }
 
 EXPORT_DEFAULTS {
@@ -29,7 +36,7 @@ EXPORT {
     Export_Id = {{ exp.export_id }};
     Path = "{{ exp.path }}";
     Pseudo = "{{ exp.pseudo }}";
-    Protocols = 4;
+    Protocols = {{ protocols }};
     Access_Type = {{ exp.access }};
     Squash = {{ exp.squash }};
     SecType = {{ exp.sec }};
@@ -55,7 +62,8 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     Returns:
         Path to the generated config file
     """
-    config_dir = Path("/etc/ganesha")
+    cfg = load_config()
+    config_dir = Path(cfg.ganesha_config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     
     config_path = config_dir / f"ganesha.{svm_name}.conf"
@@ -67,10 +75,17 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     
     # Render template
     template = Template(GANESHA_CONF_TEMPLATE)
+    protocols = cfg.ganesha_protocols
+    enable_v3 = "3" in [p.strip() for p in protocols.split(",") if p.strip()]
     config_content = template.render(
         template_version=template_version,
         config_version=config_version,
         exports=exports
+        ,
+        protocols=protocols,
+        enable_v3=enable_v3,
+        mountd_port=cfg.ganesha_mountd_port,
+        nlm_port=cfg.ganesha_nlm_port,
     )
     
     # Write config file
@@ -131,10 +146,12 @@ def add_export(
     export_id = max([e.get("export_id", 0) for e in exports], default=0) + 1
     
     # Create export entry
+    cfg = load_config()
+    export_dir = cfg.export_dir.rstrip("/")
     export_entry = {
         "export_id": export_id,
-        "path": f"/exports/{svm_name}/{volume_name}",
-        "pseudo": f"/exports/{svm_name}/{volume_name}",
+        "path": f"{export_dir}/{svm_name}/{volume_name}",
+        "pseudo": f"{export_dir}/{svm_name}/{volume_name}",
         "access": access.upper(),
         "squash": "Root_Squash" if root_squash else "No_Root_Squash",
         "sec": ["sys"],
@@ -167,9 +184,17 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
     exports = _load_exports(svm_name)
     
     # Remove matching export
+    cfg = load_config()
+    export_dir = cfg.export_dir.rstrip("/")
     exports = [
         e for e in exports
         if not (e.get("path") == f"/exports/{svm_name}/{volume_name}" and e.get("client") == client)
+    ]
+    # Support old default path too (backward compatibility)
+    exports = [
+        e
+        for e in exports
+        if not (e.get("path") == f"{export_dir}/{svm_name}/{volume_name}" and e.get("client") == client)
     ]
     
     # Save exports and regenerate config
@@ -182,7 +207,7 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
 
 def _load_exports(svm_name: str) -> List[Dict]:
     """Load exports from state file."""
-    state_dir = Path("/var/lib/arca")
+    state_dir = get_state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     
     state_file = state_dir / f"exports.{svm_name}.json"
@@ -196,7 +221,7 @@ def _load_exports(svm_name: str) -> List[Dict]:
 
 def _save_exports(svm_name: str, exports: List[Dict]) -> None:
     """Save exports to state file."""
-    state_dir = Path("/var/lib/arca")
+    state_dir = get_state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     
     state_file = state_dir / f"exports.{svm_name}.json"
@@ -204,3 +229,47 @@ def _save_exports(svm_name: str, exports: List[Dict]) -> None:
     with open(state_file, "w") as f:
         json.dump(exports, f, indent=2)
 
+
+def list_exports(svm_name: Optional[str] = None, volume_name: Optional[str] = None) -> List[Dict]:
+    """
+    List exports from state files.
+    """
+    state_dir = get_state_dir()
+    if not state_dir.exists():
+        return []
+
+    exports: List[Dict] = []
+    if svm_name:
+        per_svm = _load_exports(svm_name)
+        for e in per_svm:
+            exports.append({"svm": svm_name, "volume": _volume_from_path(e.get("path", "")), **e})
+    else:
+        for path in state_dir.glob("exports.*.json"):
+            name = path.name[len("exports.") : -len(".json")]
+            per_svm = _load_exports(name)
+            for e in per_svm:
+                exports.append({"svm": name, "volume": _volume_from_path(e.get("path", "")), **e})
+
+    if volume_name:
+        exports = [e for e in exports if e.get("volume") == volume_name]
+    return exports
+
+
+def sync(svm_name: str) -> str:
+    """
+    Re-render ganesha.conf from current state and reload the service.
+
+    Useful after changing runtime configuration (e.g., enabling NFSv3).
+    """
+    exports = _load_exports(svm_name)
+    path = render_config(svm_name, exports)
+    reload(svm_name)
+    return path
+
+
+def _volume_from_path(path: str) -> str:
+    # Expected: <export_dir>/<svm>/<volume> (base dir is configurable)
+    parts = [p for p in path.split("/") if p]
+    if not parts:
+        return ""
+    return parts[-1]

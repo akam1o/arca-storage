@@ -46,6 +46,9 @@ class SVMCreate(BaseModel):
     ip_cidr: str = Field(..., description="IP address with CIDR (e.g., 192.168.10.5/24)")
     gateway: Optional[str] = Field(None, description="Default gateway IP")
     mtu: int = Field(1500, description="MTU size", ge=68, le=9000)
+    root_volume_size_gib: Optional[int] = Field(
+        None, description="Optional root LV size in GiB (creates /dev/<vg>/vol_<svm>)", gt=0
+    )
 
     @field_validator("name")
     def validate_name(cls, v: str) -> str:

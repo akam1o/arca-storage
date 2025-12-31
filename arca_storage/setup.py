@@ -44,6 +44,7 @@ setup(
     entry_points={
         "console_scripts": [
             "arca=arca_storage.cli.cli:main",
+            "arca-storage-api=arca_storage.api.server:main",
         ],
     },
 )

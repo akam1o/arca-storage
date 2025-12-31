@@ -9,8 +9,11 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import ExportCreate, ExportStatus
 from arca_storage.cli.lib.ganesha import add_export as ganesha_add_export
+from arca_storage.cli.lib.ganesha import list_exports as ganesha_list_exports
 from arca_storage.cli.lib.ganesha import remove_export as ganesha_remove_export
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
+from arca_storage.cli.lib.config import load_config
+from arca_storage.cli.lib.state import get_state_dir
 
 
 async def add_export(export_data: ExportCreate) -> Dict[str, Any]:
@@ -33,7 +36,7 @@ async def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     )
 
     # Load exports to get export_id
-    state_dir = Path("/var/lib/arca")
+    state_dir = get_state_dir()
     state_file = state_dir / f"exports.{export_data.svm}.json"
     if state_file.exists():
         with open(state_file, "r") as f:
@@ -45,7 +48,7 @@ async def add_export(export_data: ExportCreate) -> Dict[str, Any]:
             e
             for e in exports
             if e.get("client") == export_data.client
-            and e.get("path") == f"/exports/{export_data.svm}/{export_data.volume}"
+            and e.get("path") == f"{load_config().export_dir.rstrip('/')}/{export_data.svm}/{export_data.volume}"
         ),
         None,
     )
@@ -103,6 +106,7 @@ async def list_exports(
     Returns:
         Dictionary with items and next_cursor
     """
-    # TODO: Implement actual listing from state files
-    # For now, return empty list
-    return {"items": [], "next_cursor": None}
+    items = ganesha_list_exports(svm_name=svm, volume_name=volume)
+    if client:
+        items = [i for i in items if i.get("client") == client]
+    return {"items": items[:limit], "next_cursor": None}
