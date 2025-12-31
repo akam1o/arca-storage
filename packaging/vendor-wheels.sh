@@ -6,13 +6,19 @@ WHEELHOUSE="$ROOT/packaging/wheelhouse"
 
 mkdir -p "$WHEELHOUSE"
 
-python3 -m pip install -U pip build wheel
+# Debian/Ubuntu images may enforce PEP 668 (externally-managed-environment),
+# so avoid installing build tooling into the system Python.
+VENV="$(mktemp -d)"
+trap 'rm -rf "$VENV"' EXIT
+python3 -m venv "$VENV"
+"$VENV/bin/python" -m ensurepip --upgrade
+"$VENV/bin/python" -m pip install -U pip build wheel
 
 # Build arca-storage wheel
-(cd "$ROOT/arca_storage" && python3 -m build --wheel)
+(cd "$ROOT/arca_storage" && "$VENV/bin/python" -m build --wheel)
 cp -f "$ROOT/arca_storage/dist/"*.whl "$WHEELHOUSE/"
 
 # Build wheels for runtime deps (avoid sdists at install time)
-python3 -m pip wheel --wheel-dir "$WHEELHOUSE" -r "$ROOT/packaging/requirements-runtime.txt"
+"$VENV/bin/python" -m pip wheel --wheel-dir "$WHEELHOUSE" -r "$ROOT/packaging/requirements-runtime.txt"
 
 echo "Wheelhouse ready: $WHEELHOUSE"
