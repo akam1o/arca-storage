@@ -10,7 +10,6 @@ Source1:        %{name}-wheelhouse.tar.gz
 # systemd-rpm-macros isn't always installed in minimal build containers.
 %{!?_unitdir:%global _unitdir %{_prefix}/lib/systemd/system}
 
-BuildArch:      noarch
 BuildRequires:  python3
 BuildRequires:  python3-pip
 
@@ -30,7 +29,7 @@ rm -rf %{buildroot}
 
 # Embedded venv
 install -d %{buildroot}/opt/arca-storage
-python3 -m venv %{buildroot}/opt/arca-storage/venv
+python3 -m venv --copies %{buildroot}/opt/arca-storage/venv
 tar -C %{_builddir}/%{name} -xzf %{SOURCE1}
 %{buildroot}/opt/arca-storage/venv/bin/pip install --no-index --find-links %{_builddir}/%{name}/packaging/wheelhouse arca-storage
 
