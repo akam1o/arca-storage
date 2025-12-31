@@ -22,7 +22,7 @@ jobs:
               apt-get update &&
               apt-get install -y --no-install-recommends \
                 ca-certificates build-essential dpkg-dev debhelper rsync \
-                python3 python3-venv python3-pip &&
+                python3 python3-venv &&
               rm -rf packaging/wheelhouse &&
               bash ./packaging/vendor-wheels.sh &&
               bash ./packaging/build-deb.sh
@@ -47,7 +47,7 @@ jobs:
               apt-get update &&
               DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
                 ca-certificates build-essential dpkg-dev debhelper rsync \
-                python3 python3-venv python3-pip &&
+                python3 python3-venv &&
               rm -rf packaging/wheelhouse &&
               bash ./packaging/vendor-wheels.sh &&
               bash ./packaging/build-deb.sh

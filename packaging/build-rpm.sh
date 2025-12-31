@@ -21,7 +21,10 @@ trap 'rm -rf "$TOP"' EXIT
 mkdir -p "$TOP/SOURCES" "$TOP/SPECS"
 
 TAR="$TOP/SOURCES/arca-storage.tar.gz"
-git -C "$ROOT" archive --format=tar.gz -o "$TAR" HEAD
+# GitHub Actions / container builds sometimes check out the repo with a different
+# UID/GID than the build user, and git will refuse to operate unless the
+# directory is marked as safe.
+git -c "safe.directory=$ROOT" -C "$ROOT" archive --format=tar.gz -o "$TAR" HEAD
 
 cp "$ROOT/packaging/rpm/arca-storage.spec" "$TOP/SPECS/"
 
