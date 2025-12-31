@@ -27,6 +27,12 @@ rsync -a --delete \
   --exclude 'arca_storage/.arca-state' \
   "$ROOT/" "$WORK/src/"
 
+# For "3.0 (quilt)" builds, dpkg-source expects an upstream orig tarball at
+# ../<source>_<upstream>.orig.tar.gz. Create it before adding debian/ metadata.
+tar -C "$WORK/src" -czf "$WORK/arca-storage_${VERSION}.orig.tar.gz" \
+  --transform "s,^,arca-storage-$VERSION/," \
+  .
+
 cp -R "$ROOT/packaging/debian/debian" "$WORK/src/debian"
 chmod +x "$WORK/src/debian/rules" || true
 if sed --version >/dev/null 2>&1; then
