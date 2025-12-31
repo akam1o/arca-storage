@@ -20,13 +20,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Run only on Python 3.8 to reduce CI usage (others commented out)
+      # Run only on Python 3.9 to reduce CI usage (EL9 baseline)
       matrix:
         python-version:
-          - '3.8'
-          # - '3.9'
-          # - '3.10'
+          - '3.9'
           # - '3.11'
+          # - '3.12'
 
     steps:
       - uses: actions/checkout@v4
@@ -91,7 +90,7 @@ jobs:
           cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 
       - name: Upload coverage reports
-        if: matrix.python-version == '3.11'
+        if: matrix.python-version == '3.9'
         uses: codecov/codecov-action@v4
         with:
           file: ./arca_storage/coverage.xml
