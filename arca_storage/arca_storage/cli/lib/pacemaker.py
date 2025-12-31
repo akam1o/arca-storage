@@ -98,7 +98,7 @@ def create_group(
     vlan_id: int,
     ip: str,
     prefix: int,
-    gw: Optional[str] = None,
+    gw: str,
     mtu: int = 1500,
     parent_if: str = "bond0",
     vg_name: str = "vg_pool_01",
@@ -115,7 +115,7 @@ def create_group(
         vlan_id: VLAN ID (1-4094)
         ip: VIP IP address (without prefix)
         prefix: Prefix length (e.g., 24)
-        gw: Optional default gateway
+        gw: Gateway IP (required)
         mtu: MTU size
         parent_if: Parent interface (default: bond0)
         vg_name: Volume group name for Filesystem resource device path
@@ -175,8 +175,7 @@ def create_group(
             f"ip={ip}",
             f"prefix={prefix}",
         ]
-        if gw:
-            cmd.append(f"gw={gw}")
+        cmd.append(f"gw={gw}")
         cmd.append(f"mtu={mtu}")
         cmd += ["op", "monitor", "interval=10s"]
         result = _run(cmd)

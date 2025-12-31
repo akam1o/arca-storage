@@ -35,13 +35,13 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 
 @app.post("/v1/svms", response_model=SVMResponse, status_code=201)
-async def create_svm(svm: SVMCreate) -> Dict[str, Any]:
+def create_svm(svm: SVMCreate) -> Dict[str, Any]:
     """
     Create a new SVM.
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await svm_service.create_svm(svm)
+        result = svm_service.create_svm(svm)
         return {"request_id": request_id, "status": "ok", "data": {"svm": result}}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -50,7 +50,7 @@ async def create_svm(svm: SVMCreate) -> Dict[str, Any]:
 
 
 @app.get("/v1/svms", response_model=SVMListResponse)
-async def list_svms(
+def list_svms(
     name: Optional[str] = Query(None, description="Filter by SVM name"),
     limit: int = Query(100, ge=1, le=200, description="Maximum number of results"),
     cursor: Optional[str] = Query(None, description="Pagination cursor"),
@@ -60,7 +60,7 @@ async def list_svms(
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await svm_service.list_svms(name, limit, cursor)
+        result = svm_service.list_svms(name, limit, cursor)
         return {
             "request_id": request_id,
             "status": "ok",
@@ -71,7 +71,7 @@ async def list_svms(
 
 
 @app.delete("/v1/svms/{name}", response_model=SuccessResponse)
-async def delete_svm(
+def delete_svm(
     name: str,
     force: bool = Query(False, description="Force deletion"),
     delete_volumes: bool = Query(False, description="Delete volumes as well"),
@@ -81,7 +81,7 @@ async def delete_svm(
     """
     try:
         request_id = str(uuid.uuid4())
-        await svm_service.delete_svm(name, force, delete_volumes)
+        svm_service.delete_svm(name, force, delete_volumes)
         return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -93,13 +93,13 @@ async def delete_svm(
 
 
 @app.post("/v1/volumes", response_model=VolumeResponse, status_code=201)
-async def create_volume(volume: VolumeCreate) -> Dict[str, Any]:
+def create_volume(volume: VolumeCreate) -> Dict[str, Any]:
     """
     Create a new volume.
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await volume_service.create_volume(volume)
+        result = volume_service.create_volume(volume)
         return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -108,13 +108,13 @@ async def create_volume(volume: VolumeCreate) -> Dict[str, Any]:
 
 
 @app.patch("/v1/volumes/{name}", response_model=VolumeResponse)
-async def resize_volume(name: str, resize: VolumeResize) -> Dict[str, Any]:
+def resize_volume(name: str, resize: VolumeResize) -> Dict[str, Any]:
     """
     Resize a volume.
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await volume_service.resize_volume(name, resize.svm, resize.new_size_gib)
+        result = volume_service.resize_volume(name, resize.svm, resize.new_size_gib)
         return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -123,7 +123,7 @@ async def resize_volume(name: str, resize: VolumeResize) -> Dict[str, Any]:
 
 
 @app.delete("/v1/volumes/{name}", response_model=SuccessResponse)
-async def delete_volume(
+def delete_volume(
     name: str, svm: str = Query(..., description="SVM name"), force: bool = Query(False, description="Force deletion")
 ) -> Dict[str, Any]:
     """
@@ -131,7 +131,7 @@ async def delete_volume(
     """
     try:
         request_id = str(uuid.uuid4())
-        await volume_service.delete_volume(name, svm, force)
+        volume_service.delete_volume(name, svm, force)
         return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -140,7 +140,7 @@ async def delete_volume(
 
 
 @app.get("/v1/volumes", response_model=VolumeListResponse)
-async def list_volumes(
+def list_volumes(
     svm: Optional[str] = Query(None, description="Filter by SVM name"),
     name: Optional[str] = Query(None, description="Filter by volume name"),
     limit: int = Query(100, ge=1, le=200),
@@ -151,7 +151,7 @@ async def list_volumes(
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await volume_service.list_volumes(svm, name, limit, cursor)
+        result = volume_service.list_volumes(svm, name, limit, cursor)
         return {
             "request_id": request_id,
             "status": "ok",
@@ -165,13 +165,13 @@ async def list_volumes(
 
 
 @app.post("/v1/exports", response_model=ExportResponse, status_code=201)
-async def add_export(export: ExportCreate) -> Dict[str, Any]:
+def add_export(export: ExportCreate) -> Dict[str, Any]:
     """
     Add an NFS export.
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await export_service.add_export(export)
+        result = export_service.add_export(export)
         return {"request_id": request_id, "status": "ok", "data": {"export": result}}
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
@@ -180,7 +180,7 @@ async def add_export(export: ExportCreate) -> Dict[str, Any]:
 
 
 @app.delete("/v1/exports", response_model=SuccessResponse)
-async def remove_export(
+def remove_export(
     svm: str = Query(..., description="SVM name"),
     volume: str = Query(..., description="Volume name"),
     client: str = Query(..., description="Client CIDR"),
@@ -190,7 +190,7 @@ async def remove_export(
     """
     try:
         request_id = str(uuid.uuid4())
-        await export_service.remove_export(svm, volume, client)
+        export_service.remove_export(svm, volume, client)
         return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
@@ -199,7 +199,7 @@ async def remove_export(
 
 
 @app.get("/v1/exports", response_model=ExportListResponse)
-async def list_exports(
+def list_exports(
     svm: Optional[str] = Query(None, description="Filter by SVM name"),
     volume: Optional[str] = Query(None, description="Filter by volume name"),
     client: Optional[str] = Query(None, description="Filter by client CIDR"),
@@ -211,7 +211,7 @@ async def list_exports(
     """
     try:
         request_id = str(uuid.uuid4())
-        result = await export_service.list_exports(svm, volume, client, limit, cursor)
+        result = export_service.list_exports(svm, volume, client, limit, cursor)
         return {
             "request_id": request_id,
             "status": "ok",

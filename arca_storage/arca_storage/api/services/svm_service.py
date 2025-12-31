@@ -13,14 +13,19 @@ from arca_storage.cli.lib.state import delete_svm as state_delete_svm
 from arca_storage.cli.lib.state import list_svms as state_list_svms
 from arca_storage.cli.lib.state import upsert_svm as state_upsert_svm
 from arca_storage.cli.lib.systemd import stop_unit
-from arca_storage.cli.lib.validators import (validate_ip_cidr, validate_name,
-                                   validate_vlan)
+from arca_storage.cli.lib.validators import (
+    infer_gateway_from_ip_cidr,
+    validate_ip_cidr,
+    validate_ipv4,
+    validate_name,
+    validate_vlan,
+)
 from arca_storage.cli.lib.lvm import create_lv
 from arca_storage.cli.lib.xfs import format_xfs
 from arca_storage.cli.lib.config import load_config
 
 
-async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
+def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     """
     Create a new SVM.
 
@@ -34,13 +39,16 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     validate_name(svm_data.name)
     validate_vlan(svm_data.vlan_id)
     ip_addr, prefix = validate_ip_cidr(svm_data.ip_cidr)
+    if svm_data.gateway is not None:
+        validate_ipv4(svm_data.gateway)
+    gateway_ip = svm_data.gateway or infer_gateway_from_ip_cidr(svm_data.ip_cidr)
 
     # Create namespace
     create_namespace(svm_data.name)
 
     # Attach VLAN
     cfg = load_config()
-    attach_vlan(svm_data.name, cfg.parent_if, svm_data.vlan_id, svm_data.ip_cidr, svm_data.gateway, svm_data.mtu)
+    attach_vlan(svm_data.name, cfg.parent_if, svm_data.vlan_id, svm_data.ip_cidr, gateway_ip, svm_data.mtu)
 
     # Generate ganesha config
     render_config(svm_data.name, [])
@@ -50,7 +58,13 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
         vg_name = cfg.vg_name
         lv_name = f"vol_{svm_data.name}"
         try:
-            lv_path = create_lv(vg_name, lv_name, svm_data.root_volume_size_gib, thin=True)
+            lv_path = create_lv(
+                vg_name,
+                lv_name,
+                svm_data.root_volume_size_gib,
+                thin=True,
+                thinpool_name=cfg.thinpool_name,
+            )
             format_xfs(lv_path)
         except Exception as e:
             if "already exists" not in str(e).lower():
@@ -65,7 +79,7 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
         vlan_id=svm_data.vlan_id,
         ip=ip_addr,
         prefix=prefix,
-        gw=svm_data.gateway,
+        gw=gateway_ip,
         mtu=svm_data.mtu,
         parent_if=cfg.parent_if,
         vg_name=cfg.vg_name,
@@ -78,7 +92,7 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
             "name": svm_data.name,
             "vlan_id": svm_data.vlan_id,
             "ip_cidr": svm_data.ip_cidr,
-            "gateway": svm_data.gateway,
+            "gateway": gateway_ip,
             "mtu": svm_data.mtu,
             "namespace": svm_data.name,
             "vip": ip_addr,
@@ -91,7 +105,7 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
         "name": svm_data.name,
         "vlan_id": svm_data.vlan_id,
         "ip_cidr": svm_data.ip_cidr,
-        "gateway": svm_data.gateway,
+        "gateway": gateway_ip,
         "mtu": svm_data.mtu,
         "namespace": svm_data.name,
         "vip": ip_addr,
@@ -100,7 +114,7 @@ async def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     }
 
 
-async def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None) -> Dict[str, Any]:
+def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None) -> Dict[str, Any]:
     """
     List SVMs.
 
@@ -116,7 +130,7 @@ async def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Option
     return {"items": items[:limit], "next_cursor": None}
 
 
-async def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> None:
+def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> None:
     """
     Delete an SVM.
 

@@ -66,8 +66,8 @@ meta_data() {
       <shortdesc lang="en">Prefix length</shortdesc>
       <content type="integer" default="" />
     </parameter>
-    <parameter name="gw" unique="0" required="0">
-      <longdesc lang="en">Default gateway IP address (optional)</longdesc>
+    <parameter name="gw" unique="0" required="1">
+      <longdesc lang="en">Gateway IP address</longdesc>
       <shortdesc lang="en">Gateway IP</shortdesc>
       <content type="string" default="" />
     </parameter>
@@ -121,6 +121,12 @@ validate_all() {
     # Validate prefix
     if [ -z "$OCF_RESKEY_prefix" ] || [ "$OCF_RESKEY_prefix" -lt 0 ] || [ "$OCF_RESKEY_prefix" -gt 32 ]; then
         ocf_exit_reason "Prefix length must be between 0 and 32"
+        return $OCF_ERR_ARGS
+    fi
+    
+    # Validate gateway
+    if [ -z "$OCF_RESKEY_gw" ]; then
+        ocf_exit_reason "Gateway IP (gw) is required"
         return $OCF_ERR_ARGS
     fi
 

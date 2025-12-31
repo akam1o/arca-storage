@@ -44,7 +44,7 @@ class SVMCreate(BaseModel):
     name: str = Field(..., description="SVM name", min_length=1, max_length=64)
     vlan_id: int = Field(..., description="VLAN ID", ge=1, le=4094)
     ip_cidr: str = Field(..., description="IP address with CIDR (e.g., 192.168.10.5/24)")
-    gateway: Optional[str] = Field(None, description="Default gateway IP")
+    gateway: Optional[str] = Field(None, description="Gateway IP (optional; inferred if omitted)")
     mtu: int = Field(1500, description="MTU size", ge=68, le=9000)
     root_volume_size_gib: Optional[int] = Field(
         None, description="Optional root LV size in GiB (creates /dev/<vg>/vol_<svm>)", gt=0
@@ -74,6 +74,18 @@ class SVMCreate(BaseModel):
                 raise ValueError("Prefix must be between 0 and 32")
         except Exception as e:
             raise ValueError(f"Invalid CIDR format: {e}")
+        return v
+
+    @field_validator("gateway")
+    def validate_gateway(cls, v: Optional[str]) -> Optional[str]:
+        import ipaddress
+
+        if v is None:
+            return v
+        try:
+            ipaddress.IPv4Address(v)
+        except Exception as e:
+            raise ValueError(f"Invalid gateway IP: {e}")
         return v
 
 

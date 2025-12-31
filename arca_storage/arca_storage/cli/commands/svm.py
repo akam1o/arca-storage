@@ -14,8 +14,13 @@ from arca_storage.cli.lib.state import delete_svm as state_delete_svm
 from arca_storage.cli.lib.state import list_svms as state_list_svms
 from arca_storage.cli.lib.state import upsert_svm as state_upsert_svm
 from arca_storage.cli.lib.systemd import start_unit, stop_unit
-from arca_storage.cli.lib.validators import (validate_ip_cidr, validate_name,
-                                   validate_vlan)
+from arca_storage.cli.lib.validators import (
+    validate_ip_cidr,
+    validate_ipv4,
+    infer_gateway_from_ip_cidr,
+    validate_name,
+    validate_vlan,
+)
 from arca_storage.cli.lib.lvm import create_lv
 from arca_storage.cli.lib.xfs import format_xfs
 from arca_storage.cli.lib.config import load_config
@@ -28,7 +33,7 @@ def create(
     name: str = typer.Argument(..., help="SVM name"),
     vlan_id: int = typer.Option(..., "--vlan", help="VLAN ID (1-4094)"),
     ip: str = typer.Option(..., "--ip", help="IP address with CIDR (e.g., 192.168.10.5/24)"),
-    gateway: Optional[str] = typer.Option(None, "--gateway", help="Default gateway IP"),
+    gateway: Optional[str] = typer.Option(None, "--gateway", help="Gateway IP (optional; inferred if omitted)"),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
     root_size: Optional[int] = typer.Option(None, "--root-size", help="Create root LV size in GiB (optional)"),
     drbd_resource: Optional[str] = typer.Option(
@@ -45,6 +50,8 @@ def create(
         validate_name(name)
         validate_vlan(vlan_id)
         validate_ip_cidr(ip)
+        if gateway is not None:
+            validate_ipv4(gateway)
 
         # Parse IP and prefix
         ip_addr, prefix = ip.split("/")
@@ -52,14 +59,16 @@ def create(
         typer.echo(f"Creating SVM: {name}")
 
         cfg = load_config()
+        gateway_ip = gateway or infer_gateway_from_ip_cidr(ip)
 
         # Create namespace
         create_namespace(name)
         typer.echo(f"  Created namespace: {name}")
 
         # Attach VLAN
-        attach_vlan(name, cfg.parent_if, vlan_id, ip, gateway, mtu)
+        attach_vlan(name, cfg.parent_if, vlan_id, ip, gateway_ip, mtu)
         typer.echo(f"  Configured VLAN {vlan_id} with IP {ip}")
+        typer.echo(f"  Gateway: {gateway_ip}")
 
         # Generate ganesha config
         config_path = render_config(name, [])
@@ -70,7 +79,7 @@ def create(
             vg_name = cfg.vg_name
             lv_name = f"vol_{name}"
             try:
-                lv_path = create_lv(vg_name, lv_name, root_size, thin=True)
+                lv_path = create_lv(vg_name, lv_name, root_size, thin=True, thinpool_name=cfg.thinpool_name)
                 format_xfs(lv_path)
                 typer.echo(f"  Created root LV: {lv_path}")
             except Exception as e:
@@ -87,7 +96,7 @@ def create(
             vlan_id=vlan_id,
             ip=ip_addr,
             prefix=int(prefix),
-            gw=gateway,
+            gw=gateway_ip,
             mtu=mtu,
             parent_if=cfg.parent_if,
             vg_name=cfg.vg_name,
@@ -101,7 +110,7 @@ def create(
                 "name": name,
                 "vlan_id": vlan_id,
                 "ip_cidr": ip,
-                "gateway": gateway,
+                "gateway": gateway_ip,
                 "mtu": mtu,
                 "namespace": name,
                 "vip": ip_addr,

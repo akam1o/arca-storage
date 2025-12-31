@@ -6,7 +6,7 @@ import subprocess
 from typing import Optional
 
 
-def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True) -> str:
+def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True, *, thinpool_name: str = "pool") -> str:
     """
     Create a logical volume.
     
@@ -15,6 +15,7 @@ def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True) -> s
         lv_name: Logical volume name
         size_gib: Size in GiB
         thin: Use thin provisioning (default: True)
+        thinpool_name: Thin pool LV name (default: pool)
         
     Returns:
         Path to the logical volume (e.g., "/dev/vg_name/lv_name")
@@ -37,12 +38,10 @@ def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True) -> s
     
     if thin:
         # Create thin volume
-        # Assuming thin pool is named "pool" in the VG
-        pool_name = "pool"
         cmd = [
             "lvcreate",
             "-V", f"{size_gib}G",
-            "-T", f"{vg_name}/{pool_name}",
+            "-T", f"{vg_name}/{thinpool_name}",
             "-n", lv_name
         ]
     else:
@@ -139,4 +138,3 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
     
     if result.returncode != 0:
         raise RuntimeError(f"Failed to delete logical volume: {result.stderr}")
-

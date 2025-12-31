@@ -15,7 +15,7 @@ from arca_storage.cli.lib.xfs import format_xfs, grow_xfs, mount_xfs, umount_xfs
 from arca_storage.cli.lib.config import load_config
 
 
-async def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
+def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     """
     Create a new volume.
 
@@ -35,7 +35,13 @@ async def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     lv_name = f"vol_{volume_data.svm}_{volume_data.name}"
 
     # Create LV
-    lv_path = create_lv(vg_name, lv_name, volume_data.size_gib, thin=volume_data.thin)
+    lv_path = create_lv(
+        vg_name,
+        lv_name,
+        volume_data.size_gib,
+        thin=volume_data.thin,
+        thinpool_name=cfg.thinpool_name,
+    )
 
     # Format XFS
     format_xfs(lv_path)
@@ -64,7 +70,7 @@ async def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     return record
 
 
-async def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
+def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     """
     Resize a volume.
 
@@ -107,7 +113,7 @@ async def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any
     return record
 
 
-async def delete_volume(name: str, svm: str, force: bool = False) -> None:
+def delete_volume(name: str, svm: str, force: bool = False) -> None:
     """
     Delete a volume.
 
@@ -134,7 +140,7 @@ async def delete_volume(name: str, svm: str, force: bool = False) -> None:
     state_delete_volume(svm, name)
 
 
-async def list_volumes(
+def list_volumes(
     svm: Optional[str] = None, name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None
 ) -> Dict[str, Any]:
     """
