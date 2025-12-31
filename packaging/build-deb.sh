@@ -25,6 +25,7 @@ rsync -a --delete \
   "$ROOT/" "$WORK/src/"
 
 cp -R "$ROOT/packaging/debian/debian" "$WORK/src/debian"
+chmod +x "$WORK/src/debian/rules" || true
 mkdir -p "$WORK/src/packaging"
 cp -R "$ROOT/packaging/wheelhouse" "$WORK/src/packaging/"
 
