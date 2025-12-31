@@ -15,7 +15,7 @@ if [ ! -d "$ROOT/packaging/wheelhouse" ]; then
   bash "$ROOT/packaging/vendor-wheels.sh"
 fi
 
-VERSION="$(bash "$ROOT/packaging/get-version.sh")"
+PKG_VERSION="$(bash "$ROOT/packaging/get-version.sh")"
 DEB_DIST="${ARCA_DEB_DIST:-}"
 if [ -z "$DEB_DIST" ] && [ -r /etc/os-release ]; then
   # shellcheck disable=SC1091
@@ -35,9 +35,9 @@ fi
 if [ -n "$DEB_DIST" ]; then
   # Keep it dpkg-version friendly.
   DEB_DIST="$(echo "$DEB_DIST" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9.+~' )"
-  DEB_VERSION="${VERSION}-1+${DEB_DIST}"
+  DEB_VERSION="${PKG_VERSION}-1+${DEB_DIST}"
 else
-  DEB_VERSION="${VERSION}-1"
+  DEB_VERSION="${PKG_VERSION}-1"
 fi
 
 WORK="$(mktemp -d)"
@@ -51,16 +51,16 @@ rsync -a --delete \
 
 # For "3.0 (quilt)" builds, dpkg-source expects an upstream orig tarball at
 # ../<source>_<upstream>.orig.tar.gz. Create it before adding debian/ metadata.
-tar -C "$WORK/src" -czf "$WORK/arca-storage_${VERSION}.orig.tar.gz" \
-  --transform "s,^,arca-storage-$VERSION/," \
+tar -C "$WORK/src" -czf "$WORK/arca-storage_${PKG_VERSION}.orig.tar.gz" \
+  --transform "s,^,arca-storage-$PKG_VERSION/," \
   .
 
 cp -R "$ROOT/packaging/debian/debian" "$WORK/src/debian"
 chmod +x "$WORK/src/debian/rules" || true
 if sed --version >/dev/null 2>&1; then
-  sed -i "1s/^arca-storage (.*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
+  sed -i "1s/^arca-storage ([^)]*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
 else
-  sed -i '' "1s/^arca-storage (.*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
+  sed -i '' "1s/^arca-storage ([^)]*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
 fi
 mkdir -p "$WORK/src/packaging"
 cp -R "$ROOT/packaging/wheelhouse" "$WORK/src/packaging/"
