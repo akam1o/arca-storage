@@ -4,6 +4,7 @@ NFS-Ganesha configuration management functions.
 
 import json
 import os
+import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional
 
@@ -39,9 +40,9 @@ EXPORT {
     Protocols = {{ protocols }};
     Access_Type = {{ exp.access }};
     Squash = {{ exp.squash }};
-    SecType = {{ exp.sec }};
+    SecType = {{ exp.sec_render }};
     CLIENT {
-        Clients = {{ exp.client }};
+        Clients = "{{ exp.client }}";
     }
     FSAL {
         Name = VFS;
@@ -75,13 +76,27 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     
     # Render template
     template = Template(GANESHA_CONF_TEMPLATE)
-    protocols = cfg.ganesha_protocols
-    enable_v3 = "3" in [p.strip() for p in protocols.split(",") if p.strip()]
+    protocol_tokens = [p.strip() for p in cfg.ganesha_protocols.split(",") if p.strip()]
+    # Render as "3, 4" to match ganesha.conf conventions.
+    protocols = ", ".join(protocol_tokens) if protocol_tokens else "4"
+    enable_v3 = "3" in protocol_tokens
+
+    def _sec_render(value: object) -> str:
+        # Ganesha expects SecType as tokens (e.g. "sys" or "sys, krb5").
+        if isinstance(value, list):
+            tokens = [str(v).strip() for v in value if str(v).strip()]
+            return ", ".join(tokens) if tokens else "sys"
+        raw = str(value).strip()
+        return raw or "sys"
+
+    exports_render: List[Dict] = []
+    for e in exports:
+        sec = e.get("sec", ["sys"])
+        exports_render.append({**e, "sec_render": _sec_render(sec)})
     config_content = template.render(
         template_version=template_version,
         config_version=config_version,
-        exports=exports
-        ,
+        exports=exports_render,
         protocols=protocols,
         enable_v3=enable_v3,
         mountd_port=cfg.ganesha_mountd_port,
@@ -225,9 +240,18 @@ def _save_exports(svm_name: str, exports: List[Dict]) -> None:
     state_dir.mkdir(parents=True, exist_ok=True)
     
     state_file = state_dir / f"exports.{svm_name}.json"
-    
-    with open(state_file, "w") as f:
-        json.dump(exports, f, indent=2)
+
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{state_file.name}.", dir=str(state_file.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            json.dump(exports, f, indent=2, ensure_ascii=False, sort_keys=True)
+            f.write("\n")
+        os.replace(tmp_path, state_file)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
 
 
 def list_exports(svm_name: Optional[str] = None, volume_name: Optional[str] = None) -> List[Dict]:

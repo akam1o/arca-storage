@@ -32,7 +32,7 @@ This should output the XML metadata definition.
 | `parent_if` | Yes | Parent interface name (e.g., bond0) |
 | `ip` | Yes | VIP IP address |
 | `prefix` | Yes | IP prefix length (e.g., 24) |
-| `gw` | No | Default gateway IP address |
+| `gw` | Yes | Gateway IP address |
 | `mtu` | No | MTU size (default: 1500) |
 
 ## Usage Example
@@ -91,7 +91,8 @@ pcs status resources netns_tenant_a
      OCF_RESKEY_vlan_id=100 \
      OCF_RESKEY_parent_if=bond0 \
      OCF_RESKEY_ip=192.168.10.5 \
-     OCF_RESKEY_prefix=24
+     OCF_RESKEY_prefix=24 \
+     OCF_RESKEY_gw=192.168.10.1
    ```
 
 4. **Test stop action:**
@@ -101,7 +102,8 @@ pcs status resources netns_tenant_a
      OCF_RESKEY_vlan_id=100 \
      OCF_RESKEY_parent_if=bond0 \
      OCF_RESKEY_ip=192.168.10.5 \
-     OCF_RESKEY_prefix=24
+     OCF_RESKEY_prefix=24 \
+     OCF_RESKEY_gw=192.168.10.1
    ```
 
 5. **Verify cleanup:**
@@ -180,4 +182,3 @@ sudo ip netns del <namespace_name>
 - The VLAN ID must be unique within the cluster.
 - The namespace name should match the SVM name for consistency.
 - The resource agent is idempotent - it can be safely started multiple times.
-

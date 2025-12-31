@@ -42,7 +42,7 @@ def create(
         lv_name = f"vol_{svm}_{name}"
 
         # Create LV
-        lv_path = create_lv(vg_name, lv_name, size, thin=thin)
+        lv_path = create_lv(vg_name, lv_name, size, thin=thin, thinpool_name=cfg.thinpool_name)
         typer.echo(f"  Created LV: {lv_path}")
 
         # Format XFS

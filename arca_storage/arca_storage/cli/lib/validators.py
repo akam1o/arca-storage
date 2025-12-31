@@ -77,3 +77,46 @@ def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
     except Exception as e:
         raise ValueError(f"Invalid IP address: {e}")
 
+
+def validate_ipv4(ip: str) -> None:
+    """
+    Validate an IPv4 address string.
+
+    Args:
+        ip: IPv4 address (e.g., "192.168.10.1")
+
+    Raises:
+        ValueError: If IP is invalid
+    """
+    try:
+        ipaddress.IPv4Address(ip)
+    except Exception as e:
+        raise ValueError(f"Invalid IPv4 address: {e}")
+
+
+def infer_gateway_from_ip_cidr(cidr: str) -> str:
+    """
+    Infer a default gateway from an IPv4 interface CIDR.
+
+    Rule:
+    - Pick the first usable host address in the subnet that is not equal to the interface IP.
+      (e.g., 192.168.10.5/24 -> 192.168.10.1, 192.168.10.1/24 -> 192.168.10.2)
+
+    Notes:
+    - /31 and /32 do not have a clear "default gateway" convention in this project, so callers
+      must provide an explicit gateway in those cases.
+    """
+    try:
+        iface = ipaddress.IPv4Interface(cidr)
+    except Exception as e:
+        raise ValueError(f"Invalid CIDR format: {e}")
+
+    if iface.network.prefixlen >= 31:
+        raise ValueError("Gateway cannot be inferred for /31 or /32; please specify gateway explicitly")
+
+    ip = iface.ip
+    for host in iface.network.hosts():
+        if host != ip:
+            return str(host)
+
+    raise ValueError("Gateway could not be inferred from CIDR; please specify gateway explicitly")

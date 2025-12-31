@@ -16,7 +16,7 @@ from arca_storage.cli.lib.config import load_config
 from arca_storage.cli.lib.state import get_state_dir
 
 
-async def add_export(export_data: ExportCreate) -> Dict[str, Any]:
+def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     """
     Add an NFS export.
 
@@ -70,7 +70,7 @@ async def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     }
 
 
-async def remove_export(svm: str, volume: str, client: str) -> None:
+def remove_export(svm: str, volume: str, client: str) -> None:
     """
     Remove an NFS export.
 
@@ -86,7 +86,7 @@ async def remove_export(svm: str, volume: str, client: str) -> None:
     ganesha_remove_export(svm, volume, client)
 
 
-async def list_exports(
+def list_exports(
     svm: Optional[str] = None,
     volume: Optional[str] = None,
     client: Optional[str] = None,

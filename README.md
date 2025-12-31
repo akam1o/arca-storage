@@ -136,7 +136,8 @@ sudo vi /etc/arca-storage/storage-runtime.conf
 arca bootstrap render-env
 
 # Create an SVM
-arca svm create tenant_a --vlan 100 --ip 192.168.10.5/24 --gateway 192.168.10.1
+# --gateway is optional; if omitted, it is inferred from --ip (except /31,/32)
+arca svm create tenant_a --vlan 100 --ip 192.168.10.5/24
 
 # Create a volume
 arca volume create vol1 --svm tenant_a --size 100
