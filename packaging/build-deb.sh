@@ -16,7 +16,29 @@ if [ ! -d "$ROOT/packaging/wheelhouse" ]; then
 fi
 
 VERSION="$(bash "$ROOT/packaging/get-version.sh")"
-DEB_VERSION="${VERSION}-1"
+DEB_DIST="${ARCA_DEB_DIST:-}"
+if [ -z "$DEB_DIST" ] && [ -r /etc/os-release ]; then
+  # shellcheck disable=SC1091
+  . /etc/os-release
+  if [ -n "${ID:-}" ] && [ -n "${VERSION_CODENAME:-}" ]; then
+    DEB_DIST="${ID}.${VERSION_CODENAME}"
+  elif [ -n "${VERSION_CODENAME:-}" ]; then
+    DEB_DIST="$VERSION_CODENAME"
+  elif [ -n "${ID:-}" ] && [ -n "${VERSION_ID:-}" ]; then
+    DEB_DIST="${ID}${VERSION_ID}"
+  else
+    DEB_DIST="${ID:-}"
+  fi
+fi
+
+# Disambiguate artifacts across distros (Debian/Ubuntu) so release uploads don't overwrite.
+if [ -n "$DEB_DIST" ]; then
+  # Keep it dpkg-version friendly.
+  DEB_DIST="$(echo "$DEB_DIST" | tr '[:upper:]' '[:lower:]' | tr -cd 'a-z0-9.+~' )"
+  DEB_VERSION="${VERSION}-1+${DEB_DIST}"
+else
+  DEB_VERSION="${VERSION}-1"
+fi
 
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT

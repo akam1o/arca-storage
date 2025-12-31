@@ -106,5 +106,6 @@ jobs:
             dist/*.deb
             dist/*.changes
             dist/*.buildinfo
-            dist/*.rpm
+            dist/*.noarch.rpm
+            dist/*.x86_64.rpm
             dist/*.src.rpm
