@@ -10,6 +10,12 @@ Source1:        %{name}-wheelhouse.tar.gz
 # systemd-rpm-macros isn't always installed in minimal build containers.
 %{!?_unitdir:%global _unitdir %{_prefix}/lib/systemd/system}
 
+# This package embeds a Python virtualenv with prebuilt wheels (including
+# compiled extension modules). Generating debuginfo/debugsource subpackages from
+# these vendored artifacts is not useful and may fail (e.g. empty debugsource
+# file lists). Disable automatic debug subpackages.
+%global debug_package %{nil}
+
 BuildRequires:  python3
 BuildRequires:  python3-pip
 
