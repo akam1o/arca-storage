@@ -2,7 +2,7 @@ Source: arca-storage
 Section: admin
 Priority: optional
 Maintainer: Arca Project <arca-project@ark-networks.net>
-Build-Depends: debhelper-compat (= 13), python3, python3-venv, python3-pip
+Build-Depends: debhelper-compat (= 13), python3, python3-venv
 Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
