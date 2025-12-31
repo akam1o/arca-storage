@@ -41,6 +41,7 @@ Thumbs.db
 # Project specific
 /var/lib/arca/
 *.log
+packaging/wheelhouse/
 
 # Test coverage
 htmlcov/
@@ -56,6 +57,7 @@ arca_storage/.pytest_cache/
 arca_storage/htmlcov/
 arca_storage/.coverage
 arca_storage/coverage.xml
+arca_storage/.arca-state/
 
 # Ansible/Molecule
 ansible/.cache/
