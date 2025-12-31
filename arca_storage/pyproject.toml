@@ -46,6 +46,7 @@ Homepage = "https://github.com/akam1o/arca-storage"
 
 [project.scripts]
 arca = "arca_storage.cli.cli:main"
+arca-storage-api = "arca_storage.api.server:main"
 
 [tool.setuptools.packages.find]
 where = ["."]

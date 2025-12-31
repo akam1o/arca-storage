@@ -1,0 +1,15 @@
+# Managed by Arca Storage
+[Unit]
+Description=NFS-Ganesha Service for SVM %i
+After=network.target
+
+[Service]
+Type=forking
+EnvironmentFile=-/etc/arca-storage/arca-storage.env
+NetworkNamespacePath=/var/run/netns/%i
+ExecStart=/usr/bin/ganesha.nfsd -f ${ARCA_GANESHA_CONFIG_DIR}/ganesha.%i.conf
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/var/run/ganesha.%i.pid
+
+[Install]
+WantedBy=multi-user.target

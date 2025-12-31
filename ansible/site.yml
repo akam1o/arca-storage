@@ -17,3 +17,5 @@
       tags: [nfs_ganesha]
     - role: arca-cli
       tags: [arca_cli]
+    - role: arca-runtime
+      tags: [arca_runtime]

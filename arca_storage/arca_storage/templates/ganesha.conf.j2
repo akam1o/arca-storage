@@ -3,8 +3,12 @@
 # Config version: {{ config_version }}
 
 NFS_CORE_PARAM {
-    Protocols = 4;
+    Protocols = {{ protocols }};
     NFS_Port = 2049;
+    MNT_Port = {{ mountd_port }};
+{% if enable_v3 %}
+    NLM_Port = {{ nlm_port }};
+{% endif %}
 }
 
 EXPORT_DEFAULTS {
@@ -17,7 +21,7 @@ EXPORT {
     Export_Id = {{ exp.export_id }};
     Path = "{{ exp.path }}";
     Pseudo = "{{ exp.pseudo }}";
-    Protocols = 4;
+    Protocols = {{ protocols }};
     Access_Type = {{ exp.access }};
     Squash = {{ exp.squash }};
     SecType = {{ exp.sec }};

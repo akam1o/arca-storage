@@ -20,8 +20,10 @@ lvm_thinpool_name: pool
 lvm_thinpool_size: 80%VG
 lvm_thinpool_metadata_size: 15.8G
 lvm_thinpool_chunk_size: 256K
+lvm_create_tenant_volume: false
 lvm_thin_volume_name: vol_tenant_a
 lvm_thin_volume_size: 100G
+lvm_format_tenant_filesystem: false
 
 # DRBD
 drbd_resource_name: r0
@@ -67,7 +69,8 @@ pacemaker_cluster_bootstrap_node: "{{ pacemaker_nodes[0].name }}"
 # appropriate STONITH devices for your environment (e.g., fence_ipmilan, fence_aws, etc.)
 pacemaker_enable_stonith: false
 pacemaker_install_netnsvlan_ra: true
-pacemaker_create_resources: true
+# Ansible is intended for initial bootstrap only; runtime resource management is handled by `arca`.
+pacemaker_create_resources: false
 
 # Pacemaker resource variables
 pacemaker_fs_device: "/dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}"
@@ -87,16 +90,18 @@ nfs_ganesha_export_id: 101
 nfs_ganesha_export_clients: "10.0.0.0/24"
 nfs_ganesha_tenants:
   - tenant_a
+# Ansible should not manage per-tenant configs by default (handled by `arca`).
+nfs_ganesha_render_tenant_configs: false
 
 # Enable NFSv3 support (default: false, NFSv4 only)
 # nfs_ganesha_enable_v3: true
 
-# arca CLI
-arca_cli_package_name: arca-cli
+# arca CLI (binary name is `arca`; package name is `arca-storage`)
+arca_cli_package_name: arca-storage
 arca_cli_install_method: package  # package|url
 arca_cli_download_url: ""
 arca_cli_download_checksum: ""
-arca_cli_bin_path: /usr/local/bin/arca
+arca_cli_bin_path: /usr/bin/arca
 arca_cli_archive_dest: /tmp/arca-cli.tgz
 arca_cli_extract_dir: /opt/arca-cli
 arca_cli_binary_name: arca

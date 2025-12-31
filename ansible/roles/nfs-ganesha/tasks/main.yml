@@ -48,3 +48,4 @@
   vars:
     svm_name: "{{ item }}"
   notify: Restart NFS-Ganesha
+  when: nfs_ganesha_render_tenant_configs | default(false) | bool

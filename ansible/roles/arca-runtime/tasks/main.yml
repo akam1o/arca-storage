@@ -1,0 +1,63 @@
+---
+- name: Ensure arca CLI is available
+  ansible.builtin.command: "{{ arca_cli_bin_path | default('/usr/bin/arca') }} --help"
+  register: arca_runtime_arca_help
+  changed_when: false
+  when: arca_runtime_enabled | bool
+
+- name: Enable and start Arca Storage API service
+  ansible.builtin.service:
+    name: "{{ arca_runtime_api_service_name }}"
+    state: started
+    enabled: true
+  when:
+    - arca_runtime_enabled | bool
+    - arca_runtime_enable_api_service | bool
+
+- name: Create SVMs via arca
+  ansible.builtin.command: >-
+    {{ arca_cli_bin_path | default('/usr/bin/arca') }} svm create {{ item.name }}
+    --vlan {{ item.vlan_id }}
+    --ip {{ item.ip_cidr }}
+    {% if item.gateway is defined and item.gateway %}--gateway {{ item.gateway }}{% endif %}
+    {% if item.mtu is defined and item.mtu %}--mtu {{ item.mtu }}{% endif %}
+  register: arca_runtime_svm_create
+  changed_when: arca_runtime_svm_create.rc == 0
+  failed_when: >-
+    arca_runtime_svm_create.rc != 0 and
+    ('already exists' not in (arca_runtime_svm_create.stdout | lower)) and
+    ('already exists' not in (arca_runtime_svm_create.stderr | lower))
+  loop: "{{ arca_runtime_svms }}"
+  when: arca_runtime_enabled | bool
+
+- name: Create volumes via arca
+  ansible.builtin.command: >-
+    {{ arca_cli_bin_path | default('/usr/bin/arca') }} volume create {{ item.name }}
+    --svm {{ item.svm }}
+    --size {{ item.size_gib }}
+    {% if item.thin is defined %}{% if item.thin | bool %}--thin{% else %}--no-thin{% endif %}{% endif %}
+  register: arca_runtime_volume_create
+  changed_when: arca_runtime_volume_create.rc == 0
+  failed_when: >-
+    arca_runtime_volume_create.rc != 0 and
+    ('already exists' not in (arca_runtime_volume_create.stdout | lower)) and
+    ('already exists' not in (arca_runtime_volume_create.stderr | lower))
+  loop: "{{ arca_runtime_volumes }}"
+  when: arca_runtime_enabled | bool
+
+- name: Add exports via arca
+  ansible.builtin.command: >-
+    {{ arca_cli_bin_path | default('/usr/bin/arca') }} export add
+    --svm {{ item.svm }}
+    --volume {{ item.volume }}
+    --client {{ item.client }}
+    {% if item.access is defined and item.access %}{% if item.access == 'ro' %}--ro{% else %}--rw{% endif %}{% endif %}
+    {% if item.root_squash is defined %}{% if item.root_squash | bool %}--root-squash{% else %}--no-root-squash{% endif %}{% endif %}
+  register: arca_runtime_export_add
+  changed_when: arca_runtime_export_add.rc == 0
+  failed_when: >-
+    arca_runtime_export_add.rc != 0 and
+    ('already exists' not in (arca_runtime_export_add.stdout | lower)) and
+    ('already exists' not in (arca_runtime_export_add.stderr | lower))
+  loop: "{{ arca_runtime_exports }}"
+  when: arca_runtime_enabled | bool

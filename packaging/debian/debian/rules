@@ -1,0 +1,37 @@
+#!/usr/bin/make -f
+
+export DH_VERBOSE=1
+
+%:
+	dh $@
+
+override_dh_auto_build:
+	:
+
+override_dh_auto_install:
+	# Install embedded venv
+	install -d $(CURDIR)/debian/arca-storage/opt/arca-storage
+	python3 -m venv $(CURDIR)/debian/arca-storage/opt/arca-storage/venv
+	$(CURDIR)/debian/arca-storage/opt/arca-storage/venv/bin/pip install --no-index --find-links $(CURDIR)/packaging/wheelhouse arca-storage
+
+	# Wrappers
+	install -d $(CURDIR)/debian/arca-storage/usr/bin
+	install -m 0755 packaging/wrappers/arca $(CURDIR)/debian/arca-storage/usr/bin/arca
+	install -m 0755 packaging/wrappers/arca-storage-api $(CURDIR)/debian/arca-storage/usr/bin/arca-storage-api
+
+	# Configs
+	install -d $(CURDIR)/debian/arca-storage/etc/arca-storage
+	install -m 0644 arca_storage/arca_storage/resources/config/storage-bootstrap.conf $(CURDIR)/debian/arca-storage/etc/arca-storage/storage-bootstrap.conf
+	install -m 0644 arca_storage/arca_storage/resources/config/storage-runtime.conf $(CURDIR)/debian/arca-storage/etc/arca-storage/storage-runtime.conf
+
+	# systemd units
+	install -d $(CURDIR)/debian/arca-storage/lib/systemd/system
+	install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage-api.service $(CURDIR)/debian/arca-storage/lib/systemd/system/arca-storage-api.service
+	install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha@.service $(CURDIR)/debian/arca-storage/lib/systemd/system/nfs-ganesha@.service
+
+	# Pacemaker RA
+	install -d $(CURDIR)/debian/arca-storage/usr/lib/ocf/resource.d/local
+	install -m 0755 arca_storage/arca_storage/resources/pacemaker/NetnsVlan $(CURDIR)/debian/arca-storage/usr/lib/ocf/resource.d/local/NetnsVlan
+
+override_dh_installsystemd:
+	dh_installsystemd --no-enable

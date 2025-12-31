@@ -39,6 +39,31 @@ ansible-playbook -i inventory.ini site.yml
 - `pacemaker_hacluster_password` は適切な値に変更してください。
 - `drbd_shared_secret` は全ノードで同じ値を設定し、本番環境では必ず変更してください（ansible-vault推奨）。
 - NFS-Ganeshaのエクスポートは要件に合わせて調整してください。
+- このプレイブックは初期ブートストラップ用途を想定しています。SVM/Volume/Export の作成や Pacemaker リソース作成などのランタイム操作は、デフォルトでは `arca` 側で実施してください。
+
+### ブートストラップ向けのデフォルト
+
+ランタイムでのドリフトを避けるため、`group_vars/all.yml` ではデフォルトで以下を無効化しています：
+
+- `pacemaker_create_resources: false`
+- `nfs_ganesha_render_tenant_configs: false`
+- `lvm_create_tenant_volume: false`
+- `lvm_format_tenant_filesystem: false`
+
+### オプション: `arca` 経由でのランタイム構築
+
+Ansible でランタイム構築も行いたい場合は、`pcs` を直接叩いたりテンプレートを書き込むのではなく、`arca` を実行する方針を推奨します。
+
+- 有効化: `arca_runtime_enabled: true`
+- 入力: `arca_runtime_svms`, `arca_runtime_volumes`, `arca_runtime_exports`
+- タグ: `arca_runtime`
+
+例:
+
+```bash
+ansible-playbook -i inventory.ini site.yml --tags arca_cli,arca_runtime \
+  -e arca_runtime_enabled=true
+```
 
 ## STONITH設定
 デフォルトでは `pacemaker_enable_stonith: false` に設定されています。本番環境では以下の手順でSTONITHを有効化することを強く推奨します：

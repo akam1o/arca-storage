@@ -30,24 +30,39 @@ The system combines:
 
 ### Prerequisites
 
-- RHEL/Alma/Rocky Linux 8 or 9
-- Pacemaker, Corosync, NFS-Ganesha, LVM2, DRBD installed
+- RHEL/Alma/Rocky Linux 8/9, Debian, or Ubuntu
+- Pacemaker/Corosync/pcs, NFS-Ganesha, LVM2, DRBD installed
 - 2-node cluster configuration
 
 ### Installation
 
-1. **Install Python package:**
+1. **Install OS dependencies (example):**
 
    ```bash
-   cd arca_storage
-   pip install -e ".[dev]"
+   # EL9 (RHEL/Alma/Rocky 9)
+   sudo dnf install -y pacemaker corosync pcs resource-agents \
+     nfs-ganesha nfs-ganesha-utils \
+     lvm2 xfsprogs \
+     drbd-utils drbd-kmod
+
+   # Debian/Ubuntu (package names may vary)
+   sudo apt-get update
+   sudo apt-get install -y pacemaker corosync pcs resource-agents \
+     nfs-ganesha \
+     lvm2 xfsprogs \
+     drbd-utils
    ```
 
-2. **Install Pacemaker Resource Agent:**
+2. **Install `arca-storage` package (rpm/deb):**
+
+   Download the latest package from GitHub Releases and install it.
 
    ```bash
-   sudo cp arca_storage/src/arca_storage/resources/pacemaker/NetnsVlan /usr/lib/ocf/resource.d/local/NetnsVlan
-   sudo chmod +x /usr/lib/ocf/resource.d/local/NetnsVlan
+   # EL9 (rpm)
+   sudo dnf install -y ./arca-storage-*.rpm
+
+   # Debian/Ubuntu (deb)
+   sudo apt-get install -y ./arca-storage_*.deb
    ```
 
 3. **Follow MVP setup guide:**
@@ -60,16 +75,31 @@ The system combines:
 
 By default, Arca Storage uses NFSv4 only. To enable NFSv3 support:
 
-1. **Edit Ansible variables:**
+1. **Edit runtime config:**
 
-   In `ansible/group_vars/all.yml` or your host-specific variables:
+   In `/etc/arca-storage/storage-runtime.conf`:
 
-   ```yaml
-   # Enable NFSv3 support (default: false, NFSv4 only)
-   nfs_ganesha_enable_v3: true
+   ```ini
+   [storage]
+   # Enable NFSv3 (use both v3 and v4)
+   ganesha_protocols = 3,4
+
+   # Fixed ports (recommended when using NFSv3)
+   ganesha_mountd_port = 20048
+   ganesha_nlm_port = 32768
    ```
 
-2. **Required firewall ports when NFSv3 is enabled:**
+2. **Re-render configs and reload services:**
+
+   ```bash
+   # Keep env file in sync (optional but recommended after config edits)
+   sudo arca bootstrap render-env
+
+   # Re-render per-SVM ganesha.conf and reload
+   sudo arca export sync --all
+   ```
+
+3. **Required firewall ports when NFSv3 is enabled:**
 
    ```
    111/tcp,udp   (rpcbind/portmapper)
@@ -78,7 +108,7 @@ By default, Arca Storage uses NFSv4 only. To enable NFSv3 support:
    32768/tcp,udp (NLM)
    ```
 
-3. **Client mount examples:**
+4. **Client mount examples:**
 
    ```bash
    # NFSv4 (default)
@@ -88,13 +118,23 @@ By default, Arca Storage uses NFSv4 only. To enable NFSv3 support:
    mount -t nfs -o vers=3 server:/exports /mnt
    ```
 
-**Note**: When NFSv3 is enabled, the `rpcbind` package is automatically installed and the service is started. Both NFSv3 and NFSv4 protocols will be available simultaneously.
+**Note**: When using NFSv3, ensure `rpcbind` is installed and running. Both NFSv3 and NFSv4 protocols will be available simultaneously.
 
 ## Usage
 
 ### CLI Tool (arca)
 
 ```bash
+# Bootstrap (without Ansible)
+arca bootstrap install
+
+# (Optional) edit configs
+sudo vi /etc/arca-storage/storage-bootstrap.conf
+sudo vi /etc/arca-storage/storage-runtime.conf
+
+# Re-generate /etc/arca-storage/arca-storage.env after editing configs
+arca bootstrap render-env
+
 # Create an SVM
 arca svm create tenant_a --vlan 100 --ip 192.168.10.5/24 --gateway 192.168.10.1
 
@@ -113,7 +153,13 @@ arca svm list
 Start the API server:
 
 ```bash
-uvicorn arca_storage.api.main:app --host 0.0.0.0 --port 8080
+arca-storage-api --host 127.0.0.1 --port 8080
+```
+
+Or run it as a systemd service (when installed via package):
+
+```bash
+sudo systemctl enable --now arca-storage-api
 ```
 
 API endpoints:
@@ -135,7 +181,7 @@ See API documentation at `http://localhost:8080/docs` when the server is running
 ```
 arca-storage/
 ├── arca_storage/               # Python package
-│   ├── src/arca_storage/       # Package source code
+│   ├── arca_storage/           # Package source code
 │   │   ├── api/                # FastAPI REST API
 │   │   │   ├── main.py         # API application
 │   │   │   ├── models.py       # Pydantic models
@@ -200,8 +246,9 @@ Follow PEP 8 for Python code.
 ## Documentation
 
 - [docs/mvp-setup.md](docs/mvp-setup.md) - MVP setup guide
-- [arca_storage/src/arca_storage/resources/pacemaker/](arca_storage/src/arca_storage/resources/pacemaker/) - Pacemaker RA documentation
-- [arca_storage/src/arca_storage/templates/](arca_storage/src/arca_storage/templates/) - Template documentation
+- [arca_storage/arca_storage/resources/pacemaker/](arca_storage/arca_storage/resources/pacemaker/) - Pacemaker RA documentation
+- [arca_storage/arca_storage/resources/systemd/](arca_storage/arca_storage/resources/systemd/) - systemd unit files
+- [arca_storage/arca_storage/templates/](arca_storage/arca_storage/templates/) - Template documentation
 
 ## License
 

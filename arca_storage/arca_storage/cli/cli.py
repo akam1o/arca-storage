@@ -9,6 +9,7 @@ from typing import Optional
 import typer
 
 from arca_storage.cli.commands import export, svm, volume
+from arca_storage.cli.commands import bootstrap
 
 app = typer.Typer(
     name="arca",
@@ -20,6 +21,7 @@ app = typer.Typer(
 app.add_typer(svm.app, name="svm", help="SVM management commands")
 app.add_typer(volume.app, name="volume", help="Volume management commands")
 app.add_typer(export.app, name="export", help="Export management commands")
+app.add_typer(bootstrap.app, name="bootstrap", help="Bootstrap initial setup")
 
 
 def main() -> int:
