@@ -56,5 +56,6 @@ bash ./packaging/build-rpm.sh
 
 - These scripts are intended for CI/container builds. Host tooling requirements vary.
 - If `packaging/wheelhouse/` is missing, the build scripts will run `./packaging/vendor-wheels.sh` automatically.
+- Package versions are derived from the release tag (e.g. `v0.2.2`). Override with `ARCA_VERSION=0.2.2`.
 - Packages do not auto-enable services by default; enable explicitly:
   - `systemctl enable --now arca-storage-api`

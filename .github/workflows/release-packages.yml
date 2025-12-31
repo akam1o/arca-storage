@@ -15,6 +15,7 @@ jobs:
       - name: Build debs (Debian)
         run: |
           docker run --rm \
+            -e "ARCA_VERSION=${{ github.event.release.tag_name }}" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             debian:bookworm \
@@ -40,6 +41,7 @@ jobs:
       - name: Build debs (Ubuntu)
         run: |
           docker run --rm \
+            -e "ARCA_VERSION=${{ github.event.release.tag_name }}" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             ubuntu:24.04 \
@@ -65,6 +67,7 @@ jobs:
       - name: Build rpms (EL9)
         run: |
           docker run --rm \
+            -e "ARCA_VERSION=${{ github.event.release.tag_name }}" \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             rockylinux:9 \

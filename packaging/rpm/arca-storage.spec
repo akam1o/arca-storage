@@ -7,6 +7,9 @@ URL:            https://github.com/akam1o/arca-storage
 Source0:        %{name}.tar.gz
 Source1:        %{name}-wheelhouse.tar.gz
 
+# systemd-rpm-macros isn't always installed in minimal build containers.
+%{!?_unitdir:%global _unitdir %{_prefix}/lib/systemd/system}
+
 BuildArch:      noarch
 BuildRequires:  python3
 BuildRequires:  python3-pip
@@ -30,6 +33,13 @@ install -d %{buildroot}/opt/arca-storage
 python3 -m venv %{buildroot}/opt/arca-storage/venv
 tar -C %{_builddir}/%{name} -xzf %{SOURCE1}
 %{buildroot}/opt/arca-storage/venv/bin/pip install --no-index --find-links %{_builddir}/%{name}/packaging/wheelhouse arca-storage
+
+# RPM forbids references to the buildroot path in packaged files.
+# venv-generated scripts embed the absolute venv path, so rewrite it to the
+# final install prefix (/opt/arca-storage/venv).
+LC_ALL=C grep -rlI "%{buildroot}" %{buildroot}/opt/arca-storage/venv | while read -r f; do
+  sed -i "s|%{buildroot}||g" "$f"
+done
 
 # Wrappers
 install -d %{buildroot}%{_bindir}

@@ -14,6 +14,10 @@ python3 -m venv "$VENV"
 "$VENV/bin/python" -m ensurepip --upgrade
 "$VENV/bin/python" -m pip install -U pip build wheel
 
+# Prefer the release tag version when building the wheel.
+PKG_VERSION="$(bash "$ROOT/packaging/get-version.sh")"
+export SETUPTOOLS_SCM_PRETEND_VERSION="$PKG_VERSION"
+
 # Build arca-storage wheel
 (cd "$ROOT/arca_storage" && "$VENV/bin/python" -m build --wheel)
 cp -f "$ROOT/arca_storage/dist/"*.whl "$WHEELHOUSE/"
