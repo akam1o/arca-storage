@@ -10,6 +10,8 @@ if ! command -v rpmbuild >/dev/null 2>&1; then
   exit 1
 fi
 
+VERSION="$(bash "$ROOT/packaging/get-version.sh")"
+
 if [ ! -d "$ROOT/packaging/wheelhouse" ]; then
   echo "Missing packaging/wheelhouse; running ./packaging/vendor-wheels.sh" >&2
   bash "$ROOT/packaging/vendor-wheels.sh"
@@ -29,6 +31,11 @@ TAR="$TOP/SOURCES/arca-storage.tar.gz"
 git -c "safe.directory=$ROOT" -C "$ROOT" archive --format=tar.gz --prefix="arca-storage/" -o "$TAR" HEAD
 
 cp "$ROOT/packaging/rpm/arca-storage.spec" "$TOP/SPECS/"
+if sed --version >/dev/null 2>&1; then
+  sed -i "s/^Version:\\s\\{1,\\}.*/Version:        $VERSION/" "$TOP/SPECS/arca-storage.spec"
+else
+  sed -i '' "s/^Version:\\s\\{1,\\}.*/Version:        $VERSION/" "$TOP/SPECS/arca-storage.spec"
+fi
 
 # Include wheelhouse in SOURCES
 tar -C "$ROOT" -czf "$TOP/SOURCES/arca-storage-wheelhouse.tar.gz" packaging/wheelhouse

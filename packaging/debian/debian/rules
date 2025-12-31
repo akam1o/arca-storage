@@ -13,6 +13,10 @@ override_dh_auto_install:
 	install -d $(CURDIR)/debian/arca-storage/opt/arca-storage
 	python3 -m venv $(CURDIR)/debian/arca-storage/opt/arca-storage/venv
 	$(CURDIR)/debian/arca-storage/opt/arca-storage/venv/bin/pip install --no-index --find-links $(CURDIR)/packaging/wheelhouse arca-storage
+	# venv-generated scripts embed the build path; rewrite to the final install prefix (/opt/arca-storage/venv)
+	LC_ALL=C grep -rlI "$(CURDIR)/debian/arca-storage" $(CURDIR)/debian/arca-storage/opt/arca-storage/venv | while read -r f; do \
+	  sed -i "s|$(CURDIR)/debian/arca-storage||g" "$$f"; \
+	done
 
 	# Wrappers
 	install -d $(CURDIR)/debian/arca-storage/usr/bin

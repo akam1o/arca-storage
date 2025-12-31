@@ -15,6 +15,9 @@ if [ ! -d "$ROOT/packaging/wheelhouse" ]; then
   bash "$ROOT/packaging/vendor-wheels.sh"
 fi
 
+VERSION="$(bash "$ROOT/packaging/get-version.sh")"
+DEB_VERSION="${VERSION}-1"
+
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
@@ -26,6 +29,11 @@ rsync -a --delete \
 
 cp -R "$ROOT/packaging/debian/debian" "$WORK/src/debian"
 chmod +x "$WORK/src/debian/rules" || true
+if sed --version >/dev/null 2>&1; then
+  sed -i "1s/^arca-storage (.*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
+else
+  sed -i '' "1s/^arca-storage (.*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
+fi
 mkdir -p "$WORK/src/packaging"
 cp -R "$ROOT/packaging/wheelhouse" "$WORK/src/packaging/"
 

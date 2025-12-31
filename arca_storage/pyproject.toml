@@ -1,10 +1,10 @@
 [build-system]
-requires = ["setuptools>=68", "wheel"]
+requires = ["setuptools>=68", "wheel", "setuptools-scm>=8"]
 build-backend = "setuptools.build_meta"
 
 [project]
 name = "arca-storage"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Software-Defined Storage system with SVM functionality"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -54,3 +54,8 @@ include = ["arca_storage", "arca_storage.*"]
 
 [tool.setuptools.package-data]
 arca_storage = ["templates/**/*", "resources/**/*"]
+
+[tool.setuptools_scm]
+version_scheme = "no-guess-dev"
+local_scheme = "no-local-version"
+tag_regex = "^v(?P<version>.*)$"
