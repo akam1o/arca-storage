@@ -30,24 +30,39 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
 
 ### 前提条件
 
-- RHEL/Alma/Rocky Linux 8 または 9
-- Pacemaker, Corosync, NFS-Ganesha, LVM2, DRBD がインストール済み
+- RHEL/Alma/Rocky Linux 8/9, Debian, または Ubuntu
+- Pacemaker/Corosync/pcs, NFS-Ganesha, LVM2, DRBD がインストール済み
 - 2ノードクラスター構成
 
 ### インストール
 
-1. **Pythonパッケージのインストール:**
+1. **OS 依存パッケージのインストール（例）:**
 
    ```bash
-   cd arca_storage
-   pip install -e ".[dev]"
+   # EL9 (RHEL/Alma/Rocky 9)
+   sudo dnf install -y pacemaker corosync pcs resource-agents \
+     nfs-ganesha nfs-ganesha-utils \
+     lvm2 xfsprogs \
+     drbd-utils drbd-kmod
+
+   # Debian/Ubuntu（パッケージ名はディストリ/リポジトリにより異なる場合があります）
+   sudo apt-get update
+   sudo apt-get install -y pacemaker corosync pcs resource-agents \
+     nfs-ganesha \
+     lvm2 xfsprogs \
+     drbd-utils
    ```
 
-2. **Pacemaker Resource Agentのインストール:**
+2. **`arca-storage` パッケージのインストール（rpm/deb）:**
+
+   GitHub Releases から最新のパッケージを取得してインストールします。
 
    ```bash
-   sudo cp arca_storage/arca_storage/resources/pacemaker/NetnsVlan /usr/lib/ocf/resource.d/local/NetnsVlan
-   sudo chmod +x /usr/lib/ocf/resource.d/local/NetnsVlan
+   # EL9 (rpm)
+   sudo dnf install -y ./arca-storage-*.rpm
+
+   # Debian/Ubuntu (deb)
+   sudo apt-get install -y ./arca-storage_*.deb
    ```
 
 3. **MVPセットアップガイドに従う:**
@@ -60,16 +75,31 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
 
 デフォルトでは、Arca StorageはNFSv4のみを使用します。NFSv3サポートを有効にするには：
 
-1. **Ansible変数の編集:**
+1. **runtime 設定の編集:**
 
-   `ansible/group_vars/all.yml` または各ホスト固有の変数ファイルに以下を設定：
+   `/etc/arca-storage/storage-runtime.conf` に設定します：
 
-   ```yaml
-   # NFSv3サポートを有効化 (デフォルト: false、NFSv4のみ)
-   nfs_ganesha_enable_v3: true
+   ```ini
+   [storage]
+   # NFSv3 を有効化（v3 + v4 の両方を利用）
+   ganesha_protocols = 3,4
+
+   # 固定ポート（NFSv3 利用時に推奨）
+   ganesha_mountd_port = 20048
+   ganesha_nlm_port = 32768
    ```
 
-2. **NFSv3有効時に必要なファイアウォールポート:**
+2. **設定の再生成と reload:**
+
+   ```bash
+   # 設定変更後に env を同期（任意だが推奨）
+   sudo arca bootstrap render-env
+
+   # SVM ごとの ganesha.conf を再生成して reload
+   sudo arca export sync --all
+   ```
+
+3. **NFSv3有効時に必要なファイアウォールポート:**
 
    ```
    111/tcp,udp   (rpcbind/portmapper)
@@ -78,7 +108,7 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
    32768/tcp,udp (NLM)
    ```
 
-3. **クライアントマウント例:**
+4. **クライアントマウント例:**
 
    ```bash
    # NFSv4 (デフォルト)
@@ -88,13 +118,23 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
    mount -t nfs -o vers=3 server:/exports /mnt
    ```
 
-**注意**: NFSv3を有効にすると、`rpcbind` パッケージが自動的にインストールされ、サービスが起動します。NFSv3とNFSv4の両プロトコルが同時に利用可能になります。
+**注意**: NFSv3 を利用する場合、`rpcbind` がインストールされて起動していることを確認してください。NFSv3 と NFSv4 の両プロトコルが同時に利用可能になります。
 
 ## 使い方
 
 ### CLIツール (arca)
 
 ```bash
+# Ansibleなしでのブートストラップ
+arca bootstrap install
+
+# (任意) 設定の編集
+sudo vi /etc/arca-storage/storage-bootstrap.conf
+sudo vi /etc/arca-storage/storage-runtime.conf
+
+# 設定変更後に /etc/arca-storage/arca-storage.env を再生成
+arca bootstrap render-env
+
 # SVMの作成
 arca svm create tenant_a --vlan 100 --ip 192.168.10.5/24 --gateway 192.168.10.1
 
@@ -113,7 +153,13 @@ arca svm list
 APIサーバーの起動:
 
 ```bash
-uvicorn arca_storage.api.main:app --host 0.0.0.0 --port 8080
+arca-storage-api --host 127.0.0.1 --port 8080
+```
+
+または systemd サービスとして起動します（パッケージインストール時）:
+
+```bash
+sudo systemctl enable --now arca-storage-api
 ```
 
 APIエンドポイント:
@@ -201,6 +247,7 @@ Pythonコードは PEP 8 に従ってください。
 
 - [docs/mvp-setup.md](docs/mvp-setup.md) - MVPセットアップガイド
 - [arca_storage/arca_storage/resources/pacemaker/](arca_storage/arca_storage/resources/pacemaker/) - Pacemaker RAドキュメント
+- [arca_storage/arca_storage/resources/systemd/](arca_storage/arca_storage/resources/systemd/) - systemd ユニットファイル
 - [arca_storage/arca_storage/templates/](arca_storage/arca_storage/templates/) - テンプレートドキュメント
 
 ## ライセンス

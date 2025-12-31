@@ -156,6 +156,14 @@ sudo systemctl enable --now pacemaker
 
 ### On node1:
 
+This section uses `export_dir` (default: `/exports`) and `ganesha_config_dir` (default: `/etc/ganesha`).
+You can change them in `/etc/arca-storage/storage-runtime.conf`.
+After editing configs, re-generate `/etc/arca-storage/arca-storage.env`:
+
+```bash
+sudo arca bootstrap render-env
+```
+
 1. **Create Logical Volume for SVM:**
 
    ```bash
@@ -175,7 +183,7 @@ sudo systemctl enable --now pacemaker
 3. **Create mount point:**
 
    ```bash
-   sudo mkdir -p /exports/tenant_a
+   sudo mkdir -p <export_dir>/tenant_a
    ```
 
 4. **Mount filesystem:**
@@ -183,13 +191,13 @@ sudo systemctl enable --now pacemaker
    ```bash
    sudo mount -o rw,noatime,nodiratime,logbsize=256k,inode64 \
      /dev/vg_pool_01/vol_tenant_a \
-     /exports/tenant_a
+     <export_dir>/tenant_a
    ```
 
 5. **Add to /etc/fstab (optional):**
 
    ```
-   /dev/vg_pool_01/vol_tenant_a /exports/tenant_a xfs rw,noatime,nodiratime,logbsize=256k,inode64 0 0
+   /dev/vg_pool_01/vol_tenant_a <export_dir>/tenant_a xfs rw,noatime,nodiratime,logbsize=256k,inode64 0 0
    ```
 
 ## Step 5: Install Pacemaker Resource Agent
@@ -225,7 +233,7 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
 
 3. **Configure STONITH (recommended for production):**
 
-   **Note:** The Ansible playbook has STONITH disabled by default (`pacemaker_enable_stonith: false`). For MVP/testing environments, you can proceed without STONITH. For production environments, STONITH is strongly recommended.
+   **Note:** For MVP/testing environments, you can proceed without STONITH. For production environments, STONITH is strongly recommended.
 
    To enable STONITH:
    - Set `pacemaker_enable_stonith: true` in `ansible/group_vars/all.yml`
@@ -275,7 +283,7 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
    ```bash
    sudo pcs resource create fs_tenant_a ocf:heartbeat:Filesystem \
      device=/dev/vg_pool_01/vol_tenant_a \
-     directory=/exports/tenant_a \
+     directory=<export_dir>/tenant_a \
      fstype=xfs \
      op monitor interval=10s
    ```
@@ -296,7 +304,14 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
 
 7. **Create NFS-Ganesha resource:**
 
-   First, create systemd unit template `/etc/systemd/system/nfs-ganesha@.service`:
+   First, ensure systemd unit template `/etc/systemd/system/nfs-ganesha@.service` is installed.
+   You can install it via:
+
+   ```bash
+   sudo arca bootstrap install
+   ```
+
+   If you install it manually, use `${ARCA_GANESHA_CONFIG_DIR}` (from `/etc/arca-storage/arca-storage.env`) or the default `/etc/ganesha`:
 
    ```ini
    [Unit]
@@ -305,8 +320,9 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
 
    [Service]
    Type=forking
+   EnvironmentFile=-/etc/arca-storage/arca-storage.env
    NetworkNamespacePath=/var/run/netns/%i
-   ExecStart=/usr/bin/ganesha.nfsd -f /etc/ganesha/ganesha.%i.conf
+   ExecStart=/usr/bin/ganesha.nfsd -f ${ARCA_GANESHA_CONFIG_DIR}/ganesha.%i.conf
    ExecReload=/bin/kill -HUP $MAINPID
    PIDFile=/var/run/ganesha.%i.pid
 
@@ -344,9 +360,17 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
 
 ### On node1:
 
-1. **Create ganesha configuration:**
+1. **(Recommended) Create ganesha configuration via `arca export`:**
 
-   Create `/etc/ganesha/ganesha.tenant_a.conf`:
+   ```bash
+   sudo arca export add --svm tenant_a --volume vol1 --client 10.0.0.0/24 --access rw
+   ```
+
+   This generates `<ganesha_config_dir>/ganesha.tenant_a.conf` (default: `/etc/ganesha/ganesha.tenant_a.conf`).
+
+2. **(Manual) Create ganesha configuration:**
+
+   Create `<ganesha_config_dir>/ganesha.tenant_a.conf`:
 
    ```conf
    NFS_CORE_PARAM {
@@ -361,8 +385,8 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
 
    EXPORT {
        Export_Id = 101;
-       Path = "/exports/tenant_a";
-       Pseudo = "/exports/tenant_a";
+       Path = "<export_dir>/tenant_a";
+       Pseudo = "<export_dir>/tenant_a";
        Protocols = 4;
        Access_Type = RW;
        Squash = Root_Squash;
@@ -376,7 +400,7 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
    }
    ```
 
-2. **Start NFS-Ganesha (if not managed by Pacemaker):**
+3. **Start NFS-Ganesha (if not managed by Pacemaker):**
 
    ```bash
    sudo systemctl start nfs-ganesha@tenant_a
@@ -413,7 +437,7 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
    ```bash
    # From a client machine
    sudo mkdir -p /mnt/nfs-test
-   sudo mount -t nfs4 192.168.10.5:/exports/tenant_a /mnt/nfs-test
+   sudo mount -t nfs4 192.168.10.5:<export_dir>/tenant_a /mnt/nfs-test
    df -h /mnt/nfs-test
    sudo touch /mnt/nfs-test/testfile
    sudo umount /mnt/nfs-test
@@ -499,7 +523,7 @@ sudo ip netns exec tenant_a ps aux | grep ganesha
 sudo journalctl -u nfs-ganesha@tenant_a -f
 
 # Check export configuration
-sudo cat /etc/ganesha/ganesha.tenant_a.conf
+sudo cat <ganesha_config_dir>/ganesha.tenant_a.conf
 ```
 
 ### Namespace issues
@@ -529,5 +553,4 @@ After MVP verification:
 
 ## References
 
-- [Pacemaker RA README](../arca_storage/src/arca_storage/resources/pacemaker/) - Resource agent documentation
-
+- [Pacemaker RA README](../arca_storage/arca_storage/resources/pacemaker/) - Resource agent documentation

@@ -39,6 +39,31 @@ ansible-playbook -i inventory.ini site.yml
 - Change `pacemaker_hacluster_password` to an appropriate value.
 - Set the same `drbd_shared_secret` value on all nodes and change it for production use (ansible-vault recommended).
 - Adjust NFS-Ganesha exports according to your requirements.
+- This playbook is intended for initial bootstrap; runtime operations (creating SVMs/volumes/exports and Pacemaker resources) should be handled by `arca` by default.
+
+### Bootstrap-only Defaults
+
+To avoid runtime drift, these are disabled by default in `group_vars/all.yml`:
+
+- `pacemaker_create_resources: false`
+- `nfs_ganesha_render_tenant_configs: false`
+- `lvm_create_tenant_volume: false`
+- `lvm_format_tenant_filesystem: false`
+
+### Optional: Runtime provisioning via `arca`
+
+If you still want Ansible to perform runtime provisioning, prefer calling `arca` (instead of direct `pcs`/template writes).
+
+- Enable: `arca_runtime_enabled: true`
+- Inputs: `arca_runtime_svms`, `arca_runtime_volumes`, `arca_runtime_exports`
+- Tag: `arca_runtime`
+
+Example:
+
+```bash
+ansible-playbook -i inventory.ini site.yml --tags arca_cli,arca_runtime \
+  -e arca_runtime_enabled=true
+```
 
 ## STONITH Configuration
 By default, `pacemaker_enable_stonith: false` is set. For production environments, it is strongly recommended to enable STONITH:
