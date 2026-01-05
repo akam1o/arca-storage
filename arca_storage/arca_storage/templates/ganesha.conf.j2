@@ -24,9 +24,9 @@ EXPORT {
     Protocols = {{ protocols }};
     Access_Type = {{ exp.access }};
     Squash = {{ exp.squash }};
-    SecType = {{ exp.sec }};
+    SecType = {{ exp.sec_render }};
     CLIENT {
-        Clients = {{ exp.client }};
+        Clients = "{{ exp.client }}";
     }
     FSAL {
         Name = VFS;
