@@ -271,7 +271,13 @@ def pacemaker_cluster(
         _run(["systemctl", "enable", "--now", "pcsd"])
 
         # Ensure hacluster password
-        _run_shell(f"echo 'hacluster:{hacluster_password}' | chpasswd")
+        subprocess.run(
+            ["chpasswd"],
+            input=f"hacluster:{hacluster_password}\n",
+            capture_output=True,
+            text=True,
+            check=True,
+        )
 
         # Authenticate and setup
         auth = _run(["pcs", "host", "auth", *node_list, "-u", "hacluster", "-p", hacluster_password], check=False)
