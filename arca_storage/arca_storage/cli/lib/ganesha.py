@@ -2,54 +2,96 @@
 NFS-Ganesha configuration management functions.
 """
 
+from __future__ import annotations
+
+import hashlib
 import json
 import os
 import tempfile
 from pathlib import Path
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Sequence
 
 from jinja2 import Template
 
 from arca_storage.cli.lib.config import load_config
 from arca_storage.cli.lib.state import get_state_dir
 
-# Template for ganesha.conf
-GANESHA_CONF_TEMPLATE = """# Managed by arca
-# Template version: {{ template_version }}
-# Config version: {{ config_version }}
+TEMPLATE_VERSION = "1.0.0"
 
-NFS_CORE_PARAM {
-    Protocols = {{ protocols }};
-    NFS_Port = 2049;
-    MNT_Port = {{ mountd_port }};
-{% if enable_v3 %}
-    NLM_Port = {{ nlm_port }};
-{% endif %}
-}
 
-EXPORT_DEFAULTS {
-    Access_Type = RW;
-    Squash = Root_Squash;
-}
+def _template_path() -> Path:
+    # arca_storage/cli/lib/ganesha.py -> arca_storage/templates/ganesha.conf.j2
+    return Path(__file__).resolve().parents[2] / "templates" / "ganesha.conf.j2"
 
-{% for exp in exports %}
-EXPORT {
-    Export_Id = {{ exp.export_id }};
-    Path = "{{ exp.path }}";
-    Pseudo = "{{ exp.pseudo }}";
-    Protocols = {{ protocols }};
-    Access_Type = {{ exp.access }};
-    Squash = {{ exp.squash }};
-    SecType = {{ exp.sec_render }};
-    CLIENT {
-        Clients = "{{ exp.client }}";
+def _config_snapshot_dir() -> Path:
+    # Keep snapshots under the same persistent state directory as exports.*.json.
+    return get_state_dir() / "config"
+
+
+def _snapshot_path(svm_name: str, config_version: str) -> Path:
+    return _config_snapshot_dir() / f"ganesha.{svm_name}.{config_version}.conf"
+
+def _snapshot_meta_path(svm_name: str, config_version: str) -> Path:
+    return _config_snapshot_dir() / f"ganesha.{svm_name}.{config_version}.json"
+
+
+def _render_sectype(value: object) -> str:
+    # Ganesha expects SecType as tokens (e.g. "sys" or "sys, krb5").
+    if isinstance(value, list):
+        tokens = [str(v).strip() for v in value if str(v).strip()]
+        return ", ".join(tokens) if tokens else "sys"
+    raw = str(value).strip()
+    return raw or "sys"
+
+
+def _stable_config_version(
+    *,
+    svm_name: str,
+    protocols: str,
+    mountd_port: int,
+    nlm_port: int,
+    exports: Sequence[Dict],
+) -> str:
+    payload = {
+        "svm": svm_name,
+        "protocols": protocols,
+        "mountd_port": mountd_port,
+        "nlm_port": nlm_port,
+        "exports": [
+            {
+                "export_id": e.get("export_id"),
+                "path": e.get("path"),
+                "pseudo": e.get("pseudo"),
+                "access": e.get("access"),
+                "squash": e.get("squash"),
+                "sec": e.get("sec"),
+                "client": e.get("client"),
+            }
+            for e in exports
+        ],
     }
-    FSAL {
-        Name = VFS;
-    }
-}
-{% endfor %}
-"""
+    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    return digest[:12]
+
+
+def _write_if_changed(path: Path, content: str) -> None:
+    # Keep this using built-in open() so unit tests can easily mock writes.
+    if path.exists():
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                if f.read() == content:
+                    return
+        except Exception:
+            # If we can't read, fall back to writing.
+            pass
+
+    with open(path, "w", encoding="utf-8") as f:
+        f.write(content)
+
+
+def _write_json_if_changed(path: Path, data: object) -> None:
+    content = json.dumps(data, indent=2, ensure_ascii=False, sort_keys=True) + "\n"
+    _write_if_changed(path, content)
 
 
 def render_config(svm_name: str, exports: List[Dict]) -> str:
@@ -68,33 +110,57 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     config_dir.mkdir(parents=True, exist_ok=True)
     
     config_path = config_dir / f"ganesha.{svm_name}.conf"
-    
-    # Generate config version (timestamp)
-    import datetime
-    config_version = datetime.datetime.now().strftime("%Y%m%d%H%M%S")
-    template_version = "1.0.0"
-    
-    # Render template
-    template = Template(GANESHA_CONF_TEMPLATE)
+
+    # Render template from templates/ganesha.conf.j2 (single source of truth).
+    template = Template(_template_path().read_text(encoding="utf-8"))
     protocol_tokens = [p.strip() for p in cfg.ganesha_protocols.split(",") if p.strip()]
     # Render as "3, 4" to match ganesha.conf conventions.
     protocols = ", ".join(protocol_tokens) if protocol_tokens else "4"
     enable_v3 = "3" in protocol_tokens
 
-    def _sec_render(value: object) -> str:
-        # Ganesha expects SecType as tokens (e.g. "sys" or "sys, krb5").
-        if isinstance(value, list):
-            tokens = [str(v).strip() for v in value if str(v).strip()]
-            return ", ".join(tokens) if tokens else "sys"
-        raw = str(value).strip()
-        return raw or "sys"
+    # Stable ordering for deterministic output.
+    exports_sorted = sorted(
+        list(exports),
+        key=lambda e: (
+            int(e.get("export_id") or 0),
+            str(e.get("path") or ""),
+            str(e.get("client") or ""),
+        ),
+    )
 
     exports_render: List[Dict] = []
-    for e in exports:
+    for e in exports_sorted:
         sec = e.get("sec", ["sys"])
-        exports_render.append({**e, "sec_render": _sec_render(sec)})
+        exports_render.append({**e, "sec_render": _render_sectype(sec)})
+
+    config_version = _stable_config_version(
+        svm_name=svm_name,
+        protocols=protocols,
+        mountd_port=cfg.ganesha_mountd_port,
+        nlm_port=cfg.ganesha_nlm_port,
+        exports=exports_render,
+    )
+    meta = {
+        "template_version": TEMPLATE_VERSION,
+        "config_version": config_version,
+        "protocols": protocols,
+        "mountd_port": cfg.ganesha_mountd_port,
+        "nlm_port": cfg.ganesha_nlm_port if enable_v3 else None,
+        "exports": [
+            {
+                "export_id": e.get("export_id"),
+                "path": e.get("path"),
+                "pseudo": e.get("pseudo"),
+                "access": e.get("access"),
+                "squash": e.get("squash"),
+                "sec": e.get("sec"),
+                "client": e.get("client"),
+            }
+            for e in exports_sorted
+        ],
+    }
     config_content = template.render(
-        template_version=template_version,
+        template_version=TEMPLATE_VERSION,
         config_version=config_version,
         exports=exports_render,
         protocols=protocols,
@@ -102,10 +168,16 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
         mountd_port=cfg.ganesha_mountd_port,
         nlm_port=cfg.ganesha_nlm_port,
     )
-    
-    # Write config file
-    with open(config_path, "w") as f:
-        f.write(config_content)
+
+    # Save snapshots for rollback purposes.
+    snapshot_dir = _config_snapshot_dir()
+    snapshot_dir.mkdir(parents=True, exist_ok=True)
+    _write_if_changed(_snapshot_path(svm_name, config_version), config_content)
+    _write_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.conf", config_content)
+    _write_json_if_changed(_snapshot_meta_path(svm_name, config_version), meta)
+    _write_json_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.json", meta)
+
+    _write_if_changed(config_path, config_content)
     
     return str(config_path)
 
@@ -139,7 +211,8 @@ def add_export(
     volume_name: str,
     client: str,
     access: str = "rw",
-    root_squash: bool = True
+    root_squash: bool = True,
+    sec: Optional[List[str]] = None,
 ) -> None:
     """
     Add an export to the ganesha configuration.
@@ -169,8 +242,8 @@ def add_export(
         "pseudo": f"{export_dir}/{svm_name}/{volume_name}",
         "access": access.upper(),
         "squash": "Root_Squash" if root_squash else "No_Root_Squash",
-        "sec": ["sys"],
-        "client": client
+        "sec": sec or ["sys"],
+        "client": client,
     }
     
     exports.append(export_entry)
@@ -289,6 +362,71 @@ def sync(svm_name: str) -> str:
     path = render_config(svm_name, exports)
     reload(svm_name)
     return path
+
+
+def list_config_snapshots(svm_name: str) -> List[Dict]:
+    """
+    List saved ganesha.conf snapshots for a given SVM.
+    """
+    snapshot_dir = _config_snapshot_dir()
+    if not snapshot_dir.exists():
+        return []
+
+    results: List[Dict] = []
+    prefix = f"ganesha.{svm_name}."
+    suffix = ".conf"
+    for p in snapshot_dir.glob(f"{prefix}*{suffix}"):
+        if p.name == f"ganesha.{svm_name}.latest.conf":
+            continue
+        version = p.name[len(prefix) : -len(suffix)]
+        try:
+            mtime = p.stat().st_mtime
+        except Exception:
+            mtime = 0.0
+        results.append({"config_version": version, "path": str(p), "mtime": mtime})
+
+    results.sort(key=lambda x: float(x.get("mtime") or 0.0), reverse=True)
+    return results
+
+
+def rollback_config(svm_name: str, config_version: str) -> str:
+    """
+    Restore ganesha.<svm>.conf from a saved snapshot and reload the service.
+
+    Args:
+        svm_name: SVM name
+        config_version: Snapshot version (or "latest")
+    """
+    cfg = load_config()
+    config_dir = Path(cfg.ganesha_config_dir)
+    config_dir.mkdir(parents=True, exist_ok=True)
+    config_path = config_dir / f"ganesha.{svm_name}.conf"
+
+    snapshot_dir = _config_snapshot_dir()
+    if config_version == "latest":
+        snap = snapshot_dir / f"ganesha.{svm_name}.latest.conf"
+    else:
+        snap = _snapshot_path(svm_name, config_version)
+
+    if not snap.exists():
+        raise FileNotFoundError(f"Snapshot not found: {snap}")
+
+    content = snap.read_text(encoding="utf-8")
+    _write_if_changed(config_path, content)
+    reload(svm_name)
+    return str(config_path)
+
+
+def read_config_snapshot_meta(svm_name: str, config_version: str) -> Dict:
+    snapshot_dir = _config_snapshot_dir()
+    if config_version == "latest":
+        path = snapshot_dir / f"ganesha.{svm_name}.latest.json"
+    else:
+        path = _snapshot_meta_path(svm_name, config_version)
+    if not path.exists():
+        raise FileNotFoundError(f"Snapshot metadata not found: {path}")
+    with open(path, "r", encoding="utf-8") as f:
+        return json.load(f)
 
 
 def _volume_from_path(path: str) -> str:

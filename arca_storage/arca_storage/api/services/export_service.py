@@ -32,7 +32,12 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
 
     # Add export to configuration
     ganesha_add_export(
-        export_data.svm, export_data.volume, export_data.client, export_data.access, export_data.root_squash
+        export_data.svm,
+        export_data.volume,
+        export_data.client,
+        export_data.access,
+        export_data.root_squash,
+        export_data.sec,
     )
 
     # Load exports to get export_id

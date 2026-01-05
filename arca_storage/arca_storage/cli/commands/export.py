@@ -2,11 +2,13 @@
 Export management commands.
 """
 
+import json
 from typing import List, Optional
 
 import typer
 
 from arca_storage.cli.lib.ganesha import add_export
+from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
 from arca_storage.cli.lib.ganesha import reload as reload_ganesha
 from arca_storage.cli.lib.ganesha import remove_export, render_config
 from arca_storage.cli.lib.ganesha import sync as sync_ganesha
@@ -148,4 +150,75 @@ def sync(
 
     except Exception as e:
         typer.echo(f"Error syncing exports: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def snapshots(
+    svm: str = typer.Option(..., "--svm", help="SVM name"),
+):
+    """
+    List saved ganesha.conf snapshots for an SVM.
+    """
+    try:
+        validate_name(svm)
+        snaps = list_config_snapshots(svm)
+        if not snaps:
+            typer.echo("No snapshots found")
+            return
+        for s in snaps:
+            typer.echo(f"{s.get('config_version')} {s.get('path')}")
+        typer.echo(f"latest {get_state_dir()}/config/ganesha.{svm}.latest.conf")
+    except Exception as e:
+        typer.echo(f"Error listing snapshots: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command()
+def rollback(
+    svm: str = typer.Option(..., "--svm", help="SVM name"),
+    config_version: str = typer.Option("latest", "--config-version", help="Snapshot version (default: latest)"),
+):
+    """
+    Roll back ganesha.<svm>.conf to a saved snapshot and reload.
+    """
+    try:
+        validate_name(svm)
+        path = rollback_config(svm, config_version)
+        typer.echo(f"Rolled back: {svm} -> {path} (version={config_version})")
+    except Exception as e:
+        typer.echo(f"Error rolling back: {e}", err=True)
+        raise typer.Exit(1)
+
+
+@app.command("snapshot-show")
+def snapshot_show(
+    svm: str = typer.Option(..., "--svm", help="SVM name"),
+    config_version: str = typer.Option("latest", "--config-version", help="Snapshot version (default: latest)"),
+    as_json: bool = typer.Option(False, "--json", help="Print raw snapshot metadata as JSON"),
+):
+    """
+    Show what a snapshot contains (protocols/ports/exports).
+    """
+    try:
+        validate_name(svm)
+        meta = read_config_snapshot_meta(svm, config_version)
+        if as_json:
+            typer.echo(typer.style(json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True), dim=False))
+            return
+
+        typer.echo(f"svm={svm} config_version={meta.get('config_version')} template_version={meta.get('template_version')}")
+        typer.echo(f"protocols={meta.get('protocols')} mountd_port={meta.get('mountd_port')} nlm_port={meta.get('nlm_port')}")
+        exports = meta.get("exports") or []
+        if not exports:
+            typer.echo("exports: (none)")
+            return
+        typer.echo("exports:")
+        for e in exports:
+            typer.echo(
+                f"  id={e.get('export_id')} client={e.get('client')} access={e.get('access')} "
+                f"sec={e.get('sec')} squash={e.get('squash')} path={e.get('path')}"
+            )
+    except Exception as e:
+        typer.echo(f"Error showing snapshot: {e}", err=True)
         raise typer.Exit(1)

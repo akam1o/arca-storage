@@ -1,16 +1,8 @@
 name: Python Tests
 
 on:
-  push:
-    branches: [main]
-    paths:
-      - 'arca_storage/**'
-      - '.github/workflows/python-tests.yml'
-  pull_request:
-    branches: [main]
-    paths:
-      - 'arca_storage/**'
-      - '.github/workflows/python-tests.yml'
+  workflow_call:
+  workflow_dispatch:
 
 permissions:
   contents: read
@@ -29,6 +21,9 @@ jobs:
 
     steps:
       - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives versions from Git tags (e.g. v0.2.7).
+          fetch-depth: 0
 
       - name: Set up Python ${{ matrix.python-version }}
         uses: actions/setup-python@v5
@@ -85,7 +80,7 @@ jobs:
           cp -r arca_storage/tests /tmp/tests
           cp arca_storage/pytest.ini /tmp/pytest.ini
           cd /tmp
-          python -m pytest tests/unit -v --cov=arca_storage --cov-report=xml --cov-report=term
+          python -m pytest tests/unit tests/integration -v -m "not slow" --cov=arca_storage --cov-report=xml --cov-report=term
           # Copy coverage results back
           cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 

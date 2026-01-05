@@ -3,6 +3,11 @@
 Setup script for Arca Storage.
 """
 
+from __future__ import annotations
+
+import os
+import subprocess
+
 from setuptools import setup, find_packages
 
 with open("README.md", "r", encoding="utf-8") as fh:
@@ -13,9 +18,51 @@ with open("requirements.txt", "r", encoding="utf-8") as fh:
 
 packages = find_packages(where=".")
 
+def _resolve_version() -> str:
+    """
+    Resolve a version string for legacy `setup.py` usage.
+
+    Primary source is Git tags like `v0.2.7` (GitHub Releases format).
+    """
+    candidates = [
+        os.environ.get("ARCA_VERSION", ""),
+        os.environ.get("GITHUB_REF_NAME", ""),
+    ]
+    github_ref = os.environ.get("GITHUB_REF", "")
+    if github_ref:
+        candidates.append(github_ref.rsplit("/", 1)[-1])
+
+    for raw in candidates:
+        raw = (raw or "").strip()
+        if raw:
+            return raw.lstrip("v")
+
+    try:
+        tag = subprocess.check_output(
+            ["git", "describe", "--tags", "--match", "v*", "--abbrev=0"],
+            text=True,
+            stderr=subprocess.DEVNULL,
+        ).strip()
+        if tag:
+            return tag.lstrip("v")
+    except Exception:
+        pass
+
+    return "0.0.0"
+
+
+_setup_kwargs: dict[str, object] = {}
+try:
+    import setuptools_scm  # noqa: F401
+
+    # Keep versioning consistent with pyproject.toml (setuptools-scm).
+    _setup_kwargs["use_scm_version"] = True
+except Exception:
+    _setup_kwargs["version"] = _resolve_version()
+
 setup(
     name="arca-storage",
-    version="0.1.0",
+    **_setup_kwargs,
     author="Arca Storage Project",
     description="Software-Defined Storage system with SVM functionality",
     long_description=long_description,

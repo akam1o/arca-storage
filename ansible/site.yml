@@ -4,6 +4,18 @@
   become: true
   vars:
     ansible_python_interpreter: auto_silent
+  pre_tasks:
+    - name: Fail fast if default secrets are used (change for production)
+      ansible.builtin.assert:
+        that:
+          - pacemaker_hacluster_password is defined
+          - pacemaker_hacluster_password != "changeme"
+          - drbd_shared_secret is defined
+          - drbd_shared_secret != "changeme"
+        fail_msg: >-
+          Default secrets detected. Set pacemaker_hacluster_password and drbd_shared_secret to non-default values
+          (use ansible-vault for production).
+      when: not (test_mode | default(false) | bool)
   roles:
     - role: common
       tags: [common]
