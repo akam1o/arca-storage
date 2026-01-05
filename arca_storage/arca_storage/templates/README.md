@@ -53,3 +53,12 @@ Path("/etc/ganesha/ganesha.tenant_a.conf").write_text(config)
 - Template files are version-controlled in Git
 - Generated configuration files include both `template_version` and `config_version` in their headers
 - `config_version` is derived from the rendered content (stable for identical inputs) so repeated renders are idempotent
+- Rendered configs are snapshot-saved under `<state_dir>/config/` for rollback (default: `/var/lib/arca/config/`)
+  - Example: `ganesha.<svm>.<config_version>.conf`, and `ganesha.<svm>.latest.conf`
+  - List: `arca export snapshots --svm <svm>`
+  - Inspect: `arca export snapshot-show --svm <svm> --config-version <config_version|latest>`
+  - Roll back: `arca export rollback --svm <svm> --config-version <config_version|latest>`
+  - Diff (examples):
+    - `diff -u <state_dir>/config/ganesha.<svm>.<a>.json <state_dir>/config/ganesha.<svm>.<b>.json`
+    - `diff -u <state_dir>/config/ganesha.<svm>.<a>.conf <state_dir>/config/ganesha.<svm>.<b>.conf`
+    - `diff -u /etc/ganesha/ganesha.<svm>.conf <state_dir>/config/ganesha.<svm>.<config_version>.conf`
