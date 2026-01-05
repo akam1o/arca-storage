@@ -26,7 +26,7 @@ class TestVolumeCreate:
 
         assert result.exit_code == 0
         assert "Creating volume: vol1" in result.stdout
-        mock_create_lv.assert_called_once_with("vg_pool_01", "vol_tenant_a_vol1", 100, thin=True)
+        mock_create_lv.assert_called_once_with("vg_pool_01", "vol_tenant_a_vol1", 100, thin=True, thinpool_name="pool")
         mock_format.assert_called_once()
         mock_mount.assert_called_once()
 
@@ -42,7 +42,7 @@ class TestVolumeCreate:
         result = runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100", "--no-thin"])
 
         assert result.exit_code == 0
-        mock_create_lv.assert_called_once_with("vg_pool_01", "vol_tenant_a_vol1", 100, thin=False)
+        mock_create_lv.assert_called_once_with("vg_pool_01", "vol_tenant_a_vol1", 100, thin=False, thinpool_name="pool")
 
 
 class TestVolumeResize:
