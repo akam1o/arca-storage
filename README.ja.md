@@ -179,6 +179,10 @@ APIエンドポイント:
 
 サーバー起動時に `http://localhost:8080/docs` でAPIドキュメントを参照できます。
 
+### OpenStack (Cinder)
+
+`docs/openstack-cinder.ja.md` を参照してください。
+
 ## プロジェクト構成
 
 ```
