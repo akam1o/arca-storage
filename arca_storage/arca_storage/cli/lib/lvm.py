@@ -106,16 +106,16 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
 def delete_lv(vg_name: str, lv_name: str) -> None:
     """
     Delete a logical volume.
-    
+
     Args:
         vg_name: Volume group name
         lv_name: Logical volume name
-        
+
     Raises:
         RuntimeError: If LV deletion fails
     """
     lv_path = f"/dev/{vg_name}/{lv_name}"
-    
+
     # Check if LV exists
     result = subprocess.run(
         ["lvdisplay", lv_path],
@@ -123,11 +123,11 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
         text=True,
         check=False
     )
-    
+
     if result.returncode != 0:
         # LV doesn't exist, skip
         return
-    
+
     # Delete LV
     result = subprocess.run(
         ["lvremove", "-f", lv_path],
@@ -135,6 +135,83 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
         text=True,
         check=False
     )
-    
+
     if result.returncode != 0:
         raise RuntimeError(f"Failed to delete logical volume: {result.stderr}")
+
+
+def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
+    """
+    Create a thin snapshot of a logical volume.
+
+    Args:
+        vg_name: Volume group name
+        source_lv: Source logical volume name
+        snap_lv: Snapshot logical volume name
+
+    Returns:
+        Path to the snapshot logical volume
+
+    Raises:
+        RuntimeError: If snapshot creation fails
+    """
+    source_path = f"/dev/{vg_name}/{source_lv}"
+    snap_path = f"/dev/{vg_name}/{snap_lv}"
+
+    # Check if source LV exists
+    result = subprocess.run(
+        ["lvdisplay", source_path],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Source logical volume {source_path} does not exist")
+
+    # Check if snapshot already exists
+    result = subprocess.run(
+        ["lvdisplay", snap_path],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+
+    if result.returncode == 0:
+        raise RuntimeError(f"Snapshot {snap_path} already exists")
+
+    # Create thin snapshot
+    cmd = [
+        "lvcreate",
+        "--snapshot",
+        "--name", snap_lv,
+        source_path
+    ]
+
+    result = subprocess.run(
+        cmd,
+        capture_output=True,
+        text=True,
+        check=False
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to create snapshot: {result.stderr}")
+
+    return snap_path
+
+
+def delete_snapshot_lv(vg_name: str, snap_lv: str) -> None:
+    """
+    Delete a snapshot logical volume.
+
+    This is functionally the same as delete_lv but provided for clarity.
+
+    Args:
+        vg_name: Volume group name
+        snap_lv: Snapshot logical volume name
+
+    Raises:
+        RuntimeError: If snapshot deletion fails
+    """
+    delete_lv(vg_name, snap_lv)
