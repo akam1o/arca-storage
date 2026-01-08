@@ -28,6 +28,15 @@ class VolumeStatus(str, Enum):
     ERROR = "error"
 
 
+class SnapshotStatus(str, Enum):
+    """Snapshot status values."""
+
+    CREATING = "creating"
+    AVAILABLE = "available"
+    DELETING = "deleting"
+    ERROR = "error"
+
+
 class ExportStatus(str, Enum):
     """Export status values."""
 
@@ -149,6 +158,48 @@ class VolumeResize(BaseModel):
     new_size_gib: int = Field(..., description="New size in GiB", gt=0)
 
 
+class VolumeQoSApply(BaseModel):
+    """Request model for applying QoS to a volume."""
+
+    svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
+    read_iops: Optional[int] = Field(None, description="Read IOPS limit", gt=0)
+    write_iops: Optional[int] = Field(None, description="Write IOPS limit", gt=0)
+    read_bps: Optional[int] = Field(None, description="Read bandwidth limit (bytes/sec)", gt=0)
+    write_bps: Optional[int] = Field(None, description="Write bandwidth limit (bytes/sec)", gt=0)
+
+    @field_validator("svm")
+    def validate_svm(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
+            raise ValueError(
+                "SVM name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+            )
+        return v
+
+
+class VolumeQoS(BaseModel):
+    """QoS settings response model."""
+
+    svm: str
+    volume: str
+    qos_enabled: bool
+    device_id: Optional[str] = None
+    cgroup_path: Optional[str] = None
+    read_iops: Optional[int] = None
+    write_iops: Optional[int] = None
+    read_bps: Optional[int] = None
+    write_bps: Optional[int] = None
+
+
+class VolumeQoSResponse(BaseModel):
+    """Response model for QoS operations."""
+
+    request_id: str
+    status: str
+    data: dict
+
+
 class Volume(BaseModel):
     """Volume response model."""
 
@@ -173,6 +224,73 @@ class VolumeResponse(BaseModel):
 
 class VolumeListResponse(BaseModel):
     """Response model for listing volumes."""
+
+    request_id: str
+    status: str
+    data: dict
+
+
+# Snapshot Models
+
+
+class SnapshotCreate(BaseModel):
+    """Request model for creating a snapshot."""
+
+    name: str = Field(..., description="Snapshot name", min_length=1, max_length=64)
+    svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
+    volume: str = Field(..., description="Source volume name", min_length=1, max_length=64)
+
+    @field_validator("name", "svm", "volume")
+    def validate_name(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
+            raise ValueError(
+                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+            )
+        return v
+
+
+class VolumeCloneCreate(BaseModel):
+    """Request model for creating a volume from a snapshot."""
+
+    name: str = Field(..., description="New volume name", min_length=1, max_length=64)
+    svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
+    snapshot: str = Field(..., description="Source snapshot name", min_length=1, max_length=64)
+    size_gib: Optional[int] = Field(None, description="Size in GiB (optional, defaults to snapshot size)", gt=0)
+
+    @field_validator("name", "svm", "snapshot")
+    def validate_name(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
+            raise ValueError(
+                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+            )
+        return v
+
+
+class Snapshot(BaseModel):
+    """Snapshot response model."""
+
+    name: str
+    svm: str
+    volume: str
+    lv_path: str
+    status: SnapshotStatus
+    created_at: datetime
+
+
+class SnapshotResponse(BaseModel):
+    """Response model for snapshot operations."""
+
+    request_id: str
+    status: str
+    data: dict
+
+
+class SnapshotListResponse(BaseModel):
+    """Response model for listing snapshots."""
 
     request_id: str
     status: str

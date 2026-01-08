@@ -9,11 +9,26 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
-from arca_storage.api.models import (ExportCreate, ExportListResponse, ExportResponse,
-                        SuccessResponse, SVMCreate, SVMListResponse,
-                        SVMResponse, VolumeCreate, VolumeListResponse,
-                        VolumeResize, VolumeResponse)
-from arca_storage.api.services import export_service, svm_service, volume_service
+from arca_storage.api.models import (
+    ExportCreate,
+    ExportListResponse,
+    ExportResponse,
+    SnapshotCreate,
+    SnapshotListResponse,
+    SnapshotResponse,
+    SuccessResponse,
+    SVMCreate,
+    SVMListResponse,
+    SVMResponse,
+    VolumeCloneCreate,
+    VolumeCreate,
+    VolumeListResponse,
+    VolumeQoSApply,
+    VolumeQoSResponse,
+    VolumeResize,
+    VolumeResponse,
+)
+from arca_storage.api.services import export_service, qos_service, snapshot_service, svm_service, volume_service
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
@@ -201,3 +216,159 @@ def list_exports(
         "status": "ok",
         "data": {"items": result["items"], "next_cursor": result.get("next_cursor")},
     }
+
+
+# Snapshot endpoints
+
+
+@app.post("/v1/snapshots", response_model=SnapshotResponse, status_code=201)
+def create_snapshot(snapshot: SnapshotCreate) -> Dict[str, Any]:
+    """
+    Create a snapshot of a volume.
+    """
+    request_id = str(uuid.uuid4())
+    try:
+        result = snapshot_service.create_snapshot(snapshot)
+        return {"request_id": request_id, "status": "ok", "data": {"snapshot": result}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.delete("/v1/snapshots/{name}", response_model=SuccessResponse)
+def delete_snapshot(
+    name: str,
+    svm: str = Query(..., description="SVM name"),
+    volume: str = Query(..., description="Volume name"),
+    force: bool = Query(False, description="Force deletion"),
+) -> Dict[str, Any]:
+    """
+    Delete a snapshot.
+    """
+    request_id = str(uuid.uuid4())
+    try:
+        snapshot_service.delete_snapshot(name, svm, volume, force)
+        return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+
+
+@app.get("/v1/snapshots", response_model=SnapshotListResponse)
+def list_snapshots(
+    svm: Optional[str] = Query(None, description="Filter by SVM name"),
+    volume: Optional[str] = Query(None, description="Filter by volume name"),
+    name: Optional[str] = Query(None, description="Filter by snapshot name"),
+    limit: int = Query(100, ge=1, le=200),
+    cursor: Optional[str] = Query(None),
+) -> Dict[str, Any]:
+    """
+    List all snapshots.
+    """
+    request_id = str(uuid.uuid4())
+    result = snapshot_service.list_snapshots(svm, volume, name, limit, cursor)
+    return {
+        "request_id": request_id,
+        "status": "ok",
+        "data": {"items": result["items"], "next_cursor": result.get("next_cursor")},
+    }
+
+
+@app.post("/v1/volumes/{name}/clone", response_model=VolumeResponse, status_code=201)
+def clone_volume_from_snapshot(name: str, clone: VolumeCloneCreate) -> Dict[str, Any]:
+    """
+    Create a new volume from a snapshot (clone).
+    """
+    request_id = str(uuid.uuid4())
+    try:
+        result = snapshot_service.clone_volume_from_snapshot(clone)
+        return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# QoS endpoints
+
+
+@app.patch("/v1/volumes/{name}/qos", response_model=VolumeQoSResponse)
+def apply_qos_to_volume(name: str, qos: VolumeQoSApply) -> Dict[str, Any]:
+    """
+    Apply QoS limits to a volume.
+
+    This endpoint allows setting IOPS and bandwidth limits on a volume using cgroups v2 I/O Controller.
+
+    - **read_iops**: Read IOPS limit
+    - **write_iops**: Write IOPS limit
+    - **read_bps**: Read bandwidth limit in bytes/sec
+    - **write_bps**: Write bandwidth limit in bytes/sec
+
+    Example:
+    ```json
+    {
+        "svm": "production_svm",
+        "read_iops": 5000,
+        "write_iops": 5000,
+        "read_bps": 524288000,
+        "write_bps": 524288000
+    }
+    ```
+    """
+    request_id = str(uuid.uuid4())
+    try:
+        result = qos_service.apply_qos_to_volume(
+            svm=qos.svm,
+            volume=name,
+            read_iops=qos.read_iops,
+            write_iops=qos.write_iops,
+            read_bps=qos.read_bps,
+            write_bps=qos.write_bps,
+        )
+        return {"request_id": request_id, "status": "ok", "data": {"qos": result}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.delete("/v1/volumes/{name}/qos", response_model=SuccessResponse)
+def remove_qos_from_volume(
+    name: str,
+    svm: str = Query(..., description="SVM name"),
+) -> Dict[str, Any]:
+    """
+    Remove QoS limits from a volume.
+
+    This resets all I/O limits to unlimited (max).
+    """
+    request_id = str(uuid.uuid4())
+    try:
+        qos_service.remove_qos_from_volume(svm=svm, volume=name)
+        return {"request_id": request_id, "status": "ok", "data": {"message": "QoS limits removed"}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@app.get("/v1/volumes/{name}/qos", response_model=VolumeQoSResponse)
+def get_qos_settings(
+    name: str,
+    svm: str = Query(..., description="SVM name"),
+) -> Dict[str, Any]:
+    """
+    Get current QoS settings for a volume.
+
+    Returns the current I/O limits (IOPS and bandwidth) applied to the volume.
+    """
+    request_id = str(uuid.uuid4())
+    try:
+        result = qos_service.get_qos_settings(svm=svm, volume=name)
+        return {"request_id": request_id, "status": "ok", "data": {"qos": result}}
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=404, detail=str(e))

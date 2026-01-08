@@ -66,6 +66,10 @@ def _volumes_file() -> Path:
     return _state_dir() / "volumes.json"
 
 
+def _snapshots_file() -> Path:
+    return _state_dir() / "snapshots.json"
+
+
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -149,4 +153,51 @@ def delete_volume(svm: str, name: str) -> bool:
         return False
     data["items"] = new_items
     _atomic_write_json(_volumes_file(), data)
+    return True
+
+
+def list_snapshots(
+    svm: Optional[str] = None, volume: Optional[str] = None, name: Optional[str] = None
+) -> List[Dict[str, Any]]:
+    snapshots = _load_json(_snapshots_file(), {"items": []}).get("items", [])
+    if svm:
+        snapshots = [s for s in snapshots if s.get("svm") == svm]
+    if volume:
+        snapshots = [s for s in snapshots if s.get("volume") == volume]
+    if name:
+        snapshots = [s for s in snapshots if s.get("name") == name]
+    return snapshots
+
+
+def upsert_snapshot(snapshot: Dict[str, Any]) -> None:
+    data = _load_json(_snapshots_file(), {"items": []})
+    items = data.get("items", [])
+    items = [
+        i
+        for i in items
+        if not (
+            i.get("svm") == snapshot.get("svm")
+            and i.get("volume") == snapshot.get("volume")
+            and i.get("name") == snapshot.get("name")
+        )
+    ]
+    if "created_at" not in snapshot:
+        snapshot["created_at"] = _utc_now_iso()
+    items.append(snapshot)
+    data["items"] = sorted(items, key=lambda x: (x.get("svm", ""), x.get("volume", ""), x.get("name", "")))
+    _atomic_write_json(_snapshots_file(), data)
+
+
+def delete_snapshot(svm: str, volume: str, name: str) -> bool:
+    data = _load_json(_snapshots_file(), {"items": []})
+    items = data.get("items", [])
+    new_items = [
+        i
+        for i in items
+        if not (i.get("svm") == svm and i.get("volume") == volume and i.get("name") == name)
+    ]
+    if len(new_items) == len(items):
+        return False
+    data["items"] = new_items
+    _atomic_write_json(_snapshots_file(), data)
     return True
