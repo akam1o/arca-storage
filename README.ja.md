@@ -1,5 +1,7 @@
 # Arca Storage
 
+[English](README.md) | 日本語
+
 [![CI](https://github.com/akam1o/arca-storage/actions/workflows/ci.yml/badge.svg)](https://github.com/akam1o/arca-storage/actions/workflows/ci.yml)
 [![Python Tests](https://github.com/akam1o/arca-storage/actions/workflows/python-tests.yml/badge.svg)](https://github.com/akam1o/arca-storage/actions/workflows/python-tests.yml)
 [![Ansible Lint](https://github.com/akam1o/arca-storage/actions/workflows/ansible-lint.yml/badge.svg)](https://github.com/akam1o/arca-storage/actions/workflows/ansible-lint.yml)
@@ -257,7 +259,7 @@ Apache License 2.0
 
 ## コントリビューション
 
-コントリビューションを歓迎します！コーディング規約に従ってください。
+コントリビューションを歓迎します！[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md) を参照してください。
 
 ## ステータス
 
