@@ -22,11 +22,59 @@
 : "${OCF_RESKEY_ns?}"
 : "${OCF_RESKEY_vlan_id?}"
 : "${OCF_RESKEY_parent_if?}"
+: "${OCF_RESKEY_ifname:=}"
 : "${OCF_RESKEY_ip?}"
 : "${OCF_RESKEY_prefix?}"
 : "${OCF_RESKEY_gw?}"
 
-vlan_if="${OCF_RESKEY_parent_if}.${OCF_RESKEY_vlan_id}"
+hash2b62() {
+    CHARS="0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+    rem=0
+
+    if command -v openssl >/dev/null 2>&1 && command -v od >/dev/null 2>&1; then
+        bytes="$(printf %s "$1" | openssl dgst -sha256 -binary 2>/dev/null | od -An -tu1)"
+        for b in $bytes; do
+            rem=$(( (rem * 256 + b) % 3844 ))
+        done
+    else
+        # Last resort: deterministic but weaker than sha256-based method
+        if command -v cksum >/dev/null 2>&1; then
+            crc="$(printf %s "$1" | cksum | awk '{print $1}')"
+            rem=$(( crc % 3844 ))
+        fi
+    fi
+
+    i1=$(( rem % 62 ))
+    i2=$(( (rem / 62) % 62 ))
+    c1="$(printf %s "$CHARS" | cut -c$((i1 + 1))-$((i1 + 1)))"
+    c2="$(printf %s "$CHARS" | cut -c$((i2 + 1))-$((i2 + 1)))"
+    printf "%s%s" "$c1" "$c2"
+}
+
+make_ifname() {
+    ns="$1"
+    vlan_id="$2"
+    prefix="v${vlan_id}-"
+    max_len=15
+    digest="$(hash2b62 "${ns}:0")"
+    safe="$(printf %s "$ns" | tr -cd '[:alnum:]' | tr '[:upper:]' '[:lower:]')"
+    [ -n "$safe" ] || safe="svm"
+
+    # Always reserve 2 chars for the hash suffix.
+    if [ "${#prefix}" -gt $((max_len - 2)) ]; then
+        prefix="$(printf %s "$prefix" | cut -c1-$((max_len - 2)))"
+    fi
+    core_len=$((max_len - ${#prefix} - 2))
+    [ "$core_len" -lt 0 ] && core_len=0
+    core="$(printf %s "$safe" | cut -c1-"$core_len")"
+    printf "%s" "${prefix}${core}${digest}" | cut -c1-"$max_len"
+}
+
+if [ -n "$OCF_RESKEY_ifname" ]; then
+    vlan_if="$OCF_RESKEY_ifname"
+else
+    vlan_if="$(make_ifname "$OCF_RESKEY_ns" "$OCF_RESKEY_vlan_id")"
+fi
 
 meta_data() {
     cat <<'EOF'
@@ -54,6 +102,11 @@ meta_data() {
     <parameter name="parent_if" unique="0" required="1">
       <longdesc lang="en">Parent interface name (e.g., bond0)</longdesc>
       <shortdesc lang="en">Parent interface</shortdesc>
+      <content type="string" default="" />
+    </parameter>
+    <parameter name="ifname" unique="0" required="0">
+      <longdesc lang="en">Optional VLAN interface name (max 15 chars). If omitted, uses a deterministic per-namespace name (v{vlan_id}-&lt;short-ns&gt;&lt;hash2b62&gt;) to avoid collisions when multiple namespaces share the same VLAN ID.</longdesc>
+      <shortdesc lang="en">VLAN interface name</shortdesc>
       <content type="string" default="" />
     </parameter>
     <parameter name="ip" unique="0" required="1">
@@ -110,6 +163,21 @@ validate_all() {
     if ! ip link show "$OCF_RESKEY_parent_if" >/dev/null 2>&1; then
         ocf_exit_reason "Parent interface %s does not exist" "$OCF_RESKEY_parent_if"
         return $OCF_ERR_ARGS
+    fi
+
+    # Validate optional ifname
+    if [ -n "$OCF_RESKEY_ifname" ]; then
+        # Linux interface names are typically limited to 15 chars (IFNAMSIZ-1)
+        if [ "${#OCF_RESKEY_ifname}" -gt 15 ]; then
+            ocf_exit_reason "Interface name (ifname) must be <= 15 characters"
+            return $OCF_ERR_ARGS
+        fi
+        case "$OCF_RESKEY_ifname" in
+            *[!a-zA-Z0-9_.:-]*)
+                ocf_exit_reason "Interface name (ifname) contains invalid characters"
+                return $OCF_ERR_ARGS
+                ;;
+        esac
     fi
 
     # Validate IP address

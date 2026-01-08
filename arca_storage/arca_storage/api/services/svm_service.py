@@ -7,7 +7,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SVMCreate, SVMStatus
 from arca_storage.cli.lib.ganesha import render_config
-from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace
+from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, allocate_vlan_ifname
 from arca_storage.cli.lib.pacemaker import create_group, delete_group
 from arca_storage.cli.lib.state import delete_svm as state_delete_svm
 from arca_storage.cli.lib.state import list_svms as state_list_svms
@@ -48,7 +48,16 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
 
     # Attach VLAN
     cfg = load_config()
-    attach_vlan(svm_data.name, cfg.parent_if, svm_data.vlan_id, svm_data.ip_cidr, gateway_ip, svm_data.mtu)
+    vlan_ifname = allocate_vlan_ifname(svm_data.name, svm_data.vlan_id)
+    attach_vlan(
+        svm_data.name,
+        cfg.parent_if,
+        svm_data.vlan_id,
+        svm_data.ip_cidr,
+        gateway_ip,
+        svm_data.mtu,
+        ifname=vlan_ifname,
+    )
 
     # Generate ganesha config
     render_config(svm_data.name, [])
@@ -77,6 +86,7 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
         svm_data.name,
         f"{export_dir}/{svm_data.name}",
         vlan_id=svm_data.vlan_id,
+        ifname=vlan_ifname,
         ip=ip_addr,
         prefix=prefix,
         gw=gateway_ip,
@@ -96,6 +106,7 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
             "mtu": svm_data.mtu,
             "namespace": svm_data.name,
             "vip": ip_addr,
+            "ifname": vlan_ifname,
             "status": SVMStatus.AVAILABLE.value,
         }
     )

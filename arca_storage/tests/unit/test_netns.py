@@ -6,7 +6,7 @@ from unittest.mock import MagicMock, call
 
 import pytest
 
-from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace
+from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, make_vlan_ifname
 
 
 class TestCreateNamespace:
@@ -50,6 +50,15 @@ class TestCreateNamespace:
 
 class TestAttachVlan:
     """Tests for attach_vlan function."""
+
+    @pytest.mark.unit
+    def test_make_vlan_ifname_is_short_and_deterministic(self):
+        ifname1 = make_vlan_ifname("tenant_a", 100)
+        ifname2 = make_vlan_ifname("tenant_a", 100)
+        assert ifname1 == ifname2
+        assert ifname1.startswith("v100-")
+        assert len(ifname1) <= 15
+        assert ifname1[-2:].isalnum()
 
     @pytest.mark.unit
     def test_attach_new_vlan(self, mock_subprocess):
