@@ -261,6 +261,10 @@ Apache License 2.0
 
 コントリビューションを歓迎します！[CONTRIBUTING.ja.md](CONTRIBUTING.ja.md) を参照してください。
 
+## Contact
+
+お問い合わせは [GitHub Issues](https://github.com/akam1o/arca-storage/issues) に Issue を作成してください。セキュリティ報告は [GitHub Security Advisories](https://github.com/akam1o/arca-storage/security/advisories) をご利用ください。
+
 ## ステータス
 
 このプロジェクトは活発に開発中です。MVP実装は完了していますが、追加機能と最適化が計画されています。

@@ -261,6 +261,10 @@ Apache License 2.0
 
 Contributions are welcome! See [CONTRIBUTING.md](CONTRIBUTING.md).
 
+## Contact
+
+For inquiries, open an issue on [GitHub Issues](https://github.com/akam1o/arca-storage/issues). For security reports, use [GitHub Security Advisories](https://github.com/akam1o/arca-storage/security/advisories).
+
 ## Status
 
 This project is in active development. The MVP implementation is complete, but additional features and optimizations are planned.
