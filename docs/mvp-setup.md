@@ -10,8 +10,8 @@ This guide provides step-by-step instructions for setting up the Arca Storage MV
 - RAM: Standard amount (ZFS ARC not used)
 - Boot Disk: 2x disks in RAID1 (OS)
 - Storage: 12-24x NVMe SSD (data)
-- NIC (Service): 4x 100Gbps → Bonding (200Gbps)
-- NIC (Cluster): 4x 100Gbps → Bonding (200Gbps)
+- NIC (Service): 2x 100Gbps → Bonding (200Gbps)
+- NIC (Cluster): 2x 100Gbps → Bonding (200Gbps)
 
 ### Software Requirements
 
