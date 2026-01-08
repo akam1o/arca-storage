@@ -13,7 +13,7 @@ Linux標準技術を使用して構築された、Storage Virtual Machine (SVM) 
 Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機能を提供するソフトウェア・デファインド・ストレージシステムです：
 
 - **マルチプロトコル**: NFS v4.1 / v4.2 (デフォルト)、オプションでNFSv3サポート
-- **マルチテナンシー**: Network Namespaceベースのネットワーク分離
+- **マルチテナンシー**: Network Namespaceベースのネットワーク分離（SVMごとに VLAN インタフェースを作成し、同一 VLAN ID を複数 SVM で共有可能）
 - **高可用性**: Pacemakerベースのアクティブ/アクティブ・フェイルオーバー
 - **データ効率**: LVM Thin Provisioningによるオーバーコミット
 - **クライアント統合**: Kubernetes (CSI) およびOpenStack (Cinder NFS Driver) サポート
@@ -139,6 +139,7 @@ arca bootstrap render-env
 
 # SVMの作成
 # --gateway は省略可です（未指定の場合は --ip から推定。/31,/32 は指定してください）
+# 同一 VLAN ID を複数 SVM で使う場合でも、SVM ごとに VLAN インタフェース名を自動生成します（例: v{vlan_id}-<SVM名短縮><2文字base62ハッシュ>）
 arca svm create tenant_a --vlan 100 --ip 192.168.10.5/24
 
 # ボリュームの作成

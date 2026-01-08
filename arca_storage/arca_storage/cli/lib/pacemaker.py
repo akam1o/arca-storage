@@ -5,6 +5,8 @@ Pacemaker resource management functions.
 import subprocess
 from typing import Optional, Sequence
 
+from arca_storage.cli.lib.netns import make_vlan_ifname
+
 
 def _run(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
     return subprocess.run(list(cmd), capture_output=True, text=True, check=False)
@@ -96,6 +98,7 @@ def create_group(
     mount_path: str,
     *,
     vlan_id: int,
+    ifname: Optional[str] = None,
     ip: str,
     prefix: int,
     gw: str,
@@ -163,6 +166,7 @@ def create_group(
     # Create NetnsVlan resource
     netns_resource = f"netns_{svm_name}"
     if not _resource_exists(netns_resource):
+        resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
         cmd = [
             "pcs",
             "resource",
@@ -172,6 +176,7 @@ def create_group(
             f"ns={svm_name}",
             f"vlan_id={vlan_id}",
             f"parent_if={parent_if}",
+            f"ifname={resolved_ifname}",
             f"ip={ip}",
             f"prefix={prefix}",
         ]

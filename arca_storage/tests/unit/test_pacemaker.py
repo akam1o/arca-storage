@@ -35,6 +35,7 @@ def test_create_group_creates_missing_resources(mock_subprocess):
         "tenant_a",
         "/exports/tenant_a",
         vlan_id=100,
+        ifname="v100-tenantxxxx",
         ip="192.168.10.5",
         prefix=24,
         gw="192.168.10.1",
@@ -47,3 +48,4 @@ def test_create_group_creates_missing_resources(mock_subprocess):
     calls = [c.args[0] for c in mock_subprocess.call_args_list]
     assert any(cmd[:5] == ["pcs", "resource", "create", "netns_tenant_a", "ocf:local:NetnsVlan"] for cmd in calls)
     assert any("vlan_id=100" in cmd for cmd in calls if isinstance(cmd, list))
+    assert any("ifname=v100-tenantxxxx" in cmd for cmd in calls if isinstance(cmd, list))

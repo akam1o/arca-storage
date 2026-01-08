@@ -30,6 +30,7 @@ This should output the XML metadata definition.
 | `ns` | Yes | Network namespace name |
 | `vlan_id` | Yes | VLAN ID (1-4094) |
 | `parent_if` | Yes | Parent interface name (e.g., bond0) |
+| `ifname` | No | VLAN interface name (max 15 chars). If omitted, the RA uses a deterministic per-namespace name (`v{vlan_id}-` + shortened namespace + 2-char base62 hash suffix) so multiple namespaces can share the same VLAN ID without collisions. |
 | `ip` | Yes | VIP IP address |
 | `prefix` | Yes | IP prefix length (e.g., 24) |
 | `gw` | Yes | Gateway IP address |
@@ -44,6 +45,7 @@ pcs resource create netns_tenant_a ocf:local:NetnsVlan \
   ns=tenant_a \
   vlan_id=100 \
   parent_if=bond0 \
+  ifname=v100-tenantakH \
   ip=192.168.10.5 \
   prefix=24 \
   gw=192.168.10.1 \

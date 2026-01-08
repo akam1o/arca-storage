@@ -8,7 +8,7 @@ import typer
 
 from arca_storage.cli.lib.ganesha import reload as reload_ganesha
 from arca_storage.cli.lib.ganesha import render_config
-from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace
+from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, allocate_vlan_ifname
 from arca_storage.cli.lib.pacemaker import create_group, delete_group
 from arca_storage.cli.lib.state import delete_svm as state_delete_svm
 from arca_storage.cli.lib.state import list_svms as state_list_svms
@@ -66,7 +66,8 @@ def create(
         typer.echo(f"  Created namespace: {name}")
 
         # Attach VLAN
-        attach_vlan(name, cfg.parent_if, vlan_id, ip, gateway_ip, mtu)
+        vlan_ifname = allocate_vlan_ifname(name, vlan_id)
+        attach_vlan(name, cfg.parent_if, vlan_id, ip, gateway_ip, mtu, ifname=vlan_ifname)
         typer.echo(f"  Configured VLAN {vlan_id} with IP {ip}")
         typer.echo(f"  Gateway: {gateway_ip}")
 
@@ -94,6 +95,7 @@ def create(
             name,
             f"{export_dir}/{name}",
             vlan_id=vlan_id,
+            ifname=vlan_ifname,
             ip=ip_addr,
             prefix=int(prefix),
             gw=gateway_ip,
@@ -114,6 +116,7 @@ def create(
                 "mtu": mtu,
                 "namespace": name,
                 "vip": ip_addr,
+                "ifname": vlan_ifname,
                 "status": "available",
             }
         )
