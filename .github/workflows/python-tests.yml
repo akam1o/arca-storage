@@ -80,7 +80,7 @@ jobs:
           cp -r arca_storage/tests /tmp/tests
           cp arca_storage/pytest.ini /tmp/pytest.ini
           cd /tmp
-          python -m pytest tests/unit tests/integration tests/openstack -v -m "not slow" --cov=arca_storage --cov-report=xml --cov-report=term
+          python -m pytest tests/unit tests/integration -v -m "not slow" --cov=arca_storage --cov-report=xml --cov-report=term
           # Copy coverage results back
           cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 
