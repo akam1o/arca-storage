@@ -181,7 +181,11 @@ See API documentation at `http://localhost:8080/docs` when the server is running
 
 ### OpenStack (Cinder)
 
-See `docs/openstack-cinder.md`.
+See [docs/openstack-cinder.md](docs/openstack-cinder.md).
+
+### OpenStack (Manila)
+
+See [docs/openstack-manila.md](docs/openstack-manila.md).
 
 ## Project Structure
 
