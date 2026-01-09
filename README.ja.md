@@ -182,7 +182,11 @@ APIエンドポイント:
 
 ### OpenStack (Cinder)
 
-`docs/openstack-cinder.ja.md` を参照してください。
+[docs/openstack-cinder.ja.md](docs/openstack-cinder.ja.md) を参照してください。
+
+### OpenStack (Manila)
+
+[docs/openstack-manila.ja.md](docs/openstack-manila.ja.md) を参照してください。
 
 ## プロジェクト構成
 
