@@ -165,6 +165,46 @@ def _get_arca_manila_opts():
                 "Used for Pacemaker filesystem resource. If not set, no root volume is created."
             ),
         ),
+        # Network Plugin Configuration
+        cfg.StrOpt(
+            "arca_storage_network_plugin_mode",
+            default="standalone",
+            choices=["standalone", "neutron"],
+            help=(
+                "Network plugin mode for IP/VLAN allocation in per_project strategy. "
+                "'standalone': Use static IP pools from arca_storage_per_project_ip_pools. "
+                "'neutron': Allocate IPs via Neutron ports (requires [neutron] auth config)."
+            ),
+        ),
+        cfg.ListOpt(
+            "arca_storage_neutron_net_ids",
+            default=[],
+            help=(
+                "List of Neutron network IDs for SVM port creation (neutron mode only). "
+                "Each network must be a VLAN provider network with provider:segmentation_id. "
+                "VXLAN/Geneve networks are not supported. "
+                "Ports are allocated in round-robin fashion across these networks. "
+                "The first subnet in each network is automatically used. "
+                "Example: net-uuid-1,net-uuid-2,net-uuid-3"
+            ),
+        ),
+        cfg.BoolOpt(
+            "arca_storage_neutron_port_security",
+            default=False,
+            help=(
+                "Enable port security for Neutron ports (neutron mode only). "
+                "Typically False for data plane ports to avoid security group overhead."
+            ),
+        ),
+        cfg.StrOpt(
+            "arca_storage_neutron_vnic_type",
+            default="normal",
+            help=(
+                "VNIC type for Neutron ports (neutron mode only). "
+                "Options: 'normal', 'direct', 'macvtap', 'baremetal', etc. "
+                "Requires Neutron binding extension support."
+            ),
+        ),
         # Capacity Configuration
         cfg.FloatOpt(
             "arca_storage_max_over_subscription_ratio",

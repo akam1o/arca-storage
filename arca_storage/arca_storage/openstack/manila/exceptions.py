@@ -97,3 +97,67 @@ class ArcaNetworkConflict(ArcaManilaException):
     """
 
     message = "Network conflict: %(details)s"
+
+
+class ArcaNeutronError(ArcaManilaException):
+    """Neutron API error.
+
+    Base exception for Neutron-related errors when using neutron mode.
+    """
+
+    message = "Neutron error: %(details)s"
+
+
+class ArcaNeutronPortCreationFailed(ArcaNeutronError):
+    """Failed to create Neutron port."""
+
+    message = "Failed to create Neutron port: %(details)s"
+
+
+class ArcaNeutronAuthenticationError(ArcaNeutronError):
+    """Neutron authentication error.
+
+    Raised when [neutron] section is not configured or authentication fails.
+    """
+
+    message = "Neutron authentication error: %(details)s"
+
+
+class ArcaNeutronNetworkNotFound(ArcaNeutronError):
+    """Neutron network not found."""
+
+    message = "Neutron network %(network_id)s not found"
+
+
+class ArcaNeutronInvalidNetworkType(ArcaNeutronError):
+    """Neutron network has invalid type.
+
+    Raised when network is not a VLAN provider network (e.g., VXLAN, Geneve).
+    """
+
+    message = "Invalid network type %(network_type)s for network %(network_id)s. Only VLAN provider networks are supported."
+
+
+class ArcaNetworkPoolExhausted(ArcaManilaException):
+    """All network pools are exhausted.
+
+    This is a non-retryable error indicating that all configured IP pools
+    have been fully allocated. Retry will not help - operator intervention
+    is required to either:
+    1. Add more IP pools to configuration
+    2. Delete unused SVMs to free IPs
+    3. Increase pool size ranges
+    """
+
+    message = "All network pools exhausted: %(details)s"
+
+
+class ArcaNetworkConfigurationError(ArcaManilaException):
+    """Network configuration error.
+
+    This is a non-retryable error indicating invalid network configuration
+    (e.g., invalid CIDR, invalid VLAN ID, gateway in allocatable range).
+    Retry will not help - operator must fix the configuration.
+    """
+
+    message = "Network configuration error: %(details)s"
