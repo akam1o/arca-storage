@@ -198,25 +198,44 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             svm_strategy = configured_strategy
 
             if configured_strategy == "per_project":
-                # Validate per_project configuration requires explicit pool configuration
-                ip_pools_config = self.configuration.arca_storage_per_project_ip_pools
+                # Initialize network allocator based on mode
+                network_mode = self.configuration.arca_storage_network_plugin_mode
 
-                if not ip_pools_config:
-                    raise manila_exception.ManilaException(
-                        "per_project strategy requires arca_storage_per_project_ip_pools "
-                        "configuration. Example: "
-                        "arca_storage_per_project_ip_pools = 192.168.100.0/24|192.168.100.10-192.168.100.200:100"
+                if network_mode == "standalone":
+                    # Validate standalone mode requires pool configuration
+                    ip_pools_config = self.configuration.arca_storage_per_project_ip_pools
+
+                    if not ip_pools_config:
+                        raise manila_exception.ManilaException(
+                            "per_project strategy with standalone mode requires "
+                            "arca_storage_per_project_ip_pools configuration. Example: "
+                            "arca_storage_per_project_ip_pools = 192.168.100.0/24|192.168.100.10-192.168.100.200:100"
+                        )
+
+                    from .network_allocators.standalone import StandaloneAllocator
+                    self._network_allocator = StandaloneAllocator(
+                        self.configuration,
+                        self.arca_client,
+                        self._allocation_lock,
+                        self._pool_allocation_counter,
                     )
 
-                # Parse and validate IP/VLAN pools
-                self._ip_vlan_pools = self._parse_ip_vlan_pools(ip_pools_config)
-                total_capacity = sum(
-                    pool["num_hosts"] for pool in self._ip_vlan_pools
-                )
+                elif network_mode == "neutron":
+                    from .network_allocators.neutron import NeutronAllocator
+                    self._network_allocator = NeutronAllocator(self.configuration)
+
+                else:
+                    raise manila_exception.ManilaException(
+                        f"Invalid network_plugin_mode: {network_mode}. "
+                        f"Valid options: standalone, neutron"
+                    )
+
+                # Validate allocator configuration
+                self._network_allocator.validate_config()
+
                 LOG.info(
-                    "Using per_project SVM strategy with %d pools (total capacity: %d projects)",
-                    len(self._ip_vlan_pools),
-                    total_capacity
+                    "Using per_project SVM strategy with %s network allocator",
+                    network_mode
                 )
 
                 svm_strategy = "per_project"
@@ -755,185 +774,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         return svm_info
 
-    def _parse_ip_vlan_pools(self, pool_configs: List[str]) -> List[Dict[str, Any]]:
-        """Parse and validate IP/VLAN pool configuration.
-
-        Args:
-            pool_configs: List of pool config strings
-                Format: "ip_cidr|start_ip-end_ip:vlan_id"
-
-        Returns:
-            List of parsed pool dicts with keys: ip_network, vlan_id, gateway,
-            num_hosts, first_host, last_host
-
-        Raises:
-            manila.exception.ManilaException: If configuration is invalid
-        """
-        import ipaddress
-
-        pools = []
-
-        for i, pool_config in enumerate(pool_configs):
-            try:
-                # Parse VLAN ID (always at the end after ":")
-                parts = pool_config.split(":")
-                if len(parts) != 2:
-                    raise ValueError(
-                        f"Invalid format '{pool_config}'. "
-                        f"Expected '<ip_cidr>|<start_ip>-<end_ip>:<vlan_id>'"
-                    )
-
-                ip_part, vlan_id_str = parts
-                ip_part = ip_part.strip()
-                vlan_id_str = vlan_id_str.strip()
-
-                # Parse VLAN ID
-                try:
-                    vlan_id = int(vlan_id_str)
-                except ValueError:
-                    raise ValueError(
-                        f"Invalid VLAN ID '{vlan_id_str}', must be an integer"
-                    )
-
-                if vlan_id < 1 or vlan_id > 4094:
-                    raise ValueError(
-                        f"VLAN ID {vlan_id} out of range (must be 1-4094)"
-                    )
-
-                # IP range is mandatory (must contain "|")
-                if "|" not in ip_part:
-                    raise ValueError(
-                        f"IP range is required. Use format '<ip_cidr>|<start_ip>-<end_ip>:<vlan_id>'. "
-                        f"Example: '192.168.100.0/24|192.168.100.10-192.168.100.200:100'"
-                    )
-
-                # Parse "ip_cidr|start_ip-end_ip"
-                cidr_str, range_str = ip_part.split("|", 1)
-                cidr_str = cidr_str.strip()
-                range_str = range_str.strip()
-
-                # Parse CIDR
-                try:
-                    ip_network = ipaddress.ip_network(cidr_str, strict=False)
-                except ValueError as e:
-                    raise ValueError(f"Invalid IP CIDR '{cidr_str}': {e}")
-
-                # Validate IPv4 only
-                if ip_network.version != 4:
-                    raise ValueError(
-                        f"Only IPv4 pools are supported, got IPv{ip_network.version} "
-                        f"in '{pool_config}'"
-                    )
-
-                # Parse IP range
-                if "-" not in range_str:
-                    raise ValueError(
-                        f"Invalid IP range '{range_str}'. Expected '<start_ip>-<end_ip>'"
-                    )
-
-                start_ip_str, end_ip_str = range_str.split("-", 1)
-                start_ip_str = start_ip_str.strip()
-                end_ip_str = end_ip_str.strip()
-
-                try:
-                    start_ip = ipaddress.ip_address(start_ip_str)
-                    end_ip = ipaddress.ip_address(end_ip_str)
-                except ValueError as e:
-                    raise ValueError(f"Invalid IP address in range: {e}")
-
-                # Validate IPs are IPv4
-                if start_ip.version != 4 or end_ip.version != 4:
-                    raise ValueError(
-                        f"Only IPv4 addresses are supported in range"
-                    )
-
-                # Validate IPs are within CIDR
-                if start_ip not in ip_network:
-                    raise ValueError(
-                        f"Start IP {start_ip} is not in CIDR {ip_network}"
-                    )
-                if end_ip not in ip_network:
-                    raise ValueError(
-                        f"End IP {end_ip} is not in CIDR {ip_network}"
-                    )
-
-                # Validate range order (allow single-IP pools where start == end)
-                if start_ip > end_ip:
-                    raise ValueError(
-                        f"Start IP {start_ip} must be less than or equal to end IP {end_ip}"
-                    )
-
-                first_host = start_ip
-                last_host = end_ip
-                num_hosts = int(end_ip) - int(start_ip) + 1
-
-                if num_hosts <= 0:
-                    raise ValueError(
-                        f"IP pool has no usable host addresses"
-                    )
-
-                # Infer gateway from CIDR (typically first IP in subnet)
-                # For most networks: x.x.x.1 is the gateway
-                if ip_network.prefixlen == 32:
-                    # Single host network, use network address as gateway
-                    gateway = str(ip_network.network_address)
-                elif ip_network.prefixlen == 31:
-                    # Point-to-point, use network address as gateway
-                    gateway = str(ip_network.network_address)
-                else:
-                    # Standard subnet, use first usable IP (.1) as gateway
-                    gateway = str(ip_network.network_address + 1)
-
-                # Validate gateway is not in allocatable range
-                gateway_ip = ipaddress.ip_address(gateway)
-                if gateway_ip >= start_ip and gateway_ip <= end_ip:
-                    raise ValueError(
-                        f"Gateway IP {gateway} is within allocatable range "
-                        f"{start_ip}-{end_ip}. Gateway must be excluded from the range. "
-                        f"Example: if gateway is {gateway}, use range like "
-                        f"{ip_network.network_address + 2}-{end_ip}"
-                    )
-
-                # Validate network/broadcast addresses are not in range
-                if ip_network.prefixlen < 31:
-                    # For normal subnets, check network and broadcast
-                    if start_ip == ip_network.network_address:
-                        raise ValueError(
-                            f"Network address {ip_network.network_address} cannot be in allocatable range. "
-                            f"Start IP must be at least {ip_network.network_address + 1}"
-                        )
-                    if end_ip == ip_network.broadcast_address:
-                        raise ValueError(
-                            f"Broadcast address {ip_network.broadcast_address} cannot be in allocatable range. "
-                            f"End IP must be at most {ip_network.broadcast_address - 1}"
-                        )
-
-                pools.append({
-                    "ip_network": ip_network,
-                    "vlan_id": vlan_id,
-                    "gateway": gateway,
-                    "num_hosts": num_hosts,
-                    "first_host": first_host,
-                    "last_host": last_host,
-                })
-
-                LOG.debug(
-                    "Parsed pool %d: %s (VLAN %d, %s-%s, %d IPs)",
-                    i, str(ip_network), vlan_id, first_host, last_host, num_hosts
-                )
-
-            except ValueError as e:
-                raise manila_exception.ManilaException(
-                    f"Invalid pool configuration at index {i} ('{pool_config}'): {e}"
-                )
-
-        if not pools:
-            raise manila_exception.ManilaException(
-                "No valid IP/VLAN pools configured for per_project strategy"
-            )
-
-        return pools
-
     def _allocate_per_project_svm(self, project_id: str) -> str:
         """Allocate or get existing SVM for a project.
 
@@ -1013,282 +853,158 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
             # Retry loop for network conflicts (multi-process race conditions)
             max_retries = 3
+            allocation = None
+
             for attempt in range(max_retries):
-                # Calculate VLAN ID, IP address, and gateway
-                # Pass attempt number to vary IP selection on retries
                 try:
-                    vlan_id, ip_cidr, gateway = self._calculate_svm_network(
-                        project_id, retry_attempt=attempt
-                    )
-                except Exception as e:
-                    raise manila_exception.ShareBackendException(
-                        f"Failed to calculate network for project {project_id}: {str(e)}"
+                    # Allocate network using NetworkAllocator plugin
+                    allocation = self._network_allocator.allocate(
+                        project_id=project_id,
+                        svm_name=svm_name,
+                        retry_attempt=attempt,
                     )
 
-                # Create SVM via API
-                try:
+                    # Create SVM via API
                     svm_info = self.arca_client.create_svm(
                         name=svm_name,
-                        vlan_id=vlan_id,
-                        ip_cidr=ip_cidr,
-                        gateway=gateway,
+                        vlan_id=allocation.vlan_id,
+                        ip_cidr=allocation.ip_cidr,
+                        gateway=allocation.gateway,
                         mtu=self.configuration.arca_storage_per_project_mtu,
                         root_volume_size_gib=self.configuration.arca_storage_per_project_root_volume_size_gib,
                     )
+
                     LOG.info(
-                        "Created SVM %s for project %s (VLAN: %d, IP: %s)",
-                        svm_name, project_id, vlan_id, ip_cidr
+                        "Created SVM %s for project %s (VLAN: %d, IP: %s, allocation_id: %s)",
+                        svm_name,
+                        project_id,
+                        allocation.vlan_id,
+                        allocation.ip_cidr,
+                        allocation.allocation_id,
                     )
 
                     # Cache the new SVM
                     self._per_project_svm_cache[project_id] = {
                         "svm_name": svm_name,
-                        "vlan_id": vlan_id,
+                        "vlan_id": allocation.vlan_id,
                         "ip": svm_info.get("vip"),
+                        "allocation_id": allocation.allocation_id,
                     }
                     return svm_name
 
                 except arca_exceptions.ArcaSVMAlreadyExists:
                     # Race condition: another process created SVM with same name
                     LOG.info("SVM %s was created by another process", svm_name)
+
+                    # Cleanup allocated network resource if it exists
+                    # (the SVM created by the other process has its own network allocation)
+                    if allocation and allocation.allocation_id:
+                        try:
+                            self._network_allocator.deallocate(allocation.allocation_id)
+                            LOG.info(
+                                "Cleaned up allocation %s after concurrent SVM creation",
+                                allocation.allocation_id,
+                            )
+                        except Exception as cleanup_error:
+                            LOG.error(
+                                "Failed to cleanup allocation %s: %s",
+                                allocation.allocation_id,
+                                cleanup_error,
+                            )
+
                     svm_info = self.arca_client.get_svm(svm_name)
                     self._per_project_svm_cache[project_id] = {
                         "svm_name": svm_name,
                         "vlan_id": svm_info.get("vlan_id"),
                         "ip": svm_info.get("vip"),
+                        "allocation_id": None,  # We don't own this allocation
                     }
                     return svm_name
 
-                except arca_exceptions.ArcaNetworkConflict as e:
-                    # IP address conflict: another process used this IP
-                    # Note: VLAN reuse is allowed, so this is purely an IP conflict
-                    # Retry with different IP allocation
-                    LOG.warning(
-                        "IP address conflict on attempt %d/%d for project %s: %s",
-                        attempt + 1, max_retries, project_id, e
+                except (arca_exceptions.ArcaNetworkPoolExhausted, arca_exceptions.ArcaNetworkConfigurationError) as e:
+                    # Non-retryable network error (pool exhausted or config error)
+                    LOG.error(
+                        "Non-retryable network error for SVM %s: %s",
+                        svm_name,
+                        e,
                     )
+
+                    # Cleanup allocated network resource if it exists (though unlikely for these errors)
+                    if allocation and allocation.allocation_id:
+                        try:
+                            self._network_allocator.deallocate(allocation.allocation_id)
+                            LOG.info(
+                                "Cleaned up allocation %s after non-retryable error",
+                                allocation.allocation_id,
+                            )
+                        except Exception as cleanup_error:
+                            LOG.error(
+                                "Failed to cleanup allocation %s: %s",
+                                allocation.allocation_id,
+                                cleanup_error,
+                            )
+
+                    # Don't retry - raise immediately
+                    raise manila_exception.ShareBackendException(
+                        f"Failed to allocate network for SVM {svm_name}: {str(e)}"
+                    )
+
+                except arca_exceptions.ArcaNetworkConflict as e:
+                    # Network conflict - cleanup allocated port if it exists and retry
+                    LOG.warning(
+                        "Network conflict on attempt %d/%d for SVM %s: %s",
+                        attempt + 1,
+                        max_retries,
+                        svm_name,
+                        e,
+                    )
+
+                    # Cleanup allocated network resource if it exists
+                    if allocation and allocation.allocation_id:
+                        try:
+                            self._network_allocator.deallocate(allocation.allocation_id)
+                            LOG.info(
+                                "Cleaned up allocation %s after network conflict",
+                                allocation.allocation_id,
+                            )
+                        except Exception as cleanup_error:
+                            LOG.error(
+                                "Failed to cleanup allocation %s: %s",
+                                allocation.allocation_id,
+                                cleanup_error,
+                            )
+
                     if attempt < max_retries - 1:
                         continue  # Retry with new allocation
                     else:
                         # All retries exhausted
-                        LOG.error("Exhausted retries for SVM creation due to IP address conflicts")
                         raise manila_exception.ShareBackendException(
-                            f"Failed to allocate IP address for project after {max_retries} attempts: {str(e)}"
+                            f"Failed to allocate network for SVM {svm_name} "
+                            f"after {max_retries} attempts: {str(e)}"
                         )
 
                 except Exception as e:
+                    # Unexpected error - cleanup and raise
                     LOG.exception("Failed to create SVM %s for project %s", svm_name, project_id)
+
+                    # Cleanup allocated network resource if it exists
+                    if allocation and allocation.allocation_id:
+                        try:
+                            self._network_allocator.deallocate(allocation.allocation_id)
+                            LOG.info(
+                                "Cleaned up allocation %s after SVM creation failure",
+                                allocation.allocation_id,
+                            )
+                        except Exception as cleanup_error:
+                            LOG.error(
+                                "Failed to cleanup allocation %s: %s",
+                                allocation.allocation_id,
+                                cleanup_error,
+                            )
+
                     raise manila_exception.ShareBackendException(
                         f"Failed to create SVM for project: {str(e)}"
                     )
-
-    def _calculate_svm_network(self, project_id: str, retry_attempt: int = 0) -> tuple:
-        """Calculate VLAN ID, IP CIDR, and gateway for a project's SVM.
-
-        Uses round-robin pool selection with collision detection.
-
-        Args:
-            project_id: OpenStack project ID
-            retry_attempt: Retry attempt number for multi-process race handling
-
-        Returns:
-            Tuple of (vlan_id, ip_cidr, gateway)
-
-        Raises:
-            Exception: If pool is exhausted or configuration is invalid
-
-        Note:
-            This implementation only supports IPv4. IPv6 support would require
-            additional configuration and validation.
-        """
-        if not self._ip_vlan_pools:
-            raise Exception("No IP/VLAN pools configured for per_project strategy")
-
-        # Use round-robin with collision detection
-        return self._allocate_from_multi_pool(project_id, retry_attempt=retry_attempt)
-
-    def _allocate_from_multi_pool(self, project_id: str, retry_attempt: int = 0) -> tuple:
-        """Allocate network from pools using round-robin with collision detection.
-
-        IMPORTANT: This method MUST be called within the allocation lock
-        (_allocation_lock or distributed lock) to ensure thread-safe counter access.
-        The counter increment is not separately locked to avoid deadlock scenarios.
-
-        Multi-worker coordination: When oslo.concurrency is enabled, the distributed
-        lock provides cross-process synchronization. Without it, best-effort
-        round-robin distribution is maintained within each process.
-
-        Args:
-            project_id: OpenStack project ID
-            retry_attempt: Retry attempt number (passed to _find_free_slot_in_pool)
-
-        Returns:
-            Tuple of (vlan_id, ip_cidr, gateway)
-
-        Raises:
-            Exception: If all pools are exhausted
-        """
-        # Try round-robin allocation
-        # NOTE: Counter access is safe because this method is only called from
-        # _allocate_per_project_svm_impl which holds the allocation lock
-        num_pools = len(self._ip_vlan_pools)
-        start_pool_idx = self._pool_allocation_counter % num_pools
-
-        for attempt in range(num_pools):
-            pool_idx = (start_pool_idx + attempt) % num_pools
-            pool = self._ip_vlan_pools[pool_idx]
-
-            try:
-                # Try to allocate from this pool, passing retry attempt for randomization
-                vlan_id, ip_cidr = self._find_free_slot_in_pool(pool, attempt=retry_attempt)
-
-                # Success! Increment counter for next allocation
-                self._pool_allocation_counter += 1
-
-                gateway = pool["gateway"]
-
-                LOG.debug(
-                    "Allocated network for project %s from pool %d: "
-                    "VLAN=%d, IP=%s, gateway=%s",
-                    project_id, pool_idx, vlan_id, ip_cidr, gateway
-                )
-
-                return vlan_id, ip_cidr, gateway
-
-            except Exception as e:
-                # This pool is full or has conflicts, try next pool
-                LOG.debug("Pool %d allocation failed: %s", pool_idx, e)
-                continue
-
-        # All pools exhausted
-        raise Exception(
-            f"All IP/VLAN pools exhausted. Total pools: {num_pools}"
-        )
-
-    def _get_used_ips_in_vlan(self, vlan_id: int) -> set:
-        """Get set of all currently used IP addresses in a specific VLAN.
-
-        This method scans ALL SVMs (not just prefix-filtered ones) to detect
-        IP conflicts with infrastructure, other Manila backends, or manually
-        created SVMs.
-
-        Args:
-            vlan_id: VLAN ID to query
-
-        Returns:
-            Set of used IP addresses (as ipaddress.IPv4Address objects)
-        """
-        import ipaddress
-
-        used_ips = set()
-
-        try:
-            svms = self.arca_client.list_svms()
-
-            for svm in svms:
-                # Check ALL SVMs in this VLAN, not just prefix-filtered ones
-                # This prevents conflicts with infrastructure or other services
-                # Ensure vlan_id is int for comparison (API may return string)
-                svm_vlan = svm.get("vlan_id")
-                try:
-                    svm_vlan = int(svm_vlan) if svm_vlan is not None else None
-                except (ValueError, TypeError):
-                    LOG.warning("Invalid vlan_id type in SVM %s: %s", svm["name"], svm_vlan)
-                    continue
-
-                if svm_vlan == vlan_id:
-                    # Extract IP from vip or ip_cidr (handle both bare IP and CIDR format)
-                    vip = svm.get("vip")
-                    ip_cidr = svm.get("ip_cidr")
-
-                    # Try vip first (preferred)
-                    if vip:
-                        try:
-                            # Handle both "1.2.3.4" and "1.2.3.4/24" formats
-                            if "/" in str(vip):
-                                ip_addr = ipaddress.ip_interface(vip).ip
-                            else:
-                                ip_addr = ipaddress.ip_address(vip)
-                            used_ips.add(ip_addr)
-                        except ValueError:
-                            LOG.warning("Invalid VIP format in SVM %s: %s", svm["name"], vip)
-
-                    # Fallback to ip_cidr if vip is not available
-                    elif ip_cidr:
-                        try:
-                            ip_addr = ipaddress.ip_interface(ip_cidr).ip
-                            used_ips.add(ip_addr)
-                        except ValueError:
-                            LOG.warning("Invalid ip_cidr format in SVM %s: %s", svm["name"], ip_cidr)
-
-        except Exception as e:
-            LOG.warning("Failed to get used IPs in VLAN %d: %s", vlan_id, e)
-            # Return empty set and let allocation proceed
-            # (will rely on backend to detect conflicts)
-
-        return used_ips
-
-    def _find_free_slot_in_pool(
-        self, pool: Dict[str, Any], attempt: int = 0
-    ) -> tuple:
-        """Find first free IP slot in a pool.
-
-        Since each pool now has a single VLAN ID (not a range), we only need to
-        check if the pool's VLAN is already fully allocated by checking used IPs.
-
-        Args:
-            pool: Pool configuration dict
-            attempt: Retry attempt number (used to vary starting offset for multi-process races)
-
-        Returns:
-            Tuple of (vlan_id, ip_cidr)
-
-        Raises:
-            Exception: If no free slot found in pool
-        """
-        import random
-
-        ip_network = pool["ip_network"]
-        vlan_id = pool["vlan_id"]
-        num_hosts = pool["num_hosts"]
-        first_host = pool["first_host"]
-
-        # Get all SVMs using this VLAN to find used IPs
-        used_ips = self._get_used_ips_in_vlan(vlan_id)
-
-        # On retry attempts, add random offset to avoid repeatedly trying the same IP
-        # in multi-process race conditions where list_svms() hasn't caught up
-        if attempt > 0:
-            # Use process-specific entropy: PID + timestamp + attempt
-            # This ensures different processes choose different offsets
-            # Use local Random instance to avoid global RNG side effects
-            import os
-            import time
-            seed = (os.getpid() * 1000000 + int(time.time() * 1000)) ^ attempt
-            local_rng = random.Random(seed)
-            start_offset = local_rng.randint(0, num_hosts - 1)
-            LOG.debug("Retry %d: using random offset (seed based on PID %d)", attempt, os.getpid())
-        else:
-            start_offset = 0
-
-        # Search for first free IP, starting from potentially randomized offset
-        for i in range(num_hosts):
-            offset = (start_offset + i) % num_hosts
-            ip_addr = first_host + offset
-
-            if ip_addr not in used_ips:
-                # Found free slot
-                ip_cidr = f"{ip_addr}/{ip_network.prefixlen}"
-                LOG.debug(
-                    "Found free IP in pool VLAN %d at offset %d (attempt %d)",
-                    vlan_id, offset, attempt
-                )
-                return vlan_id, ip_cidr
-
-        # Pool exhausted
-        raise Exception(
-            f"Pool exhausted: VLAN {vlan_id}, all {num_hosts} IP slots used"
-        )
 
     # Share Lifecycle Methods
 
