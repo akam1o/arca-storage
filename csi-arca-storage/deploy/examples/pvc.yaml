@@ -1,0 +1,44 @@
+---
+# Example: Basic PersistentVolumeClaim
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: example-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany  # NFS supports ReadWriteMany
+  storageClassName: arca-storage
+  resources:
+    requests:
+      storage: 10Gi
+
+---
+# Example: PVC with ReadWriteOnce mode
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: example-pvc-rwo
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteOnce
+  storageClassName: arca-storage
+  resources:
+    requests:
+      storage: 5Gi
+
+---
+# Example: PVC with larger capacity
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: large-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: arca-storage
+  resources:
+    requests:
+      storage: 100Gi

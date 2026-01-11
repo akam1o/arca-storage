@@ -1,0 +1,172 @@
+---
+# ConfigMap for CSI driver configuration
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: csi-arca-storage-config
+  namespace: kube-system
+data:
+  config.yaml: |
+    arca:
+      base_url: "https://arca-api.example.com"
+      timeout: "30s"
+      auth_token: ""  # Set via Secret
+      tls:
+        ca_cert_path: ""  # Optional: Set to cert path if custom CA is needed (system CA bundle used if empty)
+        insecure_skip_verify: false
+    
+    network:
+      pools:
+        - cidr: "10.0.0.0/24"
+          range: "10.0.0.100-10.0.0.200"
+          vlan: 100
+          gateway: "10.0.0.1"
+      mtu: 1500
+    
+    driver:
+      endpoint: "unix:///csi/csi.sock"
+      state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
+      base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
+
+---
+# StatefulSet for CSI controller
+apiVersion: apps/v1
+kind: StatefulSet
+metadata:
+  name: csi-arca-storage-controller
+  namespace: kube-system
+spec:
+  serviceName: csi-arca-storage-controller
+  replicas: 1
+  selector:
+    matchLabels:
+      app: csi-arca-storage-controller
+  template:
+    metadata:
+      labels:
+        app: csi-arca-storage-controller
+    spec:
+      serviceAccountName: csi-arca-storage-controller
+      priorityClassName: system-cluster-critical
+      tolerations:
+        - key: CriticalAddonsOnly
+          operator: Exists
+      containers:
+        # CSI Driver Controller
+        - name: csi-driver
+          image: csi-arca-storage:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --mode=controller
+            - --config=/etc/csi-arca-storage/config.yaml
+            - -v=5
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: POD_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: metadata.name
+            - name: ARCA_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: csi-arca-storage-secret
+                  key: auth-token
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: config
+              mountPath: /etc/csi-arca-storage
+              readOnly: true
+          resources:
+            requests:
+              cpu: 100m
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 512Mi
+        
+        # External Provisioner
+        - name: csi-provisioner
+          image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --v=5
+            - --timeout=300s
+            - --leader-election
+            - --leader-election-namespace=kube-system
+            - --extra-create-metadata
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        
+        # External Snapshotter
+        - name: csi-snapshotter
+          image: registry.k8s.io/sig-storage/csi-snapshotter:v8.1.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --v=5
+            - --timeout=300s
+            - --leader-election
+            - --leader-election-namespace=kube-system
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        
+        # External Resizer
+        - name: csi-resizer
+          image: registry.k8s.io/sig-storage/csi-resizer:v1.12.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --v=5
+            - --timeout=300s
+            - --leader-election
+            - --leader-election-namespace=kube-system
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 32Mi
+            limits:
+              cpu: 100m
+              memory: 128Mi
+        
+        # Liveness Probe
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --health-port=9808
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      
+      volumes:
+        - name: socket-dir
+          emptyDir: {}
+        - name: config
+          configMap:
+            name: csi-arca-storage-config

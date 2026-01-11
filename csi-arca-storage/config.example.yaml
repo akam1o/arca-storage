@@ -1,0 +1,59 @@
+# Example configuration for CSI ARCA Storage Driver
+
+# ARCA API configuration
+arca:
+  # Base URL for ARCA storage API
+  base_url: "https://arca-api.example.com"
+
+  # Request timeout
+  timeout: "30s"
+
+  # Authentication token for ARCA API
+  auth_token: "your-auth-token-here"
+
+  # TLS configuration (optional)
+  tls:
+    # Path to CA certificate for verifying ARCA API server
+    ca_cert_path: "/etc/csi-arca-storage/ca.crt"
+
+    # Path to client certificate (for mutual TLS)
+    client_cert_path: ""
+
+    # Path to client key (for mutual TLS)
+    client_key_path: ""
+
+    # Skip TLS verification (NOT recommended for production)
+    insecure_skip_verify: false
+
+# Network configuration
+network:
+  # IP address pools for SVM allocation
+  pools:
+    # Pool 1: Basic configuration with CIDR
+    - cidr: "10.0.0.0/24"
+      range: "10.0.0.100-10.0.0.200"  # Optional: restrict to specific range
+      vlan: 100
+      gateway: "10.0.0.1"
+
+    # Pool 2: Another VLAN for different workloads
+    - cidr: "10.1.0.0/24"
+      range: "10.1.0.50-10.1.0.150"
+      vlan: 101
+      gateway: "10.1.0.1"
+
+  # MTU for network interfaces (default: 1500)
+  mtu: 1500
+
+# Driver configuration
+driver:
+  # Node ID (hostname will be used if not specified)
+  node_id: ""
+
+  # CSI driver endpoint (unix socket or TCP)
+  endpoint: "unix:///csi/csi.sock"
+
+  # Path to node state file (for node plugin only)
+  state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
+
+  # Base path for SVM NFS mounts (for node plugin only)
+  base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"

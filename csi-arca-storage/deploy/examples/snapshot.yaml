@@ -1,0 +1,48 @@
+---
+# Example: Create a VolumeSnapshot from a PVC
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshot
+metadata:
+  name: example-snapshot
+  namespace: default
+spec:
+  volumeSnapshotClassName: arca-snapshots
+  source:
+    persistentVolumeClaimName: example-pvc
+
+---
+# Example: Restore a PVC from a VolumeSnapshot
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: restored-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: arca-storage
+  dataSource:
+    name: example-snapshot
+    kind: VolumeSnapshot
+    apiGroup: snapshot.storage.k8s.io
+  resources:
+    requests:
+      storage: 10Gi  # Must be >= source volume size
+
+---
+# Example: Clone a PVC from another PVC
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: cloned-pvc
+  namespace: default
+spec:
+  accessModes:
+    - ReadWriteMany
+  storageClassName: arca-storage
+  dataSource:
+    name: example-pvc
+    kind: PersistentVolumeClaim
+  resources:
+    requests:
+      storage: 10Gi  # Must be >= source volume size

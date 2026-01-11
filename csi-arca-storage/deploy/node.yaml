@@ -1,0 +1,147 @@
+---
+# DaemonSet for CSI node plugin
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: csi-arca-storage-node
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      app: csi-arca-storage-node
+  template:
+    metadata:
+      labels:
+        app: csi-arca-storage-node
+    spec:
+      serviceAccountName: csi-arca-storage-node
+      priorityClassName: system-node-critical
+      hostNetwork: true
+      dnsPolicy: ClusterFirstWithHostNet
+      tolerations:
+        - operator: Exists
+      containers:
+        # CSI Driver Node Plugin
+        - name: csi-driver
+          image: csi-arca-storage:latest
+          imagePullPolicy: IfNotPresent
+          args:
+            - --mode=node
+            - --config=/etc/csi-arca-storage/config.yaml
+            - --node-id=$(NODE_NAME)
+            - -v=5
+          env:
+            - name: CSI_ENDPOINT
+              value: unix:///csi/csi.sock
+            - name: NODE_NAME
+              valueFrom:
+                fieldRef:
+                  fieldPath: spec.nodeName
+            - name: ARCA_AUTH_TOKEN
+              valueFrom:
+                secretKeyRef:
+                  name: csi-arca-storage-secret
+                  key: auth-token
+          securityContext:
+            privileged: true
+            capabilities:
+              add: ["SYS_ADMIN"]
+            allowPrivilegeEscalation: true
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: plugin-dir
+              mountPath: /var/lib/kubelet/plugins/csi.arca-storage.io
+              mountPropagation: Bidirectional
+            - name: pods-mount-dir
+              mountPath: /var/lib/kubelet/pods
+              mountPropagation: Bidirectional
+            - name: mounts-dir
+              mountPath: /var/lib/kubelet/plugins/csi.arca-storage.io/mounts
+              mountPropagation: Bidirectional
+            - name: state-dir
+              mountPath: /var/lib/csi-arca-storage
+            - name: config
+              mountPath: /etc/csi-arca-storage
+              readOnly: true
+          livenessProbe:
+            httpGet:
+              path: /healthz
+              port: 9809
+            initialDelaySeconds: 10
+            timeoutSeconds: 3
+            periodSeconds: 10
+            failureThreshold: 5
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 256Mi
+        
+        # CSI Node Driver Registrar
+        - name: node-driver-registrar
+          image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.12.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --kubelet-registration-path=/var/lib/kubelet/plugins/csi.arca-storage.io/csi.sock
+            - --v=5
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+            - name: registration-dir
+              mountPath: /registration
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+        
+        # Liveness Probe
+        - name: liveness-probe
+          image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
+          args:
+            - --csi-address=/csi/csi.sock
+            - --health-port=9809
+          volumeMounts:
+            - name: socket-dir
+              mountPath: /csi
+          resources:
+            requests:
+              cpu: 10m
+              memory: 16Mi
+            limits:
+              cpu: 100m
+              memory: 64Mi
+      
+      volumes:
+        - name: socket-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.arca-storage.io
+            type: DirectoryOrCreate
+        - name: plugin-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.arca-storage.io
+            type: DirectoryOrCreate
+        - name: pods-mount-dir
+          hostPath:
+            path: /var/lib/kubelet/pods
+            type: Directory
+        - name: mounts-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins/csi.arca-storage.io/mounts
+            type: DirectoryOrCreate
+        - name: state-dir
+          hostPath:
+            path: /var/lib/csi-arca-storage
+            type: DirectoryOrCreate
+        - name: registration-dir
+          hostPath:
+            path: /var/lib/kubelet/plugins_registry
+            type: Directory
+        - name: config
+          configMap:
+            name: csi-arca-storage-config

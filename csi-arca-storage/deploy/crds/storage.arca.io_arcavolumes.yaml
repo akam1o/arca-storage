@@ -1,0 +1,173 @@
+---
+apiVersion: apiextensions.k8s.io/v1
+kind: CustomResourceDefinition
+metadata:
+  annotations:
+    controller-gen.kubebuilder.io/version: v0.16.5
+  name: arcavolumes.storage.arca.io
+spec:
+  group: storage.arca.io
+  names:
+    categories:
+    - storage
+    - arca
+    kind: ArcaVolume
+    listKind: ArcaVolumeList
+    plural: arcavolumes
+    shortNames:
+    - av
+    singular: arcavolume
+  scope: Cluster
+  versions:
+  - additionalPrinterColumns:
+    - description: Backend volume identifier
+      jsonPath: .spec.volumeID
+      name: VolumeID
+      type: string
+    - description: Storage virtual machine
+      jsonPath: .spec.svmName
+      name: SVM
+      type: string
+    - description: Storage endpoint VIP
+      jsonPath: .spec.vip
+      name: VIP
+      type: string
+    - description: Backend path
+      jsonPath: .spec.path
+      name: Path
+      type: string
+    - description: Provisioned capacity (bytes)
+      jsonPath: .spec.capacityBytes
+      name: CapacityBytes
+      type: integer
+    - jsonPath: .metadata.creationTimestamp
+      name: Age
+      type: date
+    name: v1alpha1
+    schema:
+      openAPIV3Schema:
+        properties:
+          apiVersion:
+            type: string
+          kind:
+            type: string
+          metadata:
+            type: object
+          spec:
+            properties:
+              capacityBytes:
+                format: int64
+                minimum: 1
+                type: integer
+              contentSource:
+                properties:
+                  sourceSnapshotID:
+                    maxLength: 16
+                    minLength: 16
+                    pattern: ^[a-f0-9]{16}$
+                    type: string
+                  sourceVolumeID:
+                    maxLength: 20
+                    minLength: 20
+                    pattern: ^pvc-[a-f0-9]{16}$
+                    type: string
+                  type:
+                    enum:
+                    - Volume
+                    - Snapshot
+                    type: string
+                required:
+                - type
+                type: object
+                x-kubernetes-validations:
+                - message: contentSource must set exactly one of sourceVolumeID/sourceSnapshotID
+                    matching type
+                  rule: (self.type == 'Volume' && has(self.sourceVolumeID) && !has(self.sourceSnapshotID))
+                    || (self.type == 'Snapshot' && has(self.sourceSnapshotID) && !has(self.sourceVolumeID))
+              createdAt:
+                format: date-time
+                type: string
+              name:
+                maxLength: 253
+                minLength: 1
+                pattern: ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,251}[A-Za-z0-9])?$
+                type: string
+              path:
+                maxLength: 4096
+                minLength: 1
+                type: string
+              svmName:
+                maxLength: 63
+                minLength: 1
+                pattern: ^[A-Za-z0-9]([A-Za-z0-9_.-]{0,61}[A-Za-z0-9])?$
+                type: string
+              vip:
+                format: ip
+                maxLength: 45
+                type: string
+              volumeID:
+                maxLength: 20
+                minLength: 20
+                pattern: ^pvc-[a-f0-9]{16}$
+                type: string
+            required:
+            - capacityBytes
+            - createdAt
+            - name
+            - path
+            - svmName
+            - vip
+            - volumeID
+            type: object
+          status:
+            properties:
+              conditions:
+                items:
+                  properties:
+                    lastTransitionTime:
+                      format: date-time
+                      type: string
+                    message:
+                      maxLength: 32768
+                      type: string
+                    observedGeneration:
+                      format: int64
+                      minimum: 0
+                      type: integer
+                    reason:
+                      maxLength: 1024
+                      minLength: 1
+                      pattern: ^[A-Za-z]([A-Za-z0-9_,:]*[A-Za-z0-9_])?$
+                      type: string
+                    status:
+                      enum:
+                      - "True"
+                      - "False"
+                      - Unknown
+                      type: string
+                    type:
+                      maxLength: 316
+                      pattern: ^([a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*/)?(([A-Za-z0-9][-A-Za-z0-9_.]*)?[A-Za-z0-9])$
+                      type: string
+                  required:
+                  - lastTransitionTime
+                  - message
+                  - reason
+                  - status
+                  - type
+                  type: object
+                type: array
+                x-kubernetes-list-map-keys:
+                - type
+                x-kubernetes-list-type: map
+              observedGeneration:
+                format: int64
+                type: integer
+            type: object
+        required:
+        - spec
+        type: object
+    served: true
+    storage: true
+    subresources:
+      status: {}

@@ -16,7 +16,7 @@ Arca Storage is a Software-Defined Storage system that provides NetApp ONTAP-lik
 - **Multi-tenancy**: Network Namespace-based network isolation
 - **High Availability**: Pacemaker-based Active/Active failover
 - **Data Efficiency**: LVM Thin Provisioning with overcommit
-- **Client Integration**: Kubernetes (CSI) and OpenStack (Cinder NFS Driver) support
+- **Client Integration**: Kubernetes (CSI) ([docs](csi-arca-storage/README.md)) and OpenStack (Cinder NFS Driver) support
 
 ## Architecture
 

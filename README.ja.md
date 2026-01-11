@@ -16,7 +16,7 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
 - **マルチテナンシー**: Network Namespaceベースのネットワーク分離（SVMごとに VLAN インタフェースを作成し、同一 VLAN ID を複数 SVM で共有可能）
 - **高可用性**: Pacemakerベースのアクティブ/アクティブ・フェイルオーバー
 - **データ効率**: LVM Thin Provisioningによるオーバーコミット
-- **クライアント統合**: Kubernetes (CSI) およびOpenStack (Cinder NFS Driver) サポート
+- **クライアント統合**: Kubernetes (CSI)（[ドキュメント](csi-arca-storage/README.ja.md)）およびOpenStack (Cinder NFS Driver) サポート
 
 ## アーキテクチャ
 
