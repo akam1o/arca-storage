@@ -1,0 +1,50 @@
+# Binaries for programs and plugins
+*.exe
+*.exe~
+*.dll
+*.so
+*.dylib
+
+# Test binary, built with `go test -c`
+*.test
+
+# Output of the go coverage tool
+*.out
+
+# Go workspace file
+go.work
+
+# Build artifacts
+bin/
+dist/
+/csi-driver
+
+# Local Go caches (useful for restricted network/sandbox runs)
+.gocache/
+.gomodcache/
+.gopath/
+
+# IDE files
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Configuration files with secrets
+config.yaml
+*.key
+*.crt
+*.pem
+
+# State files
+*.json
+node-volumes.json
+
+# Temporary files
+*.tmp
+*.log

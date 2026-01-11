@@ -1,0 +1,64 @@
+---
+# StorageClass for ARCA Storage
+# This is the main storage class for dynamically provisioned volumes
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arca-storage
+  annotations:
+    storageclass.kubernetes.io/is-default-class: "false"
+provisioner: csi.arca-storage.io
+parameters:
+  # No parameters needed - namespace is automatically extracted from PVC
+  # The driver will create one SVM per namespace with automatic network allocation
+reclaimPolicy: Delete
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+mountOptions:
+  - nfsvers=4.2
+  - rsize=1048576
+  - wsize=1048576
+  - hard
+  - timeo=600
+  - retrans=2
+  - noresvport
+
+---
+# StorageClass with retain policy (for important data)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arca-storage-retain
+provisioner: csi.arca-storage.io
+parameters: {}
+reclaimPolicy: Retain  # Volumes are not deleted when PVC is deleted
+volumeBindingMode: Immediate
+allowVolumeExpansion: true
+mountOptions:
+  - nfsvers=4.2
+  - rsize=1048576
+  - wsize=1048576
+  - hard
+  - timeo=600
+  - retrans=2
+  - noresvport
+
+---
+# StorageClass with delayed binding (for topology-aware scheduling)
+apiVersion: storage.k8s.io/v1
+kind: StorageClass
+metadata:
+  name: arca-storage-wait
+provisioner: csi.arca-storage.io
+parameters: {}
+reclaimPolicy: Delete
+volumeBindingMode: WaitForFirstConsumer  # Wait for pod to be scheduled
+allowVolumeExpansion: true
+mountOptions:
+  - nfsvers=4.2
+  - rsize=1048576
+  - wsize=1048576
+  - hard
+  - timeo=600
+  - retrans=2
+  - noresvport

@@ -1,0 +1,23 @@
+---
+# VolumeSnapshotClass for ARCA Storage
+# Enables server-side reflink-based snapshots
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: arca-snapshots
+  annotations:
+    snapshot.storage.kubernetes.io/is-default-class: "true"
+driver: csi.arca-storage.io
+deletionPolicy: Delete  # Snapshots are deleted when VolumeSnapshot is deleted
+parameters:
+  # No parameters needed - snapshots are created server-side using XFS reflink
+
+---
+# VolumeSnapshotClass with retain policy
+apiVersion: snapshot.storage.k8s.io/v1
+kind: VolumeSnapshotClass
+metadata:
+  name: arca-snapshots-retain
+driver: csi.arca-storage.io
+deletionPolicy: Retain  # Snapshots are retained when VolumeSnapshot is deleted
+parameters: {}
