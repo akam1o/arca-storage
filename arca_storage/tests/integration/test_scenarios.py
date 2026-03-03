@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from arca_storage.api.main import app as api_app
 from arca_storage.cli.cli import app as cli_app
+from arca_storage.errors import NotFoundError
 
 
 class TestSVMWorkflow:
@@ -17,39 +18,8 @@ class TestSVMWorkflow:
 
     @pytest.mark.integration
     @pytest.mark.slow
-    @patch("arca_storage.cli.commands.svm.create_namespace")
-    @patch("arca_storage.cli.commands.svm.attach_vlan")
-    @patch("arca_storage.cli.commands.svm.render_config")
-    @patch("arca_storage.cli.commands.svm.create_group")
-    @patch("arca_storage.cli.commands.volume.create_lv")
-    @patch("arca_storage.cli.commands.volume.format_xfs")
-    @patch("arca_storage.cli.commands.volume.mount_xfs")
-    @patch("arca_storage.cli.commands.export.add_export")
-    @patch("arca_storage.cli.commands.export.reload_ganesha")
-    @patch("arca_storage.cli.commands.svm.delete_group")
-    @patch("arca_storage.cli.commands.svm.stop_unit")
-    @patch("arca_storage.cli.commands.svm.delete_namespace")
-    @patch("arca_storage.cli.commands.volume.umount_xfs")
-    @patch("arca_storage.cli.commands.volume.delete_lv")
-    def test_full_svm_lifecycle(
-        self,
-        mock_delete_lv,
-        mock_umount,
-        mock_delete_ns,
-        mock_stop,
-        mock_delete_group,
-        mock_reload,
-        mock_add_export,
-        mock_mount,
-        mock_format,
-        mock_create_lv,
-        mock_create_group,
-        mock_render,
-        mock_attach,
-        mock_create_ns,
-    ):
-        """Test complete SVM lifecycle."""
-        mock_create_lv.return_value = "/dev/vg_pool_01/vol1"
+    def test_full_svm_lifecycle(self, fake_context):
+        """Test complete SVM lifecycle using fake adapters."""
         runner = CliRunner()
 
         # 1. Create SVM
@@ -77,13 +47,9 @@ class TestSVMWorkflow:
         result = runner.invoke(cli_app, ["svm", "delete", "tenant_a"])
         assert result.exit_code == 0
 
-        # Verify all mocks were called
-        mock_create_ns.assert_called_once()
-        mock_attach.assert_called_once()
-        mock_create_lv.assert_called_once()
-        mock_add_export.assert_called_once()
-        mock_delete_lv.assert_called_once()
-        mock_delete_ns.assert_called_once()
+        # Verify cleanup
+        assert not fake_context.adapters.netns.namespace_exists("tenant_a")
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
 
 
 class TestAPIWorkflow:
@@ -168,10 +134,10 @@ class TestErrorHandling:
     """Test error handling scenarios."""
 
     @pytest.mark.integration
-    @patch("arca_storage.cli.commands.svm.create_namespace")
-    def test_svm_create_failure_rollback(self, mock_create_ns):
-        """Test SVM creation failure triggers rollback."""
-        mock_create_ns.side_effect = RuntimeError("Failed to create namespace")
+    def test_svm_create_failure_rollback(self, fake_context):
+        """Test SVM creation failure when adapter raises."""
+        # Break the pacemaker adapter to force a failure at that step
+        fake_context.adapters.pacemaker.groups = None
 
         runner = CliRunner()
         result = runner.invoke(cli_app, ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24"])
@@ -183,9 +149,9 @@ class TestErrorHandling:
     @patch("arca_storage.api.services.svm_service.create_svm")
     def test_api_error_response(self, mock_create_svm):
         """Test API returns proper error response."""
-        mock_create_svm.side_effect = ValueError("Invalid configuration")
+        mock_create_svm.side_effect = NotFoundError("SVM", "tenant_a")
 
         client = TestClient(api_app)
         response = client.post("/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"})
 
-        assert response.status_code == 400
+        assert response.status_code == 404

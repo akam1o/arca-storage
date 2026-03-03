@@ -28,6 +28,18 @@ The system combines:
 - **LVM Thin Provisioning**: Virtual volume management and snapshots
 - **DRBD**: Node-to-node synchronous data mirroring
 
+### Internal Design
+
+The Python codebase follows a **declarative reconciliation** architecture:
+
+- **Resource Models** (`models/`): Pydantic models with Spec (desired state) and Status (actual state) for SVM, Volume, Snapshot, and Export resources.
+- **Reconcilers** (`reconcilers/`): Idempotent reconciliation loops that drive resources from desired to actual state, one step at a time. Each step is persisted so that retries resume from the last successful point.
+- **Adapters** (`adapters/`): Protocol-based abstractions for system operations (LVM, XFS, Network Namespace, Pacemaker, NFS-Ganesha, systemd). Production implementations call real commands; Fake implementations enable in-memory testing without root privileges.
+- **State Store** (`db/`): SQLite WAL-backed state database with ACID transactions, replacing the previous JSON file-based state.
+- **Structured Errors** (`errors.py`): Machine-readable error codes (e.g., `NOT_FOUND`, `ALREADY_EXISTS`) that map to HTTP status codes and are consumed by the Go CSI driver.
+- **Unified Config** (`config.py`): TOML-based configuration validated through Pydantic, replacing the dual INI boot/runtime config.
+- **Application Context** (`context.py`): Dependency wiring — a single `AppContext` provides the DB, adapters, and reconcilers to both CLI and API.
+
 ## Quick Start
 
 ### Prerequisites
@@ -194,21 +206,46 @@ arca-storage/
 ├── arca_storage/               # Python package
 │   ├── arca_storage/           # Package source code
 │   │   ├── api/                # FastAPI REST API
-│   │   │   ├── main.py         # API application
-│   │   │   ├── models.py       # Pydantic models
-│   │   │   └── services/       # Service layer
-│   │   ├── cli/                # CLI tool
+│   │   │   ├── main.py         # API application & error handlers
+│   │   │   ├── models.py       # Request/Response Pydantic models
+│   │   │   └── services/       # Service layer (delegates to reconcilers)
+│   │   ├── cli/                # CLI tool (Typer)
 │   │   │   ├── cli.py          # Main CLI entry
 │   │   │   ├── commands/       # Command implementations
-│   │   │   └── lib/            # Library functions
-│   │   ├── resources/          # System resources
-│   │   │   └── pacemaker/      # Pacemaker resource agents
+│   │   │   └── lib/            # Validators, helpers
+│   │   ├── models/             # Resource models (Spec/Status)
+│   │   │   ├── svm.py          # SVM resource
+│   │   │   ├── volume.py       # Volume resource
+│   │   │   ├── snapshot.py     # Snapshot resource
+│   │   │   └── export.py       # Export resource
+│   │   ├── reconcilers/        # Reconciliation loops
+│   │   │   ├── svm.py          # SVM reconciler
+│   │   │   ├── volume.py       # Volume reconciler
+│   │   │   ├── snapshot.py     # Snapshot reconciler
+│   │   │   └── export.py       # Export reconciler
+│   │   ├── adapters/           # System operation adapters
+│   │   │   ├── lvm.py          # LVM adapter (Protocol + Subprocess + Fake)
+│   │   │   ├── xfs.py          # XFS adapter
+│   │   │   ├── netns.py        # Network Namespace adapter
+│   │   │   ├── pacemaker.py    # Pacemaker adapter
+│   │   │   ├── ganesha.py      # NFS-Ganesha adapter
+│   │   │   └── systemd.py      # systemd adapter
+│   │   ├── db/                 # SQLite WAL state store
+│   │   ├── errors.py           # Structured error codes
+│   │   ├── config.py           # TOML config (Pydantic)
+│   │   ├── context.py          # Dependency wiring (AppContext)
+│   │   ├── openstack/          # OpenStack drivers (Cinder, Manila)
+│   │   ├── resources/          # Pacemaker RA, systemd units
 │   │   └── templates/          # Configuration templates
 │   ├── tests/                  # Test suite
+│   │   ├── unit/               # Unit tests (models, errors, db, reconcilers)
+│   │   └── integration/        # Integration tests (CLI, API, scenarios)
 │   ├── pyproject.toml          # Package configuration
-│   ├── setup.py                # Legacy configuration
-│   ├── pytest.ini              # Test configuration
-│   └── README.md               # Package documentation
+│   └── pytest.ini              # Test configuration
+├── csi-arca-storage/           # Go CSI driver
+│   ├── pkg/arca/               # ARCA API client & structured errors
+│   ├── cmd/                    # CLI entry point
+│   └── deploy/                 # Kubernetes manifests
 ├── ansible/                    # Ansible playbooks
 │   ├── roles/                  # Ansible roles
 │   └── site.yml                # Main playbook

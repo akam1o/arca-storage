@@ -185,7 +185,13 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 
 	// Check status code
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		// Try to parse error message from response
+		// Try to parse structured error response first
+		var errResp ArcaErrorResponse
+		if err := json.Unmarshal(respBody, &errResp); err == nil && errResp.Error.Code != "" {
+			return nil, MapErrorCodeToError(resp.StatusCode, &errResp.Error)
+		}
+
+		// Fall back to legacy text-based error mapping
 		var apiResp APIResponse
 		if err := json.Unmarshal(respBody, &apiResp); err == nil && apiResp.Error != "" {
 			return nil, MapHTTPStatusToError(resp.StatusCode, apiResp.Error)

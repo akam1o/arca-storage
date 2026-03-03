@@ -1,0 +1,233 @@
+"""
+Pacemaker resource management adapter.
+"""
+
+from __future__ import annotations
+
+from typing import Optional, Protocol, runtime_checkable
+
+from arca_storage.adapters._subprocess import run_cmd
+from arca_storage.cli.lib.netns import make_vlan_ifname
+
+
+@runtime_checkable
+class PacemakerAdapter(Protocol):
+    def resource_exists(self, name: str) -> bool: ...
+
+    def create_group(
+        self,
+        svm_name: str,
+        mount_path: str,
+        *,
+        vlan_id: int,
+        ifname: Optional[str],
+        ip: str,
+        prefix: int,
+        gw: str,
+        mtu: int,
+        parent_if: str,
+        vg_name: str,
+        create_filesystem: bool,
+        drbd_resource_name: str,
+        enforce_drbd_constraints: bool,
+    ) -> None: ...
+
+    def delete_group(self, svm_name: str) -> None: ...
+
+
+class SubprocessPacemakerAdapter:
+    """Production adapter — calls pcs commands."""
+
+    def __init__(self, timeout: int = 60) -> None:
+        self._timeout = timeout
+
+    def resource_exists(self, name: str) -> bool:
+        result = run_cmd(["pcs", "resource", "show", name], timeout=self._timeout, check=False)
+        return result.returncode == 0
+
+    def create_group(
+        self,
+        svm_name: str,
+        mount_path: str,
+        *,
+        vlan_id: int,
+        ifname: Optional[str] = None,
+        ip: str,
+        prefix: int,
+        gw: str,
+        mtu: int = 1500,
+        parent_if: str = "bond0",
+        vg_name: str = "vg_pool_01",
+        create_filesystem: bool = True,
+        drbd_resource_name: str = "r0",
+        enforce_drbd_constraints: bool = True,
+    ) -> None:
+        group_name = f"g_svm_{svm_name}"
+        if self.resource_exists(group_name):
+            return  # idempotent
+
+        resources: list[str] = []
+        master_name: Optional[str] = None
+
+        if enforce_drbd_constraints:
+            master_name = self._ensure_drbd_master(drbd_resource_name)
+
+        # Filesystem resource
+        fs_resource = f"fs_{svm_name}"
+        if create_filesystem and not self.resource_exists(fs_resource):
+            device = f"/dev/{vg_name}/vol_{svm_name}"
+            run_cmd(
+                [
+                    "pcs", "resource", "create", fs_resource,
+                    "ocf:heartbeat:Filesystem",
+                    f"device={device}", f"directory={mount_path}", "fstype=xfs",
+                    "op", "monitor", "interval=10s",
+                ],
+                timeout=self._timeout,
+            )
+            resources.append(fs_resource)
+
+        # NetnsVlan resource
+        netns_resource = f"netns_{svm_name}"
+        if not self.resource_exists(netns_resource):
+            resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
+            run_cmd(
+                [
+                    "pcs", "resource", "create", netns_resource,
+                    "ocf:local:NetnsVlan",
+                    f"ns={svm_name}", f"vlan_id={vlan_id}", f"parent_if={parent_if}",
+                    f"ifname={resolved_ifname}", f"ip={ip}", f"prefix={prefix}",
+                    f"gw={gw}", f"mtu={mtu}",
+                    "op", "monitor", "interval=10s",
+                ],
+                timeout=self._timeout,
+            )
+        resources.append(netns_resource)
+
+        # Ganesha resource
+        ganesha_resource = f"ganesha_{svm_name}"
+        if not self.resource_exists(ganesha_resource):
+            run_cmd(
+                [
+                    "pcs", "resource", "create", ganesha_resource,
+                    f"systemd:nfs-ganesha@{svm_name}",
+                    "op", "monitor", "interval=10s",
+                ],
+                timeout=self._timeout,
+            )
+        resources.append(ganesha_resource)
+
+        # Create group
+        run_cmd(
+            ["pcs", "resource", "group", "add", group_name, *resources],
+            timeout=self._timeout,
+        )
+
+        # Constraints
+        if master_name:
+            target = fs_resource if (create_filesystem and fs_resource in resources) else resources[0]
+            self._ensure_order(master_name, target)
+            self._ensure_colocation(group_name, master_name)
+
+    def delete_group(self, svm_name: str) -> None:
+        group_name = f"g_svm_{svm_name}"
+        if not self.resource_exists(group_name):
+            return  # idempotent
+        run_cmd(["pcs", "resource", "disable", group_name], timeout=self._timeout, check=False)
+        run_cmd(["pcs", "resource", "delete", group_name], timeout=self._timeout)
+
+    # ---- internal helpers ----
+
+    def _ensure_drbd_master(self, drbd_resource_name: str) -> str:
+        primitive = f"p_drbd_{drbd_resource_name}"
+        master = f"ms_drbd_{drbd_resource_name}"
+        if not self.resource_exists(primitive):
+            run_cmd(
+                [
+                    "pcs", "resource", "create", primitive,
+                    "ocf:linbit:drbd", f"drbd_resource={drbd_resource_name}",
+                    "op", "monitor", "interval=15s", "role=Master",
+                ],
+                timeout=self._timeout,
+            )
+        if not self.resource_exists(master):
+            run_cmd(
+                [
+                    "pcs", "resource", "master", master, primitive,
+                    "master-max=1", "master-node-max=1", "clone-max=2", "clone-node-max=1",
+                ],
+                timeout=self._timeout,
+            )
+        return master
+
+    def _constraints_text(self) -> str:
+        result = run_cmd(["pcs", "constraint", "show", "--full"], timeout=self._timeout, check=False)
+        return (result.stdout or "") + "\n" + (result.stderr or "")
+
+    def _ensure_order(self, master_name: str, target: str) -> None:
+        needle = f"order {master_name}:promote {target}:start"
+        if needle in self._constraints_text():
+            return
+        run_cmd(
+            ["pcs", "constraint", "order", f"{master_name}:promote", f"{target}:start"],
+            timeout=self._timeout,
+        )
+
+    def _ensure_colocation(self, group_name: str, master_name: str) -> None:
+        needle = f"colocation {group_name} with {master_name}:Master"
+        if needle in self._constraints_text():
+            return
+        run_cmd(
+            ["pcs", "constraint", "colocation", "add", group_name, "with", f"{master_name}:Master"],
+            timeout=self._timeout,
+        )
+
+
+class FakePacemakerAdapter:
+    """In-memory fake for testing."""
+
+    def __init__(self) -> None:
+        self.resources: dict[str, dict] = {}
+        self.groups: dict[str, list[str]] = {}
+
+    def resource_exists(self, name: str) -> bool:
+        return name in self.resources or name in self.groups
+
+    def create_group(
+        self,
+        svm_name: str,
+        mount_path: str,
+        *,
+        vlan_id: int,
+        ifname: Optional[str] = None,
+        ip: str,
+        prefix: int,
+        gw: str,
+        mtu: int = 1500,
+        parent_if: str = "bond0",
+        vg_name: str = "vg_pool_01",
+        create_filesystem: bool = True,
+        drbd_resource_name: str = "r0",
+        enforce_drbd_constraints: bool = True,
+    ) -> None:
+        group_name = f"g_svm_{svm_name}"
+        if group_name in self.groups:
+            return
+        resources = []
+        if create_filesystem:
+            fs = f"fs_{svm_name}"
+            self.resources[fs] = {"type": "Filesystem"}
+            resources.append(fs)
+        netns = f"netns_{svm_name}"
+        self.resources[netns] = {"type": "NetnsVlan"}
+        resources.append(netns)
+        ganesha = f"ganesha_{svm_name}"
+        self.resources[ganesha] = {"type": "nfs-ganesha"}
+        resources.append(ganesha)
+        self.groups[group_name] = resources
+
+    def delete_group(self, svm_name: str) -> None:
+        group_name = f"g_svm_{svm_name}"
+        members = self.groups.pop(group_name, [])
+        for m in members:
+            self.resources.pop(m, None)

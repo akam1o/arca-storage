@@ -1,5 +1,8 @@
 """
 Export management commands.
+
+Core add/remove/list operations delegate to the Export reconciler.
+Utility commands (sync, snapshots, rollback) still call legacy ganesha helpers.
 """
 
 import json
@@ -7,14 +10,13 @@ from typing import List, Optional
 
 import typer
 
-from arca_storage.cli.lib.ganesha import add_export
 from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
-from arca_storage.cli.lib.ganesha import reload as reload_ganesha
-from arca_storage.cli.lib.ganesha import remove_export, render_config
 from arca_storage.cli.lib.ganesha import sync as sync_ganesha
 from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
-from arca_storage.cli.lib.ganesha import list_exports as ganesha_list_exports
+from arca_storage.context import get_context
+from arca_storage.models.base import Phase, ResourceMeta
+from arca_storage.models.export import Export, ExportSpec, ExportStatus
 
 app = typer.Typer(help="Export management commands")
 
@@ -27,31 +29,37 @@ def add(
     access: str = typer.Option("rw", "--access", help="Access type: rw or ro (default: rw)"),
     root_squash: bool = typer.Option(True, "--root-squash/--no-root-squash", help="Enable root squash (default: True)"),
 ):
-    """
-    Add an NFS export.
-
-    Adds an export entry to the NFS-Ganesha configuration and reloads the service.
-    """
+    """Add an NFS export via the reconciler."""
     try:
         validate_name(volume)
         validate_name(svm)
         validate_ip_cidr(client)
 
-        if access not in ["rw", "ro"]:
+        if access not in ("rw", "ro"):
             raise ValueError("Access must be 'rw' or 'ro'")
 
         typer.echo(f"Adding export for volume: {volume} in SVM: {svm}")
 
-        # Add export to configuration
-        add_export(svm, volume, client, access, root_squash)
-        typer.echo(f"  Added export: {client} -> {volume}")
+        ctx = get_context()
+        export = Export(
+            spec=ExportSpec(
+                svm=svm,
+                volume=volume,
+                client=client,
+                access=access,
+                root_squash=root_squash,
+            ),
+        )
+        export = ctx.export_reconciler.reconcile(export)
 
-        # Reload ganesha
-        reload_ganesha(svm)
-        typer.echo(f"  Reloaded NFS-Ganesha service")
+        if export.status.phase == Phase.FAILED:
+            typer.echo(f"Error adding export: {export.status.message}", err=True)
+            raise typer.Exit(1)
 
-        typer.echo(f"Export added successfully")
+        typer.echo(f"Export added successfully (phase={export.status.phase.value})")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error adding export: {e}", err=True)
         raise typer.Exit(1)
@@ -63,11 +71,7 @@ def remove(
     svm: str = typer.Option(..., "--svm", help="SVM name"),
     client: str = typer.Option(..., "--client", help="Client CIDR"),
 ):
-    """
-    Remove an NFS export.
-
-    Removes an export entry from the NFS-Ganesha configuration and reloads the service.
-    """
+    """Remove an NFS export via the reconciler."""
     try:
         validate_name(volume)
         validate_name(svm)
@@ -75,16 +79,25 @@ def remove(
 
         typer.echo(f"Removing export for volume: {volume} in SVM: {svm}")
 
-        # Remove export from configuration
-        remove_export(svm, volume, client)
-        typer.echo(f"  Removed export: {client} -> {volume}")
+        ctx = get_context()
+        records = ctx.db.list_exports(svm=svm, volume=volume, client=client)
+        if not records:
+            typer.echo("Export not found", err=True)
+            raise typer.Exit(1)
 
-        # Reload ganesha
-        reload_ganesha(svm)
-        typer.echo(f"  Reloaded NFS-Ganesha service")
+        record = records[0]
+        export = Export(
+            metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
+            spec=ExportSpec.model_validate(record["spec"]),
+            status=ExportStatus.model_validate(record["status"]),
+        )
+        export.status.phase = Phase.DELETING
+        ctx.export_reconciler.reconcile(export)
 
-        typer.echo(f"Export removed successfully")
+        typer.echo("Export removed successfully")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error removing export: {e}", err=True)
         raise typer.Exit(1)
@@ -95,21 +108,22 @@ def list(
     svm: Optional[str] = typer.Option(None, "--svm", help="Filter by SVM name"),
     volume: Optional[str] = typer.Option(None, "--volume", help="Filter by volume name"),
 ):
-    """
-    List NFS exports.
-
-    Shows all configured exports, optionally filtered by SVM or volume.
-    """
+    """List NFS exports from the database."""
     try:
-        exports = ganesha_list_exports(svm_name=svm, volume_name=volume)
+        ctx = get_context()
+        exports = ctx.db.list_exports(svm=svm, volume=volume)
         if not exports:
             typer.echo("No exports found")
             return
         for exp in exports:
+            spec = exp.get("spec", {})
+            status = exp.get("status", {})
             typer.echo(
-                f"{exp.get('svm')}/{exp.get('volume')} client={exp.get('client')} access={exp.get('access')} export_id={exp.get('export_id')}"
+                f"{spec.get('svm')}/{spec.get('volume')} "
+                f"client={spec.get('client')} "
+                f"access={spec.get('access')} "
+                f"phase={status.get('phase', 'unknown')}"
             )
-
     except Exception as e:
         typer.echo(f"Error listing exports: {e}", err=True)
         raise typer.Exit(1)

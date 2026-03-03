@@ -57,6 +57,16 @@ ansible-playbook -i inventory.ini site.yml --syntax-check
 
 リリース準備では、CI は Git tag（例: `v0.2.7`）を `setuptools-scm` 経由でバージョンとして利用します。
 
+## アーキテクチャについて
+
+Python パッケージは **宣言的リコンシリエーション** アーキテクチャを採用しています：
+
+- **リソースモデル** (`models/`): 各リソースの Spec（期待状態）と Status（実際の状態）を定義。
+- **リコンサイラー** (`reconcilers/`): リソースをステップごとに冪等に進めるループ。新しい操作はステップチェーンの拡張で対応。
+- **アダプター** (`adapters/`): システムコマンドの Protocol ベース抽象化。新規追加時は Subprocess（本番）と Fake（テスト）の両実装を提供。
+- **状態ストア** (`db/`): SQLite WAL。すべての変更は DB を経由。
+- **テスト**: ユニットテストは models, errors, DB, reconcilers をカバー。統合テストは `AppContext` 経由で Fake アダプターを注入。
+
 ## Pull Request のガイドライン
 
 - 小さくレビューしやすい単位を優先してください。

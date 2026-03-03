@@ -28,6 +28,18 @@ Arca Storageは、Linux標準技術を使用してNetApp ONTAPのようなSVM機
 - **LVM Thin Provisioning**: 仮想ボリューム管理とスナップショット
 - **DRBD**: ノード間同期データミラーリング
 
+### 内部設計
+
+Python コードベースは **宣言的リコンシリエーション** アーキテクチャを採用しています：
+
+- **リソースモデル** (`models/`): SVM・Volume・Snapshot・Export の各リソースに対して Spec（期待状態）と Status（実際の状態）を持つ Pydantic モデル。
+- **リコンサイラー** (`reconcilers/`): リソースを期待状態から実際の状態へ冪等に遷移させるループ。各ステップの結果を永続化し、リトライ時は最後の成功ステップから再開。
+- **アダプター** (`adapters/`): システム操作（LVM, XFS, Network Namespace, Pacemaker, NFS-Ganesha, systemd）の Protocol ベース抽象化。本番実装は実コマンドを呼び出し、Fake 実装により root 権限なしのインメモリテストが可能。
+- **状態ストア** (`db/`): SQLite WAL バックエンドの状態データベース。ACID トランザクション対応。
+- **構造化エラー** (`errors.py`): マシンリーダブルなエラーコード（`NOT_FOUND`, `ALREADY_EXISTS` など）。HTTP ステータスコードにマッピングされ、Go CSI ドライバから利用可能。
+- **統合設定** (`config.py`): Pydantic で検証される TOML ベースの設定。
+- **アプリケーションコンテキスト** (`context.py`): 依存性の配線 — `AppContext` が DB・アダプター・リコンサイラーを CLI と API の両方に提供。
+
 ## クイックスタート
 
 ### 前提条件
@@ -195,21 +207,46 @@ arca-storage/
 ├── arca_storage/               # Pythonパッケージ
 │   ├── arca_storage/           # パッケージソースコード
 │   │   ├── api/                # FastAPI REST API
-│   │   │   ├── main.py         # APIアプリケーション
-│   │   │   ├── models.py       # Pydanticモデル
-│   │   │   └── services/       # サービス層
-│   │   ├── cli/                # CLIツール
+│   │   │   ├── main.py         # APIアプリケーション & エラーハンドラ
+│   │   │   ├── models.py       # リクエスト/レスポンス Pydantic モデル
+│   │   │   └── services/       # サービス層（リコンサイラーに委譲）
+│   │   ├── cli/                # CLIツール (Typer)
 │   │   │   ├── cli.py          # メインCLIエントリ
 │   │   │   ├── commands/       # コマンド実装
-│   │   │   └── lib/            # ライブラリ関数
-│   │   ├── resources/          # システムリソース
-│   │   │   └── pacemaker/      # Pacemakerリソースエージェント
+│   │   │   └── lib/            # バリデータ、ヘルパー
+│   │   ├── models/             # リソースモデル (Spec/Status)
+│   │   │   ├── svm.py          # SVM リソース
+│   │   │   ├── volume.py       # Volume リソース
+│   │   │   ├── snapshot.py     # Snapshot リソース
+│   │   │   └── export.py       # Export リソース
+│   │   ├── reconcilers/        # リコンシリエーションループ
+│   │   │   ├── svm.py          # SVM リコンサイラー
+│   │   │   ├── volume.py       # Volume リコンサイラー
+│   │   │   ├── snapshot.py     # Snapshot リコンサイラー
+│   │   │   └── export.py       # Export リコンサイラー
+│   │   ├── adapters/           # システム操作アダプター
+│   │   │   ├── lvm.py          # LVM (Protocol + Subprocess + Fake)
+│   │   │   ├── xfs.py          # XFS
+│   │   │   ├── netns.py        # Network Namespace
+│   │   │   ├── pacemaker.py    # Pacemaker
+│   │   │   ├── ganesha.py      # NFS-Ganesha
+│   │   │   └── systemd.py      # systemd
+│   │   ├── db/                 # SQLite WAL 状態ストア
+│   │   ├── errors.py           # 構造化エラーコード
+│   │   ├── config.py           # TOML 設定 (Pydantic)
+│   │   ├── context.py          # 依存性の配線 (AppContext)
+│   │   ├── openstack/          # OpenStack ドライバ (Cinder, Manila)
+│   │   ├── resources/          # Pacemaker RA, systemd ユニット
 │   │   └── templates/          # 設定テンプレート
 │   ├── tests/                  # テストスイート
+│   │   ├── unit/               # ユニットテスト (models, errors, db, reconcilers)
+│   │   └── integration/        # 統合テスト (CLI, API, シナリオ)
 │   ├── pyproject.toml          # パッケージ設定
-│   ├── setup.py                # レガシー設定
-│   ├── pytest.ini              # テスト設定
-│   └── README.md               # パッケージドキュメント
+│   └── pytest.ini              # テスト設定
+├── csi-arca-storage/           # Go CSI ドライバ
+│   ├── pkg/arca/               # ARCA API クライアント & 構造化エラー
+│   ├── cmd/                    # CLI エントリポイント
+│   └── deploy/                 # Kubernetes マニフェスト
 ├── ansible/                    # Ansibleプレイブック
 │   ├── roles/                  # Ansibleロール
 │   └── site.yml                # メインプレイブック

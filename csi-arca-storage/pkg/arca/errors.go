@@ -46,15 +46,16 @@ var (
 // APIError represents an error from the ARCA API
 type APIError struct {
 	StatusCode int
+	Code       string // Structured error code (e.g., "NOT_FOUND", "ALREADY_EXISTS")
 	Message    string
 	Err        error
 }
 
 func (e *APIError) Error() string {
 	if e.Err != nil {
-		return fmt.Sprintf("arca api error (status %d): %s: %v", e.StatusCode, e.Message, e.Err)
+		return fmt.Sprintf("arca api error (status %d, code=%s): %s: %v", e.StatusCode, e.Code, e.Message, e.Err)
 	}
-	return fmt.Sprintf("arca api error (status %d): %s", e.StatusCode, e.Message)
+	return fmt.Sprintf("arca api error (status %d, code=%s): %s", e.StatusCode, e.Code, e.Message)
 }
 
 func (e *APIError) Unwrap() error {
@@ -70,11 +71,71 @@ func NewAPIError(statusCode int, message string, err error) *APIError {
 	}
 }
 
-// MapHTTPStatusToError maps HTTP status codes to specific errors
+// ArcaAPIError represents the structured error response from the ARCA API
+type ArcaAPIError struct {
+	Code    string                 `json:"code"`
+	Message string                 `json:"message"`
+	Details map[string]interface{} `json:"details,omitempty"`
+}
+
+// ArcaErrorResponse represents the full error response envelope
+type ArcaErrorResponse struct {
+	RequestID string        `json:"request_id"`
+	Status    string        `json:"status"`
+	Error     ArcaAPIError  `json:"error"`
+}
+
+// MapErrorCodeToError maps a structured error code to a sentinel error
+func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
+	if errResp == nil {
+		return NewAPIError(statusCode, "unknown error", nil)
+	}
+
+	resourceType, _ := errResp.Details["resource_type"].(string)
+
+	switch errResp.Code {
+	case "NOT_FOUND":
+		switch resourceType {
+		case "Directory":
+			return ErrDirectoryNotFound
+		case "Snapshot":
+			return ErrSnapshotNotFound
+		case "Quota":
+			return ErrQuotaNotFound
+		default:
+			return ErrSVMNotFound
+		}
+	case "ALREADY_EXISTS":
+		switch resourceType {
+		case "Directory":
+			return ErrDirectoryAlreadyExists
+		case "Snapshot":
+			return ErrSnapshotAlreadyExists
+		default:
+			return ErrSVMAlreadyExists
+		}
+	case "CONFLICT":
+		if containsAny(errResp.Message, "ip", "vlan", "network") {
+			return ErrNetworkConflict
+		}
+		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: errResp.Message}
+	case "RESOURCE_EXHAUSTED":
+		return ErrAllPoolsExhausted
+	case "UNAVAILABLE":
+		return ErrUnavailable
+	case "TIMEOUT":
+		return ErrTimeout
+	default:
+		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: errResp.Message}
+	}
+}
+
+// MapHTTPStatusToError maps HTTP status codes to specific errors.
+// This is used as a fallback when the response body doesn't contain
+// a structured error (e.g., non-JSON responses from proxies).
 func MapHTTPStatusToError(statusCode int, message string) error {
 	switch statusCode {
 	case 404:
-		// Distinguish between different resource types based on message
 		if containsAny(message, "svm", "storage virtual machine") {
 			return ErrSVMNotFound
 		} else if containsAny(message, "directory", "path") {
@@ -84,9 +145,8 @@ func MapHTTPStatusToError(statusCode int, message string) error {
 		} else if containsAny(message, "quota") {
 			return ErrQuotaNotFound
 		}
-		return ErrSVMNotFound // Default to SVM not found
+		return ErrSVMNotFound
 	case 409:
-		// Distinguish between existence conflicts and network conflicts
 		if containsAny(message, "ip", "vlan", "network") {
 			return ErrNetworkConflict
 		} else if containsAny(message, "directory") {
@@ -94,7 +154,7 @@ func MapHTTPStatusToError(statusCode int, message string) error {
 		} else if containsAny(message, "snapshot") {
 			return ErrSnapshotAlreadyExists
 		}
-		return ErrSVMAlreadyExists // Default to SVM already exists
+		return ErrSVMAlreadyExists
 	case 503:
 		return ErrUnavailable
 	default:

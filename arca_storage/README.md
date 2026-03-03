@@ -8,14 +8,27 @@ Software-Defined Storage system with SVM (Storage Virtual Machine) functionality
 arca_storage/
 ├── arca_storage/        # Main package source code
 │   ├── api/             # REST API (FastAPI)
+│   │   ├── main.py      # API application & error handlers
+│   │   ├── models.py    # Request/Response Pydantic models
+│   │   └── services/    # Service layer (delegates to reconcilers)
 │   ├── cli/             # CLI tool (Typer)
+│   │   ├── cli.py       # Main CLI entry
+│   │   ├── commands/    # Command implementations
+│   │   └── lib/         # Validators, helpers
+│   ├── models/          # Resource models (Spec/Status, Pydantic v2)
+│   ├── reconcilers/     # Reconciliation loops (desired → actual state)
+│   ├── adapters/        # Protocol-based system operation adapters
+│   ├── db/              # SQLite WAL state store
+│   ├── errors.py        # Structured error codes & hierarchy
+│   ├── config.py        # TOML configuration (Pydantic)
+│   ├── context.py       # Application context / dependency wiring
+│   ├── openstack/       # OpenStack drivers (Cinder, Manila)
 │   ├── templates/       # Configuration templates
-│   └── resources/       # Resource files
+│   └── resources/       # Pacemaker RA, systemd units
 ├── tests/               # Test suite
-│   ├── unit/            # Unit tests
-│   └── integration/     # Integration tests
+│   ├── unit/            # Unit tests (models, errors, db, reconcilers)
+│   └── integration/     # Integration tests (CLI, API, scenarios)
 ├── pyproject.toml       # Modern package configuration
-├── setup.py             # Legacy package configuration
 ├── pytest.ini           # Pytest configuration
 └── requirements.txt     # Python dependencies
 ```
@@ -45,19 +58,19 @@ pip install .
 arca --help
 
 # SVM management
-arca svm create <name>
+arca svm create <name> --vlan <id> --ip <cidr>
 arca svm list
 arca svm delete <name>
 
 # Volume management
-arca volume create <svm_name> <volume_name> <size>
-arca volume list <svm_name>
-arca volume delete <svm_name> <volume_name>
+arca volume create <name> --svm <svm_name> --size <gib>
+arca volume list --svm <svm_name>
+arca volume delete <name> --svm <svm_name>
 
 # Export management
-arca export create <svm_name> <volume_name> <client_cidr>
-arca export list <svm_name>
-arca export delete <svm_name> <export_id>
+arca export add --volume <name> --svm <svm_name> --client <cidr>
+arca export list --svm <svm_name>
+arca export remove --volume <name> --svm <svm_name> --client <cidr>
 ```
 
 ### REST API
@@ -89,16 +102,17 @@ pytest --cov=arca_storage --cov-report=html
 
 ### Code Structure
 
-- **CLI** (`arca_storage/cli/`): Command-line interface using Typer
-- **API** (`arca_storage/api/`): REST API using FastAPI
-- **Lib** (`arca_storage/cli/lib/`): Core functionality modules
-  - `ganesha.py`: NFS-Ganesha configuration
-  - `lvm.py`: LVM management
-  - `netns.py`: Network namespace management
-  - `pacemaker.py`: Pacemaker resource management
-  - `systemd.py`: Systemd service management
-  - `validators.py`: Input validation
-  - `xfs.py`: XFS filesystem management
+The codebase follows a **declarative reconciliation** architecture:
+
+- **Models** (`arca_storage/models/`): Pydantic v2 resource models with Spec (desired state) and Status (actual state) for SVM, Volume, Snapshot, Export.
+- **Reconcilers** (`arca_storage/reconcilers/`): Idempotent loops that drive resources from desired to actual state, persisting each step for crash-safe retries.
+- **Adapters** (`arca_storage/adapters/`): Protocol-based abstractions for LVM, XFS, Network Namespace, Pacemaker, NFS-Ganesha, systemd. Each has a Subprocess (production) and Fake (testing) implementation.
+- **State Store** (`arca_storage/db/`): SQLite WAL-backed database with ACID transactions.
+- **Errors** (`arca_storage/errors.py`): Structured error codes mapping to HTTP status codes.
+- **Config** (`arca_storage/config.py`): TOML-based configuration validated with Pydantic.
+- **Context** (`arca_storage/context.py`): `AppContext` wiring DB, adapters, and reconcilers.
+- **CLI** (`arca_storage/cli/`): Command-line interface using Typer.
+- **API** (`arca_storage/api/`): REST API using FastAPI with global `ArcaError` exception handler.
 
 ### Dependencies
 

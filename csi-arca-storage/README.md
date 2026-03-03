@@ -28,6 +28,7 @@ The CSI driver consists of two main components:
 - **Network Allocator**: Round-robin IP allocation from configured pools
 - **Mount Manager**: Per-SVM shared NFS mounts with derived refcounting
 - **Node State**: Persistent state management for crash recovery
+- **Structured Error Handling**: The API client parses structured error responses from the ARCA backend (error codes like `NOT_FOUND`, `ALREADY_EXISTS`, `CONFLICT`) and maps them to appropriate gRPC status codes for Kubernetes
 
 ## Building
 

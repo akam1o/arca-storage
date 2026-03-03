@@ -1,18 +1,17 @@
 """
 Volume management commands.
+
+Delegates to the Volume reconciler for create/delete operations.
 """
 
 from typing import Optional
 
 import typer
 
-from arca_storage.cli.lib.lvm import create_lv, delete_lv, resize_lv
-from arca_storage.cli.lib.state import delete_volume as state_delete_volume
-from arca_storage.cli.lib.state import list_volumes as state_list_volumes
-from arca_storage.cli.lib.state import upsert_volume as state_upsert_volume
 from arca_storage.cli.lib.validators import validate_name
-from arca_storage.cli.lib.xfs import format_xfs, grow_xfs, mount_xfs, umount_xfs
-from arca_storage.cli.lib.config import load_config
+from arca_storage.context import get_context
+from arca_storage.models.base import Phase, ResourceMeta
+from arca_storage.models.volume import Volume, VolumeSpec, VolumeStatus
 
 app = typer.Typer(help="Volume management commands")
 
@@ -24,51 +23,27 @@ def create(
     size: int = typer.Option(..., "--size", help="Size in GiB"),
     thin: bool = typer.Option(True, "--thin/--no-thin", help="Use thin provisioning (default: True)"),
 ):
-    """
-    Create a new volume.
-
-    Creates an LVM logical volume, formats it with XFS, and mounts it.
-    """
+    """Create a new volume via the reconciler."""
     try:
         validate_name(name)
         validate_name(svm)
 
         typer.echo(f"Creating volume: {name} in SVM: {svm}")
 
-        cfg = load_config()
-        vg_name = cfg.vg_name
-        export_dir = cfg.export_dir.rstrip("/")
-        mount_path = f"{export_dir}/{svm}/{name}"
-        lv_name = f"vol_{svm}_{name}"
-
-        # Create LV
-        lv_path = create_lv(vg_name, lv_name, size, thin=thin, thinpool_name=cfg.thinpool_name)
-        typer.echo(f"  Created LV: {lv_path}")
-
-        # Format XFS
-        format_xfs(lv_path)
-        typer.echo(f"  Formatted XFS filesystem")
-
-        # Mount
-        mount_xfs(lv_path, mount_path)
-        typer.echo(f"  Mounted at: {mount_path}")
-
-        state_upsert_volume(
-            {
-                "name": name,
-                "svm": svm,
-                "size_gib": size,
-                "thin": thin,
-                "fs_type": "xfs",
-                "mount_path": mount_path,
-                "lv_path": lv_path,
-                "lv_name": lv_name,
-                "status": "available",
-            }
+        ctx = get_context()
+        volume = Volume(
+            spec=VolumeSpec(name=name, svm=svm, size_gib=size, thin=thin),
         )
+        volume = ctx.volume_reconciler.reconcile(volume)
 
-        typer.echo(f"Volume {name} created successfully")
+        if volume.status.phase == Phase.FAILED:
+            typer.echo(f"Error creating volume: {volume.status.message}", err=True)
+            raise typer.Exit(1)
 
+        typer.echo(f"Volume {name} created successfully (phase={volume.status.phase.value})")
+
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error creating volume: {e}", err=True)
         raise typer.Exit(1)
@@ -80,47 +55,43 @@ def resize(
     svm: str = typer.Option(..., "--svm", help="SVM name"),
     new_size: int = typer.Option(..., "--new-size", help="New size in GiB"),
 ):
-    """
-    Resize a volume.
-
-    Extends the LVM logical volume and grows the XFS filesystem.
-    """
+    """Resize a volume (LVM extend + XFS grow)."""
     try:
         validate_name(name)
         validate_name(svm)
 
         typer.echo(f"Resizing volume: {name} in SVM: {svm}")
 
-        cfg = load_config()
-        vg_name = cfg.vg_name
-        export_dir = cfg.export_dir.rstrip("/")
-        mount_path = f"{export_dir}/{svm}/{name}"
+        ctx = get_context()
+        cfg = ctx.settings.to_reconciler_config()
+        vg_name = cfg["vg_name"]
+        export_dir = cfg["export_dir"]
         lv_name = f"vol_{svm}_{name}"
+        mount_path = f"{export_dir}/{svm}/{name}"
 
-        # Resize LV
-        resize_lv(vg_name, lv_name, new_size)
+        ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size)
         typer.echo(f"  Resized LV to {new_size} GiB")
 
-        # Grow XFS
-        grow_xfs(mount_path)
+        ctx.adapters.xfs.grow(mount_path)
         typer.echo(f"  Grew XFS filesystem")
 
-        state_upsert_volume(
-            {
-                "name": name,
-                "svm": svm,
-                "size_gib": new_size,
-                "thin": True,
-                "fs_type": "xfs",
-                "mount_path": mount_path,
-                "lv_path": f"/dev/{vg_name}/{lv_name}",
-                "lv_name": lv_name,
-                "status": "available",
-            }
-        )
+        # Update DB record
+        records = ctx.db.list_volumes(svm=svm, name=name)
+        if records:
+            record = records[0]
+            vol = Volume(
+                metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
+                spec=VolumeSpec.model_validate(record["spec"]),
+                status=VolumeStatus.model_validate(record["status"]),
+            )
+            vol.spec.size_gib = new_size
+            vol.metadata.bump()
+            ctx.db.upsert_volume(vol)
 
         typer.echo(f"Volume {name} resized successfully")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error resizing volume: {e}", err=True)
         raise typer.Exit(1)
@@ -132,35 +103,32 @@ def delete(
     svm: str = typer.Option(..., "--svm", help="SVM name"),
     force: bool = typer.Option(False, "--force", help="Force deletion"),
 ):
-    """
-    Delete a volume.
-
-    Unmounts the filesystem and removes the LVM logical volume.
-    """
+    """Delete a volume via the reconciler."""
     try:
         validate_name(name)
         validate_name(svm)
 
         typer.echo(f"Deleting volume: {name} in SVM: {svm}")
 
-        cfg = load_config()
-        vg_name = cfg.vg_name
-        export_dir = cfg.export_dir.rstrip("/")
-        mount_path = f"{export_dir}/{svm}/{name}"
-        lv_name = f"vol_{svm}_{name}"
+        ctx = get_context()
+        records = ctx.db.list_volumes(svm=svm, name=name)
+        if not records:
+            typer.echo(f"Volume {name} not found in SVM {svm}", err=True)
+            raise typer.Exit(1)
 
-        # Unmount
-        umount_xfs(mount_path)
-        typer.echo(f"  Unmounted filesystem")
-
-        # Delete LV
-        delete_lv(vg_name, lv_name)
-        typer.echo(f"  Deleted LV")
-
-        state_delete_volume(svm, name)
+        record = records[0]
+        vol = Volume(
+            metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
+            spec=VolumeSpec.model_validate(record["spec"]),
+            status=VolumeStatus.model_validate(record["status"]),
+        )
+        vol.status.phase = Phase.DELETING
+        ctx.volume_reconciler.reconcile(vol)
 
         typer.echo(f"Volume {name} deleted successfully")
 
+    except typer.Exit:
+        raise
     except Exception as e:
         typer.echo(f"Error deleting volume: {e}", err=True)
         raise typer.Exit(1)
@@ -171,17 +139,21 @@ def list(
     svm: Optional[str] = typer.Option(None, "--svm", help="Filter by SVM name"),
     name: Optional[str] = typer.Option(None, "--name", help="Filter by volume name"),
 ):
-    """
-    List volumes.
-    """
+    """List volumes."""
     try:
-        volumes = state_list_volumes(svm=svm, name=name)
+        ctx = get_context()
+        volumes = ctx.db.list_volumes(svm=svm, name=name)
         if not volumes:
             typer.echo("No volumes found")
             return
         for vol in volumes:
+            spec = vol.get("spec", {})
+            status = vol.get("status", {})
             typer.echo(
-                f"{vol.get('svm')}/{vol.get('name')} size={vol.get('size_gib')}GiB thin={vol.get('thin')} mount={vol.get('mount_path')}"
+                f"{spec.get('svm')}/{spec.get('name')} "
+                f"size={spec.get('size_gib')}GiB "
+                f"phase={status.get('phase', 'unknown')} "
+                f"mount={status.get('mount_path', 'N/A')}"
             )
     except Exception as e:
         typer.echo(f"Error listing volumes: {e}", err=True)
