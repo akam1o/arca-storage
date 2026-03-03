@@ -1,159 +1,125 @@
 """
 Volume service layer.
+
+Delegates to the Volume reconciler for idempotent, step-tracked operations.
 """
 
-from datetime import datetime
+from __future__ import annotations
+
 from typing import Any, Dict, Optional
 
-from arca_storage.api.models import VolumeCreate, VolumeStatus
-from arca_storage.cli.lib.lvm import create_lv, delete_lv, resize_lv
-from arca_storage.cli.lib.state import delete_volume as state_delete_volume
-from arca_storage.cli.lib.state import list_volumes as state_list_volumes
-from arca_storage.cli.lib.state import upsert_volume as state_upsert_volume
+from arca_storage.api.models import VolumeCreate
+from arca_storage.context import get_context
+from arca_storage.errors import NotFoundError
+from arca_storage.models.base import Phase
+from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
-from arca_storage.cli.lib.xfs import format_xfs, grow_xfs, mount_xfs, umount_xfs
-from arca_storage.cli.lib.config import load_config
 
 
 def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
-    """
-    Create a new volume.
-
-    Args:
-        volume_data: Volume creation data
-
-    Returns:
-        Volume dictionary
-    """
+    """Create a new volume via the reconciler."""
     validate_name(volume_data.name)
     validate_name(volume_data.svm)
 
-    cfg = load_config()
-    vg_name = cfg.vg_name
-    export_dir = cfg.export_dir.rstrip("/")
-    mount_path = f"{export_dir}/{volume_data.svm}/{volume_data.name}"
-    lv_name = f"vol_{volume_data.svm}_{volume_data.name}"
+    ctx = get_context()
 
-    # Create LV
-    lv_path = create_lv(
-        vg_name,
-        lv_name,
-        volume_data.size_gib,
-        thin=volume_data.thin,
-        thinpool_name=cfg.thinpool_name,
+    volume = Volume(
+        spec=VolumeSpec(
+            name=volume_data.name,
+            svm=volume_data.svm,
+            size_gib=volume_data.size_gib,
+            thin=volume_data.thin,
+            fs_type=volume_data.fs_type,
+        ),
     )
 
-    # Format XFS
-    format_xfs(lv_path)
+    volume = ctx.volume_reconciler.reconcile(volume)
 
-    # Mount
-    mount_xfs(lv_path, mount_path)
+    if volume.status.phase == Phase.FAILED:
+        raise RuntimeError(volume.status.message)
 
-    record = {
-        "name": volume_data.name,
-        "svm": volume_data.svm,
-        "size_gib": volume_data.size_gib,
-        "thin": volume_data.thin,
-        "fs_type": volume_data.fs_type,
-        "mount_path": mount_path,
-        "lv_path": lv_path,
-        "lv_name": lv_name,
-        "status": VolumeStatus.AVAILABLE.value,
-        "created_at": datetime.utcnow(),
-    }
-    state_upsert_volume(
-        {
-            **record,
-            "created_at": record["created_at"].isoformat(),
-        }
-    )
-    return record
+    return _volume_to_dict(volume)
 
 
 def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
-    """
-    Resize a volume.
-
-    Args:
-        name: Volume name
-        svm: SVM name
-        new_size_gib: New size in GiB
-
-    Returns:
-        Updated volume dictionary
-    """
+    """Resize a volume (LV extend + XFS grow)."""
     validate_name(name)
     validate_name(svm)
 
-    cfg = load_config()
-    vg_name = cfg.vg_name
-    export_dir = cfg.export_dir.rstrip("/")
-    mount_path = f"{export_dir}/{svm}/{name}"
+    ctx = get_context()
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg["vg_name"]
+    export_dir = cfg["export_dir"]
     lv_name = f"vol_{svm}_{name}"
+    mount_path = f"{export_dir}/{svm}/{name}"
 
-    # Resize LV
-    resize_lv(vg_name, lv_name, new_size_gib)
+    ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
+    ctx.adapters.xfs.grow(mount_path)
 
-    # Grow XFS
-    grow_xfs(mount_path)
+    # Update volume record in DB
+    record = ctx.db.get_volume(svm, name)
+    if record:
+        vol = Volume(
+            metadata=_meta_from_record(record),
+            spec=VolumeSpec.model_validate(record["spec"]),
+            status=_parse_status(record),
+        )
+        vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
+        vol.metadata.bump()
+        ctx.db.upsert_volume(vol)
+        return _volume_to_dict(vol)
 
-    record = {
-        "name": name,
-        "svm": svm,
-        "size_gib": new_size_gib,
-        "thin": True,
-        "fs_type": "xfs",
-        "mount_path": mount_path,
-        "lv_path": f"/dev/{vg_name}/{lv_name}",
-        "lv_name": lv_name,
-        "status": VolumeStatus.AVAILABLE.value,
-        "created_at": datetime.utcnow(),
-    }
-    state_upsert_volume({**record, "created_at": record["created_at"].isoformat()})
-    return record
+    return {"name": name, "svm": svm, "size_gib": new_size_gib, "status": "Ready"}
 
 
 def delete_volume(name: str, svm: str, force: bool = False) -> None:
-    """
-    Delete a volume.
-
-    Args:
-        name: Volume name
-        svm: SVM name
-        force: Force deletion
-    """
+    """Delete a volume via the reconciler."""
     validate_name(name)
     validate_name(svm)
 
-    cfg = load_config()
-    vg_name = cfg.vg_name
-    export_dir = cfg.export_dir.rstrip("/")
-    mount_path = f"{export_dir}/{svm}/{name}"
-    lv_name = f"vol_{svm}_{name}"
+    ctx = get_context()
+    record = ctx.db.get_volume(svm, name)
+    if not record:
+        raise NotFoundError("Volume", f"{svm}/{name}")
 
-    # Unmount
-    umount_xfs(mount_path)
-
-    # Delete LV
-    delete_lv(vg_name, lv_name)
-
-    state_delete_volume(svm, name)
+    volume = Volume(
+        metadata=_meta_from_record(record),
+        spec=VolumeSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    volume.status.phase = Phase.DELETING
+    ctx.volume_reconciler.reconcile(volume)
 
 
 def list_volumes(
     svm: Optional[str] = None, name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None
 ) -> Dict[str, Any]:
-    """
-    List volumes.
+    """List volumes from the database."""
+    ctx = get_context()
+    items = ctx.db.list_volumes(svm=svm, name=name, limit=limit)
+    return {"items": items, "next_cursor": None}
 
-    Args:
-        svm: Filter by SVM name
-        name: Filter by volume name
-        limit: Maximum results
-        cursor: Pagination cursor
 
-    Returns:
-        Dictionary with items and next_cursor
-    """
-    items = state_list_volumes(svm=svm, name=name)
-    return {"items": items[:limit], "next_cursor": None}
+def _volume_to_dict(vol: Volume) -> Dict[str, Any]:
+    return {
+        "name": vol.spec.name,
+        "svm": vol.spec.svm,
+        "size_gib": vol.spec.size_gib,
+        "thin": vol.spec.thin,
+        "fs_type": vol.spec.fs_type,
+        "mount_path": vol.status.mount_path,
+        "lv_path": vol.status.lv_path,
+        "lv_name": vol.status.lv_name,
+        "status": vol.status.phase.value,
+        "created_at": vol.metadata.created_at,
+    }
+
+
+def _meta_from_record(record: Dict[str, Any]) -> Any:
+    from arca_storage.models.base import ResourceMeta
+    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+
+
+def _parse_status(record: Dict[str, Any]) -> Any:
+    from arca_storage.models.volume import VolumeStatus
+    return VolumeStatus.model_validate(record["status"])

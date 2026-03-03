@@ -28,6 +28,7 @@ ARCA Storage 向けの Kubernetes CSI (Container Storage Interface) ドライバ
 - **Network Allocator**: 設定した pool からのラウンドロビン IP 割り当て
 - **Mount Manager**: SVM 単位で共有 NFS マウントを維持（参照カウント）
 - **Node State**: ノード側の永続状態（クラッシュリカバリ）
+- **構造化エラーハンドリング**: API クライアントは ARCA backend からの構造化エラーレスポンス（`NOT_FOUND`, `ALREADY_EXISTS`, `CONFLICT` など）をパースし、Kubernetes 向けの適切な gRPC ステータスコードにマッピング
 
 ## ビルド
 

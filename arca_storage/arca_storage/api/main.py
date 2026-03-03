@@ -29,14 +29,36 @@ from arca_storage.api.models import (
     VolumeResponse,
 )
 from arca_storage.api.services import export_service, qos_service, snapshot_service, svm_service, volume_service
+from arca_storage.errors import ArcaError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
 
 
+@app.exception_handler(ArcaError)
+async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
+    """Return structured error responses for all ArcaError subtypes."""
+    request_id = str(uuid.uuid4())
+    logger.warning(
+        "ArcaError (request_id=%s, path=%s, code=%s): %s",
+        request_id,
+        request.url.path,
+        exc.code.value,
+        exc.message,
+    )
+    return JSONResponse(
+        status_code=exc.http_status,
+        content={
+            "request_id": request_id,
+            "status": "error",
+            "error": exc.to_dict(),
+        },
+    )
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
-    """Global exception handler."""
+    """Global fallback exception handler."""
     request_id = str(uuid.uuid4())
     logger.exception("Unhandled error (request_id=%s, path=%s)", request_id, request.url.path)
     return JSONResponse(
@@ -44,7 +66,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
         content={
             "request_id": request_id,
             "status": "error",
-            "error": {"code": "INTERNAL_ERROR", "message": "Internal server error", "details": {}},
+            "error": {"code": "INTERNAL", "message": "Internal server error", "details": {}},
         },
     )
 
@@ -54,15 +76,9 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
 
 @app.post("/v1/svms", response_model=SVMResponse, status_code=201)
 def create_svm(svm: SVMCreate) -> Dict[str, Any]:
-    """
-    Create a new SVM.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        result = svm_service.create_svm(svm)
-        return {"request_id": request_id, "status": "ok", "data": {"svm": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    result = svm_service.create_svm(svm)
+    return {"request_id": request_id, "status": "ok", "data": {"svm": result}}
 
 
 @app.get("/v1/svms", response_model=SVMListResponse)
@@ -89,17 +105,9 @@ def delete_svm(
     force: bool = Query(False, description="Force deletion"),
     delete_volumes: bool = Query(False, description="Delete volumes as well"),
 ) -> Dict[str, Any]:
-    """
-    Delete an SVM.
-    """
-    try:
-        request_id = str(uuid.uuid4())
-        svm_service.delete_svm(name, force, delete_volumes)
-        return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    request_id = str(uuid.uuid4())
+    svm_service.delete_svm(name, force, delete_volumes)
+    return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
 
 
 # Volume endpoints
@@ -107,43 +115,25 @@ def delete_svm(
 
 @app.post("/v1/volumes", response_model=VolumeResponse, status_code=201)
 def create_volume(volume: VolumeCreate) -> Dict[str, Any]:
-    """
-    Create a new volume.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        result = volume_service.create_volume(volume)
-        return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    result = volume_service.create_volume(volume)
+    return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
 
 
 @app.patch("/v1/volumes/{name}", response_model=VolumeResponse)
 def resize_volume(name: str, resize: VolumeResize) -> Dict[str, Any]:
-    """
-    Resize a volume.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        result = volume_service.resize_volume(name, resize.svm, resize.new_size_gib)
-        return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    result = volume_service.resize_volume(name, resize.svm, resize.new_size_gib)
+    return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
 
 
 @app.delete("/v1/volumes/{name}", response_model=SuccessResponse)
 def delete_volume(
     name: str, svm: str = Query(..., description="SVM name"), force: bool = Query(False, description="Force deletion")
 ) -> Dict[str, Any]:
-    """
-    Delete a volume.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        volume_service.delete_volume(name, svm, force)
-        return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    volume_service.delete_volume(name, svm, force)
+    return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
 
 
 @app.get("/v1/volumes", response_model=VolumeListResponse)
@@ -170,15 +160,9 @@ def list_volumes(
 
 @app.post("/v1/exports", response_model=ExportResponse, status_code=201)
 def add_export(export: ExportCreate) -> Dict[str, Any]:
-    """
-    Add an NFS export.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        result = export_service.add_export(export)
-        return {"request_id": request_id, "status": "ok", "data": {"export": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+    result = export_service.add_export(export)
+    return {"request_id": request_id, "status": "ok", "data": {"export": result}}
 
 
 @app.delete("/v1/exports", response_model=SuccessResponse)
@@ -187,15 +171,9 @@ def remove_export(
     volume: str = Query(..., description="Volume name"),
     client: str = Query(..., description="Client CIDR"),
 ) -> Dict[str, Any]:
-    """
-    Remove an NFS export.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        export_service.remove_export(svm, volume, client)
-        return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    export_service.remove_export(svm, volume, client)
+    return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
 
 
 @app.get("/v1/exports", response_model=ExportListResponse)
@@ -223,17 +201,9 @@ def list_exports(
 
 @app.post("/v1/snapshots", response_model=SnapshotResponse, status_code=201)
 def create_snapshot(snapshot: SnapshotCreate) -> Dict[str, Any]:
-    """
-    Create a snapshot of a volume.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        result = snapshot_service.create_snapshot(snapshot)
-        return {"request_id": request_id, "status": "ok", "data": {"snapshot": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    result = snapshot_service.create_snapshot(snapshot)
+    return {"request_id": request_id, "status": "ok", "data": {"snapshot": result}}
 
 
 @app.delete("/v1/snapshots/{name}", response_model=SuccessResponse)
@@ -243,17 +213,9 @@ def delete_snapshot(
     volume: str = Query(..., description="Volume name"),
     force: bool = Query(False, description="Force deletion"),
 ) -> Dict[str, Any]:
-    """
-    Delete a snapshot.
-    """
     request_id = str(uuid.uuid4())
-    try:
-        snapshot_service.delete_snapshot(name, svm, volume, force)
-        return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
-    except ValueError as e:
-        raise HTTPException(status_code=404, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=409, detail=str(e))
+    snapshot_service.delete_snapshot(name, svm, volume, force)
+    return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
 
 
 @app.get("/v1/snapshots", response_model=SnapshotListResponse)
@@ -278,17 +240,9 @@ def list_snapshots(
 
 @app.post("/v1/volumes/{name}/clone", response_model=VolumeResponse, status_code=201)
 def clone_volume_from_snapshot(name: str, clone: VolumeCloneCreate) -> Dict[str, Any]:
-    """
-    Create a new volume from a snapshot (clone).
-    """
     request_id = str(uuid.uuid4())
-    try:
-        result = snapshot_service.clone_volume_from_snapshot(clone)
-        return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    result = snapshot_service.clone_volume_from_snapshot(clone)
+    return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
 
 
 # QoS endpoints
@@ -318,20 +272,15 @@ def apply_qos_to_volume(name: str, qos: VolumeQoSApply) -> Dict[str, Any]:
     ```
     """
     request_id = str(uuid.uuid4())
-    try:
-        result = qos_service.apply_qos_to_volume(
-            svm=qos.svm,
-            volume=name,
-            read_iops=qos.read_iops,
-            write_iops=qos.write_iops,
-            read_bps=qos.read_bps,
-            write_bps=qos.write_bps,
-        )
-        return {"request_id": request_id, "status": "ok", "data": {"qos": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    result = qos_service.apply_qos_to_volume(
+        svm=qos.svm,
+        volume=name,
+        read_iops=qos.read_iops,
+        write_iops=qos.write_iops,
+        read_bps=qos.read_bps,
+        write_bps=qos.write_bps,
+    )
+    return {"request_id": request_id, "status": "ok", "data": {"qos": result}}
 
 
 @app.delete("/v1/volumes/{name}/qos", response_model=SuccessResponse)
@@ -345,13 +294,8 @@ def remove_qos_from_volume(
     This resets all I/O limits to unlimited (max).
     """
     request_id = str(uuid.uuid4())
-    try:
-        qos_service.remove_qos_from_volume(svm=svm, volume=name)
-        return {"request_id": request_id, "status": "ok", "data": {"message": "QoS limits removed"}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    qos_service.remove_qos_from_volume(svm=svm, volume=name)
+    return {"request_id": request_id, "status": "ok", "data": {"message": "QoS limits removed"}}
 
 
 @app.get("/v1/volumes/{name}/qos", response_model=VolumeQoSResponse)
@@ -365,10 +309,5 @@ def get_qos_settings(
     Returns the current I/O limits (IOPS and bandwidth) applied to the volume.
     """
     request_id = str(uuid.uuid4())
-    try:
-        result = qos_service.get_qos_settings(svm=svm, volume=name)
-        return {"request_id": request_id, "status": "ok", "data": {"qos": result}}
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
-    except RuntimeError as e:
-        raise HTTPException(status_code=404, detail=str(e))
+    result = qos_service.get_qos_settings(svm=svm, volume=name)
+    return {"request_id": request_id, "status": "ok", "data": {"qos": result}}

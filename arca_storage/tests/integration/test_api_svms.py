@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.errors import NotFoundError
 
 
 @pytest.fixture
@@ -132,7 +133,7 @@ class TestDeleteSVM:
     @pytest.mark.asyncio
     async def test_delete_svm_not_found(self, mock_delete, client):
         """Test deleting non-existent SVM."""
-        mock_delete.side_effect = ValueError("SVM not found")
+        mock_delete.side_effect = NotFoundError("SVM", "nonexistent")
 
         response = client.delete("/v1/svms/nonexistent")
 

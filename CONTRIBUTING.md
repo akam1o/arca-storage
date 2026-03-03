@@ -57,6 +57,16 @@ Packaging helpers live under `packaging/`.
 
 If you are preparing a release, note that CI uses the Git tag (e.g. `v0.2.7`) as the version via `setuptools-scm`.
 
+## Architecture notes
+
+The Python package uses a **declarative reconciliation** architecture:
+
+- **Resource models** (`models/`): Define Spec (desired) and Status (actual) for each resource type.
+- **Reconcilers** (`reconcilers/`): Idempotent loops that advance resources step by step. Add new operations by extending the reconciler's step chain.
+- **Adapters** (`adapters/`): Protocol-based abstractions for system commands. When adding a new adapter, provide both a Subprocess (production) and Fake (testing) implementation.
+- **State store** (`db/`): SQLite with WAL. All mutations go through the DB.
+- **Tests**: Unit tests cover models, errors, DB, and reconcilers. Integration tests use Fake adapters injected via `AppContext`.
+
 ## Pull request guidelines
 
 - Prefer small, reviewable PRs.

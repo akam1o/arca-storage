@@ -1,175 +1,120 @@
 """
 Snapshot service layer.
+
+Delegates to the Snapshot reconciler for idempotent, step-tracked operations.
 """
 
-from datetime import datetime
+from __future__ import annotations
+
 from typing import Any, Dict, Optional
 
-from arca_storage.api.models import SnapshotCreate, SnapshotStatus, VolumeCloneCreate
-from arca_storage.cli.lib.lvm import create_lv, create_snapshot_lv, delete_snapshot_lv
-from arca_storage.cli.lib.state import delete_snapshot as state_delete_snapshot
-from arca_storage.cli.lib.state import list_snapshots as state_list_snapshots
-from arca_storage.cli.lib.state import upsert_snapshot as state_upsert_snapshot
-from arca_storage.cli.lib.state import upsert_volume as state_upsert_volume
+from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
+from arca_storage.context import get_context
+from arca_storage.errors import NotFoundError
+from arca_storage.models.base import Phase
+from arca_storage.models.snapshot import Snapshot, SnapshotSpec
+from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
-from arca_storage.cli.lib.xfs import format_xfs, mount_xfs
-from arca_storage.cli.lib.config import load_config
 
 
 def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
-    """
-    Create a snapshot of a volume.
-
-    Args:
-        snapshot_data: Snapshot creation data
-
-    Returns:
-        Snapshot dictionary
-
-    Raises:
-        RuntimeError: If snapshot creation fails
-    """
+    """Create a snapshot via the reconciler."""
     validate_name(snapshot_data.name)
     validate_name(snapshot_data.svm)
     validate_name(snapshot_data.volume)
 
-    cfg = load_config()
-    vg_name = cfg.vg_name
+    ctx = get_context()
 
-    # LV naming: vol_{svm}_{volume}_snap_{snapshot_name}
-    source_lv = f"vol_{snapshot_data.svm}_{snapshot_data.volume}"
-    snap_lv = f"vol_{snapshot_data.svm}_{snapshot_data.volume}_snap_{snapshot_data.name}"
-
-    # Create thin snapshot
-    snap_path = create_snapshot_lv(vg_name, source_lv, snap_lv)
-
-    record = {
-        "name": snapshot_data.name,
-        "svm": snapshot_data.svm,
-        "volume": snapshot_data.volume,
-        "lv_path": snap_path,
-        "lv_name": snap_lv,
-        "status": SnapshotStatus.AVAILABLE.value,
-        "created_at": datetime.utcnow(),
-    }
-
-    state_upsert_snapshot(
-        {
-            **record,
-            "created_at": record["created_at"].isoformat(),
-        }
+    snapshot = Snapshot(
+        spec=SnapshotSpec(
+            name=snapshot_data.name,
+            svm=snapshot_data.svm,
+            volume=snapshot_data.volume,
+        ),
     )
 
-    return record
+    snapshot = ctx.snapshot_reconciler.reconcile(snapshot)
+
+    if snapshot.status.phase == Phase.FAILED:
+        raise RuntimeError(snapshot.status.message)
+
+    return _snapshot_to_dict(snapshot)
 
 
 def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> None:
-    """
-    Delete a snapshot.
-
-    Args:
-        name: Snapshot name
-        svm: SVM name
-        volume: Volume name
-        force: Force deletion
-
-    Raises:
-        RuntimeError: If snapshot deletion fails
-    """
+    """Delete a snapshot via the reconciler."""
     validate_name(name)
     validate_name(svm)
     validate_name(volume)
 
-    cfg = load_config()
-    vg_name = cfg.vg_name
+    ctx = get_context()
+    records = ctx.db.list_snapshots(svm=svm, volume=volume, name=name)
+    if not records:
+        raise NotFoundError("Snapshot", f"{svm}/{volume}/{name}")
 
-    snap_lv = f"vol_{svm}_{volume}_snap_{name}"
-
-    # Delete snapshot LV
-    delete_snapshot_lv(vg_name, snap_lv)
-
-    # Remove from state
-    state_delete_snapshot(svm, volume, name)
+    record = records[0]
+    snapshot = Snapshot(
+        metadata=_meta_from_record(record),
+        spec=SnapshotSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    snapshot.status.phase = Phase.DELETING
+    ctx.snapshot_reconciler.reconcile(snapshot)
 
 
 def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
-    """
-    Create a new volume from a snapshot (clone).
-
-    This creates a writable clone by:
-    1. Creating a new thin LV from the snapshot
-    2. Formatting it with XFS
-    3. Mounting it
-
-    Args:
-        clone_data: Clone creation data
-
-    Returns:
-        New volume dictionary
-
-    Raises:
-        RuntimeError: If clone creation fails
-    """
+    """Create a new volume from a snapshot (clone)."""
     validate_name(clone_data.name)
     validate_name(clone_data.svm)
     validate_name(clone_data.snapshot)
 
-    cfg = load_config()
-    vg_name = cfg.vg_name
-    export_dir = cfg.export_dir.rstrip("/")
+    ctx = get_context()
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg["vg_name"]
+    export_dir = cfg["export_dir"]
+
+    # Find the snapshot
+    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, name=clone_data.snapshot)
+    if not snapshots:
+        raise NotFoundError("Snapshot", f"{clone_data.svm}/{clone_data.snapshot}")
+
+    snap_record = snapshots[0]
+    source_volume = snap_record["spec"]["volume"]
+    snap_lv = f"vol_{clone_data.svm}_{source_volume}_snap_{clone_data.snapshot}"
+    new_lv = f"vol_{clone_data.svm}_{clone_data.name}"
     mount_path = f"{export_dir}/{clone_data.svm}/{clone_data.name}"
 
-    # Find the snapshot to clone from
-    snapshots = state_list_snapshots(svm=clone_data.svm, name=clone_data.snapshot)
-    if not snapshots:
-        raise RuntimeError(f"Snapshot {clone_data.snapshot} not found in SVM {clone_data.svm}")
+    # Create writable clone from snapshot
+    clone_lv_path = ctx.adapters.lvm.create_snapshot(vg_name, snap_lv, new_lv)
+    ctx.adapters.xfs.mount(clone_lv_path, mount_path)
 
-    snapshot = snapshots[0]
-    source_volume = snapshot["volume"]
+    # Store as volume
+    volume = Volume(
+        spec=VolumeSpec(
+            name=clone_data.name,
+            svm=clone_data.svm,
+            size_gib=clone_data.size_gib or 10,
+            thin=True,
+        ),
+    )
+    volume.status.phase = Phase.READY
+    volume.status.lv_created = True
+    volume.status.fs_formatted = True
+    volume.status.mounted = True
+    volume.status.lv_path = clone_lv_path
+    volume.status.lv_name = new_lv
+    volume.status.mount_path = mount_path
+    ctx.db.upsert_volume(volume)
 
-    # Snapshot LV name
-    snap_lv = f"vol_{clone_data.svm}_{source_volume}_snap_{clone_data.snapshot}"
-    snap_path = f"/dev/{vg_name}/{snap_lv}"
-
-    # New volume LV name
-    new_lv = f"vol_{clone_data.svm}_{clone_data.name}"
-
-    # Determine size (use snapshot size if not specified)
-    if clone_data.size_gib:
-        size_gib = clone_data.size_gib
-    else:
-        # Get snapshot size (for simplicity, we'll create with same size as source)
-        # In production, you'd query lvdisplay for actual size
-        size_gib = 10  # Default fallback
-
-    # Create new thin LV from snapshot (writable clone)
-    # This is done by creating a snapshot of the snapshot
-    # The snapshot will inherit the XFS filesystem with all data
-    clone_lv_path = create_snapshot_lv(vg_name, snap_lv, new_lv)
-
-    # IMPORTANT: Do NOT format the clone - it already has XFS with data from the snapshot
-    # format_xfs(clone_lv_path) would destroy the data!
-
-    # Mount the cloned filesystem (which contains the original data)
-    mount_xfs(clone_lv_path, mount_path)
-
-    # Store volume record
-    record = {
+    return {
         "name": clone_data.name,
         "svm": clone_data.svm,
-        "size_gib": size_gib,
-        "thin": True,
-        "fs_type": "xfs",
-        "mount_path": mount_path,
+        "size_gib": clone_data.size_gib or 10,
+        "status": Phase.READY.value,
         "lv_path": clone_lv_path,
-        "lv_name": new_lv,
-        "status": "available",
-        "created_at": datetime.utcnow(),
+        "mount_path": mount_path,
+        "created_at": volume.metadata.created_at,
     }
-
-    state_upsert_volume({**record, "created_at": record["created_at"].isoformat()})
-
-    return record
 
 
 def list_snapshots(
@@ -179,18 +124,29 @@ def list_snapshots(
     limit: int = 100,
     cursor: Optional[str] = None,
 ) -> Dict[str, Any]:
-    """
-    List snapshots.
+    """List snapshots from the database."""
+    ctx = get_context()
+    items = ctx.db.list_snapshots(svm=svm, volume=volume, name=name, limit=limit)
+    return {"items": items, "next_cursor": None}
 
-    Args:
-        svm: Filter by SVM name
-        volume: Filter by volume name
-        name: Filter by snapshot name
-        limit: Maximum results
-        cursor: Pagination cursor
 
-    Returns:
-        Dictionary with items and next_cursor
-    """
-    items = state_list_snapshots(svm=svm, volume=volume, name=name)
-    return {"items": items[:limit], "next_cursor": None}
+def _snapshot_to_dict(snap: Snapshot) -> Dict[str, Any]:
+    return {
+        "name": snap.spec.name,
+        "svm": snap.spec.svm,
+        "volume": snap.spec.volume,
+        "lv_path": snap.status.lv_path,
+        "lv_name": snap.status.lv_name,
+        "status": snap.status.phase.value,
+        "created_at": snap.metadata.created_at,
+    }
+
+
+def _meta_from_record(record: Dict[str, Any]) -> Any:
+    from arca_storage.models.base import ResourceMeta
+    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+
+
+def _parse_status(record: Dict[str, Any]) -> Any:
+    from arca_storage.models.snapshot import SnapshotStatus
+    return SnapshotStatus.model_validate(record["status"])
