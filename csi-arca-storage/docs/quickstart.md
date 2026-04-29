@@ -6,7 +6,7 @@ Get the CSI ARCA Storage driver running in your Kubernetes cluster in under 10 m
 
 ## Prerequisites
 
-- Kubernetes 1.20+
+- Kubernetes 1.25+
 - ARCA storage backend with API access
 - `kubectl` configured
 
@@ -22,6 +22,8 @@ If you plan to use `VolumeSnapshot`/`VolumeSnapshotClass`, ensure snapshot CRDs 
 
 ```bash
 kubectl get crd volumesnapshots.snapshot.storage.k8s.io
+kubectl get crd volumesnapshotcontents.snapshot.storage.k8s.io
+kubectl get crd volumesnapshotclasses.snapshot.storage.k8s.io
 ```
 
 If they are missing, install snapshot CRDs first (see `docs/deployment-checklist.md`).
@@ -150,7 +152,7 @@ kubectl exec test-pod -- df -h /data
 
 ## Next Steps
 
-- [Create snapshots](deployment.md#3-snapshot-creation-fails)
+- [Create snapshots](deployment.md#functional-smoke-test)
 - [Clone volumes](../deploy/examples/snapshot.yaml)
 - [Expand volumes](../README.md#volume-expansion)
 - [Configure HA](deployment.md#high-availability)

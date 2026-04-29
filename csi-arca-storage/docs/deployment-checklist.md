@@ -8,13 +8,16 @@ Use this checklist to ensure a successful deployment of the CSI ARCA Storage dri
 
 ### Infrastructure Requirements
 
-- [ ] Kubernetes cluster version 1.20 or later
+- [ ] Kubernetes cluster version 1.25 or later
+  - [ ] Confirm bundled driver CRDs using CEL validation are accepted by the API server
 - [ ] kubectl configured with cluster admin access
 - [ ] ARCA storage backend is operational
 - [ ] Network connectivity verified between:
   - [ ] Controller pod network → ARCA API
   - [ ] Node network → ARCA storage network (data plane)
   - [ ] All nodes can reach configured VLAN/network pools
+- [ ] Privileged CSI node pods with `SYS_ADMIN`, host mounts, and `hostNetwork` are permitted
+- [ ] Kubelet paths match the manifests (`/var/lib/kubelet/...`) or manifests are patched for your environment
 
 ### ARCA Backend
 
@@ -48,12 +51,7 @@ Use this checklist to ensure a successful deployment of the CSI ARCA Storage dri
   kubectl get crd volumesnapshotcontents.snapshot.storage.k8s.io
   kubectl get crd volumesnapshotclasses.snapshot.storage.k8s.io
   ```
-- [ ] If not installed, install snapshot CRDs:
-  ```bash
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotclasses.yaml
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshotcontents.yaml
-  kubectl apply -f https://raw.githubusercontent.com/kubernetes-csi/external-snapshotter/master/client/config/crd/snapshot.storage.k8s.io_volumesnapshots.yaml
-  ```
+- [ ] If not installed, install snapshot CRDs and the snapshot controller from the external-snapshotter release standardized for your cluster.
 
 ## Configuration
 
@@ -113,6 +111,10 @@ Choose your deployment method:
   ```bash
   kubectl apply -k deploy/crds/
   ```
+- [ ] Verify driver CRDs:
+  ```bash
+  kubectl get crd arcavolumes.storage.arca.io arcasnapshots.storage.arca.io
+  ```
 - [ ] Deploy CSIDriver:
   ```bash
   kubectl apply -f deploy/csidriver.yaml
@@ -135,11 +137,13 @@ Choose your deployment method:
 
 - [ ] For development:
   ```bash
-  kubectl apply -k deploy/kustomize/overlays/development
+  kubectl kustomize --load-restrictor LoadRestrictionsNone \
+    deploy/kustomize/overlays/development | kubectl apply -f -
   ```
 - [ ] For production:
   ```bash
-  kubectl apply -k deploy/kustomize/overlays/production
+  kubectl kustomize --load-restrictor LoadRestrictionsNone \
+    deploy/kustomize/overlays/production | kubectl apply -f -
   ```
 
 ### Deploy Storage Classes

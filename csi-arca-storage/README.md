@@ -28,6 +28,7 @@ The CSI driver consists of two main components:
 - **Network Allocator**: Round-robin IP allocation from configured pools
 - **Mount Manager**: Per-SVM shared NFS mounts with derived refcounting
 - **Node State**: Persistent state management for crash recovery
+- **CRD Metadata Store**: Controller metadata persisted as `ArcaVolume` and `ArcaSnapshot` custom resources
 - **Structured Error Handling**: The API client parses structured error responses from the ARCA backend (error codes like `NOT_FOUND`, `ALREADY_EXISTS`, `CONFLICT`) and maps them to appropriate gRPC status codes for Kubernetes
 
 ## Building
@@ -65,6 +66,8 @@ driver:
   base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
 ```
 
+In Kubernetes deployments, pass the API token from a Secret as `ARCA_AUTH_TOKEN`. The driver uses that environment variable to override `arca.auth_token` from the ConfigMap.
+
 ## Deployment
 
 ### Quick Start
@@ -77,19 +80,21 @@ For detailed deployment instructions, configuration options, and production best
 
 ### Prerequisites
 
-- Kubernetes 1.20+
+- Kubernetes 1.25+
 - ARCA Storage backend with API access
 - Network connectivity between nodes and ARCA storage network
+
+The bundled driver CRDs use Kubernetes CEL validation, so Kubernetes 1.25+ is the practical minimum for the manifests in `deploy/crds/`.
 
 ### Installation Methods
 
 #### Method 1: Direct kubectl (Quickstart)
 
 ```bash
-# Install CRDs first (required before controller starts)
+# Install driver CRDs first (required before controller starts)
 kubectl apply -k deploy/crds/
 
-# If you plan to use VolumeSnapshot/VolumeSnapshotClass, ensure snapshot CRDs are installed first.
+# If you plan to use VolumeSnapshot/VolumeSnapshotClass, ensure Kubernetes snapshot CRDs are installed first.
 
 # Create secret with ARCA API token
 kubectl create secret generic csi-arca-storage-secret \
@@ -112,10 +117,13 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ```bash
 # Development
-kubectl apply -k deploy/kustomize/overlays/development
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/development | kubectl apply -f -
 
 # Production
-kubectl apply -k deploy/kustomize/overlays/production
+# Create deploy/kustomize/overlays/production/secrets.env first.
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/production | kubectl apply -f -
 ```
 
 See [docs/deployment.md](docs/deployment.md) for configuration details
@@ -252,8 +260,8 @@ csi-arca-storage/
 │   │   └── manager.go       # Kubernetes Lease-based locks
 │   ├── config/              # Configuration
 │   │   └── config.go        # Config loading and validation
-│   └── store/               # Metadata storage
-│       └── memory.go        # In-memory store (for testing)
+│   ├── store/               # Metadata storage (CRD-backed + cache)
+│   └── apis/                # ArcaVolume / ArcaSnapshot API types
 └── deploy/                  # Kubernetes manifests
 ```
 

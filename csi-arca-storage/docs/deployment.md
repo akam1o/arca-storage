@@ -2,44 +2,93 @@
 
 English | [日本語](deployment.ja.md)
 
-This guide provides detailed instructions for deploying the CSI ARCA Storage driver in a Kubernetes cluster.
+This guide describes how to deploy the CSI ARCA Storage driver to Kubernetes using the manifests in `deploy/`. It reflects the current driver layout: the controller stores volume and snapshot metadata in ARCA-specific CRDs, the node plugin mounts one shared NFS export per SVM, and authentication is injected through `ARCA_AUTH_TOKEN`.
+
+Run the commands in this document from the `csi-arca-storage/` directory.
+
+## Deployment Model
+
+The deployed driver consists of:
+
+- `CSIDriver` registration: `deploy/csidriver.yaml`
+- Controller `StatefulSet`: `deploy/controller.yaml` for direct apply, or `deploy/controller-statefulset.yaml` through Kustomize
+- Node `DaemonSet`: `deploy/node.yaml`
+- Controller and node RBAC: `deploy/rbac-controller.yaml`, `deploy/rbac-node.yaml`
+- Driver metadata CRDs: `deploy/crds/`
+- Example `StorageClass` and `VolumeSnapshotClass`: `deploy/examples/`
+
+The controller uses `ArcaVolume` and `ArcaSnapshot` cluster-scoped CRDs as its persistent metadata store. Apply these CRDs before starting the controller.
 
 ## Prerequisites
 
 ### Kubernetes Cluster
-- Kubernetes 1.20 or later
-- CSI volume snapshots feature enabled (for snapshot support)
-- Network connectivity from all nodes to ARCA storage network
+
+- Kubernetes 1.25 or later.
+  - The bundled `ArcaVolume` and `ArcaSnapshot` CRDs use CEL validation through `x-kubernetes-validations`, which graduated to beta in Kubernetes 1.25. See the Kubernetes note on [CRD validation rules](https://kubernetes.io/blog/2022/09/23/crd-validation-rules-beta/).
+- `kubectl` access with permission to create CRDs, cluster-scoped RBAC, `StatefulSet`, `DaemonSet`, `Secret`, and `ConfigMap` resources.
+- Snapshot CRDs and the snapshot controller installed if you plan to use `VolumeSnapshot` and `VolumeSnapshotClass`.
+- Kubelet plugin paths follow the standard `/var/lib/kubelet/...` layout used by the manifests.
+- Nodes allow privileged CSI node pods with `SYS_ADMIN`, host mounts, and `hostNetwork`.
 
 ### ARCA Storage Backend
-- ARCA storage backend API accessible
-- Authentication token with appropriate permissions
-- Network pools configured for SVM allocation
 
-### Tools
-- `kubectl` configured to access your cluster
-- `kustomize` (optional, for kustomize-based deployment)
-- Docker (for building custom images)
+- ARCA API endpoint reachable from the controller and node pods.
+- Authentication token with permission to create/delete SVMs, directories, snapshots, and quotas.
+- Backend support for:
+  - SVM lifecycle operations
+  - Directory creation/deletion
+  - Quota set/expand/get operations
+  - Server-side snapshot/clone operations
+- NFS-Ganesha exports available on the SVM VIPs.
 
-## Deployment Methods
+### Network
 
-### Method 1: Direct kubectl Apply (Quickstart)
+- Controller pods can reach the ARCA API endpoint.
+- Every Kubernetes node can reach every SVM VIP selected from the configured pools.
+- NFSv4.2 traffic from nodes to the storage network is allowed.
+- The configured MTU matches the storage network. Use `1500` unless jumbo frames are configured end to end.
 
-1. **Configure ARCA API Access**
+### Local Tools
 
-Create a secret with your ARCA API authentication token:
+- `kubectl`
+- `kustomize` support through `kubectl apply -k` or a standalone `kustomize` binary
+- Docker or a compatible builder if you build your own image
+
+## Before You Deploy
+
+### 1. Choose an Image
+
+The raw manifests use `csi-arca-storage:latest`. The production Kustomize overlay uses `ghcr.io/akam1o/csi-arca-storage:v1.0.0`.
+
+For a custom image:
 
 ```bash
-kubectl create secret generic csi-arca-storage-secret \
-  --namespace=kube-system \
-  --from-literal=auth-token='your-auth-token-here'
+docker build -t <registry>/csi-arca-storage:<tag> .
+docker push <registry>/csi-arca-storage:<tag>
 ```
 
-2. **Configure Network Pools**
+Then update either:
 
-Edit `deploy/controller.yaml` to configure your network pools:
+- `deploy/controller.yaml` and `deploy/node.yaml` for direct apply
+- `deploy/kustomize/overlays/*/kustomization.yaml` for Kustomize
+
+### 2. Prepare ARCA API Configuration
+
+The driver reads `/etc/csi-arca-storage/config.yaml` inside the pod. In Kubernetes this file is supplied by the `csi-arca-storage-config` ConfigMap.
+
+Current configuration schema:
 
 ```yaml
+arca:
+  base_url: "https://arca-api.example.com"
+  timeout: "30s"
+  auth_token: ""  # Prefer ARCA_AUTH_TOKEN from Secret
+  tls:
+    ca_cert_path: ""
+    client_cert_path: ""
+    client_key_path: ""
+    insecure_skip_verify: false
+
 network:
   pools:
     - cidr: "10.0.0.0/24"
@@ -47,148 +96,166 @@ network:
       vlan: 100
       gateway: "10.0.0.1"
   mtu: 1500
+
+driver:
+  endpoint: "unix:///csi/csi.sock"
+  state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
+  base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
 ```
 
-3. **Deploy the Driver**
+Notes:
+
+- `arca.base_url`, at least one `network.pools[].cidr`, and `driver.endpoint` are required.
+- `arca.timeout` defaults to `30s` if omitted.
+- `network.mtu` defaults to `1500` if omitted.
+- `ARCA_AUTH_TOKEN` overrides `arca.auth_token` when set.
+- `CSI_ENDPOINT` overrides `driver.endpoint` when set by the manifests.
+- `network.pools[].range`, `vlan`, and `gateway` are optional, but production deployments should make the intended allocation range explicit.
+
+### 3. Prepare Secrets
+
+Create the API token Secret:
 
 ```bash
-# Apply all manifests
+kubectl create secret generic csi-arca-storage-secret \
+  --namespace=kube-system \
+  --from-literal=auth-token='<your-arca-api-token>'
+```
+
+The controller and node manifests read this value as `ARCA_AUTH_TOKEN`.
+
+### 4. Prepare Snapshot Support
+
+The ARCA driver CRDs are not the same as Kubernetes snapshot CRDs.
+
+Apply the driver CRDs:
+
+```bash
+kubectl apply -k deploy/crds/
+```
+
+If you use Kubernetes `VolumeSnapshot`, confirm these CRDs also exist:
+
+```bash
+kubectl get crd volumesnapshots.snapshot.storage.k8s.io
+kubectl get crd volumesnapshotcontents.snapshot.storage.k8s.io
+kubectl get crd volumesnapshotclasses.snapshot.storage.k8s.io
+```
+
+If they are missing, install the snapshot CRDs and snapshot controller according to your cluster distribution or the external-snapshotter release you standardize on.
+
+## Deployment Method 1: Direct `kubectl apply`
+
+Use direct apply for quick tests or small environments where editing the raw manifests is acceptable.
+
+### 1. Edit the ConfigMap
+
+Edit `deploy/controller.yaml` and update the embedded `csi-arca-storage-config` ConfigMap:
+
+```yaml
+data:
+  config.yaml: |
+    arca:
+      base_url: "https://arca-api.example.com"
+      timeout: "30s"
+      auth_token: ""
+      tls:
+        ca_cert_path: ""
+        insecure_skip_verify: false
+
+    network:
+      pools:
+        - cidr: "10.0.0.0/24"
+          range: "10.0.0.100-10.0.0.200"
+          vlan: 100
+          gateway: "10.0.0.1"
+      mtu: 1500
+
+    driver:
+      endpoint: "unix:///csi/csi.sock"
+      state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
+      base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
+```
+
+### 2. Apply Manifests in Order
+
+```bash
+kubectl apply -k deploy/crds/
 kubectl apply -f deploy/csidriver.yaml
 kubectl apply -f deploy/rbac-controller.yaml
 kubectl apply -f deploy/rbac-node.yaml
 kubectl apply -f deploy/controller.yaml
 kubectl apply -f deploy/node.yaml
+```
 
-# Apply storage class and snapshot class
+### 3. Apply Storage Classes
+
+```bash
 kubectl apply -f deploy/examples/storageclass.yaml
 kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 ```
 
-4. **Verify Installation**
+`deploy/examples/storageclass.yaml` creates:
+
+- `arca-storage`: default delete policy
+- `arca-storage-retain`: retain policy
+- `arca-storage-wait`: `WaitForFirstConsumer`
+
+`deploy/examples/volumesnapshotclass.yaml` creates:
+
+- `arca-snapshots`: delete policy
+- `arca-snapshots-retain`: retain policy
+
+## Deployment Method 2: Kustomize
+
+Use Kustomize for production or repeatable environment-specific deployment. The Kustomize base uses `controller-statefulset.yaml`, which does not embed a ConfigMap or Secret. Those are generated from overlay files.
+
+The current Kustomize base reuses shared manifests from `deploy/`, outside the base directory. Use `kubectl kustomize --load-restrictor LoadRestrictionsNone ... | kubectl apply -f -`; plain `kubectl apply -k` rejects those out-of-root references.
+
+### Development Overlay
+
+Edit `deploy/kustomize/overlays/development/config.yaml`, then deploy:
 
 ```bash
-# Check controller pod
-kubectl get pods -n kube-system -l app=csi-arca-storage-controller
-
-# Check node pods
-kubectl get pods -n kube-system -l app=csi-arca-storage-node
-
-# Check CSIDriver
-kubectl get csidriver csi.arca-storage.io
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/development | kubectl apply -f -
 ```
 
-### Method 2: Kustomize-Based Deployment (Recommended)
+The development overlay:
 
-#### Development Environment
+- Uses `csi-arca-storage:dev`
+- Generates `csi-arca-storage-config` from `config.yaml`
+- Generates `csi-arca-storage-secret` with `auth-token=dev-token`
+- Enables `tls.insecure_skip_verify: true` in the example config
 
-1. **Configure Development Settings**
+### Production Overlay
 
-Edit `deploy/kustomize/overlays/development/config.yaml`:
-
-```yaml
-arca:
-  base_url: "https://arca-api.dev.example.com"
-  tls:
-    insecure_skip_verify: true  # OK for dev
-```
-
-2. **Deploy**
-
-```bash
-kubectl apply -k deploy/kustomize/overlays/development
-```
-
-#### Production Environment
-
-1. **Configure Production Settings**
-
-Edit `deploy/kustomize/overlays/production/config.yaml`:
-
-```yaml
-arca:
-  base_url: "https://arca-api.prod.example.com"
-  timeout: "60s"
-network:
-  pools:
-    - cidr: "10.100.0.0/22"
-      range: "10.100.0.100-10.100.3.200"
-      vlan: 1000
-      gateway: "10.100.0.1"
-  mtu: 9000  # Jumbo frames
-```
-
-2. **Create Secrets**
+Edit `deploy/kustomize/overlays/production/config.yaml`, prepare `secrets.env`, and deploy:
 
 ```bash
 cd deploy/kustomize/overlays/production
 cp secrets.env.example secrets.env
-# Edit secrets.env and add your auth token
-echo "auth-token=your-production-token" > secrets.env
+printf 'auth-token=%s\n' '<your-production-token>' > secrets.env
+cd ../../../..
+
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/production | kubectl apply -f -
 ```
 
-**Important**: Add `secrets.env` to `.gitignore` to prevent committing secrets!
+The production overlay:
 
-3. **Deploy**
+- Uses `ghcr.io/akam1o/csi-arca-storage:v1.0.0`
+- Sets controller replicas to `2`
+- Applies higher controller sidecar resource requests and limits
+- Generates ConfigMap and Secret with stable names
 
-```bash
-kubectl apply -k deploy/kustomize/overlays/production
-```
+Keep `secrets.env` out of version control.
 
-4. **Verify HA Setup**
+## TLS and mTLS
 
-```bash
-# Should show 2 controller replicas
-kubectl get statefulset -n kube-system csi-arca-storage-controller
-```
+### Custom CA
 
-## Configuration Reference
-
-### ARCA API Configuration
-
-```yaml
-arca:
-  base_url: "https://arca-api.example.com"  # ARCA API endpoint
-  timeout: "30s"                             # Request timeout
-  auth_token: ""                             # Set via Secret
-  tls:
-    ca_cert_path: "/etc/csi-arca-storage/ca.crt"  # Path to CA cert
-    client_cert_path: ""                     # Optional: mTLS client cert
-    client_key_path: ""                      # Optional: mTLS client key
-    insecure_skip_verify: false              # Skip TLS verification (NOT for production)
-```
-
-### Network Configuration
-
-```yaml
-network:
-  pools:
-    - cidr: "10.0.0.0/24"          # Network CIDR
-      range: "10.0.0.100-10.0.0.200"  # IP range for SVMs (optional)
-      vlan: 100                     # VLAN ID
-      gateway: "10.0.0.1"           # Gateway IP
-  mtu: 1500                         # MTU for network interfaces
-```
-
-**Notes**:
-- Multiple pools can be defined for round-robin allocation
-- If `range` is omitted, entire CIDR is used
-- MTU should match your network infrastructure (use 9000 for jumbo frames)
-
-### Driver Configuration
-
-```yaml
-driver:
-  node_id: ""                       # Auto-detected from hostname if empty
-  endpoint: "unix:///csi/csi.sock"  # CSI gRPC endpoint
-  state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"  # Node state file
-  base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"  # Mount base path
-```
-
-## TLS Configuration
-
-### Using CA Certificate
-
-1. Create a ConfigMap with your CA certificate:
+Create a ConfigMap:
 
 ```bash
 kubectl create configmap csi-arca-storage-ca \
@@ -196,22 +263,19 @@ kubectl create configmap csi-arca-storage-ca \
   --from-file=ca.crt=/path/to/ca.crt
 ```
 
-2. Mount the ConfigMap in controller and node pods:
+Mount it into `/etc/csi-arca-storage` or another path, then set:
 
 ```yaml
-volumeMounts:
-  - name: ca-cert
-    mountPath: /etc/csi-arca-storage
-    readOnly: true
-volumes:
-  - name: ca-cert
-    configMap:
-      name: csi-arca-storage-ca
+arca:
+  tls:
+    ca_cert_path: "/etc/csi-arca-storage/ca.crt"
 ```
 
-### Using Mutual TLS (mTLS)
+If you mount more than one file into `/etc/csi-arca-storage`, make sure the mount does not hide `config.yaml`. A separate mount path such as `/etc/csi-arca-storage/tls` is often cleaner.
 
-1. Create a Secret with client certificates:
+### mTLS
+
+Create a Secret:
 
 ```bash
 kubectl create secret generic csi-arca-storage-client-certs \
@@ -220,250 +284,334 @@ kubectl create secret generic csi-arca-storage-client-certs \
   --from-file=client.key=/path/to/client.key
 ```
 
-2. Update configuration to reference the certificates:
+Mount it read-only and set:
 
 ```yaml
 arca:
   tls:
-    ca_cert_path: "/etc/csi-arca-storage/ca.crt"
-    client_cert_path: "/etc/csi-arca-storage/client.crt"
-    client_key_path: "/etc/csi-arca-storage/client.key"
+    ca_cert_path: "/etc/csi-arca-storage/tls/ca.crt"
+    client_cert_path: "/etc/csi-arca-storage/tls/client.crt"
+    client_key_path: "/etc/csi-arca-storage/tls/client.key"
+    insecure_skip_verify: false
 ```
 
-## Resource Requirements
+Never set `insecure_skip_verify: true` in production.
 
-### Controller Pod
+## Verification
 
-**Default Resources**:
-- Requests: 100m CPU, 128Mi memory
-- Limits: 500m CPU, 512Mi memory
-
-**Production Recommendations**:
-- Requests: 200m CPU, 256Mi memory
-- Limits: 1000m CPU, 1Gi memory
-
-### Node Pod (per node)
-
-**Default Resources**:
-- Requests: 50m CPU, 64Mi memory
-- Limits: 200m CPU, 256Mi memory
-
-**Adjust based on**:
-- Number of volumes per node
-- Mount/unmount frequency
-- Network I/O load
-
-## High Availability
-
-### Controller HA
-
-For production, run multiple controller replicas:
-
-```yaml
-replicas: 2  # Or more
-```
-
-**Behavior**:
-- Leader election ensures only one active controller
-- Automatic failover on controller failure
-- No downtime during controller updates
-
-### Node Plugin HA
-
-Node plugins run as a DaemonSet (one per node). HA is inherent:
-- Each node has its own plugin instance
-- Node plugin failure only affects that node
-- Automatic restart on failure
-
-## Upgrade Strategy
-
-### Rolling Update (Recommended)
+### Controller
 
 ```bash
-# Update image tag in your kustomization or manifest
+kubectl get statefulset -n kube-system csi-arca-storage-controller
+kubectl get pods -n kube-system -l app=csi-arca-storage-controller
+kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-driver --tail=100
+```
+
+Expected direct-apply controller pod container count: `5/5`.
+
+Controller containers:
+
+- `csi-driver`
+- `csi-provisioner`
+- `csi-snapshotter`
+- `csi-resizer`
+- `liveness-probe`
+
+### Node Plugin
+
+```bash
+kubectl get daemonset -n kube-system csi-arca-storage-node
+kubectl get pods -n kube-system -l app=csi-arca-storage-node
+kubectl logs -n kube-system -l app=csi-arca-storage-node -c csi-driver --tail=100
+```
+
+Expected node pod container count: `3/3`.
+
+Node containers:
+
+- `csi-driver`
+- `node-driver-registrar`
+- `liveness-probe`
+
+### CRDs and Registration
+
+```bash
+kubectl get crd arcavolumes.storage.arca.io arcasnapshots.storage.arca.io
+kubectl get csidriver csi.arca-storage.io
+kubectl get storageclass arca-storage
+kubectl get volumesnapshotclass arca-snapshots
+```
+
+### Functional Smoke Test
+
+Create a PVC:
+
+```bash
+kubectl apply -f deploy/examples/pvc.yaml
+kubectl get pvc example-pvc
+```
+
+Create a pod that mounts it:
+
+```bash
+kubectl apply -f deploy/examples/pod.yaml
+kubectl get pod example-pod
+kubectl exec example-pod -- df -h /data
+kubectl exec example-pod -- sh -c "echo test > /data/test.txt"
+kubectl exec example-pod -- cat /data/test.txt
+```
+
+Check driver metadata:
+
+```bash
+kubectl get arcavolumes
+```
+
+Snapshot test, if snapshot CRDs and controller are installed:
+
+```bash
+kubectl apply -f deploy/examples/snapshot.yaml
+kubectl get volumesnapshot example-snapshot
+kubectl get arcasnapshots
+```
+
+## Operations
+
+### High Availability
+
+The controller runs as a `StatefulSet`. Production uses at least two replicas:
+
+```bash
+kubectl scale statefulset csi-arca-storage-controller \
+  -n kube-system \
+  --replicas=2
+```
+
+The CSI sidecars use leader election, so only the active leader performs controller work. Node pods run as a `DaemonSet`; a node plugin restart affects only that node.
+
+### Resource Sizing
+
+Direct-apply defaults:
+
+- Controller driver: `100m` CPU / `128Mi` memory requests, `500m` / `512Mi` limits
+- Node driver: `50m` CPU / `64Mi` memory requests, `200m` / `256Mi` limits
+- Sidecars have smaller per-container requests and limits in the manifests
+
+Production overlay increases controller-side resources through `controller-patch.yaml`.
+
+Monitor:
+
+```bash
+kubectl top pods -n kube-system -l app=csi-arca-storage-controller
+kubectl top pods -n kube-system -l app=csi-arca-storage-node
+```
+
+### Updating the Driver Image
+
+For direct apply:
+
+```bash
 kubectl set image statefulset/csi-arca-storage-controller \
   -n kube-system \
-  csi-driver=csi-arca-storage:v1.1.0
+  csi-driver=<registry>/csi-arca-storage:<tag>
 
-# Node plugin will automatically roll out to all nodes
 kubectl set image daemonset/csi-arca-storage-node \
   -n kube-system \
-  csi-driver=csi-arca-storage:v1.1.0
-```
+  csi-driver=<registry>/csi-arca-storage:<tag>
 
-### Monitoring Rollout
-
-```bash
-# Watch controller update
 kubectl rollout status statefulset/csi-arca-storage-controller -n kube-system
-
-# Watch node plugin update
 kubectl rollout status daemonset/csi-arca-storage-node -n kube-system
 ```
 
+For Kustomize, update the `images` block in the overlay and re-apply.
+
+### Updating Configuration
+
+Direct apply:
+
+```bash
+kubectl apply -f deploy/controller.yaml
+kubectl rollout restart statefulset/csi-arca-storage-controller -n kube-system
+kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
+```
+
+Kustomize:
+
+```bash
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl rollout restart statefulset/csi-arca-storage-controller -n kube-system
+kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
+```
+
+Restart both controller and node pods when network pools, TLS paths, endpoint, or auth configuration changes.
+
+### Rollback
+
+```bash
+kubectl rollout undo statefulset/csi-arca-storage-controller -n kube-system
+kubectl rollout undo daemonset/csi-arca-storage-node -n kube-system
+```
+
+Do not delete `ArcaVolume` or `ArcaSnapshot` CRDs during rollback unless you intentionally want to remove driver metadata.
+
 ## Troubleshooting
 
-### Check Driver Status
+### PVC Stays Pending
 
-```bash
-# Controller logs
-kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-driver
+Check:
 
-# Node plugin logs (specific node)
-kubectl logs -n kube-system -l app=csi-arca-storage-node -c csi-driver \
-  --field-selector spec.nodeName=<node-name>
-
-# Provisioner logs
-kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-provisioner
-```
-
-### Common Issues
-
-#### 1. Volume Creation Fails
-
-**Symptoms**: PVC stuck in `Pending` state
-
-**Check**:
 ```bash
 kubectl describe pvc <pvc-name>
-kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-driver
+kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-driver --tail=200
+kubectl get arcavolumes
 ```
 
-**Common Causes**:
-- ARCA API not reachable
-- Invalid auth token
-- Network pool exhausted
-- Insufficient permissions
+Common causes:
 
-#### 2. Volume Mount Fails
+- ARCA API endpoint is unreachable from the controller.
+- `ARCA_AUTH_TOKEN` is missing, expired, or lacks required permissions.
+- `network.pools` is empty, invalid, or exhausted.
+- Driver CRDs were not applied before the controller started.
+- Snapshot restore was requested but the source snapshot is not ready.
 
-**Symptoms**: Pod stuck in `ContainerCreating`
+### Pod Stays ContainerCreating
 
-**Check**:
+Check:
+
 ```bash
 kubectl describe pod <pod-name>
 kubectl logs -n kube-system -l app=csi-arca-storage-node -c csi-driver \
-  --field-selector spec.nodeName=<node-name>
+  --field-selector spec.nodeName=<node-name> \
+  --tail=200
 ```
 
-**Common Causes**:
-- Network connectivity to SVM VIP
-- NFS mount failure
-- Permission issues
+Common causes:
 
-#### 3. Snapshot Creation Fails
+- The node cannot reach the SVM VIP.
+- NFSv4.2 is blocked by firewall or network policy.
+- The backend export is missing or not yet reloaded.
+- The node plugin cannot perform privileged mount operations.
+- Host paths such as `/var/lib/kubelet/plugins_registry` differ from the manifest assumptions.
 
-**Check**:
+### Snapshot Creation Fails
+
+Check:
+
 ```bash
 kubectl describe volumesnapshot <snapshot-name>
-kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-snapshotter
+kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-snapshotter --tail=200
+kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-driver --tail=200
+kubectl get arcasnapshots
 ```
 
-**Common Causes**:
-- XFS reflink not supported on backend
-- Source volume not found
-- API error
+Common causes:
+
+- Kubernetes snapshot CRDs or snapshot controller are missing.
+- The backend volume path does not exist.
+- Backend XFS/reflink snapshot operation failed.
+- ARCA API returned an authorization or conflict error.
+
+### Controller Cannot Start
+
+Check:
+
+```bash
+kubectl logs -n kube-system -l app=csi-arca-storage-controller -c csi-driver --previous
+kubectl get crd arcavolumes.storage.arca.io arcasnapshots.storage.arca.io
+kubectl get secret csi-arca-storage-secret -n kube-system
+kubectl get configmap csi-arca-storage-config -n kube-system -o yaml
+```
+
+Common causes:
+
+- `arca.base_url` is empty.
+- No network pools are configured.
+- `driver.endpoint` is empty.
+- CRDs are missing or rejected by the API server.
 
 ### Enable Debug Logging
 
-Edit controller/node manifests to increase log verbosity:
+Increase verbosity in controller and node driver args:
 
 ```yaml
 args:
+  - --mode=controller
   - --config=/etc/csi-arca-storage/config.yaml
-  - -v=8  # Maximum verbosity (default: 5)
+  - -v=8
 ```
+
+Re-apply and restart the affected workload.
 
 ## Uninstallation
 
-### Delete in Reverse Order
+Delete test workloads first:
 
 ```bash
-# Delete storage resources first
-kubectl delete -f deploy/examples/pod.yaml
-kubectl delete -f deploy/examples/pvc.yaml
-
-# Delete storage classes
-kubectl delete -f deploy/examples/storageclass.yaml
-kubectl delete -f deploy/examples/volumesnapshotclass.yaml
-
-# Delete driver components
-kubectl delete -f deploy/node.yaml
-kubectl delete -f deploy/controller.yaml
-kubectl delete -f deploy/rbac-node.yaml
-kubectl delete -f deploy/rbac-controller.yaml
-kubectl delete -f deploy/csidriver.yaml
-
-# Delete secrets and configmaps
-kubectl delete secret csi-arca-storage-secret -n kube-system
-kubectl delete configmap csi-arca-storage-config -n kube-system
+kubectl delete -f deploy/examples/pod.yaml --ignore-not-found
+kubectl delete -f deploy/examples/pvc.yaml --ignore-not-found
+kubectl delete -f deploy/examples/snapshot.yaml --ignore-not-found
 ```
 
-### Clean Up Node State
+Delete classes:
 
-On each node (if needed):
+```bash
+kubectl delete -f deploy/examples/volumesnapshotclass.yaml --ignore-not-found
+kubectl delete -f deploy/examples/storageclass.yaml --ignore-not-found
+```
+
+Delete driver workloads:
+
+```bash
+kubectl delete -f deploy/node.yaml --ignore-not-found
+kubectl delete -f deploy/controller.yaml --ignore-not-found
+kubectl delete -f deploy/rbac-node.yaml --ignore-not-found
+kubectl delete -f deploy/rbac-controller.yaml --ignore-not-found
+kubectl delete -f deploy/csidriver.yaml --ignore-not-found
+```
+
+Delete generated configuration:
+
+```bash
+kubectl delete secret csi-arca-storage-secret -n kube-system --ignore-not-found
+kubectl delete configmap csi-arca-storage-config -n kube-system --ignore-not-found
+```
+
+Delete driver metadata CRDs only after all volumes and snapshots managed by the driver are no longer needed:
+
+```bash
+kubectl delete -k deploy/crds/
+```
+
+Optional node cleanup:
 
 ```bash
 sudo rm -rf /var/lib/csi-arca-storage
 sudo rm -rf /var/lib/kubelet/plugins/csi.arca-storage.io
 ```
 
-## Security Considerations
+## Security Checklist
 
-1. **Secrets Management**
-   - Never commit secrets to git
-   - Use Kubernetes Secrets or external secret managers
-   - Rotate auth tokens regularly
+- Store the ARCA token in a Kubernetes Secret or external secret manager.
+- Do not commit `secrets.env`, tokens, or private keys.
+- Use TLS with certificate verification in production.
+- Use mTLS when the ARCA API requires client identity.
+- Restrict ARCA API access to CSI pods through network policy or infrastructure firewall rules.
+- Review RBAC before granting additional permissions.
+- Keep node plugin privilege limited to the CSI node workload.
 
-2. **Network Policies**
-   - Restrict ARCA API access to driver pods only
-   - Use NetworkPolicies to limit traffic
+## Performance Notes
 
-3. **RBAC**
-   - Review and customize RBAC permissions
-   - Follow principle of least privilege
+The node plugin mounts each SVM export once per node and bind-mounts individual volume paths from that shared SVM mount.
 
-4. **TLS**
-   - Always use TLS in production
-   - Don't skip certificate verification
-   - Use mTLS for enhanced security
+Default NFS options used by the driver:
 
-## Performance Tuning
-
-### NFS Mount Options
-
-Adjust mount options in StorageClass:
-
-```yaml
-mountOptions:
-  - nfsvers=4.2       # Use NFSv4.2
-  - rsize=1048576     # 1MB read size
-  - wsize=1048576     # 1MB write size
-  - hard              # Hard mount (vs soft)
-  - timeo=600         # 60s timeout
-  - retrans=2         # Retransmit attempts
-  - noresvport        # Use non-reserved port
+```text
+vers=4.2,rsize=1048576,wsize=1048576,hard,timeo=600,retrans=2,noresvport
 ```
 
-### Network MTU
+For high-throughput workloads:
 
-For high-throughput workloads, enable jumbo frames:
-
-```yaml
-network:
-  mtu: 9000  # Requires jumbo frames support in network
-```
-
-### Resource Limits
-
-Adjust based on workload:
-
-```yaml
-resources:
-  requests:
-    cpu: 200m
-    memory: 256Mi
-  limits:
-    cpu: 1000m
-    memory: 1Gi
-```
+- Use jumbo frames only when the whole path supports the configured MTU.
+- Keep SVM VIPs close to the worker nodes from a routing and firewall perspective.
+- Scale controller resources if provisioning latency rises during PVC or snapshot bursts.

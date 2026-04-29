@@ -159,7 +159,7 @@ arca svm create tenant_b --ip 192.168.20.5/32
 arca volume create vol1 --svm tenant_a --size 100
 
 # Add an export
-arca export add --volume vol1 --svm tenant_a --client 10.0.0.0/24 --rw
+arca export add --volume vol1 --svm tenant_a --client 10.0.0.0/24 --access rw
 
 # List SVMs
 arca svm list
@@ -183,13 +183,27 @@ API endpoints:
 
 - `POST /v1/svms` - Create SVM
 - `GET /v1/svms` - List SVMs
+- `GET /v1/svms/{name}` - Get SVM details
 - `DELETE /v1/svms/{name}` - Delete SVM
+- `POST /v1/directories` - Create a directory for CSI-managed volumes
+- `DELETE /v1/directories/{svm_name}` - Delete a directory
+- `POST /v1/quotas` - Set a directory quota
+- `PATCH /v1/quotas` - Expand a directory quota
+- `GET /v1/quotas/{svm_name}` - Get a directory quota
 - `POST /v1/volumes` - Create volume
+- `GET /v1/volumes` - List volumes
 - `PATCH /v1/volumes/{name}` - Resize volume
 - `DELETE /v1/volumes/{name}` - Delete volume
+- `POST /v1/volumes/{name}/clone` - Clone a volume from a snapshot
+- `PATCH /v1/volumes/{name}/qos` - Apply QoS limits
+- `GET /v1/volumes/{name}/qos` - Get QoS settings
+- `DELETE /v1/volumes/{name}/qos` - Remove QoS limits
 - `POST /v1/exports` - Add export
 - `GET /v1/exports` - List exports
 - `DELETE /v1/exports` - Remove export
+- `POST /v1/snapshots` - Create snapshot
+- `GET /v1/snapshots` - List snapshots
+- `DELETE /v1/snapshots/{name}` - Delete snapshot
 
 See API documentation at `http://localhost:8080/docs` when the server is running.
 
@@ -296,6 +310,9 @@ Follow PEP 8 for Python code.
 ## Documentation
 
 - [docs/mvp-setup.md](docs/mvp-setup.md) - MVP setup guide
+- [csi-arca-storage/docs/quickstart.md](csi-arca-storage/docs/quickstart.md) - CSI quick start
+- [csi-arca-storage/docs/deployment.md](csi-arca-storage/docs/deployment.md) - CSI deployment guide
+- [csi-arca-storage/docs/deployment-checklist.md](csi-arca-storage/docs/deployment-checklist.md) - CSI deployment checklist
 - [arca_storage/arca_storage/resources/pacemaker/](arca_storage/arca_storage/resources/pacemaker/) - Pacemaker RA documentation
 - [arca_storage/arca_storage/resources/systemd/](arca_storage/arca_storage/resources/systemd/) - systemd unit files
 - [arca_storage/arca_storage/templates/](arca_storage/arca_storage/templates/) - Template documentation
