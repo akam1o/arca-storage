@@ -4,20 +4,16 @@ NFS-Ganesha configuration adapter.
 
 from __future__ import annotations
 
-from pathlib import Path
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import Dict, List, Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.cli.lib.ganesha import render_config as _legacy_render_config
-from arca_storage.cli.lib.ganesha import _load_exports, _save_exports
 
 
 @runtime_checkable
 class GaneshaAdapter(Protocol):
     def render_config(self, svm_name: str, exports: List[Dict]) -> str: ...
     def reload(self, svm_name: str) -> None: ...
-    def load_exports(self, svm_name: str) -> List[Dict]: ...
-    def save_exports(self, svm_name: str, exports: List[Dict]) -> None: ...
 
 
 class SubprocessGaneshaAdapter:
@@ -35,12 +31,6 @@ class SubprocessGaneshaAdapter:
             timeout=self._timeout,
         )
 
-    def load_exports(self, svm_name: str) -> List[Dict]:
-        return _load_exports(svm_name)
-
-    def save_exports(self, svm_name: str, exports: List[Dict]) -> None:
-        _save_exports(svm_name, exports)
-
 
 class FakeGaneshaAdapter:
     """In-memory fake for testing."""
@@ -56,17 +46,12 @@ class FakeGaneshaAdapter:
         self._maybe_fail()
         path = f"/etc/ganesha/ganesha.{svm_name}.conf"
         self.configs[svm_name] = path
+        self.exports[svm_name] = [dict(e) for e in exports]
         return path
 
     def reload(self, svm_name: str) -> None:
         self._maybe_fail()
         self.reload_count += 1
-
-    def load_exports(self, svm_name: str) -> List[Dict]:
-        return list(self.exports.get(svm_name, []))
-
-    def save_exports(self, svm_name: str, exports: List[Dict]) -> None:
-        self.exports[svm_name] = list(exports)
 
     def _maybe_fail(self) -> None:
         self._call_count += 1

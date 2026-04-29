@@ -8,6 +8,7 @@ implementations.
 
 from __future__ import annotations
 
+from concurrent.futures import ThreadPoolExecutor
 import tempfile
 from pathlib import Path
 
@@ -229,6 +230,8 @@ class TestExportReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.ganesha_configured is True
         assert result.status.service_reloaded is True
+        assert result.status.export_id == 1
+        assert adapters.ganesha.exports["svm1"][0]["path"] == "/export/svm1/vol1"
 
     def test_delete_export(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)
@@ -243,6 +246,28 @@ class TestExportReconciler:
         rec.reconcile(created)
 
         assert len(db.list_exports(svm="svm1")) == 0
+        assert adapters.ganesha.exports["svm1"] == []
+
+    def test_concurrent_export_creates_allocate_unique_ids(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+
+        def create_export(i: int):
+            export = Export(
+                spec=ExportSpec(
+                    svm="svm1",
+                    volume=f"vol{i}",
+                    client=f"10.0.{i}.0/24",
+                ),
+            )
+            return rec.reconcile(export).status.export_id
+
+        with ThreadPoolExecutor(max_workers=4) as executor:
+            export_ids = list(executor.map(create_export, range(1, 5)))
+
+        assert sorted(export_ids) == [1, 2, 3, 4]
+        records = db.list_exports(svm="svm1")
+        assert sorted(r["status"]["export_id"] for r in records) == [1, 2, 3, 4]
+        assert len(adapters.ganesha.exports["svm1"]) == 4
 
 
 # ── Error Handling ────────────────────────────────────────────────

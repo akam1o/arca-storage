@@ -204,22 +204,6 @@ def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: b
             spec = export["spec"]
             export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
 
-    ganesha_exports = ctx.adapters.ganesha.load_exports(svm_name)
-    if ganesha_exports:
-        if not force:
-            raise PreconditionFailedError(
-                f"SVM '{svm_name}' still has Ganesha exports; remove them first or retry with force",
-                {
-                    "resource": "SVM",
-                    "name": svm_name,
-                    "ganesha_export_count": len(ganesha_exports),
-                },
-            )
-
-        ctx.adapters.ganesha.save_exports(svm_name, [])
-        ctx.adapters.ganesha.render_config(svm_name, [])
-        ctx.adapters.ganesha.reload(svm_name)
-
 
 def _volume_ref(volume: Dict[str, Any]) -> str:
     spec = volume.get("spec", {})

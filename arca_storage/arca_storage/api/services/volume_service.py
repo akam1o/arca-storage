@@ -16,6 +16,8 @@ from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
 
 _LIST_ALL_LIMIT = 1_000_000
+_CSI_CLIENT_CIDR = "0.0.0.0/0"
+_CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
 def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
@@ -161,26 +163,16 @@ def _delete_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
 
 
 def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
-    cfg = ctx.settings.to_reconciler_config()
-    export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
-    root_path = f"{export_dir}/{svm}"
-    volume_path = f"{root_path}/{volume}"
+    from arca_storage.api.services import export_service
 
-    exports = ctx.adapters.ganesha.load_exports(svm)
-    kept = [e for e in exports if e.get("path") != volume_path]
     has_other_csi_volume = any(
-        e.get("owner") == "csi"
-        and str(e.get("path") or "").startswith(f"{root_path}/")
-        and e.get("path") != volume_path
-        for e in kept
+        e.get("spec", {}).get("owner") == "csi"
+        and e.get("spec", {}).get("client") == _CSI_CLIENT_CIDR
+        and e.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
+        for e in ctx.db.list_exports(svm=svm, limit=_LIST_ALL_LIMIT)
     )
-    if not has_other_csi_volume:
-        kept = [e for e in kept if not (e.get("path") == root_path and e.get("owner") == "csi")]
-
-    if kept != exports:
-        ctx.adapters.ganesha.save_exports(svm, kept)
-        ctx.adapters.ganesha.render_config(svm, kept)
-        ctx.adapters.ganesha.reload(svm)
+    if not has_other_csi_volume and ctx.db.get_export(svm, _CSI_ROOT_EXPORT_VOLUME, _CSI_CLIENT_CIDR):
+        export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, _CSI_CLIENT_CIDR)
 
 
 def _snapshot_ref(snapshot: Dict[str, Any]) -> str:
