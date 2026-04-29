@@ -80,9 +80,9 @@ type ArcaAPIError struct {
 
 // ArcaErrorResponse represents the full error response envelope
 type ArcaErrorResponse struct {
-	RequestID string        `json:"request_id"`
-	Status    string        `json:"status"`
-	Error     ArcaAPIError  `json:"error"`
+	RequestID string       `json:"request_id"`
+	Status    string       `json:"status"`
+	Error     ArcaAPIError `json:"error"`
 }
 
 // MapErrorCodeToError maps a structured error code to a sentinel error
@@ -91,7 +91,7 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 		return NewAPIError(statusCode, "unknown error", nil)
 	}
 
-	resourceType, _ := errResp.Details["resource_type"].(string)
+	resourceType := resourceTypeFromDetails(errResp.Details)
 
 	switch errResp.Code {
 	case "NOT_FOUND":
@@ -128,6 +128,15 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 	default:
 		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: errResp.Message}
 	}
+}
+
+func resourceTypeFromDetails(details map[string]interface{}) string {
+	for _, key := range []string{"resource_type", "resource"} {
+		if resourceType, ok := details[key].(string); ok {
+			return resourceType
+		}
+	}
+	return ""
 }
 
 // MapHTTPStatusToError maps HTTP status codes to specific errors.

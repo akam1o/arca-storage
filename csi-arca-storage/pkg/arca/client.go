@@ -6,6 +6,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -205,17 +206,18 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 // isNonRetryableError checks if an error should not be retried
 func isNonRetryableError(err error) bool {
 	// Don't retry on 4xx errors except 408 (timeout) and 429 (rate limit)
-	if apiErr, ok := err.(*APIError); ok {
+	var apiErr *APIError
+	if errors.As(err, &apiErr) {
 		if apiErr.StatusCode >= 400 && apiErr.StatusCode < 500 {
 			return apiErr.StatusCode != 408 && apiErr.StatusCode != 429
 		}
 	}
 
 	// Don't retry on specific known errors
-	switch err {
-	case ErrSVMAlreadyExists, ErrDirectoryAlreadyExists, ErrSnapshotAlreadyExists:
+	switch {
+	case errors.Is(err, ErrSVMAlreadyExists), errors.Is(err, ErrDirectoryAlreadyExists), errors.Is(err, ErrSnapshotAlreadyExists):
 		return true
-	case ErrSVMNotFound, ErrDirectoryNotFound, ErrSnapshotNotFound, ErrQuotaNotFound:
+	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrQuotaNotFound):
 		return true
 	}
 
@@ -229,14 +231,7 @@ func (c *Client) GetSVM(ctx context.Context, name string) (*SVM, error) {
 		return nil, err
 	}
 
-	var response struct {
-		Data SVM `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &response.Data, nil
+	return decodeSVMResponse(respBody)
 }
 
 // CreateSVM creates a new SVM (idempotent)
@@ -244,27 +239,20 @@ func (c *Client) CreateSVM(ctx context.Context, req *CreateSVMRequest) (*SVM, er
 	respBody, err := c.doRequest(ctx, http.MethodPost, "/v1/svms", req)
 	if err != nil {
 		// If SVM already exists, try to get it
-		if err == ErrSVMAlreadyExists {
+		if errors.Is(err, ErrSVMAlreadyExists) {
 			return c.GetSVM(ctx, req.Name)
 		}
 		return nil, err
 	}
 
-	var response struct {
-		Data SVM `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return &response.Data, nil
+	return decodeSVMResponse(respBody)
 }
 
 // DeleteSVM deletes an SVM (idempotent)
 func (c *Client) DeleteSVM(ctx context.Context, name string) error {
 	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/svms/%s", name), nil)
 	if err != nil {
-		if err == ErrSVMNotFound {
+		if errors.Is(err, ErrSVMNotFound) {
 			return nil // Idempotent
 		}
 		return err
@@ -279,14 +267,7 @@ func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 		return nil, err
 	}
 
-	var response struct {
-		Data []SVM `json:"data"`
-	}
-	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
-	}
-
-	return response.Data, nil
+	return decodeSVMListResponse(respBody)
 }
 
 // GetSVMCapacity retrieves SVM capacity information
@@ -304,4 +285,62 @@ func (c *Client) GetSVMCapacity(ctx context.Context, svmName string) (*CapacityI
 	}
 
 	return &response.Data, nil
+}
+
+func decodeSVMResponse(respBody []byte) (*SVM, error) {
+	var response struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	if len(response.Data) == 0 {
+		return nil, fmt.Errorf("%w: missing data field", ErrInvalidResponse)
+	}
+
+	var svm SVM
+	if err := json.Unmarshal(response.Data, &svm); err == nil && svm.Name != "" {
+		return &svm, nil
+	}
+
+	var nested struct {
+		SVM SVM `json:"svm"`
+	}
+	if err := json.Unmarshal(response.Data, &nested); err == nil && nested.SVM.Name != "" {
+		return &nested.SVM, nil
+	}
+
+	return nil, fmt.Errorf("%w: missing SVM object in response", ErrInvalidResponse)
+}
+
+func decodeSVMListResponse(respBody []byte) ([]SVM, error) {
+	var response struct {
+		Data json.RawMessage `json:"data"`
+	}
+	if err := json.Unmarshal(respBody, &response); err != nil {
+		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+	}
+	if len(response.Data) == 0 {
+		return nil, fmt.Errorf("%w: missing data field", ErrInvalidResponse)
+	}
+
+	var svms []SVM
+	if err := json.Unmarshal(response.Data, &svms); err == nil {
+		return svms, nil
+	}
+
+	var nested struct {
+		Items []SVM `json:"items"`
+		SVMs  []SVM `json:"svms"`
+	}
+	if err := json.Unmarshal(response.Data, &nested); err == nil {
+		if nested.Items != nil {
+			return nested.Items, nil
+		}
+		if nested.SVMs != nil {
+			return nested.SVMs, nil
+		}
+	}
+
+	return nil, fmt.Errorf("%w: missing SVM list in response", ErrInvalidResponse)
 }

@@ -44,7 +44,7 @@ func (m *SVMManager) EnsureSVM(ctx context.Context, namespace string) (*SVM, err
 		return svm, nil
 	}
 
-	if err != nil && err != ErrSVMNotFound {
+	if err != nil && !errors.Is(err, ErrSVMNotFound) {
 		return nil, fmt.Errorf("failed to check existing SVM: %w", err)
 	}
 
@@ -75,7 +75,7 @@ func (m *SVMManager) createSVMWithLock(ctx context.Context, namespace, svmName s
 		return svm, nil
 	}
 
-	if err != nil && err != ErrSVMNotFound {
+	if err != nil && !errors.Is(err, ErrSVMNotFound) {
 		return nil, fmt.Errorf("failed to check existing SVM after lock: %w", err)
 	}
 

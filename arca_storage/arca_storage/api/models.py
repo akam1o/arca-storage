@@ -128,6 +128,63 @@ class SVMListResponse(BaseModel):
     data: dict
 
 
+# CSI compatibility models
+
+
+class DirectoryCreate(BaseModel):
+    """Request model for CSI directory-backed volume creation."""
+
+    svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
+    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
+    quota_bytes: Optional[int] = Field(None, description="Optional quota/capacity in bytes", gt=0)
+
+    @field_validator("svm_name", "path")
+    def validate_name(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
+            raise ValueError(
+                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+            )
+        return v
+
+
+class QuotaSet(BaseModel):
+    """Request model for CSI quota/capacity updates."""
+
+    svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
+    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
+    quota_bytes: int = Field(..., description="Quota/capacity in bytes", gt=0)
+
+    @field_validator("svm_name", "path")
+    def validate_name(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
+            raise ValueError(
+                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+            )
+        return v
+
+
+class QuotaExpand(BaseModel):
+    """Request model for CSI quota expansion."""
+
+    svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
+    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
+    new_quota_bytes: int = Field(..., description="New quota/capacity in bytes", gt=0)
+
+    @field_validator("svm_name", "path")
+    def validate_name(cls, v: str) -> str:
+        import re
+
+        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
+            raise ValueError(
+                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+            )
+        return v
+
+
 # Volume Models
 
 
