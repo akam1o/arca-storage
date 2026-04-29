@@ -13,10 +13,10 @@ import (
 
 // VolumeStaging represents a staged volume's information
 type VolumeStaging struct {
-	VolumeID      string   `json:"volume_id"`
-	SVMName       string   `json:"svm_name"`
-	VIP           string   `json:"vip"`
-	StagingPath   string   `json:"staging_path"`
+	VolumeID       string   `json:"volume_id"`
+	SVMName        string   `json:"svm_name"`
+	VIP            string   `json:"vip"`
+	StagingPath    string   `json:"staging_path"`
 	PublishedPaths []string `json:"published_paths"` // Target paths where volume is published
 }
 

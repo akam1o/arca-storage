@@ -1,0 +1,18 @@
+arca:
+  base_url: "https://arca-api.example.com"
+  timeout: "30s"
+  auth_token: ""  # Set via Secret
+  tls:
+    ca_cert_path: ""  # Optional: Set to cert path if custom CA is needed (system CA bundle used if empty)
+    insecure_skip_verify: false
+
+network:
+  pools:
+    - cidr: "10.0.0.0/24"
+      range: "10.0.0.100-10.0.0.200"
+      vlan: 100
+      gateway: "10.0.0.1"
+  mtu: 1500
+
+driver:
+  endpoint: "unix:///csi/csi.sock"

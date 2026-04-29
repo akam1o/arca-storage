@@ -37,6 +37,9 @@ Thumbs.db
 
 # Configuration files with secrets
 config.yaml
+!deploy/kustomize/base/config.yaml
+!deploy/kustomize/overlays/development/config.yaml
+!deploy/kustomize/overlays/production/config.yaml
 *.key
 *.crt
 *.pem
