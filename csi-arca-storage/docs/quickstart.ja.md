@@ -6,7 +6,7 @@ CSI ARCA Storage driver を Kubernetes に 10 分程度で導入するための�
 
 ## 前提条件
 
-- Kubernetes 1.20+
+- Kubernetes 1.25+
 - ARCA storage backend（API 到達性と適切な権限を持つ token）
 - `kubectl` が利用可能
 
@@ -134,7 +134,7 @@ kubectl exec test-pod -- df -h /data
 
 ## 次のステップ
 
-- スナップショット: `deployment.ja.md`（「Snapshot 作成が失敗する」）
+- スナップショット: [deployment.ja.md](deployment.ja.md#functional-smoke-test)
 - クローン例: `../deploy/examples/snapshot.yaml`
 - 拡張: `../README.ja.md`（「拡張」）
 - HA 設定: `deployment.ja.md`（「高可用性（HA）」）

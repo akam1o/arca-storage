@@ -159,7 +159,7 @@ arca svm create tenant_b --ip 192.168.20.5/32
 arca volume create vol1 --svm tenant_a --size 100
 
 # エクスポートの追加
-arca export add --volume vol1 --svm tenant_a --client 10.0.0.0/24 --rw
+arca export add --volume vol1 --svm tenant_a --client 10.0.0.0/24 --access rw
 
 # SVMの一覧表示
 arca svm list
@@ -183,13 +183,27 @@ APIエンドポイント:
 
 - `POST /v1/svms` - SVM作成
 - `GET /v1/svms` - SVM一覧
+- `GET /v1/svms/{name}` - SVM詳細取得
 - `DELETE /v1/svms/{name}` - SVM削除
+- `POST /v1/directories` - CSI 管理ボリューム用ディレクトリ作成
+- `DELETE /v1/directories/{svm_name}` - ディレクトリ削除
+- `POST /v1/quotas` - ディレクトリ quota 設定
+- `PATCH /v1/quotas` - ディレクトリ quota 拡張
+- `GET /v1/quotas/{svm_name}` - ディレクトリ quota 取得
 - `POST /v1/volumes` - ボリューム作成
+- `GET /v1/volumes` - ボリューム一覧
 - `PATCH /v1/volumes/{name}` - ボリュームリサイズ
 - `DELETE /v1/volumes/{name}` - ボリューム削除
+- `POST /v1/volumes/{name}/clone` - Snapshot からのボリューム clone
+- `PATCH /v1/volumes/{name}/qos` - QoS 制限適用
+- `GET /v1/volumes/{name}/qos` - QoS 設定取得
+- `DELETE /v1/volumes/{name}/qos` - QoS 制限削除
 - `POST /v1/exports` - エクスポート追加
 - `GET /v1/exports` - エクスポート一覧
 - `DELETE /v1/exports` - エクスポート削除
+- `POST /v1/snapshots` - Snapshot 作成
+- `GET /v1/snapshots` - Snapshot 一覧
+- `DELETE /v1/snapshots/{name}` - Snapshot 削除
 
 サーバー起動時に `http://localhost:8080/docs` でAPIドキュメントを参照できます。
 
@@ -296,6 +310,9 @@ Pythonコードは PEP 8 に従ってください。
 ## ドキュメント
 
 - [docs/mvp-setup.md](docs/mvp-setup.md) - MVPセットアップガイド
+- [csi-arca-storage/docs/quickstart.ja.md](csi-arca-storage/docs/quickstart.ja.md) - CSI クイックスタート
+- [csi-arca-storage/docs/deployment.ja.md](csi-arca-storage/docs/deployment.ja.md) - CSI デプロイガイド
+- [csi-arca-storage/docs/deployment-checklist.ja.md](csi-arca-storage/docs/deployment-checklist.ja.md) - CSI デプロイチェックリスト
 - [arca_storage/arca_storage/resources/pacemaker/](arca_storage/arca_storage/resources/pacemaker/) - Pacemaker RAドキュメント
 - [arca_storage/arca_storage/resources/systemd/](arca_storage/arca_storage/resources/systemd/) - systemd ユニットファイル
 - [arca_storage/arca_storage/templates/](arca_storage/arca_storage/templates/) - テンプレートドキュメント

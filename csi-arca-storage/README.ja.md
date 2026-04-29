@@ -28,6 +28,7 @@ ARCA Storage 向けの Kubernetes CSI (Container Storage Interface) ドライバ
 - **Network Allocator**: 設定した pool からのラウンドロビン IP 割り当て
 - **Mount Manager**: SVM 単位で共有 NFS マウントを維持（参照カウント）
 - **Node State**: ノード側の永続状態（クラッシュリカバリ）
+- **CRD Metadata Store**: `ArcaVolume` / `ArcaSnapshot` custom resource に controller metadata を保存
 - **構造化エラーハンドリング**: API クライアントは ARCA backend からの構造化エラーレスポンス（`NOT_FOUND`, `ALREADY_EXISTS`, `CONFLICT` など）をパースし、Kubernetes 向けの適切な gRPC ステータスコードにマッピング
 
 ## ビルド
@@ -74,9 +75,11 @@ driver:
 
 ### 前提条件
 
-- Kubernetes 1.20+
+- Kubernetes 1.25+
 - ARCA Storage backend（API 到達性と適切な権限を持つ token）
 - ノードから ARCA storage network（データプレーン）への疎通
+
+同梱の driver CRD は Kubernetes の CEL validation を使うため、`deploy/crds/` のマニフェストは Kubernetes 1.25+ を前提にしています。
 
 ### インストール方法
 
@@ -107,10 +110,13 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ```bash
 # 開発用
-kubectl apply -k deploy/kustomize/overlays/development
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/development | kubectl apply -f -
 
 # 本番用
-kubectl apply -k deploy/kustomize/overlays/production
+# 先に deploy/kustomize/overlays/production/secrets.env を作成してください。
+kubectl kustomize --load-restrictor LoadRestrictionsNone \
+  deploy/kustomize/overlays/production | kubectl apply -f -
 ```
 
 設定の詳細は `docs/deployment.ja.md` を参照してください。
