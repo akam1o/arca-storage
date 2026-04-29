@@ -53,7 +53,7 @@ ansible-playbook -i inventory.ini site.yml --syntax-check
 パッケージング用のスクリプトは `packaging/` 配下にあります。
 
 - Debian/Ubuntu: `packaging/vendor-wheels.sh`, `packaging/build-deb.sh`
-- EL9: `packaging/vendor-wheels.sh`, `packaging/build-rpm.sh`
+- EL9/EL10: `packaging/vendor-wheels.sh`, `packaging/build-rpm.sh`
 
 リリース準備では、CI は Git tag（例: `v0.2.7`）を `setuptools-scm` 経由でバージョンとして利用します。
 
@@ -72,4 +72,3 @@ Python パッケージは **宣言的リコンシリエーション** アーキ�
 - 小さくレビューしやすい単位を優先してください。
 - 挙動が変わる場合はドキュメントも更新してください。
 - 必要がない限り、リファクタと機能変更を混ぜないでください。
-

@@ -1,0 +1,37 @@
+name: RPM Build
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  el10:
+    name: EL10 RPM
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build rpms (EL10)
+        run: |
+          docker run --rm \
+            -e "ARCA_VERSION=0.0.0" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            rockylinux/rockylinux:10 \
+            bash -lc '
+              dnf -y install git tar gzip rsync rpm-build python3 python3-pip &&
+              git config --global --add safe.directory /workspace &&
+              rm -rf packaging/wheelhouse packaging/out/rpm &&
+              bash ./packaging/vendor-wheels.sh &&
+              bash ./packaging/build-rpm.sh
+            '
+
+      - name: Upload rpm artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: el10-rpms
+          path: packaging/out/rpm/*
