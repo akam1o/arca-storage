@@ -99,3 +99,43 @@ class TestDeleteVolume:
         data = response.json()
         assert data["status"] == "ok"
         assert data["data"]["deleted"] is True
+
+    @pytest.mark.integration
+    def test_delete_volume_removes_exports(self, fake_context):
+        """Deleting a volume cleans dependent export records and Ganesha config."""
+        client = TestClient(app)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+
+        assert fake_context.db.list_exports(svm="tenant_a", volume="vol1")
+        assert fake_context.adapters.ganesha.exports["tenant_a"]
+
+        response = client.delete("/v1/volumes/vol1?svm=tenant_a")
+
+        assert response.status_code == 200
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+        assert fake_context.db.list_exports(svm="tenant_a", volume="vol1") == []
+        assert fake_context.adapters.ganesha.exports["tenant_a"] == []
+
+    @pytest.mark.integration
+    def test_delete_volume_rejects_snapshots_unless_forced(self, fake_context):
+        """Snapshots must be explicitly removed or deleted via force."""
+        client = TestClient(app)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        response = client.delete("/v1/volumes/vol1?svm=tenant_a")
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert fake_context.db.get_volume("tenant_a", "vol1") is not None
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1")
+
+        response = client.delete("/v1/volumes/vol1?svm=tenant_a&force=true")
+
+        assert response.status_code == 200
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []

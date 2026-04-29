@@ -12,9 +12,11 @@ from typing import Any, Dict, Optional
 from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
+
+_LIST_ALL_LIMIT = 1_000_000
 
 
 def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
@@ -69,11 +71,35 @@ def get_svm(name: str) -> Dict[str, Any]:
 
 
 def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> None:
-    """Delete an SVM via the reconciler."""
+    """Delete an SVM after dependent resources are gone or safely cascaded."""
+    validate_name(name)
+
     ctx = get_context()
     record = ctx.db.get_svm(name)
     if not record:
         raise NotFoundError("SVM", name)
+
+    volumes = ctx.db.list_volumes(svm=name, limit=_LIST_ALL_LIMIT)
+    cascade_volumes = delete_volumes or force
+    if volumes and not cascade_volumes:
+        raise PreconditionFailedError(
+            f"SVM '{name}' has volumes; delete volumes first or retry with delete_volumes",
+            {
+                "resource": "SVM",
+                "name": name,
+                "volume_count": len(volumes),
+                "volumes": [_volume_ref(v) for v in volumes],
+            },
+        )
+
+    if cascade_volumes:
+        from arca_storage.api.services import volume_service
+
+        for volume in volumes:
+            spec = volume["spec"]
+            volume_service.delete_volume(spec["name"], spec["svm"], force=force)
+
+    _cleanup_or_reject_remaining_dependents(ctx, name, force=force)
 
     svm = SVM(
         metadata=_meta_from_record(record),
@@ -137,3 +163,74 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _parse_status(record: Dict[str, Any], kind: str) -> Any:
     from arca_storage.models.svm import SVMStatus
     return SVMStatus.model_validate(record["status"])
+
+
+def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: bool) -> None:
+    snapshots = ctx.db.list_snapshots(svm=svm_name, limit=_LIST_ALL_LIMIT)
+    if snapshots:
+        if not force:
+            raise PreconditionFailedError(
+                f"SVM '{svm_name}' has snapshots; delete snapshots first or retry with force",
+                {
+                    "resource": "SVM",
+                    "name": svm_name,
+                    "snapshot_count": len(snapshots),
+                    "snapshots": [_snapshot_ref(s) for s in snapshots],
+                },
+            )
+
+        from arca_storage.api.services import snapshot_service
+
+        for snapshot in snapshots:
+            spec = snapshot["spec"]
+            snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+
+    exports = ctx.db.list_exports(svm=svm_name, limit=_LIST_ALL_LIMIT)
+    if exports:
+        if not force:
+            raise PreconditionFailedError(
+                f"SVM '{svm_name}' has exports; delete exports first or retry with force",
+                {
+                    "resource": "SVM",
+                    "name": svm_name,
+                    "export_count": len(exports),
+                    "exports": [_export_ref(e) for e in exports],
+                },
+            )
+
+        from arca_storage.api.services import export_service
+
+        for export in exports:
+            spec = export["spec"]
+            export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
+
+    ganesha_exports = ctx.adapters.ganesha.load_exports(svm_name)
+    if ganesha_exports:
+        if not force:
+            raise PreconditionFailedError(
+                f"SVM '{svm_name}' still has Ganesha exports; remove them first or retry with force",
+                {
+                    "resource": "SVM",
+                    "name": svm_name,
+                    "ganesha_export_count": len(ganesha_exports),
+                },
+            )
+
+        ctx.adapters.ganesha.save_exports(svm_name, [])
+        ctx.adapters.ganesha.render_config(svm_name, [])
+        ctx.adapters.ganesha.reload(svm_name)
+
+
+def _volume_ref(volume: Dict[str, Any]) -> str:
+    spec = volume.get("spec", {})
+    return f"{spec.get('svm')}/{spec.get('name')}"
+
+
+def _snapshot_ref(snapshot: Dict[str, Any]) -> str:
+    spec = snapshot.get("spec", {})
+    return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('name')}"
+
+
+def _export_ref(export: Dict[str, Any]) -> str:
+    spec = export.get("spec", {})
+    return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('client')}"

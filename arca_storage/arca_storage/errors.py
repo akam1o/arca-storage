@@ -97,6 +97,11 @@ class ConflictError(ArcaError):
         super().__init__(ErrorCode.CONFLICT, message, details)
 
 
+class PreconditionFailedError(ArcaError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(ErrorCode.PRECONDITION_FAILED, message, details)
+
+
 class InvalidArgumentError(ArcaError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(ErrorCode.INVALID_ARGUMENT, message, details)

@@ -138,3 +138,59 @@ class TestDeleteSVM:
         response = client.delete("/v1/svms/nonexistent")
 
         assert response.status_code == 404
+
+    @pytest.mark.integration
+    def test_delete_svm_rejects_existing_volumes(self, fake_context):
+        """SVM deletion refuses to orphan dependent volumes by default."""
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        response = client.delete("/v1/svms/tenant_a")
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert fake_context.db.get_svm("tenant_a") is not None
+        assert fake_context.db.get_volume("tenant_a", "vol1") is not None
+
+    @pytest.mark.integration
+    def test_delete_svm_delete_volumes_cascades(self, fake_context):
+        """delete_volumes removes dependent volumes before deleting the SVM."""
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        response = client.delete("/v1/svms/tenant_a?delete_volumes=true")
+
+        assert response.status_code == 200
+        assert fake_context.db.get_svm("tenant_a") is None
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+
+    @pytest.mark.integration
+    def test_delete_svm_force_cascades_snapshots(self, fake_context):
+        """force cascades through snapshots without leaving DB state behind."""
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        response = client.delete("/v1/svms/tenant_a?delete_volumes=true")
+
+        assert response.status_code == 412
+        assert fake_context.db.get_svm("tenant_a") is not None
+
+        response = client.delete("/v1/svms/tenant_a?force=true")
+
+        assert response.status_code == 200
+        assert fake_context.db.get_svm("tenant_a") is None
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
