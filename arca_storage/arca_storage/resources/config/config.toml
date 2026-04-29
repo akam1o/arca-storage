@@ -1,0 +1,41 @@
+# Arca Storage configuration
+#
+# Default path:
+#   /etc/arca-storage/config.toml
+#
+# Override path:
+#   ARCA_CONFIG_PATH=/path/to/config.toml
+
+[storage]
+vg_name = "vg_pool_01"
+thinpool_name = "pool"
+
+[network]
+parent_interface = "bond0"
+default_nfs_versions = ["4"]
+
+[cluster]
+pacemaker_cluster_name = "arca-cluster"
+enable_stonith = true
+drbd_resource = "r0"
+pacemaker_ra_vendor = "local"
+
+[api]
+bind = "127.0.0.1"
+port = 8080
+
+[timeouts]
+subprocess_default = 30
+pacemaker_operation = 60
+nfs_mount = 15
+
+[state]
+db_path = "/var/lib/arca-storage/state.db"
+runtime_dir = "/var/lib/arca-storage"
+
+[ganesha]
+config_dir = "/etc/ganesha"
+export_dir = "/exports"
+protocols = [4]
+mountd_port = 20048
+nlm_port = 32768

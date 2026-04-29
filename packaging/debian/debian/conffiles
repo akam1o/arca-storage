@@ -1,2 +1,3 @@
-/etc/arca-storage/storage-bootstrap.conf
-/etc/arca-storage/storage-runtime.conf
+/etc/arca-storage/config.toml
+/etc/arca-storage/api.env
+/etc/arca-storage/arca-storage.env

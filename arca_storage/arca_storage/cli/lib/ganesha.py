@@ -13,7 +13,7 @@ from typing import Dict, List, Optional, Sequence
 
 from jinja2 import Template
 
-from arca_storage.cli.lib.config import load_config
+from arca_storage.config import load_settings
 from arca_storage.cli.lib.state import get_state_dir
 
 TEMPLATE_VERSION = "1.0.0"
@@ -105,18 +105,18 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     Returns:
         Path to the generated config file
     """
-    cfg = load_config()
-    config_dir = Path(cfg.ganesha_config_dir)
+    cfg = load_settings()
+    config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     
     config_path = config_dir / f"ganesha.{svm_name}.conf"
 
     # Render template from templates/ganesha.conf.j2 (single source of truth).
     template = Template(_template_path().read_text(encoding="utf-8"))
-    protocol_tokens = [p.strip() for p in cfg.ganesha_protocols.split(",") if p.strip()]
+    protocol_tokens = [str(p) for p in cfg.ganesha.protocols]
     # Render as "3, 4" to match ganesha.conf conventions.
     protocols = ", ".join(protocol_tokens) if protocol_tokens else "4"
-    enable_v3 = "3" in protocol_tokens
+    enable_v3 = 3 in cfg.ganesha.protocols
 
     # Stable ordering for deterministic output.
     exports_sorted = sorted(
@@ -136,16 +136,16 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     config_version = _stable_config_version(
         svm_name=svm_name,
         protocols=protocols,
-        mountd_port=cfg.ganesha_mountd_port,
-        nlm_port=cfg.ganesha_nlm_port,
+        mountd_port=cfg.ganesha.mountd_port,
+        nlm_port=cfg.ganesha.nlm_port,
         exports=exports_render,
     )
     meta = {
         "template_version": TEMPLATE_VERSION,
         "config_version": config_version,
         "protocols": protocols,
-        "mountd_port": cfg.ganesha_mountd_port,
-        "nlm_port": cfg.ganesha_nlm_port if enable_v3 else None,
+        "mountd_port": cfg.ganesha.mountd_port,
+        "nlm_port": cfg.ganesha.nlm_port if enable_v3 else None,
         "exports": [
             {
                 "export_id": e.get("export_id"),
@@ -165,8 +165,8 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
         exports=exports_render,
         protocols=protocols,
         enable_v3=enable_v3,
-        mountd_port=cfg.ganesha_mountd_port,
-        nlm_port=cfg.ganesha_nlm_port,
+        mountd_port=cfg.ganesha.mountd_port,
+        nlm_port=cfg.ganesha.nlm_port,
     )
 
     # Save snapshots for rollback purposes.
@@ -234,8 +234,8 @@ def add_export(
     export_id = max([e.get("export_id", 0) for e in exports], default=0) + 1
     
     # Create export entry
-    cfg = load_config()
-    export_dir = cfg.export_dir.rstrip("/")
+    cfg = load_settings()
+    export_dir = cfg.ganesha.export_dir.rstrip("/")
     export_entry = {
         "export_id": export_id,
         "path": f"{export_dir}/{svm_name}/{volume_name}",
@@ -272,13 +272,8 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
     exports = _load_exports(svm_name)
     
     # Remove matching export
-    cfg = load_config()
-    export_dir = cfg.export_dir.rstrip("/")
-    exports = [
-        e for e in exports
-        if not (e.get("path") == f"/exports/{svm_name}/{volume_name}" and e.get("client") == client)
-    ]
-    # Support old default path too (backward compatibility)
+    cfg = load_settings()
+    export_dir = cfg.ganesha.export_dir.rstrip("/")
     exports = [
         e
         for e in exports
@@ -397,8 +392,8 @@ def rollback_config(svm_name: str, config_version: str) -> str:
         svm_name: SVM name
         config_version: Snapshot version (or "latest")
     """
-    cfg = load_config()
-    config_dir = Path(cfg.ganesha_config_dir)
+    cfg = load_settings()
+    config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     config_path = config_dir / f"ganesha.{svm_name}.conf"
 

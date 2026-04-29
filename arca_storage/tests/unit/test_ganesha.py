@@ -10,6 +10,13 @@ import pytest
 from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config, sync
 
 
+@pytest.fixture(autouse=True)
+def arca_config(monkeypatch, tmp_path):
+    config_path = tmp_path / "config.toml"
+    config_path.write_text(f"[state]\nruntime_dir = \"{tmp_path}\"\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+
 class TestRenderConfig:
     """Tests for render_config function."""
 

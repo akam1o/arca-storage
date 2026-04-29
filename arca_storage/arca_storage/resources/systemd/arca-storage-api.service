@@ -4,7 +4,8 @@ After=network.target
 
 [Service]
 Type=simple
-Environment=ARCA_RUNTIME_CONFIG_PATH=/etc/arca-storage/storage-runtime.conf
+Environment=ARCA_CONFIG_PATH=/etc/arca-storage/config.toml
+EnvironmentFile=-/etc/arca-storage/api.env
 ExecStart=/usr/bin/arca-storage-api
 Restart=on-failure
 RestartSec=3

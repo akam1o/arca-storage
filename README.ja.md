@@ -89,18 +89,18 @@ Python コードベースは **宣言的リコンシリエーション** アー�
 
 デフォルトでは、Arca StorageはNFSv4のみを使用します。NFSv3サポートを有効にするには：
 
-1. **runtime 設定の編集:**
+1. **設定の編集:**
 
-   `/etc/arca-storage/storage-runtime.conf` に設定します：
+   `/etc/arca-storage/config.toml` に設定します：
 
-   ```ini
-   [storage]
+   ```toml
+   [ganesha]
    # NFSv3 を有効化（v3 + v4 の両方を利用）
-   ganesha_protocols = 3,4
+   protocols = [3, 4]
 
    # 固定ポート（NFSv3 利用時に推奨）
-   ganesha_mountd_port = 20048
-   ganesha_nlm_port = 32768
+   mountd_port = 20048
+   nlm_port = 32768
    ```
 
 2. **設定の再生成と reload:**
@@ -140,14 +140,13 @@ Python コードベースは **宣言的リコンシリエーション** アー�
 
 ```bash
 # Ansibleなしでのブートストラップ
-arca bootstrap install
+sudo arca bootstrap install
 
 # (任意) 設定の編集
-sudo vi /etc/arca-storage/storage-bootstrap.conf
-sudo vi /etc/arca-storage/storage-runtime.conf
+sudo vi /etc/arca-storage/config.toml
 
 # 設定変更後に /etc/arca-storage/arca-storage.env を再生成
-arca bootstrap render-env
+sudo arca bootstrap render-env
 
 # SVMの作成
 # --gateway は省略可です（未指定の場合は --ip から推定。/31,/32 は指定してください）

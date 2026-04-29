@@ -2,14 +2,14 @@
 Unit tests for state store.
 """
 
-import os
-
 import pytest
 
 
 @pytest.mark.unit
 def test_state_roundtrip(temp_dir, monkeypatch):
-    monkeypatch.setenv("ARCA_STATE_DIR", str(temp_dir))
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(f"[state]\nruntime_dir = \"{temp_dir}\"\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
 
     from arca_storage.cli.lib import state
 
@@ -28,4 +28,3 @@ def test_state_roundtrip(temp_dir, monkeypatch):
 
     assert state.delete_svm("tenant_a") is True
     assert state.list_svms() == []
-

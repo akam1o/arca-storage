@@ -89,18 +89,18 @@ The Python codebase follows a **declarative reconciliation** architecture:
 
 By default, Arca Storage uses NFSv4 only. To enable NFSv3 support:
 
-1. **Edit runtime config:**
+1. **Edit config:**
 
-   In `/etc/arca-storage/storage-runtime.conf`:
+   In `/etc/arca-storage/config.toml`:
 
-   ```ini
-   [storage]
+   ```toml
+   [ganesha]
    # Enable NFSv3 (use both v3 and v4)
-   ganesha_protocols = 3,4
+   protocols = [3, 4]
 
    # Fixed ports (recommended when using NFSv3)
-   ganesha_mountd_port = 20048
-   ganesha_nlm_port = 32768
+   mountd_port = 20048
+   nlm_port = 32768
    ```
 
 2. **Re-render configs and reload services:**
@@ -140,14 +140,13 @@ By default, Arca Storage uses NFSv4 only. To enable NFSv3 support:
 
 ```bash
 # Bootstrap (without Ansible)
-arca bootstrap install
+sudo arca bootstrap install
 
-# (Optional) edit configs
-sudo vi /etc/arca-storage/storage-bootstrap.conf
-sudo vi /etc/arca-storage/storage-runtime.conf
+# (Optional) edit config
+sudo vi /etc/arca-storage/config.toml
 
-# Re-generate /etc/arca-storage/arca-storage.env after editing configs
-arca bootstrap render-env
+# Re-generate /etc/arca-storage/arca-storage.env after editing config
+sudo arca bootstrap render-env
 
 # Create an SVM
 # --gateway is optional; if omitted, it is inferred from --ip (except /31,/32)

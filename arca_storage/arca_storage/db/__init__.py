@@ -95,6 +95,7 @@ class StateDB:
 
     def __init__(self, db_path: Path | str) -> None:
         self._db_path = str(db_path)
+        Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
         # Initialise schema on first connection
         with self.transaction() as conn:

@@ -25,8 +25,9 @@ override_dh_auto_install:
 
 	# Configs
 	install -d $(CURDIR)/debian/arca-storage/etc/arca-storage
-	install -m 0644 arca_storage/arca_storage/resources/config/storage-bootstrap.conf $(CURDIR)/debian/arca-storage/etc/arca-storage/storage-bootstrap.conf
-	install -m 0644 arca_storage/arca_storage/resources/config/storage-runtime.conf $(CURDIR)/debian/arca-storage/etc/arca-storage/storage-runtime.conf
+	install -m 0644 arca_storage/arca_storage/resources/config/config.toml $(CURDIR)/debian/arca-storage/etc/arca-storage/config.toml
+	install -m 0644 arca_storage/arca_storage/resources/config/api.env $(CURDIR)/debian/arca-storage/etc/arca-storage/api.env
+	install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage.env $(CURDIR)/debian/arca-storage/etc/arca-storage/arca-storage.env
 
 	# systemd units
 	install -d $(CURDIR)/debian/arca-storage/lib/systemd/system
