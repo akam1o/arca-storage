@@ -22,7 +22,8 @@ _LIST_ALL_LIMIT = 1_000_000
 def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     """Create a new SVM via the reconciler."""
     validate_name(svm_data.name)
-    validate_vlan(svm_data.vlan_id)
+    if svm_data.vlan_id is not None:
+        validate_vlan(svm_data.vlan_id)
     validate_ip_cidr(svm_data.ip_cidr)
     if svm_data.gateway is not None:
         validate_ipv4(svm_data.gateway)

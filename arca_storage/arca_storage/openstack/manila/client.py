@@ -503,7 +503,7 @@ class ArcaManilaClient:
     def create_svm(
         self,
         name: str,
-        vlan_id: int,
+        vlan_id: Optional[int],
         ip_cidr: str,
         gateway: Optional[str] = None,
         mtu: int = 1500,
@@ -513,7 +513,7 @@ class ArcaManilaClient:
 
         Args:
             name: SVM name
-            vlan_id: VLAN ID (1-4094)
+            vlan_id: Optional VLAN ID (1-4094)
             ip_cidr: IP address with CIDR (e.g., 192.168.10.5/24)
             gateway: Gateway IP (optional, will be inferred if not provided)
             mtu: MTU size (default: 1500)
@@ -528,17 +528,18 @@ class ArcaManilaClient:
         """
         data = {
             "name": name,
-            "vlan_id": vlan_id,
             "ip_cidr": ip_cidr,
             "mtu": mtu,
         }
+        if vlan_id is not None:
+            data["vlan_id"] = vlan_id
         if gateway:
             data["gateway"] = gateway
         if root_volume_size_gib:
             data["root_volume_size_gib"] = root_volume_size_gib
 
         response = self._make_request("POST", "/v1/svms", json_data=data)
-        LOG.info("Created SVM %s with VLAN %d and IP %s", name, vlan_id, ip_cidr)
+        LOG.info("Created SVM %s with VLAN %s and IP %s", name, vlan_id if vlan_id is not None else "none", ip_cidr)
         return response.get("data", {}).get("svm", {})
 
     # Snapshot operations (LVM thin snapshots)

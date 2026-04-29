@@ -2,6 +2,7 @@ package arca
 
 import (
 	"context"
+	"encoding/json"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -59,6 +60,20 @@ func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	}
 	if len(svms) != 1 || svms[0].Name != "k8s-default" {
 		t.Fatalf("ListSVMs() = %#v", svms)
+	}
+}
+
+func TestCreateSVMRequestOmitsOptionalVLAN(t *testing.T) {
+	payload, err := json.Marshal(&CreateSVMRequest{
+		Name:   "k8s-default",
+		IPCIDR: "192.168.10.5/32",
+		MTU:    1500,
+	})
+	if err != nil {
+		t.Fatalf("Marshal() error = %v", err)
+	}
+	if string(payload) != `{"name":"k8s-default","ip_cidr":"192.168.10.5/32","mtu":1500}` {
+		t.Fatalf("payload = %s", payload)
 	}
 }
 

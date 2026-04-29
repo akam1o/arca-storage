@@ -51,27 +51,37 @@ class SVMReconciler:
         spec = svm.spec
 
         ip_addr, prefix = validate_ip_cidr(spec.ip_cidr)
-        gateway = spec.gateway or infer_gateway_from_ip_cidr(spec.ip_cidr)
+        uses_vlan = spec.vlan_id is not None
+        gateway = spec.gateway or (infer_gateway_from_ip_cidr(spec.ip_cidr) if uses_vlan else None)
         parent_if = self._cfg.get("parent_if", "bond0")
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         thinpool = self._cfg.get("thinpool_name", "pool")
         export_dir = self._cfg.get("export_dir", "/exports")
         drbd_resource = self._cfg.get("drbd_resource", "r0")
 
-        steps = [
-            (
-                "namespace_created",
-                lambda: self.adapters.netns.create_namespace(spec.name),
-            ),
-            (
-                "vlan_attached",
-                lambda: self._attach_vlan(svm, parent_if, gateway),
-            ),
+        steps = []
+        if uses_vlan:
+            steps.extend([
+                (
+                    "namespace_created",
+                    lambda: self.adapters.netns.create_namespace(spec.name),
+                ),
+                (
+                    "vlan_attached",
+                    lambda: self._attach_vlan(svm, parent_if, gateway),
+                ),
+            ])
+        steps.append(
             (
                 "ganesha_configured",
-                lambda: self.adapters.ganesha.render_config(spec.name, []),
-            ),
-        ]
+                lambda: self.adapters.ganesha.render_config(
+                    spec.name,
+                    [],
+                    bind_addr=ip_addr,
+                    host_network=not uses_vlan,
+                ),
+            )
+        )
 
         if spec.root_volume_size_gib:
             lv_name = f"vol_{spec.name}"
@@ -125,6 +135,8 @@ class SVMReconciler:
         return svm
 
     def _attach_vlan(self, svm: SVM, parent_if: str, gateway: str) -> None:
+        if svm.spec.vlan_id is None:
+            raise ValueError("vlan_id is required to attach a VLAN interface")
         ifname = svm.status.vlan_ifname
         if not ifname:
             ifname = allocate_vlan_ifname(svm.spec.name, svm.spec.vlan_id)

@@ -49,3 +49,40 @@ def test_create_group_creates_missing_resources(mock_subprocess):
     assert any(cmd[:5] == ["pcs", "resource", "create", "netns_tenant_a", "ocf:local:NetnsVlan"] for cmd in calls)
     assert any("vlan_id=100" in cmd for cmd in calls if isinstance(cmd, list))
     assert any("ifname=v100-tenantxxxx" in cmd for cmd in calls if isinstance(cmd, list))
+
+
+@pytest.mark.unit
+def test_create_group_without_vlan_creates_ipaddr2_and_host_ganesha(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=1),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource create p_drbd_r0
+        MagicMock(returncode=1),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource master ms_drbd_r0 p_drbd_r0 ...
+        MagicMock(returncode=1),  # pcs resource show ip_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ip_tenant_a
+        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=None,
+        ip="192.168.10.5",
+        prefix=32,
+        gw=None,
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+        create_filesystem=False,
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert any(cmd[:5] == ["pcs", "resource", "create", "ip_tenant_a", "ocf:heartbeat:IPaddr2"] for cmd in calls)
+    assert any("cidr_netmask=32" in cmd for cmd in calls if isinstance(cmd, list))
+    assert any("systemd:nfs-ganesha-host@tenant_a" in cmd for cmd in calls if isinstance(cmd, list))

@@ -93,6 +93,28 @@ class TestSVMReconciler:
         # Verify DB state
         records = db.list_svms(name="test-svm")
         assert len(records) == 1
+        assert adapters.ganesha.bind_addrs["test-svm"] == "10.0.0.5"
+        assert adapters.ganesha.host_network["test-svm"] is False
+
+    def test_create_svm_without_vlan_uses_host_network(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="novlan",
+                ip_cidr="10.0.9.5/32",
+            ),
+        )
+
+        result = rec.reconcile(svm)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.namespace_created is False
+        assert result.status.vlan_attached is False
+        assert adapters.netns.namespace_exists("novlan") is False
+        assert adapters.ganesha.bind_addrs["novlan"] == "10.0.9.5"
+        assert adapters.ganesha.host_network["novlan"] is True
+        assert adapters.pacemaker.resources["ip_novlan"]["type"] == "IPaddr2"
+        assert adapters.pacemaker.resources["ganesha_novlan"]["type"] == "nfs-ganesha-host"
 
     def test_create_svm_idempotent(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
@@ -268,6 +290,21 @@ class TestExportReconciler:
         records = db.list_exports(svm="svm1")
         assert sorted(r["status"]["export_id"] for r in records) == [1, 2, 3, 4]
         assert len(adapters.ganesha.exports["svm1"]) == 4
+
+    def test_export_render_preserves_svm_bind_addr(self, db, adapters, config):
+        svm_rec = SVMReconciler(db, adapters, config=config)
+        svm_rec.reconcile(SVM(spec=SVMSpec(name="host-svm", ip_cidr="10.0.8.5/32")))
+
+        rec = ExportReconciler(db, adapters, config=config)
+        export = Export(
+            spec=ExportSpec(svm="host-svm", volume="vol1", client="10.0.0.0/24"),
+        )
+
+        result = rec.reconcile(export)
+
+        assert result.status.phase == Phase.READY
+        assert adapters.ganesha.bind_addrs["host-svm"] == "10.0.8.5"
+        assert adapters.ganesha.host_network["host-svm"] is True
 
 
 # ── Error Handling ────────────────────────────────────────────────

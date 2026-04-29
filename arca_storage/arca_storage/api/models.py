@@ -51,7 +51,7 @@ class SVMCreate(BaseModel):
     """Request model for creating an SVM."""
 
     name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    vlan_id: int = Field(..., description="VLAN ID", ge=1, le=4094)
+    vlan_id: Optional[int] = Field(None, description="Optional VLAN ID", ge=1, le=4094)
     ip_cidr: str = Field(..., description="IP address with CIDR (e.g., 192.168.10.5/24)")
     gateway: Optional[str] = Field(None, description="Gateway IP (optional; inferred if omitted)")
     mtu: int = Field(1500, description="MTU size", ge=68, le=9000)
@@ -102,7 +102,7 @@ class SVM(BaseModel):
     """SVM response model."""
 
     name: str
-    vlan_id: int
+    vlan_id: Optional[int]
     ip_cidr: str
     gateway: Optional[str]
     mtu: int

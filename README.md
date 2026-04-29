@@ -13,7 +13,7 @@ Software-Defined Storage system with Storage Virtual Machine (SVM) functionality
 Arca Storage is a Software-Defined Storage system that provides NetApp ONTAP-like SVM functionality using Linux standard technologies:
 
 - **Multi-protocol**: NFS v4.1 / v4.2 (default), with optional NFSv3 support
-- **Multi-tenancy**: Network Namespace-based network isolation
+- **Multi-tenancy**: Per-SVM Ganesha bind addresses, with optional Network Namespace/VLAN isolation
 - **High Availability**: Pacemaker-based Active/Active failover
 - **Data Efficiency**: LVM Thin Provisioning with overcommit
 - **Client Integration**: Kubernetes (CSI) ([docs](csi-arca-storage/README.md)) and OpenStack ([Cinder NFS Driver](docs/openstack-cinder.md), [Manila](docs/openstack-manila.md)) support
@@ -23,7 +23,7 @@ Arca Storage is a Software-Defined Storage system that provides NetApp ONTAP-lik
 The system combines:
 - **Pacemaker + Corosync**: HA clustering and resource management
 - **NFS-Ganesha**: User-space NFS server (one process per SVM)
-- **Network Namespace**: Tenant network isolation
+- **Network Namespace**: Optional tenant network isolation when VLAN-backed SVMs are used
 - **XFS**: NVMe-optimized filesystem
 - **LVM Thin Provisioning**: Virtual volume management and snapshots
 - **DRBD**: Node-to-node synchronous data mirroring
@@ -149,8 +149,11 @@ sudo vi /etc/arca-storage/config.toml
 sudo arca bootstrap render-env
 
 # Create an SVM
-# --gateway is optional; if omitted, it is inferred from --ip (except /31,/32)
+# --vlan is optional. Without it, Ganesha binds directly to the SVM VIP in the host namespace.
+# --gateway is optional for VLAN-backed SVMs; if omitted, it is inferred from --ip (except /31,/32)
 arca svm create tenant_a --vlan 100 --ip 192.168.10.5/24
+# or without a VLAN:
+arca svm create tenant_b --ip 192.168.20.5/32
 
 # Create a volume
 arca volume create vol1 --svm tenant_a --size 100

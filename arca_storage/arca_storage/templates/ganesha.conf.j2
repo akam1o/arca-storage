@@ -4,6 +4,9 @@
 
 NFS_CORE_PARAM {
     Protocols = {{ protocols }};
+{% if bind_addr %}
+    Bind_addr = {{ bind_addr }};
+{% endif %}
     NFS_Port = 2049;
     MNT_Port = {{ mountd_port }};
 {% if enable_v3 %}

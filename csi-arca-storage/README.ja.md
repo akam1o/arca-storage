@@ -54,8 +54,8 @@ network:
   pools:
     - cidr: "10.0.0.0/24"
       range: "10.0.0.100-10.0.0.200"
-      vlan: 100
-      gateway: "10.0.0.1"
+      vlan: 100       # 任意。VLAN なし SVM では省略
+      gateway: "10.0.0.1"  # VLAN-backed の /30 以上では省略可
   mtu: 1500
 
 driver:

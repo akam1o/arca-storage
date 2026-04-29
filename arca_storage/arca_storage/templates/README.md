@@ -10,6 +10,7 @@ NFS-Ganesha configuration template.
 
 - `template_version`: Template version (e.g., "1.0.0")
 - `config_version`: Configuration version timestamp (e.g., "20251220123456")
+- `bind_addr`: Optional Ganesha listen address for `NFS_CORE_PARAM.Bind_addr`
 - `exports`: List of export dictionaries with the following keys:
   - `export_id`: Unique export ID (integer)
   - `path`: Export path (e.g., "/exports/tenant_a/vol1")
@@ -31,6 +32,7 @@ template = Template(template_path.read_text())
 config = template.render(
     template_version="1.0.0",
     config_version="20251220123456",
+    bind_addr="192.168.10.5",
     exports=[
         {
             "export_id": 101,

@@ -17,9 +17,9 @@ type SVM struct {
 // CreateSVMRequest represents a request to create an SVM
 type CreateSVMRequest struct {
 	Name    string `json:"name"`
-	VLANID  int    `json:"vlan_id"`
+	VLANID  int    `json:"vlan_id,omitempty"`
 	IPCIDR  string `json:"ip_cidr"`
-	Gateway string `json:"gateway"`
+	Gateway string `json:"gateway,omitempty"`
 	MTU     int    `json:"mtu"`
 }
 

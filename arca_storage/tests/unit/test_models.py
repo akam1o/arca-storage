@@ -40,6 +40,10 @@ class TestSVMModel:
         assert d["mtu"] == 9000
         assert d["name"] == "test"
 
+    def test_vlan_is_optional(self):
+        spec = SVMSpec(name="test", ip_cidr="10.0.0.5/32")
+        assert spec.vlan_id is None
+
 
 class TestVolumeModel:
     def test_defaults(self):

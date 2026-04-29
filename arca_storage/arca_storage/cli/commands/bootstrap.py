@@ -95,11 +95,12 @@ def install(
                 shutil.copy2(api_src, api_dst)
 
         if install_ganesha_unit:
-            ganesha_src = _resource_path("systemd", "nfs-ganesha@.service")
-            ganesha_dst = Path("/etc/systemd/system/nfs-ganesha@.service")
-            if not ganesha_src.exists():
-                raise RuntimeError(f"Missing packaged systemd unit: {ganesha_src}")
-            shutil.copy2(ganesha_src, ganesha_dst)
+            for unit in ["nfs-ganesha@.service", "nfs-ganesha-host@.service"]:
+                ganesha_src = _resource_path("systemd", unit)
+                ganesha_dst = Path("/etc/systemd/system") / unit
+                if not ganesha_src.exists():
+                    raise RuntimeError(f"Missing packaged systemd unit: {ganesha_src}")
+                shutil.copy2(ganesha_src, ganesha_dst)
 
         # systemd environment file (used by nfs-ganesha@.service)
         _write_env_file(cfg)
@@ -172,6 +173,7 @@ def verify(
 
     # systemd unit files
     check(Path("/etc/systemd/system/nfs-ganesha@.service").exists(), "nfs-ganesha@.service present", "missing nfs-ganesha@.service (run: arca bootstrap install)")
+    check(Path("/etc/systemd/system/nfs-ganesha-host@.service").exists(), "nfs-ganesha-host@.service present", "missing nfs-ganesha-host@.service (run: arca bootstrap install)")
     check(Path("/etc/systemd/system/arca-storage-api.service").exists(), "arca-storage-api.service present", "missing arca-storage-api.service (run: arca bootstrap install)")
 
     # Config sanity (basic)
