@@ -10,10 +10,12 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
 from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError
+from arca_storage.errors import NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
+
+_LIST_ALL_LIMIT = 1_000_000
 
 
 def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
@@ -73,7 +75,7 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
 
 
 def delete_volume(name: str, svm: str, force: bool = False) -> None:
-    """Delete a volume via the reconciler."""
+    """Delete a volume and clean up dependent exports/snapshots first."""
     validate_name(name)
     validate_name(svm)
 
@@ -81,6 +83,27 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
     record = ctx.db.get_volume(svm, name)
     if not record:
         raise NotFoundError("Volume", f"{svm}/{name}")
+
+    snapshots = ctx.db.list_snapshots(svm=svm, volume=name, limit=_LIST_ALL_LIMIT)
+    if snapshots and not force:
+        raise PreconditionFailedError(
+            f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
+            {
+                "resource": "Volume",
+                "name": f"{svm}/{name}",
+                "snapshot_count": len(snapshots),
+                "snapshots": [_snapshot_ref(s) for s in snapshots],
+            },
+        )
+
+    _delete_exports_for_volume(ctx, svm, name)
+
+    if snapshots:
+        from arca_storage.api.services import snapshot_service
+
+        for snapshot in snapshots:
+            spec = snapshot["spec"]
+            snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
 
     volume = Volume(
         metadata=_meta_from_record(record),
@@ -123,3 +146,43 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _parse_status(record: Dict[str, Any]) -> Any:
     from arca_storage.models.volume import VolumeStatus
     return VolumeStatus.model_validate(record["status"])
+
+
+def _delete_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
+    """Remove DB-backed and CSI-only Ganesha exports before deleting a volume."""
+    from arca_storage.api.services import export_service
+
+    exports = ctx.db.list_exports(svm=svm, volume=volume, limit=_LIST_ALL_LIMIT)
+    for export in exports:
+        spec = export["spec"]
+        export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
+
+    _remove_ganesha_exports_for_volume(ctx, svm, volume)
+
+
+def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
+    cfg = ctx.settings.to_reconciler_config()
+    export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
+    root_path = f"{export_dir}/{svm}"
+    volume_path = f"{root_path}/{volume}"
+
+    exports = ctx.adapters.ganesha.load_exports(svm)
+    kept = [e for e in exports if e.get("path") != volume_path]
+    has_other_csi_volume = any(
+        e.get("owner") == "csi"
+        and str(e.get("path") or "").startswith(f"{root_path}/")
+        and e.get("path") != volume_path
+        for e in kept
+    )
+    if not has_other_csi_volume:
+        kept = [e for e in kept if not (e.get("path") == root_path and e.get("owner") == "csi")]
+
+    if kept != exports:
+        ctx.adapters.ganesha.save_exports(svm, kept)
+        ctx.adapters.ganesha.render_config(svm, kept)
+        ctx.adapters.ganesha.reload(svm)
+
+
+def _snapshot_ref(snapshot: Dict[str, Any]) -> str:
+    spec = snapshot.get("spec", {})
+    return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('name')}"

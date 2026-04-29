@@ -8,6 +8,7 @@ from typing import Optional
 
 import typer
 
+from arca_storage.api.services import volume_service
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
 from arca_storage.models.base import Phase, ResourceMeta
@@ -101,29 +102,15 @@ def resize(
 def delete(
     name: str = typer.Argument(..., help="Volume name"),
     svm: str = typer.Option(..., "--svm", help="SVM name"),
-    force: bool = typer.Option(False, "--force", help="Force deletion"),
+    force: bool = typer.Option(False, "--force", help="Delete dependent snapshots before deleting"),
 ):
-    """Delete a volume via the reconciler."""
+    """Delete a volume after dependent exports/snapshots are handled."""
     try:
         validate_name(name)
         validate_name(svm)
 
         typer.echo(f"Deleting volume: {name} in SVM: {svm}")
-
-        ctx = get_context()
-        records = ctx.db.list_volumes(svm=svm, name=name)
-        if not records:
-            typer.echo(f"Volume {name} not found in SVM {svm}", err=True)
-            raise typer.Exit(1)
-
-        record = records[0]
-        vol = Volume(
-            metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
-            spec=VolumeSpec.model_validate(record["spec"]),
-            status=VolumeStatus.model_validate(record["status"]),
-        )
-        vol.status.phase = Phase.DELETING
-        ctx.volume_reconciler.reconcile(vol)
+        volume_service.delete_volume(name, svm, force=force)
 
         typer.echo(f"Volume {name} deleted successfully")
 

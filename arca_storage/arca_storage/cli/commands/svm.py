@@ -8,6 +8,7 @@ from typing import Optional
 
 import typer
 
+from arca_storage.api.services import svm_service
 from arca_storage.cli.lib.validators import (
     validate_ip_cidr,
     validate_ipv4,
@@ -76,28 +77,15 @@ def create(
 @app.command()
 def delete(
     name: str = typer.Argument(..., help="SVM name"),
-    force: bool = typer.Option(False, "--force", help="Force deletion even if volumes exist"),
+    force: bool = typer.Option(False, "--force", help="Force cascading deletion of dependent resources"),
+    delete_volumes: bool = typer.Option(False, "--delete-volumes", help="Delete dependent volumes before deleting"),
 ):
-    """Delete an SVM via the reconciler."""
+    """Delete an SVM after dependent resources are gone or safely cascaded."""
     try:
         validate_name(name)
 
         typer.echo(f"Deleting SVM: {name}")
-
-        ctx = get_context()
-        records = ctx.db.list_svms(name=name)
-        if not records:
-            typer.echo(f"SVM {name} not found", err=True)
-            raise typer.Exit(1)
-
-        from arca_storage.models.base import ResourceMeta
-        record = records[0]
-        svm = SVM(
-            metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
-            spec=SVMSpec.model_validate(record["spec"]),
-        )
-        svm.status.phase = Phase.DELETING
-        ctx.svm_reconciler.reconcile(svm)
+        svm_service.delete_svm(name, force=force, delete_volumes=delete_volumes)
 
         typer.echo(f"SVM {name} deleted successfully")
 
