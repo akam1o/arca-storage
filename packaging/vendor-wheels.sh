@@ -25,4 +25,9 @@ cp -f "$ROOT/arca_storage/dist/"*.whl "$WHEELHOUSE/"
 # Build wheels for runtime deps (avoid sdists at install time)
 "$VENV/bin/python" -m pip wheel --wheel-dir "$WHEELHOUSE" -r "$ROOT/packaging/requirements-runtime.txt"
 
+# Validate the offline wheelhouse against the built package metadata. Use
+# --ignore-installed so build-tool dependencies in this temporary venv cannot
+# hide missing runtime wheels.
+"$VENV/bin/python" -m pip install --dry-run --ignore-installed --no-index --find-links "$WHEELHOUSE" arca-storage >/dev/null
+
 echo "Wheelhouse ready: $WHEELHOUSE"
