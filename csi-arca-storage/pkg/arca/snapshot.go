@@ -2,6 +2,7 @@ package arca
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,7 +12,7 @@ import (
 func (c *Client) CreateSnapshot(ctx context.Context, req *CreateSnapshotRequest) error {
 	_, err := c.doRequest(ctx, http.MethodPost, "/v1/snapshots", req)
 	if err != nil {
-		if err == ErrSnapshotAlreadyExists {
+		if errors.Is(err, ErrSnapshotAlreadyExists) {
 			return nil // Idempotent
 		}
 		return err
@@ -26,7 +27,7 @@ func (c *Client) DeleteSnapshot(ctx context.Context, svmName, snapshotPath strin
 
 	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/snapshots/%s", svmName), nil, params)
 	if err != nil {
-		if err == ErrSnapshotNotFound {
+		if errors.Is(err, ErrSnapshotNotFound) {
 			return nil // Idempotent
 		}
 		return err

@@ -1,0 +1,236 @@
+"""
+CSI compatibility layer for directory and quota operations.
+
+The CSI driver models PVCs as directories under an SVM export. Internally Arca
+Storage still provisions one LVM/XFS volume per directory name and exposes it
+through the SVM's NFS-Ganesha instance.
+"""
+
+from __future__ import annotations
+
+import math
+import zlib
+from typing import Any, Dict, List
+
+from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
+from arca_storage.api.services import volume_service
+from arca_storage.cli.lib.validators import validate_name
+from arca_storage.context import get_context
+from arca_storage.errors import NotFoundError
+
+GIB = 1024**3
+CSI_CLIENT_CIDR = "0.0.0.0/0"
+
+
+def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
+    """Create an SVM-relative directory for CSI by provisioning a volume."""
+    svm = directory_data.svm_name
+    path = directory_data.path
+    _validate_directory(svm, path)
+
+    ctx = get_context()
+    _require_svm(ctx, svm)
+
+    size_gib = _quota_bytes_to_gib(directory_data.quota_bytes)
+    volume = _ensure_volume(svm, path, size_gib)
+    _ensure_csi_exports(ctx, svm, path)
+    return _directory_response(svm, path, volume, directory_data.quota_bytes)
+
+
+def delete_directory(svm_name: str, path: str) -> None:
+    """Delete a CSI directory and its backing volume."""
+    _validate_directory(svm_name, path)
+
+    ctx = get_context()
+    _require_svm(ctx, svm_name)
+    record = ctx.db.get_volume(svm_name, path)
+    if not record:
+        raise NotFoundError("Directory", f"{svm_name}/{path}")
+
+    _remove_csi_exports(ctx, svm_name, path)
+    volume_service.delete_volume(path, svm_name, force=True)
+
+
+def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
+    """Set CSI quota/capacity. This maps to backing volume size in GiB."""
+    svm = quota_data.svm_name
+    path = quota_data.path
+    _validate_directory(svm, path)
+
+    ctx = get_context()
+    _require_svm(ctx, svm)
+    size_gib = _quota_bytes_to_gib(quota_data.quota_bytes)
+    _ensure_volume(svm, path, size_gib)
+    _ensure_csi_exports(ctx, svm, path)
+    return get_quota(svm, path)
+
+
+def expand_quota(quota_data: QuotaExpand) -> Dict[str, Any]:
+    """Expand CSI quota/capacity."""
+    return set_quota(
+        QuotaSet(
+            svm_name=quota_data.svm_name,
+            path=quota_data.path,
+            quota_bytes=quota_data.new_quota_bytes,
+        )
+    )
+
+
+def get_quota(svm_name: str, path: str) -> Dict[str, Any]:
+    """Return quota/capacity information for a CSI directory."""
+    _validate_directory(svm_name, path)
+
+    ctx = get_context()
+    _require_svm(ctx, svm_name)
+    record = ctx.db.get_volume(svm_name, path)
+    if not record:
+        raise NotFoundError("Quota", f"{svm_name}/{path}")
+
+    size_gib = int(record.get("spec", {}).get("size_gib") or 0)
+    quota_bytes = size_gib * GIB
+    return {
+        "path": path,
+        "quota_bytes": quota_bytes,
+        "used_bytes": 0,
+        "project_id": zlib.crc32(f"{svm_name}/{path}".encode("utf-8")) & 0x7FFFFFFF,
+    }
+
+
+def _ensure_volume(svm: str, path: str, size_gib: int) -> Dict[str, Any]:
+    ctx = get_context()
+    record = ctx.db.get_volume(svm, path)
+    if not record:
+        return volume_service.create_volume(
+            VolumeCreate(name=path, svm=svm, size_gib=size_gib, thin=True, fs_type="xfs")
+        )
+
+    current_size = int(record.get("spec", {}).get("size_gib") or 0)
+    if current_size < size_gib:
+        return volume_service.resize_volume(path, svm, size_gib)
+    return _volume_record_to_dict(record)
+
+
+def _ensure_csi_exports(ctx: Any, svm: str, path: str) -> None:
+    cfg = ctx.settings.to_reconciler_config()
+    export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
+    root_path = f"{export_dir}/{svm}"
+    volume_path = f"{root_path}/{path}"
+
+    exports = ctx.adapters.ganesha.load_exports(svm)
+    changed = _upsert_export_entry(exports, root_path, root_path)
+    changed = _upsert_export_entry(exports, volume_path, volume_path) or changed
+    if changed:
+        ctx.adapters.ganesha.save_exports(svm, exports)
+        ctx.adapters.ganesha.render_config(svm, exports)
+        ctx.adapters.ganesha.reload(svm)
+
+
+def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
+    cfg = ctx.settings.to_reconciler_config()
+    export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
+    root_path = f"{export_dir}/{svm}"
+    volume_path = f"{root_path}/{path}"
+
+    exports = ctx.adapters.ganesha.load_exports(svm)
+    kept = [
+        e
+        for e in exports
+        if not (
+            e.get("path") == volume_path
+            and e.get("client") == CSI_CLIENT_CIDR
+            and e.get("owner") == "csi"
+        )
+    ]
+    has_other_csi_volume = any(
+        e.get("owner") == "csi"
+        and e.get("client") == CSI_CLIENT_CIDR
+        and str(e.get("path") or "").startswith(f"{root_path}/")
+        for e in kept
+    )
+    if not has_other_csi_volume:
+        kept = [
+            e
+            for e in kept
+            if not (
+                e.get("path") == root_path
+                and e.get("client") == CSI_CLIENT_CIDR
+                and e.get("owner") == "csi"
+            )
+        ]
+
+    if kept != exports:
+        ctx.adapters.ganesha.save_exports(svm, kept)
+        ctx.adapters.ganesha.render_config(svm, kept)
+        ctx.adapters.ganesha.reload(svm)
+
+
+def _upsert_export_entry(exports: List[Dict[str, Any]], path: str, pseudo: str) -> bool:
+    desired = {
+        "path": path,
+        "pseudo": pseudo,
+        "access": "RW",
+        "squash": "No_Root_Squash",
+        "sec": ["sys"],
+        "client": CSI_CLIENT_CIDR,
+        "owner": "csi",
+    }
+    for entry in exports:
+        if entry.get("path") == path and entry.get("client") == CSI_CLIENT_CIDR:
+            changed = False
+            for key, value in desired.items():
+                if entry.get(key) != value:
+                    entry[key] = value
+                    changed = True
+            return changed
+
+    export_id = max([int(e.get("export_id") or 0) for e in exports], default=0) + 1
+    exports.append({"export_id": export_id, **desired})
+    return True
+
+
+def _quota_bytes_to_gib(quota_bytes: int | None) -> int:
+    if quota_bytes is None:
+        return 1
+    return max(1, int(math.ceil(quota_bytes / GIB)))
+
+
+def _validate_directory(svm: str, path: str) -> None:
+    validate_name(svm)
+    validate_name(path)
+
+
+def _require_svm(ctx: Any, svm: str) -> None:
+    if not ctx.db.get_svm(svm):
+        raise NotFoundError("SVM", svm)
+
+
+def _volume_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+    spec = record.get("spec", {})
+    status = record.get("status", {})
+    return {
+        "name": spec.get("name"),
+        "svm": spec.get("svm"),
+        "size_gib": spec.get("size_gib"),
+        "thin": spec.get("thin", True),
+        "fs_type": spec.get("fs_type", "xfs"),
+        "mount_path": status.get("mount_path"),
+        "lv_path": status.get("lv_path"),
+        "lv_name": status.get("lv_name"),
+        "status": status.get("phase"),
+        "created_at": record.get("created_at"),
+    }
+
+
+def _directory_response(
+    svm: str,
+    path: str,
+    volume: Dict[str, Any],
+    requested_quota_bytes: int | None,
+) -> Dict[str, Any]:
+    size_gib = int(volume.get("size_gib") or 0)
+    return {
+        "svm_name": svm,
+        "path": path,
+        "quota_bytes": requested_quota_bytes or size_gib * GIB,
+        "volume": volume,
+    }

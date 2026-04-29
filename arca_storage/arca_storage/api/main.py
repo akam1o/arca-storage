@@ -10,9 +10,12 @@ from fastapi import FastAPI, HTTPException, Query, Request
 from fastapi.responses import JSONResponse
 
 from arca_storage.api.models import (
+    DirectoryCreate,
     ExportCreate,
     ExportListResponse,
     ExportResponse,
+    QuotaExpand,
+    QuotaSet,
     SnapshotCreate,
     SnapshotListResponse,
     SnapshotResponse,
@@ -28,7 +31,7 @@ from arca_storage.api.models import (
     VolumeResize,
     VolumeResponse,
 )
-from arca_storage.api.services import export_service, qos_service, snapshot_service, svm_service, volume_service
+from arca_storage.api.services import directory_service, export_service, qos_service, snapshot_service, svm_service, volume_service
 from arca_storage.errors import ArcaError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
@@ -99,6 +102,13 @@ def list_svms(
     }
 
 
+@app.get("/v1/svms/{name}", response_model=SVMResponse)
+def get_svm(name: str) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = svm_service.get_svm(name)
+    return {"request_id": request_id, "status": "ok", "data": result}
+
+
 @app.delete("/v1/svms/{name}", response_model=SuccessResponse)
 def delete_svm(
     name: str,
@@ -108,6 +118,50 @@ def delete_svm(
     request_id = str(uuid.uuid4())
     svm_service.delete_svm(name, force, delete_volumes)
     return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
+
+
+# CSI directory/quota compatibility endpoints
+
+
+@app.post("/v1/directories", response_model=SuccessResponse, status_code=201)
+def create_directory(directory: DirectoryCreate) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = directory_service.create_directory(directory)
+    return {"request_id": request_id, "status": "ok", "data": {"directory": result}}
+
+
+@app.delete("/v1/directories/{svm_name}", response_model=SuccessResponse)
+def delete_directory(
+    svm_name: str,
+    path: str = Query(..., description="Directory path relative to SVM root"),
+) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    directory_service.delete_directory(svm_name, path)
+    return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
+
+
+@app.post("/v1/quotas", response_model=SuccessResponse)
+def set_quota(quota: QuotaSet) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = directory_service.set_quota(quota)
+    return {"request_id": request_id, "status": "ok", "data": result}
+
+
+@app.patch("/v1/quotas", response_model=SuccessResponse)
+def expand_quota(quota: QuotaExpand) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = directory_service.expand_quota(quota)
+    return {"request_id": request_id, "status": "ok", "data": result}
+
+
+@app.get("/v1/quotas/{svm_name}", response_model=SuccessResponse)
+def get_quota(
+    svm_name: str,
+    path: str = Query(..., description="Directory path relative to SVM root"),
+) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = directory_service.get_quota(svm_name, path)
+    return {"request_id": request_id, "status": "ok", "data": result}
 
 
 # Volume endpoints

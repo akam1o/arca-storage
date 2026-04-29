@@ -2,6 +2,7 @@ package arca
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/url"
@@ -11,7 +12,7 @@ import (
 func (c *Client) CreateDirectory(ctx context.Context, req *CreateDirectoryRequest) error {
 	_, err := c.doRequest(ctx, http.MethodPost, "/v1/directories", req)
 	if err != nil {
-		if err == ErrDirectoryAlreadyExists {
+		if errors.Is(err, ErrDirectoryAlreadyExists) {
 			return nil // Idempotent
 		}
 		return err
@@ -26,7 +27,7 @@ func (c *Client) DeleteDirectory(ctx context.Context, svmName, path string) erro
 
 	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/directories/%s", svmName), nil, params)
 	if err != nil {
-		if err == ErrDirectoryNotFound {
+		if errors.Is(err, ErrDirectoryNotFound) {
 			return nil // Idempotent
 		}
 		return err
