@@ -16,7 +16,7 @@ from jinja2 import Template
 from arca_storage.config import load_settings
 from arca_storage.cli.lib.state import get_state_dir
 
-TEMPLATE_VERSION = "1.0.0"
+TEMPLATE_VERSION = "1.1.0"
 
 
 def _template_path() -> Path:
@@ -47,6 +47,7 @@ def _render_sectype(value: object) -> str:
 def _stable_config_version(
     *,
     svm_name: str,
+    bind_addr: Optional[str],
     protocols: str,
     mountd_port: int,
     nlm_port: int,
@@ -54,6 +55,7 @@ def _stable_config_version(
 ) -> str:
     payload = {
         "svm": svm_name,
+        "bind_addr": bind_addr,
         "protocols": protocols,
         "mountd_port": mountd_port,
         "nlm_port": nlm_port,
@@ -94,7 +96,7 @@ def _write_json_if_changed(path: Path, data: object) -> None:
     _write_if_changed(path, content)
 
 
-def render_config(svm_name: str, exports: List[Dict]) -> str:
+def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str] = None) -> str:
     """
     Render ganesha.conf configuration file.
     
@@ -135,6 +137,7 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
 
     config_version = _stable_config_version(
         svm_name=svm_name,
+        bind_addr=bind_addr,
         protocols=protocols,
         mountd_port=cfg.ganesha.mountd_port,
         nlm_port=cfg.ganesha.nlm_port,
@@ -143,6 +146,7 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     meta = {
         "template_version": TEMPLATE_VERSION,
         "config_version": config_version,
+        "bind_addr": bind_addr,
         "protocols": protocols,
         "mountd_port": cfg.ganesha.mountd_port,
         "nlm_port": cfg.ganesha.nlm_port if enable_v3 else None,
@@ -163,6 +167,7 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
         template_version=TEMPLATE_VERSION,
         config_version=config_version,
         exports=exports_render,
+        bind_addr=bind_addr,
         protocols=protocols,
         enable_v3=enable_v3,
         mountd_port=cfg.ganesha.mountd_port,
@@ -182,7 +187,7 @@ def render_config(svm_name: str, exports: List[Dict]) -> str:
     return str(config_path)
 
 
-def reload(svm_name: str) -> None:
+def reload(svm_name: str, *, host_network: bool = False) -> None:
     """
     Reload NFS-Ganesha service for an SVM.
     
@@ -195,8 +200,9 @@ def reload(svm_name: str) -> None:
     import subprocess
 
     # Reload using systemctl
+    unit = "nfs-ganesha-host" if host_network else "nfs-ganesha"
     result = subprocess.run(
-        ["systemctl", "reload", f"nfs-ganesha@{svm_name}"],
+        ["systemctl", "reload", f"{unit}@{svm_name}"],
         capture_output=True,
         text=True,
         check=False
@@ -384,7 +390,7 @@ def list_config_snapshots(svm_name: str) -> List[Dict]:
     return results
 
 
-def rollback_config(svm_name: str, config_version: str) -> str:
+def rollback_config(svm_name: str, config_version: str, *, host_network: bool = False) -> str:
     """
     Restore ganesha.<svm>.conf from a saved snapshot and reload the service.
 
@@ -408,7 +414,7 @@ def rollback_config(svm_name: str, config_version: str) -> str:
 
     content = snap.read_text(encoding="utf-8")
     _write_if_changed(config_path, content)
-    reload(svm_name)
+    reload(svm_name, host_network=host_network)
     return str(config_path)
 
 

@@ -58,7 +58,7 @@ pip install .
 arca --help
 
 # SVM management
-arca svm create <name> --vlan <id> --ip <cidr>
+arca svm create <name> --ip <cidr> [--vlan <id>]
 arca svm list
 arca svm delete <name>
 

@@ -1,0 +1,13 @@
+# Managed by Ansible
+[Unit]
+Description=NFS-Ganesha Service for SVM %i (host namespace)
+After=network.target
+
+[Service]
+Type=forking
+ExecStart=/usr/bin/ganesha.nfsd -f /etc/ganesha/ganesha.%i.conf
+ExecReload=/bin/kill -HUP $MAINPID
+PIDFile=/var/run/ganesha.%i.pid
+
+[Install]
+WantedBy=multi-user.target

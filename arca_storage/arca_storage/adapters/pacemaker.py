@@ -19,11 +19,11 @@ class PacemakerAdapter(Protocol):
         svm_name: str,
         mount_path: str,
         *,
-        vlan_id: int,
+        vlan_id: Optional[int],
         ifname: Optional[str],
         ip: str,
         prefix: int,
-        gw: str,
+        gw: Optional[str],
         mtu: int,
         parent_if: str,
         vg_name: str,
@@ -50,11 +50,11 @@ class SubprocessPacemakerAdapter:
         svm_name: str,
         mount_path: str,
         *,
-        vlan_id: int,
+        vlan_id: Optional[int],
         ifname: Optional[str] = None,
         ip: str,
         prefix: int,
-        gw: str,
+        gw: Optional[str],
         mtu: int = 1500,
         parent_if: str = "bond0",
         vg_name: str = "vg_pool_01",
@@ -87,22 +87,38 @@ class SubprocessPacemakerAdapter:
             )
             resources.append(fs_resource)
 
-        # NetnsVlan resource
-        netns_resource = f"netns_{svm_name}"
-        if not self.resource_exists(netns_resource):
-            resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
-            run_cmd(
-                [
-                    "pcs", "resource", "create", netns_resource,
-                    "ocf:local:NetnsVlan",
-                    f"ns={svm_name}", f"vlan_id={vlan_id}", f"parent_if={parent_if}",
-                    f"ifname={resolved_ifname}", f"ip={ip}", f"prefix={prefix}",
-                    f"gw={gw}", f"mtu={mtu}",
-                    "op", "monitor", "interval=10s",
-                ],
-                timeout=self._timeout,
-            )
-        resources.append(netns_resource)
+        if vlan_id is None:
+            ip_resource = f"ip_{svm_name}"
+            if not self.resource_exists(ip_resource):
+                run_cmd(
+                    [
+                        "pcs", "resource", "create", ip_resource,
+                        "ocf:heartbeat:IPaddr2",
+                        f"ip={ip}", f"cidr_netmask={prefix}", f"nic={parent_if}",
+                        "op", "monitor", "interval=10s",
+                    ],
+                    timeout=self._timeout,
+                )
+            resources.append(ip_resource)
+            ganesha_unit = "nfs-ganesha-host"
+        else:
+            # NetnsVlan resource
+            netns_resource = f"netns_{svm_name}"
+            if not self.resource_exists(netns_resource):
+                resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
+                run_cmd(
+                    [
+                        "pcs", "resource", "create", netns_resource,
+                        "ocf:local:NetnsVlan",
+                        f"ns={svm_name}", f"vlan_id={vlan_id}", f"parent_if={parent_if}",
+                        f"ifname={resolved_ifname}", f"ip={ip}", f"prefix={prefix}",
+                        f"gw={gw}", f"mtu={mtu}",
+                        "op", "monitor", "interval=10s",
+                    ],
+                    timeout=self._timeout,
+                )
+            resources.append(netns_resource)
+            ganesha_unit = "nfs-ganesha"
 
         # Ganesha resource
         ganesha_resource = f"ganesha_{svm_name}"
@@ -110,7 +126,7 @@ class SubprocessPacemakerAdapter:
             run_cmd(
                 [
                     "pcs", "resource", "create", ganesha_resource,
-                    f"systemd:nfs-ganesha@{svm_name}",
+                    f"systemd:{ganesha_unit}@{svm_name}",
                     "op", "monitor", "interval=10s",
                 ],
                 timeout=self._timeout,
@@ -198,11 +214,11 @@ class FakePacemakerAdapter:
         svm_name: str,
         mount_path: str,
         *,
-        vlan_id: int,
+        vlan_id: Optional[int],
         ifname: Optional[str] = None,
         ip: str,
         prefix: int,
-        gw: str,
+        gw: Optional[str],
         mtu: int = 1500,
         parent_if: str = "bond0",
         vg_name: str = "vg_pool_01",
@@ -218,11 +234,16 @@ class FakePacemakerAdapter:
             fs = f"fs_{svm_name}"
             self.resources[fs] = {"type": "Filesystem"}
             resources.append(fs)
-        netns = f"netns_{svm_name}"
-        self.resources[netns] = {"type": "NetnsVlan"}
-        resources.append(netns)
+        if vlan_id is None:
+            ip_res = f"ip_{svm_name}"
+            self.resources[ip_res] = {"type": "IPaddr2", "ip": ip, "prefix": prefix}
+            resources.append(ip_res)
+        else:
+            netns = f"netns_{svm_name}"
+            self.resources[netns] = {"type": "NetnsVlan"}
+            resources.append(netns)
         ganesha = f"ganesha_{svm_name}"
-        self.resources[ganesha] = {"type": "nfs-ganesha"}
+        self.resources[ganesha] = {"type": "nfs-ganesha-host" if vlan_id is None else "nfs-ganesha"}
         resources.append(ganesha)
         self.groups[group_name] = resources
 

@@ -57,6 +57,16 @@ class TestSVMCreate:
         assert result.exit_code == 1
         assert "Error" in result.stdout
 
+    @pytest.mark.integration
+    def test_create_svm_without_vlan(self, fake_context):
+        """Test SVM creation without a VLAN."""
+        runner = CliRunner()
+        result = runner.invoke(app, ["svm", "create", "tenant_a", "--ip", "192.168.10.5/32"])
+
+        assert result.exit_code == 0
+        assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
+        assert fake_context.adapters.ganesha.host_network["tenant_a"] is True
+
 
 class TestSVMDelete:
     """Tests for svm delete command."""

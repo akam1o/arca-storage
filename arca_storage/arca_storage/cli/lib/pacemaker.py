@@ -97,11 +97,11 @@ def create_group(
     svm_name: str,
     mount_path: str,
     *,
-    vlan_id: int,
+    vlan_id: Optional[int],
     ifname: Optional[str] = None,
     ip: str,
     prefix: int,
-    gw: str,
+    gw: Optional[str],
     mtu: int = 1500,
     parent_if: str = "bond0",
     vg_name: str = "vg_pool_01",
@@ -115,7 +115,8 @@ def create_group(
     Args:
         svm_name: SVM name
         mount_path: Filesystem mount path
-        vlan_id: VLAN ID (1-4094)
+        vlan_id: Optional VLAN ID (1-4094). If omitted, an IPaddr2 resource
+            is created on parent_if and Ganesha runs in the host namespace.
         ip: VIP IP address (without prefix)
         prefix: Prefix length (e.g., 24)
         gw: Gateway IP (required)
@@ -163,30 +164,54 @@ def create_group(
             raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
         resources.append(fs_resource)
 
-    # Create NetnsVlan resource
-    netns_resource = f"netns_{svm_name}"
-    if not _resource_exists(netns_resource):
-        resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
-        cmd = [
-            "pcs",
-            "resource",
-            "create",
-            netns_resource,
-            "ocf:local:NetnsVlan",
-            f"ns={svm_name}",
-            f"vlan_id={vlan_id}",
-            f"parent_if={parent_if}",
-            f"ifname={resolved_ifname}",
-            f"ip={ip}",
-            f"prefix={prefix}",
-        ]
-        cmd.append(f"gw={gw}")
-        cmd.append(f"mtu={mtu}")
-        cmd += ["op", "monitor", "interval=10s"]
-        result = _run(cmd)
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to create NetnsVlan resource: {result.stderr.strip()}")
-    resources.append(netns_resource)
+    if vlan_id is None:
+        ip_resource = f"ip_{svm_name}"
+        if not _resource_exists(ip_resource):
+            result = _run(
+                [
+                    "pcs",
+                    "resource",
+                    "create",
+                    ip_resource,
+                    "ocf:heartbeat:IPaddr2",
+                    f"ip={ip}",
+                    f"cidr_netmask={prefix}",
+                    f"nic={parent_if}",
+                    "op",
+                    "monitor",
+                    "interval=10s",
+                ]
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create IPaddr2 resource: {result.stderr.strip()}")
+        resources.append(ip_resource)
+        ganesha_unit = "nfs-ganesha-host"
+    else:
+        # Create NetnsVlan resource
+        netns_resource = f"netns_{svm_name}"
+        if not _resource_exists(netns_resource):
+            resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
+            cmd = [
+                "pcs",
+                "resource",
+                "create",
+                netns_resource,
+                "ocf:local:NetnsVlan",
+                f"ns={svm_name}",
+                f"vlan_id={vlan_id}",
+                f"parent_if={parent_if}",
+                f"ifname={resolved_ifname}",
+                f"ip={ip}",
+                f"prefix={prefix}",
+            ]
+            cmd.append(f"gw={gw}")
+            cmd.append(f"mtu={mtu}")
+            cmd += ["op", "monitor", "interval=10s"]
+            result = _run(cmd)
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create NetnsVlan resource: {result.stderr.strip()}")
+        resources.append(netns_resource)
+        ganesha_unit = "nfs-ganesha"
 
     # Create nfs-ganesha resource
     ganesha_resource = f"ganesha_{svm_name}"
@@ -197,7 +222,7 @@ def create_group(
                 "resource",
                 "create",
                 ganesha_resource,
-                f"systemd:nfs-ganesha@{svm_name}",
+                f"systemd:{ganesha_unit}@{svm_name}",
                 "op",
                 "monitor",
                 "interval=10s",

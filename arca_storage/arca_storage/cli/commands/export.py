@@ -204,7 +204,8 @@ def rollback(
     """
     try:
         validate_name(svm)
-        path = rollback_config(svm, config_version)
+        ctx = get_context()
+        path = rollback_config(svm, config_version, host_network=_host_network_for_svm(ctx, svm))
         typer.echo(f"Rolled back: {svm} -> {path} (version={config_version})")
     except Exception as e:
         typer.echo(f"Error rolling back: {e}", err=True)
@@ -228,7 +229,10 @@ def snapshot_show(
             return
 
         typer.echo(f"svm={svm} config_version={meta.get('config_version')} template_version={meta.get('template_version')}")
-        typer.echo(f"protocols={meta.get('protocols')} mountd_port={meta.get('mountd_port')} nlm_port={meta.get('nlm_port')}")
+        typer.echo(
+            f"protocols={meta.get('protocols')} bind_addr={meta.get('bind_addr')} "
+            f"mountd_port={meta.get('mountd_port')} nlm_port={meta.get('nlm_port')}"
+        )
         exports = meta.get("exports") or []
         if not exports:
             typer.echo("exports: (none)")
@@ -242,3 +246,10 @@ def snapshot_show(
     except Exception as e:
         typer.echo(f"Error showing snapshot: {e}", err=True)
         raise typer.Exit(1)
+
+
+def _host_network_for_svm(ctx, svm_name: str) -> bool:
+    record = ctx.db.get_svm(svm_name)
+    if not record:
+        return False
+    return record.get("spec", {}).get("vlan_id") is None

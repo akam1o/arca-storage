@@ -54,8 +54,8 @@ network:
   pools:
     - cidr: "10.0.0.0/24"
       range: "10.0.0.100-10.0.0.200"
-      vlan: 100
-      gateway: "10.0.0.1"
+      vlan: 100       # Optional; omit for non-VLAN SVMs
+      gateway: "10.0.0.1"  # Optional for VLAN-backed /30 or larger CIDRs
   mtu: 1500
 
 driver:
@@ -288,7 +288,7 @@ kubectl get csidriver csi.arca-storage.io
 
 1. **Volume creation fails**: Check ARCA API connectivity and authentication
 2. **Mount failures**: Verify network connectivity to storage VIP
-3. **SVM conflicts**: Check for IP/VLAN collisions in network pools
+3. **SVM conflicts**: Check for IP collisions, and VLAN collisions when VLANs are configured in network pools
 4. **Snapshot failures**: Ensure XFS reflink support on ARCA backend
 
 ## License

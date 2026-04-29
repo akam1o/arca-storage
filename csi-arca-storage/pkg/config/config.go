@@ -124,12 +124,6 @@ func (c *Config) Validate() error {
 		if pool.CIDR == "" {
 			return fmt.Errorf("network.pools[%d].cidr is required", i)
 		}
-		if pool.VLANID == 0 {
-			return fmt.Errorf("network.pools[%d].vlan is required", i)
-		}
-		if pool.Gateway == "" {
-			return fmt.Errorf("network.pools[%d].gateway is required", i)
-		}
 	}
 
 	if c.Driver.Endpoint == "" {

@@ -4,8 +4,10 @@ Export Reconciler — drives NFS export resources from desired to actual state.
 
 from __future__ import annotations
 
+import json
 import logging
 from datetime import datetime, timezone
+from ipaddress import IPv4Interface
 from typing import Optional
 
 from arca_storage.db import StateDB
@@ -56,8 +58,14 @@ class ExportReconciler:
             self._persist_conn(conn, export, "export state reserved")
 
             config_entries = self._config_entries_for_svm(conn, spec.svm, export_dir)
+            bind_addr, host_network = self._ganesha_network_for_svm(conn, spec.svm)
             try:
-                self.adapters.ganesha.render_config(spec.svm, config_entries)
+                self.adapters.ganesha.render_config(
+                    spec.svm,
+                    config_entries,
+                    bind_addr=bind_addr,
+                    host_network=host_network,
+                )
                 export.status.ganesha_configured = True
                 self._persist_conn(conn, export, "ganesha config rendered")
             except Exception as e:
@@ -67,7 +75,7 @@ class ExportReconciler:
                 return export
 
             try:
-                self.adapters.ganesha.reload(spec.svm)
+                self.adapters.ganesha.reload(spec.svm, host_network=host_network)
                 export.status.service_reloaded = True
                 self._persist_conn(conn, export, "ganesha reloaded")
             except Exception as e:
@@ -109,9 +117,15 @@ class ExportReconciler:
                 )
             ]
             config_entries = _records_to_config_entries(remaining_records, export_dir)
+            bind_addr, host_network = self._ganesha_network_for_svm(conn, spec.svm)
             try:
-                self.adapters.ganesha.render_config(spec.svm, config_entries)
-                self.adapters.ganesha.reload(spec.svm)
+                self.adapters.ganesha.render_config(
+                    spec.svm,
+                    config_entries,
+                    bind_addr=bind_addr,
+                    host_network=host_network,
+                )
+                self.adapters.ganesha.reload(spec.svm, host_network=host_network)
                 self.db._delete_export_conn(conn, spec.svm, spec.volume, spec.client)
                 self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "completed")
             except Exception as e:
@@ -135,9 +149,28 @@ class ExportReconciler:
         export_dir = self._cfg.get("export_dir", "/exports")
         with self.db.transaction(immediate=True) as conn:
             config_entries = self._config_entries_for_svm(conn, svm_name, export_dir)
-            path = self.adapters.ganesha.render_config(svm_name, config_entries)
-            self.adapters.ganesha.reload(svm_name)
+            bind_addr, host_network = self._ganesha_network_for_svm(conn, svm_name)
+            path = self.adapters.ganesha.render_config(
+                svm_name,
+                config_entries,
+                bind_addr=bind_addr,
+                host_network=host_network,
+            )
+            self.adapters.ganesha.reload(svm_name, host_network=host_network)
             return path
+
+    def _ganesha_network_for_svm(self, conn, svm_name: str) -> tuple[Optional[str], bool]:
+        record = conn.execute("SELECT spec FROM svms WHERE name = ?", (svm_name,)).fetchone()
+        if not record:
+            return None, False
+
+        spec = json.loads(record["spec"])
+        ip_cidr = str(spec.get("ip_cidr") or "")
+        try:
+            bind_addr = str(IPv4Interface(ip_cidr).ip)
+        except Exception:
+            bind_addr = ip_cidr.split("/", 1)[0] if ip_cidr else None
+        return bind_addr, spec.get("vlan_id") is None
 
 
 def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dict]:

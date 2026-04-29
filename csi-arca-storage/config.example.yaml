@@ -32,14 +32,12 @@ network:
     # Pool 1: Basic configuration with CIDR
     - cidr: "10.0.0.0/24"
       range: "10.0.0.100-10.0.0.200"  # Optional: restrict to specific range
-      vlan: 100
-      gateway: "10.0.0.1"
+      vlan: 100                         # Optional: omit for non-VLAN SVMs
+      gateway: "10.0.0.1"               # Optional; ARCA can infer it for VLAN-backed /30 or larger CIDRs
 
-    # Pool 2: Another VLAN for different workloads
+    # Pool 2: Non-VLAN SVMs using /32 VIPs
     - cidr: "10.1.0.0/24"
       range: "10.1.0.50-10.1.0.150"
-      vlan: 101
-      gateway: "10.1.0.1"
 
   # MTU for network interfaces (default: 1500)
   mtu: 1500

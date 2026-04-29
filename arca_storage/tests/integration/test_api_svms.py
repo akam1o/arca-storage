@@ -80,6 +80,22 @@ class TestCreateSVM:
 
         assert response.status_code == 422  # Validation error
 
+    @pytest.mark.integration
+    def test_create_svm_without_vlan(self, fake_context):
+        """Test creating an SVM without a VLAN ID."""
+        client = TestClient(app)
+        response = client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "ip_cidr": "192.168.10.5/32"},
+        )
+
+        assert response.status_code == 201
+        data = response.json()["data"]["svm"]
+        assert data["vlan_id"] is None
+        assert data["vip"] == "192.168.10.5"
+        assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
+        assert fake_context.adapters.ganesha.host_network["tenant_a"] is True
+
 
 class TestListSVMs:
     """Tests for GET /v1/svms."""

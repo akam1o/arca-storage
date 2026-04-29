@@ -16,7 +16,7 @@ class SVMSpec(BaseModel):
     """User-declared desired state for an SVM."""
 
     name: str = Field(..., min_length=1, max_length=64)
-    vlan_id: int = Field(..., ge=1, le=4094)
+    vlan_id: Optional[int] = Field(default=None, ge=1, le=4094)
     ip_cidr: str
     gateway: Optional[str] = None
     mtu: int = Field(default=1500, ge=68, le=9000)

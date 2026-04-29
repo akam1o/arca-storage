@@ -54,6 +54,21 @@ class TestRenderConfig:
         # Verify file was written
         assert mock_file().write.call_count >= 1
 
+    @pytest.mark.unit
+    def test_render_config_with_bind_addr(self, monkeypatch, tmp_path):
+        config_path = tmp_path / "config.toml"
+        config_path.write_text(
+            f"[state]\nruntime_dir = \"{tmp_path}\"\n"
+            f"[ganesha]\nconfig_dir = \"{tmp_path / 'ganesha'}\"\n",
+            encoding="utf-8",
+        )
+        monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+        result = render_config("tenant_a", [], bind_addr="192.168.10.5")
+
+        content = Path(result).read_text(encoding="utf-8")
+        assert "Bind_addr = 192.168.10.5;" in content
+
 
 class TestReload:
     """Tests for reload function."""
@@ -67,6 +82,17 @@ class TestReload:
 
         mock_subprocess.assert_called_once_with(
             ["systemctl", "reload", "nfs-ganesha@tenant_a"], capture_output=True, text=True, check=False
+        )
+
+    @pytest.mark.unit
+    def test_reload_host_network(self, mock_subprocess):
+        """Test reloading host-namespace unit."""
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        reload("tenant_a", host_network=True)
+
+        mock_subprocess.assert_called_once_with(
+            ["systemctl", "reload", "nfs-ganesha-host@tenant_a"], capture_output=True, text=True, check=False
         )
 
     @pytest.mark.unit

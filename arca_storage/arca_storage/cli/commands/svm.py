@@ -26,7 +26,7 @@ app = typer.Typer(help="SVM management commands")
 @app.command()
 def create(
     name: str = typer.Argument(..., help="SVM name"),
-    vlan_id: int = typer.Option(..., "--vlan", help="VLAN ID (1-4094)"),
+    vlan_id: Optional[int] = typer.Option(None, "--vlan", help="Optional VLAN ID (1-4094)"),
     ip: str = typer.Option(..., "--ip", help="IP address with CIDR (e.g., 192.168.10.5/24)"),
     gateway: Optional[str] = typer.Option(None, "--gateway", help="Gateway IP (optional; inferred if omitted)"),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
@@ -38,12 +38,13 @@ def create(
     """Create a new SVM via the reconciler."""
     try:
         validate_name(name)
-        validate_vlan(vlan_id)
+        if vlan_id is not None:
+            validate_vlan(vlan_id)
         validate_ip_cidr(ip)
         if gateway is not None:
             validate_ipv4(gateway)
 
-        gateway_ip = gateway or infer_gateway_from_ip_cidr(ip)
+        gateway_ip = gateway or (infer_gateway_from_ip_cidr(ip) if vlan_id is not None else None)
 
         typer.echo(f"Creating SVM: {name}")
 
@@ -108,8 +109,9 @@ def list():
         for svm in svms:
             spec = svm.get("spec", {})
             status = svm.get("status", {})
+            vlan = spec.get("vlan_id")
             typer.echo(
-                f"{spec.get('name')} vlan={spec.get('vlan_id')} "
+                f"{spec.get('name')} vlan={vlan if vlan is not None else 'none'} "
                 f"ip={spec.get('ip_cidr')} phase={status.get('phase', 'unknown')}"
             )
     except Exception as e:
