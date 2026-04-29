@@ -1,0 +1,86 @@
+name: CSI Tests
+
+on:
+  workflow_call:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  go:
+    name: Go Build And Test
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./csi-arca-storage
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: csi-arca-storage/go.mod
+          cache-dependency-path: csi-arca-storage/go.sum
+
+      - name: Check formatting
+        run: |
+          changed="$(gofmt -l .)"
+          if [ -n "$changed" ]; then
+            echo "$changed"
+            exit 1
+          fi
+
+      - name: Verify module files
+        run: |
+          go mod tidy
+          git diff --exit-code -- go.mod go.sum
+
+      - name: Run go vet
+        run: go vet ./...
+
+      - name: Run tests
+        run: go test -race ./...
+
+      - name: Build CSI driver
+        run: go build -o /tmp/csi-driver ./cmd/csi-driver
+
+  manifests:
+    name: Manifest Validation
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up kubectl
+        uses: azure/setup-kubectl@v4
+
+      - name: Install kubeconform
+        run: |
+          curl -sSLo /tmp/kubeconform.tar.gz \
+            https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
+          sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
+
+      - name: Prepare production overlay fixture
+        run: |
+          cp \
+            csi-arca-storage/deploy/kustomize/overlays/production/secrets.env.example \
+            csi-arca-storage/deploy/kustomize/overlays/production/secrets.env
+
+      - name: Render kustomize overlays
+        working-directory: ./csi-arca-storage
+        run: |
+          mkdir -p /tmp/csi-manifests
+          kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/base > /tmp/csi-manifests/base.yaml
+          kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/overlays/development > /tmp/csi-manifests/development.yaml
+          kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/overlays/production > /tmp/csi-manifests/production.yaml
+
+      - name: Validate rendered manifests
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas /tmp/csi-manifests/*.yaml
+
+      - name: Validate example manifests
+        run: |
+          kubeconform -strict -summary -ignore-missing-schemas csi-arca-storage/deploy/examples/*.yaml

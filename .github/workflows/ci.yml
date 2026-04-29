@@ -15,3 +15,6 @@ jobs:
 
   ansible-lint:
     uses: ./.github/workflows/ansible-lint.yml
+
+  csi-tests:
+    uses: ./.github/workflows/csi-tests.yml

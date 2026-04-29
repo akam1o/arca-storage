@@ -1,0 +1,23 @@
+arca:
+  base_url: "https://arca-api.prod.example.com"
+  timeout: "60s"
+  auth_token: ""  # Set via Secret
+  tls:
+    ca_cert_path: ""  # Optional: mount CA cert if using custom CA
+    insecure_skip_verify: false
+
+network:
+  pools:
+    # Production network pools
+    - cidr: "10.100.0.0/22"
+      range: "10.100.0.100-10.100.3.200"
+      vlan: 1000
+      gateway: "10.100.0.1"
+    - cidr: "10.100.4.0/22"
+      range: "10.100.4.100-10.100.7.200"
+      vlan: 1001
+      gateway: "10.100.4.1"
+  mtu: 9000  # Jumbo frames for production
+
+driver:
+  endpoint: "unix:///csi/csi.sock"

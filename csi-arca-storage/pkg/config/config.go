@@ -101,7 +101,7 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Network.MTU == 0 {
 		config.Network.MTU = 1500
 	}
-	
+
 	// Override auth token from environment if set
 	if envToken := os.Getenv("ARCA_AUTH_TOKEN"); envToken != "" {
 		config.ARCA.AuthToken = envToken

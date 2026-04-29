@@ -20,11 +20,11 @@ type SVMMount struct {
 
 // MountManager manages per-SVM NFS mounts with NodeState-derived refcounting
 type MountManager struct {
-	mounts      map[string]*SVMMount // svmName -> mount info (in-memory only)
-	nodeState   *NodeState           // Reference to NodeState for refcount derivation
-	baseMountPath string              // Base path for SVM mounts
-	mounter     mount.Interface
-	mu          sync.Mutex
+	mounts        map[string]*SVMMount // svmName -> mount info (in-memory only)
+	nodeState     *NodeState           // Reference to NodeState for refcount derivation
+	baseMountPath string               // Base path for SVM mounts
+	mounter       mount.Interface
+	mu            sync.Mutex
 }
 
 // NewMountManager creates a new mount manager with NodeState reference

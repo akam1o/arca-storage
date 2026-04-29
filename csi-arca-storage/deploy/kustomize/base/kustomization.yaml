@@ -18,7 +18,6 @@ images:
 
 configMapGenerator:
   - name: csi-arca-storage-config
-    behavior: merge
     files:
       - config.yaml
 
@@ -30,6 +29,8 @@ secretGenerator:
 generatorOptions:
   disableNameSuffixHash: true
 
-commonLabels:
-  app.kubernetes.io/name: csi-arca-storage
-  app.kubernetes.io/component: storage
+labels:
+  - includeSelectors: true
+    pairs:
+      app.kubernetes.io/name: csi-arca-storage
+      app.kubernetes.io/component: storage
