@@ -10,16 +10,17 @@ from __future__ import annotations
 
 import math
 import zlib
-from typing import Any, Dict, List
+from typing import Any, Dict
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
-from arca_storage.api.services import volume_service
+from arca_storage.api.services import export_service, volume_service
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
 from arca_storage.errors import NotFoundError
 
 GIB = 1024**3
 CSI_CLIENT_CIDR = "0.0.0.0/0"
+CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
 def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
@@ -116,76 +117,40 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str) -> None:
     root_path = f"{export_dir}/{svm}"
     volume_path = f"{root_path}/{path}"
 
-    exports = ctx.adapters.ganesha.load_exports(svm)
-    changed = _upsert_export_entry(exports, root_path, root_path)
-    changed = _upsert_export_entry(exports, volume_path, volume_path) or changed
-    if changed:
-        ctx.adapters.ganesha.save_exports(svm, exports)
-        ctx.adapters.ganesha.render_config(svm, exports)
-        ctx.adapters.ganesha.reload(svm)
+    export_service.ensure_internal_export(
+        svm,
+        CSI_ROOT_EXPORT_VOLUME,
+        CSI_CLIENT_CIDR,
+        path=root_path,
+        pseudo=root_path,
+        access="rw",
+        root_squash=False,
+        owner="csi",
+    )
+    export_service.ensure_internal_export(
+        svm,
+        path,
+        CSI_CLIENT_CIDR,
+        path=volume_path,
+        pseudo=volume_path,
+        access="rw",
+        root_squash=False,
+        owner="csi",
+    )
 
 
 def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
-    cfg = ctx.settings.to_reconciler_config()
-    export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
-    root_path = f"{export_dir}/{svm}"
-    volume_path = f"{root_path}/{path}"
+    if ctx.db.get_export(svm, path, CSI_CLIENT_CIDR):
+        export_service.remove_internal_export(svm, path, CSI_CLIENT_CIDR)
 
-    exports = ctx.adapters.ganesha.load_exports(svm)
-    kept = [
-        e
-        for e in exports
-        if not (
-            e.get("path") == volume_path
-            and e.get("client") == CSI_CLIENT_CIDR
-            and e.get("owner") == "csi"
-        )
-    ]
     has_other_csi_volume = any(
-        e.get("owner") == "csi"
-        and e.get("client") == CSI_CLIENT_CIDR
-        and str(e.get("path") or "").startswith(f"{root_path}/")
-        for e in kept
+        e.get("spec", {}).get("owner") == "csi"
+        and e.get("spec", {}).get("client") == CSI_CLIENT_CIDR
+        and e.get("spec", {}).get("volume") != CSI_ROOT_EXPORT_VOLUME
+        for e in ctx.db.list_exports(svm=svm, limit=1_000_000)
     )
-    if not has_other_csi_volume:
-        kept = [
-            e
-            for e in kept
-            if not (
-                e.get("path") == root_path
-                and e.get("client") == CSI_CLIENT_CIDR
-                and e.get("owner") == "csi"
-            )
-        ]
-
-    if kept != exports:
-        ctx.adapters.ganesha.save_exports(svm, kept)
-        ctx.adapters.ganesha.render_config(svm, kept)
-        ctx.adapters.ganesha.reload(svm)
-
-
-def _upsert_export_entry(exports: List[Dict[str, Any]], path: str, pseudo: str) -> bool:
-    desired = {
-        "path": path,
-        "pseudo": pseudo,
-        "access": "RW",
-        "squash": "No_Root_Squash",
-        "sec": ["sys"],
-        "client": CSI_CLIENT_CIDR,
-        "owner": "csi",
-    }
-    for entry in exports:
-        if entry.get("path") == path and entry.get("client") == CSI_CLIENT_CIDR:
-            changed = False
-            for key, value in desired.items():
-                if entry.get(key) != value:
-                    entry[key] = value
-                    changed = True
-            return changed
-
-    export_id = max([int(e.get("export_id") or 0) for e in exports], default=0) + 1
-    exports.append({"export_id": export_id, **desired})
-    return True
+    if not has_other_csi_volume and ctx.db.get_export(svm, CSI_ROOT_EXPORT_VOLUME, CSI_CLIENT_CIDR):
+        export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, CSI_CLIENT_CIDR)
 
 
 def _quota_bytes_to_gib(quota_bytes: int | None) -> int:

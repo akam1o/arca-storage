@@ -9,8 +9,8 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.db import StateDB
-from arca_storage.models.base import Phase
-from arca_storage.models.export import Export
+from arca_storage.models.base import Phase, ResourceMeta
+from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
 
 logger = logging.getLogger(__name__)
@@ -37,76 +37,160 @@ class ExportReconciler:
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
 
-        # Step 1: update exports list and render config
-        if not export.status.ganesha_configured:
-            try:
-                exports_list = self.adapters.ganesha.load_exports(spec.svm)
-                export_id = max([e.get("export_id", 0) for e in exports_list], default=0) + 1
-                entry = {
-                    "export_id": export_id,
-                    "path": f"{export_dir}/{spec.svm}/{spec.volume}",
-                    "pseudo": f"{export_dir}/{spec.svm}/{spec.volume}",
-                    "access": spec.access.upper(),
-                    "squash": "Root_Squash" if spec.root_squash else "No_Root_Squash",
-                    "sec": spec.sec,
-                    "client": spec.client,
-                }
-                exports_list.append(entry)
-                self.adapters.ganesha.save_exports(spec.svm, exports_list)
-                self.adapters.ganesha.render_config(spec.svm, exports_list)
+        with self.db.transaction(immediate=True) as conn:
+            existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
+            if existing:
+                export.metadata = _meta_from_record(existing)
+                previous_status = ExportStatus.model_validate(existing["status"])
+                export.status.export_id = previous_status.export_id
 
-                export.status.export_id = export_id
-                export.status.path = entry["path"]
-                export.status.pseudo = entry["pseudo"]
+            if export.status.export_id is None:
+                records = self.db._list_exports_conn(conn, svm=spec.svm, limit=_all_rows_limit())
+                export.status.export_id = _next_export_id(records)
+
+            export.status.path = _export_path(spec, export_dir)
+            export.status.pseudo = _export_pseudo(spec, export.status.path)
+            export.status.ganesha_configured = False
+            export.status.service_reloaded = False
+            export.status.message = ""
+            self._persist_conn(conn, export, "export state reserved")
+
+            config_entries = self._config_entries_for_svm(conn, spec.svm, export_dir)
+            try:
+                self.adapters.ganesha.render_config(spec.svm, config_entries)
                 export.status.ganesha_configured = True
-                self._persist(export, "ganesha config rendered")
+                self._persist_conn(conn, export, "ganesha config rendered")
             except Exception as e:
                 export.status.phase = Phase.FAILED
                 export.status.message = f"Config failed: {e}"
-                self._persist(export, export.status.message)
+                self._persist_conn(conn, export, export.status.message)
                 return export
 
-        # Step 2: reload service
-        if not export.status.service_reloaded:
             try:
                 self.adapters.ganesha.reload(spec.svm)
                 export.status.service_reloaded = True
-                self._persist(export, "ganesha reloaded")
+                self._persist_conn(conn, export, "ganesha reloaded")
             except Exception as e:
                 export.status.phase = Phase.FAILED
                 export.status.message = f"Reload failed: {e}"
-                self._persist(export, export.status.message)
+                self._persist_conn(conn, export, export.status.message)
                 return export
 
-        export.status.phase = Phase.READY
-        export.status.message = ""
-        export.status.last_reconciled = datetime.now(timezone.utc)
-        self._persist(export, "Export ready")
+            export.status.phase = Phase.READY
+            export.status.message = ""
+            export.status.last_reconciled = datetime.now(timezone.utc)
+            self._persist_conn(conn, export, "Export ready")
         return export
 
     def _reconcile_delete(self, export: Export) -> Export:
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
-        try:
-            exports_list = self.adapters.ganesha.load_exports(spec.svm)
-            path = f"{export_dir}/{spec.svm}/{spec.volume}"
-            exports_list = [
-                e for e in exports_list
-                if not (e.get("path") == path and e.get("client") == spec.client)
+
+        with self.db.transaction(immediate=True) as conn:
+            existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
+            if not existing:
+                self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "not_found")
+                return export
+
+            export = Export(
+                metadata=_meta_from_record(existing),
+                spec=ExportSpec.model_validate(existing["spec"]),
+                status=ExportStatus.model_validate(existing["status"]),
+            )
+            export.status.phase = Phase.DELETING
+
+            remaining_records = [
+                r
+                for r in self.db._list_exports_conn(conn, svm=spec.svm, limit=_all_rows_limit())
+                if not (
+                    r.get("spec", {}).get("svm") == spec.svm
+                    and r.get("spec", {}).get("volume") == spec.volume
+                    and r.get("spec", {}).get("client") == spec.client
+                )
             ]
-            self.adapters.ganesha.save_exports(spec.svm, exports_list)
-            self.adapters.ganesha.render_config(spec.svm, exports_list)
-            self.adapters.ganesha.reload(spec.svm)
-            self.db.delete_export(spec.svm, spec.volume, spec.client)
-            self.db.log_operation("Export", export.metadata.id, "delete", "completed")
-        except Exception as e:
-            export.status.phase = Phase.FAILED
-            export.status.message = f"Delete failed: {e}"
-            self._persist(export, export.status.message)
+            config_entries = _records_to_config_entries(remaining_records, export_dir)
+            try:
+                self.adapters.ganesha.render_config(spec.svm, config_entries)
+                self.adapters.ganesha.reload(spec.svm)
+                self.db._delete_export_conn(conn, spec.svm, spec.volume, spec.client)
+                self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "completed")
+            except Exception as e:
+                export.status.phase = Phase.FAILED
+                export.status.message = f"Delete failed: {e}"
+                self._persist_conn(conn, export, export.status.message)
         return export
 
-    def _persist(self, export: Export, detail: str) -> None:
-        self.db.upsert_export(export)
-        self.db.log_operation(
-            "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
+    def _persist_conn(self, conn, export: Export, detail: str) -> None:
+        self.db._upsert_export_conn(conn, export)
+        self.db._log_operation_conn(
+            conn, "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
         )
+
+    def _config_entries_for_svm(self, conn, svm_name: str, export_dir: str) -> list[dict]:
+        records = self.db._list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
+        return _records_to_config_entries(records, export_dir)
+
+    def sync_svm_config(self, svm_name: str) -> str:
+        """Render and reload one SVM config from DB-backed exports."""
+        export_dir = self._cfg.get("export_dir", "/exports")
+        with self.db.transaction(immediate=True) as conn:
+            config_entries = self._config_entries_for_svm(conn, svm_name, export_dir)
+            path = self.adapters.ganesha.render_config(svm_name, config_entries)
+            self.adapters.ganesha.reload(svm_name)
+            return path
+
+
+def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dict]:
+    entries = []
+    for record in records:
+        spec = record.get("spec", {})
+        status = record.get("status", {})
+        export_id = status.get("export_id")
+        if export_id is None:
+            continue
+        phase = status.get("phase")
+        if phase == Phase.DELETING.value:
+            continue
+
+        path = status.get("path") or spec.get("path") or _export_path(ExportSpec.model_validate(spec), export_dir)
+        entry = {
+            "export_id": int(export_id),
+            "path": path,
+            "pseudo": status.get("pseudo") or spec.get("pseudo") or path,
+            "access": str(spec.get("access", "RW")).upper(),
+            "squash": "Root_Squash" if spec.get("root_squash", True) else "No_Root_Squash",
+            "sec": spec.get("sec") or ["sys"],
+            "client": spec.get("client"),
+        }
+        if spec.get("owner"):
+            entry["owner"] = spec.get("owner")
+        entries.append(entry)
+
+    return sorted(entries, key=lambda e: (int(e.get("export_id") or 0), str(e.get("path") or "")))
+
+
+def _next_export_id(records: list[dict]) -> int:
+    export_ids = []
+    for record in records:
+        raw = record.get("status", {}).get("export_id")
+        if raw is not None:
+            export_ids.append(int(raw))
+    return max(export_ids, default=0) + 1
+
+
+def _export_path(spec: ExportSpec, export_dir: str) -> str:
+    if spec.path:
+        return spec.path
+    return f"{str(export_dir).rstrip('/')}/{spec.svm}/{spec.volume}"
+
+
+def _export_pseudo(spec: ExportSpec, path: str) -> str:
+    return spec.pseudo or path
+
+
+def _meta_from_record(record: dict) -> ResourceMeta:
+    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+
+
+def _all_rows_limit() -> int:
+    return 1_000_000

@@ -21,6 +21,9 @@ class ExportSpec(BaseModel):
     access: str = "RW"
     root_squash: bool = True
     sec: list[str] = Field(default_factory=lambda: ["sys"])
+    path: Optional[str] = None
+    pseudo: Optional[str] = None
+    owner: str = "api"
 
 
 class ExportStatus(BaseModel):

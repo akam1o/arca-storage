@@ -12,7 +12,7 @@ from arca_storage.api.models import ExportCreate
 from arca_storage.context import get_context
 from arca_storage.errors import NotFoundError
 from arca_storage.models.base import Phase
-from arca_storage.models.export import Export, ExportSpec
+from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
 
 
@@ -49,16 +49,62 @@ def remove_export(svm: str, volume: str, client: str) -> None:
     validate_name(volume)
     validate_ip_cidr(client)
 
+    _remove_export_by_key(svm, volume, client)
+
+
+def ensure_internal_export(
+    svm: str,
+    volume: str,
+    client: str,
+    *,
+    path: str,
+    pseudo: str,
+    access: str = "rw",
+    root_squash: bool = False,
+    sec: Optional[list[str]] = None,
+    owner: str = "internal",
+) -> Dict[str, Any]:
+    """Create or update an internal export whose path is not derived from volume."""
+    validate_name(svm)
+    validate_ip_cidr(client)
+
+    export = Export(
+        spec=ExportSpec(
+            svm=svm,
+            volume=volume,
+            client=client,
+            access=access,
+            root_squash=root_squash,
+            sec=sec or ["sys"],
+            path=path,
+            pseudo=pseudo,
+            owner=owner,
+        ),
+    )
     ctx = get_context()
-    records = ctx.db.list_exports(svm=svm, volume=volume, client=client)
-    if not records:
+    export = ctx.export_reconciler.reconcile(export)
+    if export.status.phase == Phase.FAILED:
+        raise RuntimeError(export.status.message)
+    return _export_to_dict(export)
+
+
+def remove_internal_export(svm: str, volume: str, client: str) -> None:
+    """Remove an internal export without applying public volume-name validation."""
+    validate_name(svm)
+    validate_ip_cidr(client)
+    _remove_export_by_key(svm, volume, client)
+
+
+def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
+    ctx = get_context()
+    record = ctx.db.get_export(svm, volume, client)
+    if not record:
         raise NotFoundError("Export", f"{svm}/{volume}/{client}")
 
-    record = records[0]
     export = Export(
         metadata=_meta_from_record(record),
         spec=ExportSpec.model_validate(record["spec"]),
-        status=_parse_status(record),
+        status=ExportStatus.model_validate(record["status"]),
     )
     export.status.phase = Phase.DELETING
     ctx.export_reconciler.reconcile(export)
@@ -95,8 +141,3 @@ def _export_to_dict(export: Export) -> Dict[str, Any]:
 def _meta_from_record(record: Dict[str, Any]) -> Any:
     from arca_storage.models.base import ResourceMeta
     return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
-
-
-def _parse_status(record: Dict[str, Any]) -> Any:
-    from arca_storage.models.export import ExportStatus
-    return ExportStatus.model_validate(record["status"])

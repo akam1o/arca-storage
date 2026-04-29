@@ -117,9 +117,11 @@ class StateDB:
         return conn
 
     @contextmanager
-    def transaction(self) -> Generator[sqlite3.Connection, None, None]:
+    def transaction(self, *, immediate: bool = False) -> Generator[sqlite3.Connection, None, None]:
         conn = self._conn()
         try:
+            if immediate:
+                conn.execute("BEGIN IMMEDIATE")
             yield conn
             conn.commit()
         except Exception:
@@ -293,27 +295,31 @@ class StateDB:
     def upsert_export(self, export: Any) -> None:
         now = _now_iso()
         with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO exports (id, svm, volume, client, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(svm, volume, client) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    export.metadata.id,
-                    export.spec.svm,
-                    export.spec.volume,
-                    export.spec.client,
-                    export.spec.model_dump_json(),
-                    export.status.model_dump_json(),
-                    export.metadata.generation,
-                    export.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+            self._upsert_export_conn(conn, export, now=now)
+
+    def _upsert_export_conn(self, conn: sqlite3.Connection, export: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        conn.execute(
+            """INSERT INTO exports (id, svm, volume, client, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(svm, volume, client) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                export.metadata.id,
+                export.spec.svm,
+                export.spec.volume,
+                export.spec.client,
+                export.spec.model_dump_json(),
+                export.status.model_dump_json(),
+                export.metadata.generation,
+                export.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
 
     def list_exports(
         self,
@@ -323,6 +329,36 @@ class StateDB:
         limit: int = 100,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
+        return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit)
+
+    def get_export(self, svm: str, volume: str, client: str) -> dict[str, Any] | None:
+        conn = self._conn()
+        return self._get_export_conn(conn, svm, volume, client)
+
+    def _get_export_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: str,
+        volume: str,
+        client: str,
+    ) -> dict[str, Any] | None:
+        cur = conn.execute(
+            "SELECT * FROM exports WHERE svm = ? AND volume = ? AND client = ?",
+            (svm, volume, client),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_resource(row)
+
+    def _list_exports_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        client: Optional[str] = None,
+        limit: int = 100,
+    ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM exports WHERE 1=1"
         params: list[Any] = []
         if svm:
@@ -341,11 +377,14 @@ class StateDB:
 
     def delete_export(self, svm: str, volume: str, client: str) -> bool:
         with self.transaction() as conn:
-            cur = conn.execute(
-                "DELETE FROM exports WHERE svm = ? AND volume = ? AND client = ?",
-                (svm, volume, client),
-            )
-            return cur.rowcount > 0
+            return self._delete_export_conn(conn, svm, volume, client)
+
+    def _delete_export_conn(self, conn: sqlite3.Connection, svm: str, volume: str, client: str) -> bool:
+        cur = conn.execute(
+            "DELETE FROM exports WHERE svm = ? AND volume = ? AND client = ?",
+            (svm, volume, client),
+        )
+        return cur.rowcount > 0
 
     # ---- Operation log ----
 
@@ -358,11 +397,22 @@ class StateDB:
         detail: str = "",
     ) -> None:
         with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO operation_log (resource_type, resource_id, operation, phase, detail, created_at)
-                   VALUES (?, ?, ?, ?, ?, ?)""",
-                (resource_type, resource_id, operation, phase, detail, _now_iso()),
-            )
+            self._log_operation_conn(conn, resource_type, resource_id, operation, phase, detail)
+
+    def _log_operation_conn(
+        self,
+        conn: sqlite3.Connection,
+        resource_type: str,
+        resource_id: str,
+        operation: str,
+        phase: str,
+        detail: str = "",
+    ) -> None:
+        conn.execute(
+            """INSERT INTO operation_log (resource_type, resource_id, operation, phase, detail, created_at)
+               VALUES (?, ?, ?, ?, ?, ?)""",
+            (resource_type, resource_id, operation, phase, detail, _now_iso()),
+        )
 
     # ---- helpers ----
 

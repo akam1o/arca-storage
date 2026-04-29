@@ -2,7 +2,7 @@
 Export management commands.
 
 Core add/remove/list operations delegate to the Export reconciler.
-Utility commands (sync, snapshots, rollback) still call legacy ganesha helpers.
+Snapshot and rollback utilities still call legacy ganesha helpers.
 """
 
 import json
@@ -11,7 +11,6 @@ from typing import List, Optional
 import typer
 
 from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
-from arca_storage.cli.lib.ganesha import sync as sync_ganesha
 from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
 from arca_storage.context import get_context
@@ -141,13 +140,20 @@ def sync(
     """
     try:
         targets: List[str] = []
+        ctx = get_context()
         if all_svms:
-            state_dir = get_state_dir()
-            if state_dir.exists():
-                for path in sorted(state_dir.glob("exports.*.json")):
-                    name = path.name[len("exports.") : -len(".json")]
-                    if name:
-                        targets.append(name)
+            targets = sorted(
+                {
+                    str(record.get("spec", {}).get("svm"))
+                    for record in ctx.db.list_exports(limit=1_000_000)
+                    if record.get("spec", {}).get("svm")
+                }
+                | {
+                    str(record.get("spec", {}).get("name"))
+                    for record in ctx.db.list_svms(limit=1_000_000)
+                    if record.get("spec", {}).get("name")
+                }
+            )
         else:
             if not svm:
                 raise ValueError("Specify --svm or --all")
@@ -159,7 +165,7 @@ def sync(
             return
 
         for name in targets:
-            path = sync_ganesha(name)
+            path = ctx.export_reconciler.sync_svm_config(name)
             typer.echo(f"Synced: {name} -> {path}")
 
     except Exception as e:
