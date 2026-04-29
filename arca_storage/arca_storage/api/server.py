@@ -8,7 +8,7 @@ import argparse
 
 import uvicorn
 
-from arca_storage.cli.lib.config import load_config
+from arca_storage.config import load_settings
 
 
 def build_parser() -> argparse.ArgumentParser:
@@ -20,9 +20,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    cfg = load_config()
+    cfg = load_settings()
     args = build_parser().parse_args(argv)
-    host = args.host or cfg.api_host
-    port = args.port or cfg.api_port
+    host = args.host or cfg.api.bind
+    port = args.port or cfg.api.port
     uvicorn.run("arca_storage.api.main:app", host=host, port=port, log_level=args.log_level)
     return 0

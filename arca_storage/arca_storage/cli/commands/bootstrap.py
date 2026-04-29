@@ -12,7 +12,7 @@ from typing import Optional
 
 import typer
 
-from arca_storage.cli.lib.config import load_config
+from arca_storage.config import DEFAULT_CONFIG_PATH, load_settings
 
 app = typer.Typer(help="Bootstrap initial system/cluster configuration")
 
@@ -31,16 +31,7 @@ def _resource_path(*parts: str) -> Path:
 
 
 def _render_env(cfg) -> str:
-    lines = [
-        "# Managed by arca bootstrap (derived values for systemd units)",
-        f"ARCA_GANESHA_CONFIG_DIR={cfg.ganesha_config_dir}",
-        f"ARCA_EXPORT_DIR={cfg.export_dir}",
-        f"ARCA_API_HOST={cfg.api_host}",
-        f"ARCA_API_PORT={cfg.api_port}",
-    ]
-    if cfg.state_dir:
-        lines.append(f"ARCA_STATE_DIR={cfg.state_dir}")
-    return "\n".join(lines) + "\n"
+    return cfg.to_systemd_env()
 
 
 def _write_env_file(cfg) -> Path:
@@ -57,7 +48,7 @@ def install(
     install_api_service: bool = typer.Option(True, help="Install arca-storage-api systemd unit"),
     install_ganesha_unit: bool = typer.Option(True, help="Install nfs-ganesha@.service systemd unit"),
     install_config: bool = typer.Option(
-        True, help="Install /etc/arca-storage/storage-bootstrap.conf and storage-runtime.conf if missing"
+        True, help="Install /etc/arca-storage/config.toml and api.env if missing"
     ),
 ):
     """
@@ -66,30 +57,31 @@ def install(
     This command is designed to be idempotent.
     """
     try:
-        cfg = load_config()
         if install_config:
             cfg_dst_dir = Path("/etc/arca-storage")
             cfg_dst_dir.mkdir(parents=True, exist_ok=True)
 
-            bootstrap_src = _resource_path("config", "storage-bootstrap.conf")
-            bootstrap_dst = cfg_dst_dir / "storage-bootstrap.conf"
-            if bootstrap_src.exists() and not bootstrap_dst.exists():
-                shutil.copy2(bootstrap_src, bootstrap_dst)
+            config_src = _resource_path("config", "config.toml")
+            config_dst = cfg_dst_dir / "config.toml"
+            if config_src.exists() and not config_dst.exists():
+                shutil.copy2(config_src, config_dst)
 
-            runtime_src = _resource_path("config", "storage-runtime.conf")
-            runtime_dst = cfg_dst_dir / "storage-runtime.conf"
-            if runtime_src.exists() and not runtime_dst.exists():
-                shutil.copy2(runtime_src, runtime_dst)
+            api_env_src = _resource_path("config", "api.env")
+            api_env_dst = cfg_dst_dir / "api.env"
+            if api_env_src.exists() and not api_env_dst.exists():
+                shutil.copy2(api_env_src, api_env_dst)
 
             # Reload config after installing files so derived env matches.
-            cfg = load_config()
+            cfg = load_settings(DEFAULT_CONFIG_PATH)
+        else:
+            cfg = load_settings()
 
         # Pacemaker RA
         ra_src = _resource_path("pacemaker", "NetnsVlan")
         if not ra_src.exists():
             raise RuntimeError(f"Missing packaged RA: {ra_src}")
 
-        ra_dst_dir = Path(f"/usr/lib/ocf/resource.d/{ra_vendor or cfg.pacemaker_ra_vendor}")
+        ra_dst_dir = Path(f"/usr/lib/ocf/resource.d/{ra_vendor or cfg.cluster.pacemaker_ra_vendor}")
         ra_dst_dir.mkdir(parents=True, exist_ok=True)
         ra_dst = ra_dst_dir / "NetnsVlan"
         shutil.copy2(ra_src, ra_dst)
@@ -122,12 +114,12 @@ def install(
 @app.command("render-env")
 def render_env():
     """
-    Re-generate /etc/arca-storage/arca-storage.env from current config files.
+    Re-generate /etc/arca-storage/arca-storage.env from config.toml.
 
-    Use this after editing storage-bootstrap.conf / storage-runtime.conf.
+    Use this after editing /etc/arca-storage/config.toml.
     """
     try:
-        cfg = load_config()
+        cfg = load_settings()
         env_path = _write_env_file(cfg)
         typer.echo(f"Wrote {env_path}")
         _run(["systemctl", "daemon-reload"], check=False)
@@ -146,7 +138,7 @@ def verify(
 
     This command is non-destructive.
     """
-    cfg = load_config()
+    cfg = load_settings()
     issues: list[str] = []
 
     def check(cond: bool, ok: str, bad: str) -> None:
@@ -156,9 +148,8 @@ def verify(
             typer.echo(f"NG: {bad}", err=True)
             issues.append(bad)
 
-    # Config files
-    check(Path("/etc/arca-storage/storage-bootstrap.conf").exists(), "bootstrap config present", "missing storage-bootstrap.conf")
-    check(Path("/etc/arca-storage/storage-runtime.conf").exists(), "runtime config present", "missing storage-runtime.conf")
+    # Config file
+    check(DEFAULT_CONFIG_PATH.exists(), f"config present: {DEFAULT_CONFIG_PATH}", f"missing {DEFAULT_CONFIG_PATH}")
 
     # systemd env
     check(
@@ -172,7 +163,7 @@ def verify(
         check(shutil.which(binary) is not None, f"found binary: {binary}", f"missing binary in PATH: {binary}")
 
     # Pacemaker RA
-    ra_path = Path(f"/usr/lib/ocf/resource.d/{cfg.pacemaker_ra_vendor}/NetnsVlan")
+    ra_path = Path(f"/usr/lib/ocf/resource.d/{cfg.cluster.pacemaker_ra_vendor}/NetnsVlan")
     check(
         ra_path.exists(),
         f"NetnsVlan RA installed at {ra_path}",
@@ -184,15 +175,19 @@ def verify(
     check(Path("/etc/systemd/system/arca-storage-api.service").exists(), "arca-storage-api.service present", "missing arca-storage-api.service (run: arca bootstrap install)")
 
     # Config sanity (basic)
-    check(cfg.export_dir.startswith("/"), f"export_dir={cfg.export_dir}", f"export_dir must be absolute: {cfg.export_dir}")
     check(
-        cfg.ganesha_config_dir.startswith("/"),
-        f"ganesha_config_dir={cfg.ganesha_config_dir}",
-        f"ganesha_config_dir must be absolute: {cfg.ganesha_config_dir}",
+        cfg.ganesha.export_dir.startswith("/"),
+        f"export_dir={cfg.ganesha.export_dir}",
+        f"export_dir must be absolute: {cfg.ganesha.export_dir}",
     )
-    check(bool(cfg.vg_name), f"vg_name={cfg.vg_name}", "vg_name is empty")
-    check(bool(cfg.parent_if), f"parent_if={cfg.parent_if}", "parent_if is empty")
-    check(bool(cfg.drbd_resource), f"drbd_resource={cfg.drbd_resource}", "drbd_resource is empty")
+    check(
+        cfg.ganesha.config_dir.startswith("/"),
+        f"ganesha_config_dir={cfg.ganesha.config_dir}",
+        f"ganesha_config_dir must be absolute: {cfg.ganesha.config_dir}",
+    )
+    check(bool(cfg.storage.vg_name), f"vg_name={cfg.storage.vg_name}", "vg_name is empty")
+    check(bool(cfg.network.parent_interface), f"parent_if={cfg.network.parent_interface}", "parent_if is empty")
+    check(bool(cfg.cluster.drbd_resource), f"drbd_resource={cfg.cluster.drbd_resource}", "drbd_resource is empty")
 
     if check_system:
         # systemd health (only if systemctl exists)
@@ -208,7 +203,7 @@ def verify(
             res = _run(["pcs", "status"], check=False)
             check(res.returncode == 0, "pcs status ok", f"pcs status failed: {(res.stderr or res.stdout).strip()}")
 
-            master = f"ms_drbd_{cfg.drbd_resource}"
+            master = f"ms_drbd_{cfg.cluster.drbd_resource}"
             res = _run(["pcs", "resource", "show", master], check=False)
             check(res.returncode == 0, f"Pacemaker DRBD master present: {master}", f"missing Pacemaker DRBD master: {master}")
         else:
@@ -216,34 +211,38 @@ def verify(
 
         # DRBD status
         if shutil.which("drbdadm"):
-            res = _run(["drbdadm", "status", cfg.drbd_resource], check=False)
+            res = _run(["drbdadm", "status", cfg.cluster.drbd_resource], check=False)
             check(
                 res.returncode == 0,
-                f"drbdadm status ok: {cfg.drbd_resource}",
-                f"drbdadm status failed for {cfg.drbd_resource}: {(res.stderr or res.stdout).strip()}",
+                f"drbdadm status ok: {cfg.cluster.drbd_resource}",
+                f"drbdadm status failed for {cfg.cluster.drbd_resource}: {(res.stderr or res.stdout).strip()}",
             )
         else:
             check(False, "drbdadm available", "drbdadm not found; cannot verify DRBD")
 
         # LVM status
         if shutil.which("vgs") and shutil.which("lvs"):
-            res = _run(["vgs", cfg.vg_name], check=False)
-            check(res.returncode == 0, f"VG present: {cfg.vg_name}", f"missing VG: {cfg.vg_name}")
-            res = _run(["lvs", f"{cfg.vg_name}/{cfg.thinpool_name}"], check=False)
+            res = _run(["vgs", cfg.storage.vg_name], check=False)
+            check(res.returncode == 0, f"VG present: {cfg.storage.vg_name}", f"missing VG: {cfg.storage.vg_name}")
+            res = _run(["lvs", f"{cfg.storage.vg_name}/{cfg.storage.thinpool_name}"], check=False)
             check(
                 res.returncode == 0,
-                f"Thin pool present: {cfg.vg_name}/{cfg.thinpool_name}",
-                f"missing thin pool: {cfg.vg_name}/{cfg.thinpool_name}",
+                f"Thin pool present: {cfg.storage.vg_name}/{cfg.storage.thinpool_name}",
+                f"missing thin pool: {cfg.storage.vg_name}/{cfg.storage.thinpool_name}",
             )
         else:
             check(False, "lvm tools available", "vgs/lvs not found; cannot verify LVM")
 
         # Directories
-        check(Path(cfg.export_dir).exists(), f"export_dir exists: {cfg.export_dir}", f"missing export_dir: {cfg.export_dir}")
         check(
-            Path(cfg.ganesha_config_dir).exists(),
-            f"ganesha_config_dir exists: {cfg.ganesha_config_dir}",
-            f"missing ganesha_config_dir: {cfg.ganesha_config_dir}",
+            Path(cfg.ganesha.export_dir).exists(),
+            f"export_dir exists: {cfg.ganesha.export_dir}",
+            f"missing export_dir: {cfg.ganesha.export_dir}",
+        )
+        check(
+            Path(cfg.ganesha.config_dir).exists(),
+            f"ganesha_config_dir exists: {cfg.ganesha.config_dir}",
+            f"missing ganesha_config_dir: {cfg.ganesha.config_dir}",
         )
 
     if strict and issues:
@@ -364,9 +363,9 @@ def lvm_thinpool(
     Create PV/VG/thinpool required by arca on the local node.
     """
     try:
-        cfg = load_config()
-        vg = vg or cfg.vg_name
-        thinpool = thinpool or cfg.thinpool_name
+        cfg = load_settings()
+        vg = vg or cfg.storage.vg_name
+        thinpool = thinpool or cfg.storage.thinpool_name
 
         # PV
         pv_check = _run(["pvs", pv], check=False)

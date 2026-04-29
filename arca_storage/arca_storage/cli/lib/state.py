@@ -14,44 +14,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional
 
-from arca_storage.cli.lib.config import load_config
+from arca_storage.config import load_settings
 
 
 def get_state_dir() -> Path:
     """
     Resolve the directory used for persistent state.
-
-    Priority:
-    1) `ARCA_STATE_DIR` env var, if set
-    2) `/var/lib/arca` if writable
-    3) `$XDG_STATE_HOME/arca` or `~/.local/state/arca` as fallback
     """
-    env = os.environ.get("ARCA_STATE_DIR")
-    if env:
-        return Path(env)
-
-    cfg = load_config()
-    if cfg.state_dir:
-        return cfg.state_dir
-
-    candidates: list[Path] = [Path("/var/lib/arca")]
-    xdg_state_home = os.environ.get("XDG_STATE_HOME")
-    if xdg_state_home:
-        candidates.append(Path(xdg_state_home) / "arca")
-    else:
-        candidates.append(Path.home() / ".local" / "state" / "arca")
-
-    for candidate in candidates:
-        try:
-            candidate.mkdir(parents=True, exist_ok=True)
-            probe = candidate / ".write_test"
-            probe.write_text("ok", encoding="utf-8")
-            probe.unlink(missing_ok=True)
-            return candidate
-        except Exception:
-            continue
-
-    return Path(".arca-state")
+    return Path(load_settings().state.runtime_dir)
 
 
 def _state_dir() -> Path:

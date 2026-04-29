@@ -156,9 +156,9 @@ sudo systemctl enable --now pacemaker
 
 ### On node1:
 
-This section uses `export_dir` (default: `/exports`) and `ganesha_config_dir` (default: `/etc/ganesha`).
-You can change them in `/etc/arca-storage/storage-runtime.conf`.
-After editing configs, re-generate `/etc/arca-storage/arca-storage.env`:
+This section uses `ganesha.export_dir` (default: `/exports`) and `ganesha.config_dir` (default: `/etc/ganesha`).
+You can change them in `/etc/arca-storage/config.toml`.
+After editing config, re-generate `/etc/arca-storage/arca-storage.env`:
 
 ```bash
 sudo arca bootstrap render-env

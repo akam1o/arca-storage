@@ -53,8 +53,9 @@ install -m 0755 packaging/wrappers/arca-storage-api %{buildroot}%{_bindir}/arca-
 
 # Configs
 install -d %{buildroot}%{_sysconfdir}/arca-storage
-install -m 0644 arca_storage/arca_storage/resources/config/storage-bootstrap.conf %{buildroot}%{_sysconfdir}/arca-storage/storage-bootstrap.conf
-install -m 0644 arca_storage/arca_storage/resources/config/storage-runtime.conf %{buildroot}%{_sysconfdir}/arca-storage/storage-runtime.conf
+install -m 0644 arca_storage/arca_storage/resources/config/config.toml %{buildroot}%{_sysconfdir}/arca-storage/config.toml
+install -m 0644 arca_storage/arca_storage/resources/config/api.env %{buildroot}%{_sysconfdir}/arca-storage/api.env
+install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage.env %{buildroot}%{_sysconfdir}/arca-storage/arca-storage.env
 
 # systemd units
 install -d %{buildroot}%{_unitdir}
@@ -70,8 +71,9 @@ install -m 0755 arca_storage/arca_storage/resources/pacemaker/NetnsVlan %{buildr
 %{_bindir}/arca
 %{_bindir}/arca-storage-api
 /opt/arca-storage/venv
-%config(noreplace) %{_sysconfdir}/arca-storage/storage-bootstrap.conf
-%config(noreplace) %{_sysconfdir}/arca-storage/storage-runtime.conf
+%config(noreplace) %{_sysconfdir}/arca-storage/config.toml
+%config(noreplace) %{_sysconfdir}/arca-storage/api.env
+%config(noreplace) %{_sysconfdir}/arca-storage/arca-storage.env
 %{_unitdir}/arca-storage-api.service
 %{_unitdir}/nfs-ganesha@.service
 %{_prefix}/lib/ocf/resource.d/local/NetnsVlan
