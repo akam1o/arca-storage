@@ -2,7 +2,7 @@
 
 This repository contains packaging scaffolding for:
 
-- EL9 (RHEL 9 / AlmaLinux 9 / Rocky Linux 9): rpm
+- EL9/EL10 (RHEL / AlmaLinux / Rocky Linux): rpm
 - Debian: deb
 - Ubuntu: deb
 
@@ -27,7 +27,7 @@ System resources are installed to standard locations:
 
 The build uses an offline wheelhouse containing runtime dependencies.
 
-Because Python versions differ by distro (EL9: 3.9, Ubuntu 24.04: 3.12, Debian bookworm: 3.11), generate the wheelhouse with the same Python version that will build the package (typically inside the target container/CI job).
+Because Python versions differ by distro (EL9: 3.9, EL10: 3.12, Ubuntu 24.04: 3.12, Debian bookworm: 3.11), generate the wheelhouse with the same Python version that will build the package (typically inside the target container/CI job).
 
 Create wheelhouse:
 
@@ -47,7 +47,7 @@ It produces:
 bash ./packaging/build-deb.sh
 ```
 
-### EL9 (rpm)
+### EL9/EL10 (rpm)
 
 ```bash
 bash ./packaging/build-rpm.sh

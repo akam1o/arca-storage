@@ -53,7 +53,7 @@ ansible-playbook -i inventory.ini site.yml --syntax-check
 Packaging helpers live under `packaging/`.
 
 - Debian/Ubuntu: `packaging/vendor-wheels.sh`, `packaging/build-deb.sh`
-- EL9: `packaging/vendor-wheels.sh`, `packaging/build-rpm.sh`
+- EL9/EL10: `packaging/vendor-wheels.sh`, `packaging/build-rpm.sh`
 
 If you are preparing a release, note that CI uses the Git tag (e.g. `v0.2.7`) as the version via `setuptools-scm`.
 
@@ -72,4 +72,3 @@ The Python package uses a **declarative reconciliation** architecture:
 - Prefer small, reviewable PRs.
 - Update docs when behavior changes.
 - Avoid mixing refactors with functional changes unless necessary.
-
