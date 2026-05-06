@@ -20,8 +20,8 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
-    cfg = load_settings()
     args = build_parser().parse_args(argv)
+    cfg = load_settings()
     host = args.host or cfg.api.bind
     port = args.port or cfg.api.port
     uvicorn.run("arca_storage.api.main:app", host=host, port=port, log_level=args.log_level)
