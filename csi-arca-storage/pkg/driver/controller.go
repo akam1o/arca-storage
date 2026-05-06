@@ -176,6 +176,18 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			klog.V(4).Infof("Using source SVM for clone: %s with VIP: %s", svm.Name, svm.VIP)
 
 			temporarySnapshotName := fmt.Sprintf("clone-%s", volumeID)
+			temporarySnapshotReady := false
+			cleanupTemporarySnapshot := func() {
+				if !temporarySnapshotReady {
+					return
+				}
+				if err := d.arcaClient.DeleteSnapshot(ctx, temporarySnapshotName, sourceVol.SVMName, sourceVol.Path); err != nil {
+					klog.Warningf("Failed to delete temporary clone snapshot %s: %v", temporarySnapshotName, err)
+				}
+				temporarySnapshotReady = false
+			}
+			defer cleanupTemporarySnapshot()
+
 			err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
 				Name:   temporarySnapshotName,
 				SVM:    sourceVol.SVMName,
@@ -184,6 +196,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
 			}
+			temporarySnapshotReady = true
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
 				Name:         volumePath,
@@ -196,9 +209,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				return nil, status.Errorf(codes.Internal, "failed to clone volume: %v", err)
 			}
 
-			if err := d.arcaClient.DeleteSnapshot(ctx, temporarySnapshotName, sourceVol.SVMName, sourceVol.Path); err != nil {
-				klog.Warningf("Failed to delete temporary clone snapshot %s: %v", temporarySnapshotName, err)
-			}
+			cleanupTemporarySnapshot()
 
 			contentSource = &csi.VolumeContentSource{
 				Type: &csi.VolumeContentSource_Volume{
