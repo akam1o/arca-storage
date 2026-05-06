@@ -12,7 +12,8 @@ from typing import Any, Dict, Optional
 from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError, PreconditionFailedError
+from arca_storage.db import encode_cursor
+from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
 
@@ -51,14 +52,22 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     if svm.status.phase == Phase.FAILED:
         raise RuntimeError(svm.status.message)
 
-    return _svm_to_dict(svm)
+    return _svm_to_dict(svm, ctx)
 
 
 def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None) -> Dict[str, Any]:
     """List SVMs from the database."""
     ctx = get_context()
-    items = [_svm_record_to_dict(record) for record in ctx.db.list_svms(name=name, limit=limit)]
-    return {"items": items, "next_cursor": None}
+    try:
+        records = ctx.db.list_svms(name=name, limit=limit + 1, cursor=cursor)
+    except ValueError as e:
+        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+    next_cursor = None
+    if len(records) > limit:
+        next_cursor = encode_cursor([records[limit - 1]["name"]])
+        records = records[:limit]
+    items = [_svm_record_to_dict(record, ctx) for record in records]
+    return {"items": items, "next_cursor": next_cursor}
 
 
 def get_svm(name: str) -> Dict[str, Any]:
@@ -68,7 +77,7 @@ def get_svm(name: str) -> Dict[str, Any]:
     record = ctx.db.get_svm(name)
     if not record:
         raise NotFoundError("SVM", name)
-    return _svm_record_to_dict(record)
+    return _svm_record_to_dict(record, ctx)
 
 
 def get_svm_capacity(name: str) -> Dict[str, Any]:
@@ -142,13 +151,14 @@ def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> 
         )
 
 
-def _svm_to_dict(svm: SVM) -> Dict[str, Any]:
+def _svm_to_dict(svm: SVM, ctx: Any | None = None) -> Dict[str, Any]:
     vip = _vip_from_ip_cidr(svm.spec.ip_cidr)
     return {
         "name": svm.spec.name,
         "vlan_id": svm.spec.vlan_id,
         "ip_cidr": svm.spec.ip_cidr,
         "vip": vip,
+        "export_root": _export_root(svm.spec.name, ctx),
         "gateway": svm.spec.gateway,
         "mtu": svm.spec.mtu,
         "namespace": svm.spec.name,
@@ -158,7 +168,7 @@ def _svm_to_dict(svm: SVM) -> Dict[str, Any]:
     }
 
 
-def _svm_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+def _svm_record_to_dict(record: Dict[str, Any], ctx: Any | None = None) -> Dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     ip_cidr = str(spec.get("ip_cidr") or "")
@@ -168,6 +178,7 @@ def _svm_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
         "vlan_id": spec.get("vlan_id"),
         "ip_cidr": ip_cidr,
         "vip": _vip_from_ip_cidr(ip_cidr),
+        "export_root": _export_root(str(spec.get("name") or ""), ctx),
         "gateway": spec.get("gateway"),
         "mtu": spec.get("mtu", 1500),
         "namespace": spec.get("name"),
@@ -182,6 +193,14 @@ def _vip_from_ip_cidr(ip_cidr: str) -> str:
         return str(IPv4Interface(ip_cidr).ip)
     except Exception:
         return ip_cidr.split("/", 1)[0] if ip_cidr else ""
+
+
+def _export_root(svm_name: str, ctx: Any | None = None) -> str:
+    ctx = ctx or get_context()
+    export_dir = str(ctx.settings.to_reconciler_config().get("export_dir", "/exports")).rstrip("/")
+    if not svm_name:
+        return export_dir or "/"
+    return f"{export_dir}/{svm_name}" if export_dir else f"/{svm_name}"
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:
@@ -236,7 +255,7 @@ def _resume_svm_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
     svm = ctx.svm_reconciler.reconcile(svm)
     if svm.status.phase == Phase.FAILED:
         raise RuntimeError(svm.status.message)
-    return _svm_to_dict(svm)
+    return _svm_to_dict(svm, ctx)
 
 
 def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: bool) -> None:

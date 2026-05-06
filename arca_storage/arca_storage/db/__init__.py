@@ -7,6 +7,7 @@ and proper locking. No external daemon required — SQLite ships with Python.
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import threading
@@ -90,6 +91,31 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def encode_cursor(values: list[str]) -> str:
+    payload = json.dumps(values, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: str | None, expected_parts: int) -> list[str] | None:
+    if not cursor:
+        return None
+
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        values = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError("Invalid pagination cursor") from e
+
+    if (
+        not isinstance(values, list)
+        or len(values) != expected_parts
+        or not all(isinstance(value, str) for value in values)
+    ):
+        raise ValueError("Invalid pagination cursor")
+    return values
+
+
 class StateDB:
     """Thread-safe SQLite state store with WAL journaling."""
 
@@ -170,12 +196,24 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
-    def list_svms(self, name: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+    def list_svms(
+        self,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         conn = self._conn()
         if name:
             cur = conn.execute("SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?", (name, limit))
         else:
-            cur = conn.execute("SELECT * FROM svms ORDER BY name LIMIT ?", (limit,))
+            cursor_values = _decode_cursor(cursor, 1)
+            if cursor_values:
+                cur = conn.execute(
+                    "SELECT * FROM svms WHERE name > ? ORDER BY name LIMIT ?",
+                    (cursor_values[0], limit),
+                )
+            else:
+                cur = conn.execute("SELECT * FROM svms ORDER BY name LIMIT ?", (limit,))
         return [self._row_to_resource(row) for row in cur.fetchall()]
 
     def delete_svm(self, name: str) -> bool:
@@ -218,7 +256,11 @@ class StateDB:
         return self._row_to_resource(row)
 
     def list_volumes(
-        self, svm: Optional[str] = None, name: Optional[str] = None, limit: int = 100
+        self,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         sql = "SELECT * FROM volumes WHERE 1=1"
@@ -229,6 +271,11 @@ class StateDB:
         if name:
             sql += " AND name = ?"
             params.append(name)
+        cursor_values = _decode_cursor(cursor, 2)
+        if cursor_values:
+            cursor_svm, cursor_name = cursor_values
+            sql += " AND (svm > ? OR (svm = ? AND name > ?))"
+            params.extend([cursor_svm, cursor_svm, cursor_name])
         sql += " ORDER BY svm, name LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
@@ -272,6 +319,7 @@ class StateDB:
         volume: Optional[str] = None,
         name: Optional[str] = None,
         limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         sql = "SELECT * FROM snapshots WHERE 1=1"
@@ -285,6 +333,14 @@ class StateDB:
         if name:
             sql += " AND name = ?"
             params.append(name)
+        cursor_values = _decode_cursor(cursor, 3)
+        if cursor_values:
+            cursor_svm, cursor_volume, cursor_name = cursor_values
+            sql += (
+                " AND (svm > ? OR (svm = ? AND volume > ?) "
+                "OR (svm = ? AND volume = ? AND name > ?))"
+            )
+            params.extend([cursor_svm, cursor_svm, cursor_volume, cursor_svm, cursor_volume, cursor_name])
         sql += " ORDER BY svm, volume, name LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
@@ -335,9 +391,10 @@ class StateDB:
         volume: Optional[str] = None,
         client: Optional[str] = None,
         limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
-        return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit)
+        return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit, cursor=cursor)
 
     def get_export(self, svm: str, volume: str, client: str) -> dict[str, Any] | None:
         conn = self._conn()
@@ -366,6 +423,7 @@ class StateDB:
         volume: Optional[str] = None,
         client: Optional[str] = None,
         limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM exports WHERE 1=1"
         params: list[Any] = []
@@ -378,6 +436,14 @@ class StateDB:
         if client:
             sql += " AND client = ?"
             params.append(client)
+        cursor_values = _decode_cursor(cursor, 3)
+        if cursor_values:
+            cursor_svm, cursor_volume, cursor_client = cursor_values
+            sql += (
+                " AND (svm > ? OR (svm = ? AND volume > ?) "
+                "OR (svm = ? AND volume = ? AND client > ?))"
+            )
+            params.extend([cursor_svm, cursor_svm, cursor_volume, cursor_svm, cursor_volume, cursor_client])
         sql += " ORDER BY svm, volume, client LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)

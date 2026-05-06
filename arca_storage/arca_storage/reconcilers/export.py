@@ -62,7 +62,12 @@ class ExportReconciler:
             export.status.message = ""
             self._persist_conn(conn, export, "export state reserved")
 
-            config_entries = self._config_entries_for_svm(conn, spec.svm, export_dir)
+            config_entries = self._config_entries_for_svm(
+                conn,
+                spec.svm,
+                export_dir,
+                include_pending_key=(spec.svm, spec.volume, spec.client),
+            )
             bind_addr, host_network = self._ganesha_network_for_svm(conn, spec.svm)
             try:
                 self.adapters.ganesha.render_config(
@@ -145,9 +150,16 @@ class ExportReconciler:
             conn, "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
         )
 
-    def _config_entries_for_svm(self, conn, svm_name: str, export_dir: str) -> list[dict]:
+    def _config_entries_for_svm(
+        self,
+        conn,
+        svm_name: str,
+        export_dir: str,
+        *,
+        include_pending_key: tuple[str, str, str] | None = None,
+    ) -> list[dict]:
         records = self.db._list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
-        return _records_to_config_entries(records, export_dir)
+        return _records_to_config_entries(records, export_dir, include_pending_key=include_pending_key)
 
     def sync_svm_config(self, svm_name: str) -> str:
         """Render and reload one SVM config from DB-backed exports."""
@@ -186,7 +198,12 @@ class ExportReconciler:
         return export.status.message.startswith("Delete failed:")
 
 
-def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dict]:
+def _records_to_config_entries(
+    records: list[dict],
+    export_dir: str,
+    *,
+    include_pending_key: tuple[str, str, str] | None = None,
+) -> list[dict]:
     entries = []
     for record in records:
         spec = record.get("spec", {})
@@ -195,7 +212,9 @@ def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dic
         if export_id is None:
             continue
         phase = status.get("phase")
-        if phase == Phase.DELETING.value:
+        key = (spec.get("svm"), spec.get("volume"), spec.get("client"))
+        is_current_pending_create = phase == Phase.CREATING.value and key == include_pending_key
+        if phase != Phase.READY.value and not is_current_pending_create:
             continue
 
         path = status.get("path") or spec.get("path") or _export_path(ExportSpec.model_validate(spec), export_dir)

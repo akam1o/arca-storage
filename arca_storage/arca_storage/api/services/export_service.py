@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError
+from arca_storage.db import encode_cursor
+from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
@@ -132,11 +133,17 @@ def list_exports(
 ) -> Dict[str, Any]:
     """List exports from the database."""
     ctx = get_context()
-    items = [
-        _export_record_to_dict(record)
-        for record in ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit)
-    ]
-    return {"items": items, "next_cursor": None}
+    try:
+        records = ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit + 1, cursor=cursor)
+    except ValueError as e:
+        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+    next_cursor = None
+    if len(records) > limit:
+        spec = records[limit - 1]["spec"]
+        next_cursor = encode_cursor([spec["svm"], spec["volume"], spec["client"]])
+        records = records[:limit]
+    items = [_export_record_to_dict(record) for record in records]
+    return {"items": items, "next_cursor": next_cursor}
 
 
 def _export_to_dict(export: Export) -> Dict[str, Any]:

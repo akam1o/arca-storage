@@ -93,6 +93,7 @@ class TestCreateSVM:
         data = response.json()["data"]["svm"]
         assert data["vlan_id"] is None
         assert data["vip"] == "192.168.10.5"
+        assert data["export_root"] == "/exports/tenant_a"
         assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
         assert fake_context.adapters.ganesha.host_network["tenant_a"] is True
 

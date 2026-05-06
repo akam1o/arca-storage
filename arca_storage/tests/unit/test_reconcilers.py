@@ -330,6 +330,24 @@ class TestExportReconciler:
         assert adapters.ganesha.bind_addrs["host-svm"] == "10.0.8.5"
         assert adapters.ganesha.host_network["host-svm"] is True
 
+    def test_sync_skips_failed_exports(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        ready = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="ready", client="10.0.0.0/24"))
+        )
+        assert ready.status.phase == Phase.READY
+
+        failed = Export(spec=ExportSpec(svm="svm1", volume="failed", client="10.0.1.0/24"))
+        failed.status.phase = Phase.FAILED
+        failed.status.export_id = 99
+        failed.status.path = "/export/svm1/failed"
+        failed.status.pseudo = "/export/svm1/failed"
+        db.upsert_export(failed)
+
+        rec.sync_svm_config("svm1")
+
+        assert [entry["path"] for entry in adapters.ganesha.exports["svm1"]] == ["/export/svm1/ready"]
+
 
 # ── Error Handling ────────────────────────────────────────────────
 

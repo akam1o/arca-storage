@@ -343,3 +343,35 @@ class TestDeleteVolume:
 
         assert create_response.status_code == 409
         assert fake_context.db.get_volume("tenant_a", "vol1")["status"]["phase"] == "Failed"
+
+
+class TestListVolumes:
+    @pytest.mark.integration
+    def test_list_volumes_paginates_with_cursor(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        for name in ("vol1", "vol2", "vol3"):
+            client.post("/v1/volumes", json={"name": name, "svm": "tenant_a", "size_gib": 10})
+
+        first = client.get("/v1/volumes?svm=tenant_a&limit=2")
+
+        assert first.status_code == 200
+        first_data = first.json()["data"]
+        assert [item["name"] for item in first_data["items"]] == ["vol1", "vol2"]
+        assert first_data["next_cursor"]
+
+        second = client.get(f"/v1/volumes?svm=tenant_a&limit=2&cursor={first_data['next_cursor']}")
+
+        assert second.status_code == 200
+        second_data = second.json()["data"]
+        assert [item["name"] for item in second_data["items"]] == ["vol3"]
+        assert second_data["next_cursor"] is None
+
+    @pytest.mark.integration
+    def test_list_volumes_rejects_invalid_cursor(self, fake_context):
+        client = TestClient(app)
+
+        response = client.get("/v1/volumes?cursor=not-a-cursor")
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"

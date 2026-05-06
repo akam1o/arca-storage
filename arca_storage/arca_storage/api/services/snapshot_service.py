@@ -10,7 +10,8 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError, PreconditionFailedError
+from arca_storage.db import encode_cursor
+from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
@@ -171,11 +172,17 @@ def list_snapshots(
 ) -> Dict[str, Any]:
     """List snapshots from the database."""
     ctx = get_context()
-    items = [
-        _snapshot_record_to_dict(record)
-        for record in ctx.db.list_snapshots(svm=svm, volume=volume, name=name, limit=limit)
-    ]
-    return {"items": items, "next_cursor": None}
+    try:
+        records = ctx.db.list_snapshots(svm=svm, volume=volume, name=name, limit=limit + 1, cursor=cursor)
+    except ValueError as e:
+        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+    next_cursor = None
+    if len(records) > limit:
+        spec = records[limit - 1]["spec"]
+        next_cursor = encode_cursor([spec["svm"], spec["volume"], spec["name"]])
+        records = records[:limit]
+    items = [_snapshot_record_to_dict(record) for record in records]
+    return {"items": items, "next_cursor": next_cursor}
 
 
 def _snapshot_to_dict(snap: Snapshot) -> Dict[str, Any]:

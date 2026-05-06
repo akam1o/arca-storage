@@ -11,7 +11,8 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError, PreconditionFailedError
+from arca_storage.db import encode_cursor
+from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
@@ -151,8 +152,17 @@ def list_volumes(
 ) -> Dict[str, Any]:
     """List volumes from the database."""
     ctx = get_context()
-    items = [_volume_record_to_dict(record, ctx) for record in ctx.db.list_volumes(svm=svm, name=name, limit=limit)]
-    return {"items": items, "next_cursor": None}
+    try:
+        records = ctx.db.list_volumes(svm=svm, name=name, limit=limit + 1, cursor=cursor)
+    except ValueError as e:
+        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+    next_cursor = None
+    if len(records) > limit:
+        spec = records[limit - 1]["spec"]
+        next_cursor = encode_cursor([spec["svm"], spec["name"]])
+        records = records[:limit]
+    items = [_volume_record_to_dict(record, ctx) for record in records]
+    return {"items": items, "next_cursor": next_cursor}
 
 
 def _volume_to_dict(vol: Volume, ctx: Any | None = None) -> Dict[str, Any]:
