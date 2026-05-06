@@ -624,14 +624,24 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        params = {}
-        if svm:
-            params["svm"] = svm
-        if volume:
-            params["volume"] = volume
+        items: List[Dict[str, Any]] = []
+        cursor = None
 
-        response = self._make_request("GET", "/v1/snapshots", params=params)
-        return response.get("data", {}).get("items", [])
+        while True:
+            params = {"limit": 200}
+            if svm:
+                params["svm"] = svm
+            if volume:
+                params["volume"] = volume
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/snapshots", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
 
     def clone_volume_from_snapshot(
         self,
@@ -736,14 +746,24 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        params = {}
-        if svm:
-            params["svm"] = svm
-        if volume:
-            params["volume"] = volume
+        items: List[Dict[str, Any]] = []
+        cursor = None
 
-        response = self._make_request("GET", "/v1/exports", params=params)
-        return response.get("data", {}).get("items", [])
+        while True:
+            params = {"limit": 200}
+            if svm:
+                params["svm"] = svm
+            if volume:
+                params["volume"] = volume
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/exports", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
 
     # QoS operations
 
