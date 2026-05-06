@@ -668,6 +668,25 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	// Check if snapshot already exists (idempotency)
 	existingSnap, err := d.store.GetSnapshot(snapshotID)
 	if err == nil {
+		if !existingSnap.ReadyToUse {
+			sourceVolume, err := d.store.GetVolume(sourceVolumeID)
+			if err != nil {
+				return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+			}
+			if !store.IsVolumeReady(sourceVolume) {
+				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
+			}
+			klog.V(4).Infof("Snapshot %s metadata exists but is not ready, resuming creation", snapshotID)
+			if _, err := d.ensureSnapshotBackend(ctx, existingSnap, sourceVolume); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
+			}
+			if err := d.markSnapshotReady(existingSnap); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+			}
+			return &csi.CreateSnapshotResponse{
+				Snapshot: existingSnap.ToCSISnapshot(),
+			}, nil
+		}
 		klog.V(4).Infof("Snapshot %s already exists, returning existing snapshot", snapshotID)
 		return &csi.CreateSnapshotResponse{
 			Snapshot: existingSnap.ToCSISnapshot(),
@@ -688,15 +707,10 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 
 	// Create snapshot via ARCA API (server-side reflink)
 	klog.V(4).Infof("Creating snapshot %s from volume %s", snapshotID, sourceVolumeID)
-	err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-		Name:   snapshotID,
-		SVM:    sourceVolume.SVMName,
-		Volume: sourceVolume.Path,
-	})
-	if err != nil && !arca.IsAlreadyExistsError(err) {
+	backendSnapshotCreated, err := d.ensureSnapshotBackend(ctx, &store.SnapshotInfo{SnapshotID: snapshotID}, sourceVolume)
+	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
 	}
-	backendSnapshotCreated := err == nil
 	cleanupBackendSnapshot := func(reason string) {
 		if !backendSnapshotCreated {
 			return
@@ -724,6 +738,11 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		if store.IsAlreadyExists(err) {
 			existingSnap, getErr := d.store.GetSnapshot(snapshotID)
 			if getErr == nil {
+				if !existingSnap.ReadyToUse {
+					if err := d.markSnapshotReady(existingSnap); err != nil {
+						return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+					}
+				}
 				return &csi.CreateSnapshotResponse{Snapshot: existingSnap.ToCSISnapshot()}, nil
 			}
 			return nil, status.Errorf(codes.Internal, "failed to get existing snapshot metadata: %v", getErr)
@@ -733,7 +752,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	}
 
 	// Update status to ready (uses /status endpoint which persists correctly)
-	if err := d.store.UpdateSnapshotStatus(snapshotID, true); err != nil {
+	if err := d.markSnapshotReady(snapshotInfo); err != nil {
 		// Status persistence failed - must return error to maintain consistency
 		klog.Errorf("Failed to update snapshot %s status to ready: %v", snapshotID, err)
 		// Attempt to clean up the snapshot metadata since ReadyToUse=false is not useful
@@ -743,14 +762,35 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		cleanupBackendSnapshot("status persistence failure")
 		return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
 	}
-	// Update our in-memory info to reflect the status
-	snapshotInfo.ReadyToUse = true
 
 	klog.Infof("Snapshot %s created successfully from volume %s", snapshotID, sourceVolumeID)
 
 	return &csi.CreateSnapshotResponse{
 		Snapshot: snapshotInfo.ToCSISnapshot(),
 	}, nil
+}
+
+func (d *Driver) ensureSnapshotBackend(ctx context.Context, snapshotInfo *store.SnapshotInfo, sourceVolume *store.VolumeInfo) (bool, error) {
+	err := d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
+		Name:   snapshotInfo.SnapshotID,
+		SVM:    sourceVolume.SVMName,
+		Volume: sourceVolume.Path,
+	})
+	if err != nil {
+		if arca.IsAlreadyExistsError(err) {
+			return false, nil
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (d *Driver) markSnapshotReady(snapshotInfo *store.SnapshotInfo) error {
+	if err := d.store.UpdateSnapshotStatus(snapshotInfo.SnapshotID, true); err != nil {
+		return err
+	}
+	snapshotInfo.ReadyToUse = true
+	return nil
 }
 
 // DeleteSnapshot deletes a snapshot
