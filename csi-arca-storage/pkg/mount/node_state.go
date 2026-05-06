@@ -148,6 +148,8 @@ func (ns *NodeState) GetStagedVolumes() map[string]*VolumeStaging {
 	result := make(map[string]*VolumeStaging, len(ns.data.Volumes))
 	for k, v := range ns.data.Volumes {
 		staging := *v // Copy struct
+		staging.NFSMountOptions = cloneMountOptions(v.NFSMountOptions)
+		staging.PublishedPaths = cloneMountOptions(v.PublishedPaths)
 		result[k] = &staging
 	}
 
@@ -168,22 +170,39 @@ func (ns *NodeState) GetUniqueSVMs() map[string]string {
 }
 
 // GetUniqueSVMMounts returns one restore record per SVM from staged volumes.
-func (ns *NodeState) GetUniqueSVMMounts() map[string]SVMMountInfo {
+func (ns *NodeState) GetUniqueSVMMounts() (map[string]SVMMountInfo, error) {
 	ns.mu.RLock()
 	defer ns.mu.RUnlock()
 
 	svms := make(map[string]SVMMountInfo)
 	for _, staging := range ns.data.Volumes {
-		if _, exists := svms[staging.SVMName]; exists {
+		options := normalizeNFSMountOptions(staging.NFSMountOptions)
+		if existing, exists := svms[staging.SVMName]; exists {
+			if existing.VIP != staging.VIP {
+				return nil, fmt.Errorf(
+					"conflicting VIPs for SVM %s in node state: existing=%s requested=%s",
+					staging.SVMName,
+					existing.VIP,
+					staging.VIP,
+				)
+			}
+			if !sameMountOptions(existing.NFSMountOptions, options) {
+				return nil, fmt.Errorf(
+					"conflicting NFS mount options for SVM %s in node state: existing=%v requested=%v",
+					staging.SVMName,
+					normalizeNFSMountOptions(existing.NFSMountOptions),
+					options,
+				)
+			}
 			continue
 		}
 		svms[staging.SVMName] = SVMMountInfo{
 			VIP:             staging.VIP,
-			NFSMountOptions: append([]string(nil), staging.NFSMountOptions...),
+			NFSMountOptions: cloneMountOptions(options),
 		}
 	}
 
-	return svms
+	return svms, nil
 }
 
 // load loads state from file

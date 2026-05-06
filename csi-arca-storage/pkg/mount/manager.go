@@ -13,9 +13,10 @@ import (
 
 // SVMMount represents an SVM mount point
 type SVMMount struct {
-	SVMName   string
-	VIP       string
-	MountPath string
+	SVMName         string
+	VIP             string
+	MountPath       string
+	NFSMountOptions []string
 }
 
 // MountManager manages per-SVM NFS mounts with NodeState-derived refcounting
@@ -61,7 +62,10 @@ func (m *MountManager) reconcile() error {
 	klog.Info("Reconciling SVM mounts from node state")
 
 	// Get unique SVMs from NodeState
-	svms := m.nodeState.GetUniqueSVMMounts()
+	svms, err := m.nodeState.GetUniqueSVMMounts()
+	if err != nil {
+		return err
+	}
 
 	for svmName, info := range svms {
 		mountPath := m.getMountPath(svmName)
@@ -84,9 +88,10 @@ func (m *MountManager) reconcile() error {
 		} else {
 			// Mount exists - record it
 			m.mounts[svmName] = &SVMMount{
-				SVMName:   svmName,
-				VIP:       info.VIP,
-				MountPath: mountPath,
+				SVMName:         svmName,
+				VIP:             info.VIP,
+				MountPath:       mountPath,
+				NFSMountOptions: cloneMountOptions(info.NFSMountOptions),
 			}
 			klog.V(4).Infof("Found existing mount for SVM %s at %s", svmName, mountPath)
 		}
@@ -109,6 +114,14 @@ func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string, 
 			return "", fmt.Errorf("failed to check mount point: %w", err)
 		}
 		if isMounted {
+			if !sameMountOptions(mount.NFSMountOptions, nfsMountOptions) {
+				return "", fmt.Errorf(
+					"SVM %s already mounted with different NFS options: active=%v requested=%v",
+					svmName,
+					normalizeNFSMountOptions(mount.NFSMountOptions),
+					normalizeNFSMountOptions(nfsMountOptions),
+				)
+			}
 			klog.V(4).Infof("SVM %s already mounted at %s", svmName, mount.MountPath)
 			return mount.MountPath, nil
 		}
@@ -141,11 +154,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []str
 	}
 
 	nfsSource := fmt.Sprintf("%s:/exports/%s", vip, svmName)
-	options := nfsMountOptions
-	if len(options) == 0 {
-		options = GetDefaultNFSOptions()
-	}
-	options = append([]string(nil), options...)
+	options := normalizeNFSMountOptions(nfsMountOptions)
 
 	klog.Infof("Mounting NFS: %s -> %s", nfsSource, mountPath)
 
@@ -156,9 +165,10 @@ func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []str
 
 	// Record mount
 	m.mounts[svmName] = &SVMMount{
-		SVMName:   svmName,
-		VIP:       vip,
-		MountPath: mountPath,
+		SVMName:         svmName,
+		VIP:             vip,
+		MountPath:       mountPath,
+		NFSMountOptions: cloneMountOptions(options),
 	}
 
 	klog.Infof("Successfully mounted SVM %s at %s", svmName, mountPath)

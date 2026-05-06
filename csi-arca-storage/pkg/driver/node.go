@@ -70,22 +70,10 @@ func validateVIP(vip string) error {
 
 func nfsMountOptionsFromCapability(capability *csi.VolumeCapability) []string {
 	if capability == nil || capability.GetMount() == nil {
-		return arcamount.GetDefaultNFSOptions()
+		return arcamount.MergeNFSMountOptions(nil)
 	}
 
-	options := make([]string, 0, len(capability.GetMount().GetMountFlags()))
-	for _, opt := range capability.GetMount().GetMountFlags() {
-		switch opt {
-		case "", "bind", "remount", "ro", "rw":
-			continue
-		default:
-			options = append(options, opt)
-		}
-	}
-	if len(options) == 0 {
-		return arcamount.GetDefaultNFSOptions()
-	}
-	return options
+	return arcamount.MergeNFSMountOptions(capability.GetMount().GetMountFlags())
 }
 
 func bindMountOptions() []string {
