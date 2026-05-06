@@ -8,6 +8,7 @@ import pytest
 from cinder import exception
 
 from arca_storage.openstack.cinder import driver as arca_driver
+from arca_storage.openstack.cinder import exceptions as arca_exceptions
 
 
 class TestArcaStorageNFSDriver(unittest.TestCase):
@@ -144,6 +145,18 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_utils.delete_volume_file.assert_called_once_with(
             mount_point, "volume-test-vol-id"
         )
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_volume_failure_raises_backend_exception(self, mock_utils):
+        """Delete volume reports backend file deletion failures to Cinder."""
+        volume = self._create_mock_volume()
+        mount_point = "/var/lib/cinder/mnt/svm_test-svm"
+        mock_utils.get_mount_point_for_svm.return_value = mount_point
+        mock_utils.is_mounted.return_value = True
+        mock_utils.delete_volume_file.side_effect = arca_exceptions.ArcaStorageException("delete failed")
+
+        with pytest.raises(exception.VolumeBackendAPIException):
+            self.driver.delete_volume(volume)
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_extend_volume_extends_file_in_svm_export(self, mock_utils):

@@ -228,6 +228,25 @@ class TestUtilityFunctions(unittest.TestCase):
 
         mock_remove.assert_not_called()
 
+    @patch("arca_storage.openstack.cinder.utils.os.remove")
+    def test_delete_volume_file_ignores_racing_missing_file(self, mock_remove):
+        """Test file deletion remains idempotent if another process removed it."""
+        mock_remove.side_effect = FileNotFoundError("gone")
+
+        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
+            arca_utils.delete_volume_file("/mnt/test", "test-volume")
+
+        mock_remove.assert_called_once()
+
+    @patch("arca_storage.openstack.cinder.utils.os.remove")
+    def test_delete_volume_file_raises_on_remove_failure(self, mock_remove):
+        """Test delete failures are reported to the driver."""
+        mock_remove.side_effect = PermissionError("denied")
+
+        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
+            with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to delete volume file"):
+                arca_utils.delete_volume_file("/mnt/test", "test-volume")
+
     @patch("arca_storage.openstack.cinder.utils.subprocess.run")
     def test_extend_volume_file_success(self, mock_run):
         """Test volume file extension."""

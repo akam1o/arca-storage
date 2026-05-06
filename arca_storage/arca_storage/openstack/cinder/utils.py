@@ -382,11 +382,10 @@ def delete_volume_file(mount_point: str, volume_name: str) -> None:
     try:
         if os.path.exists(volume_file):
             os.remove(volume_file)
+    except FileNotFoundError:
+        return
     except OSError as e:
-        # Log warning but don't fail
-        import logging
-        LOG = logging.getLogger(__name__)
-        LOG.warning("Failed to delete volume file %s: %s", volume_file, e)
+        raise ArcaStorageException(f"Failed to delete volume file {volume_file}: {e}")
 
 
 def get_volume_file_path(mount_point: str, volume_name: str) -> str:
