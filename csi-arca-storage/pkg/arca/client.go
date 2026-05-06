@@ -269,12 +269,31 @@ func (c *Client) DeleteSVM(ctx context.Context, name string) error {
 
 // ListSVMs lists all SVMs
 func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
-	respBody, err := c.doRequest(ctx, http.MethodGet, "/v1/svms", nil)
-	if err != nil {
-		return nil, err
-	}
+	var all []SVM
+	cursor := ""
 
-	return decodeSVMListResponse(respBody)
+	for {
+		params := url.Values{}
+		params.Set("limit", "200")
+		if cursor != "" {
+			params.Set("cursor", cursor)
+		}
+
+		respBody, err := c.doRequest(ctx, http.MethodGet, "/v1/svms", nil, params)
+		if err != nil {
+			return nil, err
+		}
+
+		page, nextCursor, err := decodeSVMListResponsePage(respBody)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if nextCursor == "" {
+			return all, nil
+		}
+		cursor = nextCursor
+	}
 }
 
 // GetSVMCapacity retrieves SVM capacity information
@@ -353,33 +372,43 @@ func decodeSVMResponse(respBody []byte) (*SVM, error) {
 }
 
 func decodeSVMListResponse(respBody []byte) ([]SVM, error) {
+	svms, _, err := decodeSVMListResponsePage(respBody)
+	return svms, err
+}
+
+func decodeSVMListResponsePage(respBody []byte) ([]SVM, string, error) {
 	var response struct {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("%w: missing data field", ErrInvalidResponse)
+		return nil, "", fmt.Errorf("%w: missing data field", ErrInvalidResponse)
 	}
 
 	var svms []SVM
 	if err := json.Unmarshal(response.Data, &svms); err == nil {
-		return svms, nil
+		return svms, "", nil
 	}
 
 	var nested struct {
-		Items []SVM `json:"items"`
-		SVMs  []SVM `json:"svms"`
+		Items      []SVM   `json:"items"`
+		SVMs       []SVM   `json:"svms"`
+		NextCursor *string `json:"next_cursor"`
 	}
 	if err := json.Unmarshal(response.Data, &nested); err == nil {
+		nextCursor := ""
+		if nested.NextCursor != nil {
+			nextCursor = *nested.NextCursor
+		}
 		if nested.Items != nil {
-			return nested.Items, nil
+			return nested.Items, nextCursor, nil
 		}
 		if nested.SVMs != nil {
-			return nested.SVMs, nil
+			return nested.SVMs, nextCursor, nil
 		}
 	}
 
-	return nil, fmt.Errorf("%w: missing SVM list in response", ErrInvalidResponse)
+	return nil, "", fmt.Errorf("%w: missing SVM list in response", ErrInvalidResponse)
 }

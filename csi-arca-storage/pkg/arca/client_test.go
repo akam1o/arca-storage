@@ -64,6 +64,50 @@ func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	}
 }
 
+func TestListSVMsFollowsPagination(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/svms" {
+			http.NotFound(w, r)
+			return
+		}
+		requests = append(requests, r.URL.RawQuery)
+
+		switch len(requests) {
+		case 1:
+			if r.URL.Query().Get("limit") != "200" || r.URL.Query().Get("cursor") != "" {
+				t.Fatalf("first request query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"svm-a","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5"}],"next_cursor":"cursor-1"}}`))
+		case 2:
+			if r.URL.Query().Get("limit") != "200" || r.URL.Query().Get("cursor") != "cursor-1" {
+				t.Fatalf("second request query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"svm-b","vlan_id":100,"ip_cidr":"192.168.10.6/24","vip":"192.168.10.6"}],"next_cursor":null}}`))
+		default:
+			t.Fatalf("unexpected request %d query=%s", len(requests), r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	svms, err := client.ListSVMs(context.Background())
+	if err != nil {
+		t.Fatalf("ListSVMs() error = %v", err)
+	}
+	if len(svms) != 2 || svms[0].Name != "svm-a" || svms[1].Name != "svm-b" {
+		t.Fatalf("ListSVMs() = %#v", svms)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d", len(requests))
+	}
+}
+
 func TestCreateSVMRequestOmitsOptionalVLAN(t *testing.T) {
 	payload, err := json.Marshal(&CreateSVMRequest{
 		Name:   "k8s-default",
