@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -110,25 +111,29 @@ func (s *MemoryStore) ListVolumes(startingToken string, maxEntries int) ([]*Volu
 	var result []*VolumeInfo
 	var nextToken string
 
-	started := startingToken == ""
-	count := 0
+	volumeIDs := make([]string, 0, len(s.volumes))
+	for volumeID := range s.volumes {
+		volumeIDs = append(volumeIDs, volumeID)
+	}
+	sort.Strings(volumeIDs)
 
-	for volumeID, info := range s.volumes {
-		if !started {
-			if volumeID == startingToken {
-				started = true
-			}
-			continue
+	start := 0
+	if startingToken != "" {
+		idx := sort.SearchStrings(volumeIDs, startingToken)
+		if idx == len(volumeIDs) || volumeIDs[idx] != startingToken {
+			return nil, "", fmt.Errorf("%w: volume pagination token %s", ErrNotFound, startingToken)
 		}
+		start = idx + 1
+	}
 
-		result = append(result, info)
-		count++
+	end := len(volumeIDs)
+	if maxEntries > 0 && start+maxEntries < end {
+		end = start + maxEntries
+		nextToken = volumeIDs[end-1]
+	}
 
-		if maxEntries > 0 && count >= maxEntries {
-			// Set next token to the next volume ID (simplified pagination)
-			nextToken = volumeID
-			break
-		}
+	for _, volumeID := range volumeIDs[start:end] {
+		result = append(result, s.volumes[volumeID])
 	}
 
 	return result, nextToken, nil
@@ -194,29 +199,32 @@ func (s *MemoryStore) ListSnapshots(sourceVolumeID, startingToken string, maxEnt
 	var result []*SnapshotInfo
 	var nextToken string
 
-	started := startingToken == ""
-	count := 0
-
+	snapshotIDs := make([]string, 0, len(s.snapshots))
 	for snapshotID, info := range s.snapshots {
-		// Filter by source volume if specified
 		if sourceVolumeID != "" && info.SourceVolumeID != sourceVolumeID {
 			continue
 		}
+		snapshotIDs = append(snapshotIDs, snapshotID)
+	}
+	sort.Strings(snapshotIDs)
 
-		if !started {
-			if snapshotID == startingToken {
-				started = true
-			}
-			continue
+	start := 0
+	if startingToken != "" {
+		idx := sort.SearchStrings(snapshotIDs, startingToken)
+		if idx == len(snapshotIDs) || snapshotIDs[idx] != startingToken {
+			return nil, "", fmt.Errorf("%w: snapshot pagination token %s", ErrNotFound, startingToken)
 		}
+		start = idx + 1
+	}
 
-		result = append(result, info)
-		count++
+	end := len(snapshotIDs)
+	if maxEntries > 0 && start+maxEntries < end {
+		end = start + maxEntries
+		nextToken = snapshotIDs[end-1]
+	}
 
-		if maxEntries > 0 && count >= maxEntries {
-			nextToken = snapshotID
-			break
-		}
+	for _, snapshotID := range snapshotIDs[start:end] {
+		result = append(result, s.snapshots[snapshotID])
 	}
 
 	return result, nextToken, nil
