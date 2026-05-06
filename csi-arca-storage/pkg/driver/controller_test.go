@@ -959,6 +959,89 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 	}
 }
 
+func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	targetPath := volumeIDGen.GenerateVolumeID("clone-pvc")
+	temporarySnapshotName := "clone-" + targetPath
+	var snapshotCreated bool
+	var cloneCreated bool
+	var snapshotCleanupAttempted bool
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			snapshotCreated = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/source-path/clone":
+			cloneCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"volume":{"name":"cloned"}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+temporarySnapshotName:
+			snapshotCleanupAttempted = true
+			http.Error(w, "snapshot cleanup failed", http.StatusInternalServerError)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	_, err = driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "clone-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "clone-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 2 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "source-vol"},
+			},
+		},
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if !snapshotCreated {
+		t.Fatalf("temporary snapshot was not created")
+	}
+	if !cloneCreated {
+		t.Fatalf("clone was not created")
+	}
+	if !snapshotCleanupAttempted {
+		t.Fatalf("temporary snapshot cleanup was not attempted")
+	}
+	if _, err := st.GetVolume(targetPath); !store.IsNotFound(err) {
+		t.Fatalf("target volume metadata should not be stored, err=%v", err)
+	}
+}
+
 func TestCreateVolumeCleansUpExistingTemporaryCloneSnapshotOnRetry(t *testing.T) {
 	st := store.NewMemoryStore()
 	const sourceCapacity = int64(4 << 30)
