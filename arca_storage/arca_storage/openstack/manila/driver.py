@@ -705,15 +705,13 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 resolved_svm,
             )
 
-    def _get_svm_for_share(self, share, ensure_exists=False, allow_metadata_fallback=True):
+    def _get_svm_for_share(self, share, ensure_exists=False):
         """Determine SVM for a share based on strategy.
 
         Args:
             share: Manila share object
             ensure_exists: If True, create SVM if it doesn't exist (per_project only).
                           If False, only return SVM name without creation.
-            allow_metadata_fallback: If True, use persisted metadata only when the
-                          strategy cannot be evaluated from the provided share.
 
         Returns:
             SVM name string
@@ -735,12 +733,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Extract SVM from share type extra_specs
             share_type = share.get("share_type") if hasattr(share, "get") else None
             if not share_type:
-                if allow_metadata_fallback and metadata_svm:
-                    LOG.warning(
-                        "Using arca_svm_name metadata %r because share type is unavailable",
-                        metadata_svm,
-                    )
-                    return metadata_svm
                 raise manila_exception.ManilaException(
                     "Share type required for manual SVM strategy"
                 )
@@ -762,12 +754,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Each project gets dedicated SVM
             project_id = share.get("project_id") if hasattr(share, "get") else None
             if not project_id:
-                if allow_metadata_fallback and metadata_svm:
-                    LOG.warning(
-                        "Using arca_svm_name metadata %r because project_id is unavailable",
-                        metadata_svm,
-                    )
-                    return metadata_svm
                 raise manila_exception.ManilaException(
                     "Cannot determine project_id for per_project SVM strategy. "
                     "This may occur when snapshot operations receive incomplete share info "
@@ -1071,7 +1057,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             svm_name = self._get_svm_for_share(
                 share,
                 ensure_exists=True,
-                allow_metadata_fallback=False,
             )
             LOG.debug("Using SVM %s for share %s", svm_name, share_id)
 
