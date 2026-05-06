@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from arca_storage.adapters.lvm import SubprocessLVMAdapter
 from arca_storage.cli.lib.lvm import create_lv, delete_lv, resize_lv
 
 
@@ -137,3 +138,14 @@ class TestDeleteLv:
 
         with pytest.raises(RuntimeError, match="Failed to delete logical volume"):
             delete_lv("vg_pool_01", "vol1")
+
+
+class TestSubprocessLVMAdapter:
+    @pytest.mark.unit
+    def test_get_vg_capacity_parses_approximate_values(self, mock_subprocess):
+        """Test parsing common vgs output with approximate value markers."""
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="  <931.51,<123.45\n")
+
+        result = SubprocessLVMAdapter().get_vg_capacity("vg_pool_01")
+
+        assert result == {"total_gb": 931.51, "free_gb": 123.45}

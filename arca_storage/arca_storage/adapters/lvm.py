@@ -10,6 +10,10 @@ from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.errors import AlreadyExistsError, NotFoundError
 
 
+def _parse_lvm_float(value: str) -> float:
+    return float(value.strip().lstrip("<>"))
+
+
 @runtime_checkable
 class LVMAdapter(Protocol):
     def lv_exists(self, vg: str, lv: str) -> bool: ...
@@ -99,7 +103,7 @@ class SubprocessLVMAdapter:
         fields = [field.strip() for field in result.stdout.strip().split(",")]
         if len(fields) != 2:
             raise RuntimeError(f"Unexpected vgs output for {vg}: {result.stdout.strip()}")
-        total_gb, free_gb = (float(fields[0]), float(fields[1]))
+        total_gb, free_gb = (_parse_lvm_float(fields[0]), _parse_lvm_float(fields[1]))
         return {"total_gb": total_gb, "free_gb": free_gb}
 
 
