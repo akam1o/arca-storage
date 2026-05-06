@@ -30,9 +30,6 @@ def create(
     gateway: Optional[str] = typer.Option(None, "--gateway", help="Gateway IP (optional; inferred if omitted)"),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
     root_size: Optional[int] = typer.Option(None, "--root-size", help="Create root LV size in GiB (optional)"),
-    drbd_resource: Optional[str] = typer.Option(
-        None, "--drbd-resource", help="DRBD resource name for Pacemaker (default: from config or r0)"
-    ),
 ):
     """Create a new SVM via the reconciler."""
     try:
