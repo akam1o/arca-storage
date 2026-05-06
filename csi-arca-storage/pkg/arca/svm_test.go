@@ -1,6 +1,9 @@
 package arca
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestSVMNameForNamespaceKeepsShortNamesReadable(t *testing.T) {
 	got := svmNameForNamespace("default")
@@ -26,5 +29,17 @@ func TestSVMNameForNamespaceBoundsLongNames(t *testing.T) {
 	other := svmNameForNamespace(namespace + "4")
 	if got == other {
 		t.Fatalf("different long namespaces produced the same bounded name: %q", got)
+	}
+}
+
+func TestSVMNameForNamespaceMatchesCRDLimit(t *testing.T) {
+	namespace := strings.Repeat("a", 60)
+	got := svmNameForNamespace(namespace)
+
+	if len(got) > maxArcaSVMNameBytes {
+		t.Fatalf("name length = %d, want <= %d", len(got), maxArcaSVMNameBytes)
+	}
+	if got == "k8s-"+namespace {
+		t.Fatalf("namespace at CRD boundary was not shortened: %q", got)
 	}
 }

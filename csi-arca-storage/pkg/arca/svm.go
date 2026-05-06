@@ -15,7 +15,7 @@ import (
 
 const (
 	svmNamePrefix       = "k8s-"
-	maxArcaSVMNameBytes = 64
+	maxArcaSVMNameBytes = 63
 	svmNameHashBytes    = 6
 )
 
