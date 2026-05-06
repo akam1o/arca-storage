@@ -30,9 +30,13 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
         check=False
     )
     
-    if result.returncode == 0 and "xfs" in result.stdout.lower():
-        # Already formatted with XFS, skip
-        return
+    if result.returncode == 0:
+        if 'type="xfs"' in result.stdout.lower():
+            # Already formatted with XFS, skip
+            return
+        raise RuntimeError(
+            f"Device {device} already contains a non-XFS filesystem: {result.stdout.strip()}"
+        )
     
     # Default XFS format options from SPEC.md
     cmd = [
@@ -169,4 +173,3 @@ def grow_xfs(mount_point: str) -> None:
     
     if result.returncode != 0:
         raise RuntimeError(f"Failed to grow XFS: {result.stderr}")
-

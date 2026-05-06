@@ -31,8 +31,17 @@ class SubprocessXFSAdapter:
             raise NotFoundError("Device", device)
         # Check if already formatted
         result = run_cmd(["blkid", device], timeout=self._timeout, check=False)
-        if result.returncode == 0 and "xfs" in result.stdout.lower():
-            return  # idempotent
+        if result.returncode == 0:
+            if 'type="xfs"' in result.stdout.lower():
+                return  # idempotent
+            raise PreconditionFailedError(
+                f"Device {device} already contains a non-XFS filesystem",
+                {
+                    "resource": "Device",
+                    "name": device,
+                    "blkid": result.stdout.strip(),
+                },
+            )
         run_cmd(
             [
                 "mkfs.xfs",

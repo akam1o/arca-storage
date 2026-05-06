@@ -52,6 +52,22 @@ class TestFormatXfs:
         format_xfs("/dev/vg_pool_01/vol1")
 
     @pytest.mark.unit
+    def test_format_rejects_existing_non_xfs_filesystem(self, mock_subprocess, mock_path_exists):
+        """Test formatting rejects devices with another filesystem."""
+        mock_path_exists.return_value = True
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout='TYPE="ext4"')
+
+        with pytest.raises(RuntimeError, match="non-XFS filesystem"):
+            format_xfs("/dev/vg_pool_01/vol1")
+
+        mock_subprocess.assert_called_once_with(
+            ["blkid", "/dev/vg_pool_01/vol1"],
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+
+    @pytest.mark.unit
     def test_format_nonexistent_device(self, mock_path_exists):
         """Test formatting device that doesn't exist."""
         mock_path_exists.return_value = False

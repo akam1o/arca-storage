@@ -14,6 +14,78 @@ def _completed(cmd: list[str], returncode: int = 0, stdout: str = "", stderr: st
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
+def test_format_skips_existing_xfs_filesystem(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[0] == "blkid":
+            return _completed(cmd, stdout='/dev/vg_pool_01/vol1: UUID="abc" TYPE="xfs"\n')
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(xfs.os.path, "exists", lambda _path: True)
+    monkeypatch.setattr(xfs, "run_cmd", fake_run_cmd)
+
+    adapter = xfs.SubprocessXFSAdapter()
+    adapter.format_xfs("/dev/vg_pool_01/vol1")
+
+    assert calls == [["blkid", "/dev/vg_pool_01/vol1"]]
+
+
+def test_format_rejects_existing_non_xfs_filesystem(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[0] == "blkid":
+            return _completed(cmd, stdout='/dev/vg_pool_01/vol1: UUID="abc" TYPE="ext4"\n')
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(xfs.os.path, "exists", lambda _path: True)
+    monkeypatch.setattr(xfs, "run_cmd", fake_run_cmd)
+
+    adapter = xfs.SubprocessXFSAdapter()
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        adapter.format_xfs("/dev/vg_pool_01/vol1")
+
+    assert exc_info.value.details == {
+        "resource": "Device",
+        "name": "/dev/vg_pool_01/vol1",
+        "blkid": '/dev/vg_pool_01/vol1: UUID="abc" TYPE="ext4"',
+    }
+    assert calls == [["blkid", "/dev/vg_pool_01/vol1"]]
+
+
+def test_format_formats_device_without_existing_signature(monkeypatch):
+    calls: list[list[str]] = []
+
+    def fake_run_cmd(cmd, **_kwargs):
+        calls.append(cmd)
+        if cmd[0] == "blkid":
+            return _completed(cmd, returncode=2)
+        if cmd[0] == "mkfs.xfs":
+            return _completed(cmd)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(xfs.os.path, "exists", lambda _path: True)
+    monkeypatch.setattr(xfs, "run_cmd", fake_run_cmd)
+
+    adapter = xfs.SubprocessXFSAdapter()
+    adapter.format_xfs("/dev/vg_pool_01/vol1")
+
+    assert calls == [
+        ["blkid", "/dev/vg_pool_01/vol1"],
+        [
+            "mkfs.xfs",
+            "-b", "size=4096",
+            "-m", "crc=1,finobt=1",
+            "-i", "size=512,maxpct=25",
+            "-d", "agcount=32,su=256k,sw=1",
+            "/dev/vg_pool_01/vol1",
+        ],
+    ]
+
+
 def test_mount_is_idempotent_for_same_device(monkeypatch):
     calls: list[list[str]] = []
 
