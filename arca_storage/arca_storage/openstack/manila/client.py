@@ -52,8 +52,6 @@ class ArcaManilaClient:
         verify_ssl: bool = True,
         auth_type: Optional[str] = None,
         api_token: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
         ca_bundle: Optional[str] = None,
         client_cert: Optional[str] = None,
         client_key: Optional[str] = None,
@@ -65,10 +63,8 @@ class ArcaManilaClient:
             timeout: HTTP request timeout in seconds
             retry_count: Number of retries for failed requests
             verify_ssl: Whether to verify SSL certificates
-            auth_type: Authentication type ('token', 'basic', or None)
+            auth_type: Authentication type ('token', 'none', or None)
             api_token: Bearer token for token authentication
-            username: Username for basic authentication
-            password: Password for basic authentication
             ca_bundle: Path to CA bundle file for SSL verification
             client_cert: Path to client certificate file for mTLS
             client_key: Path to client private key file for mTLS
@@ -101,12 +97,8 @@ class ArcaManilaClient:
             if not api_token:
                 raise ValueError("api_token is required when auth_type='token'")
             self.session.headers.update({"Authorization": f"Bearer {api_token}"})
-        elif auth_type == "basic":
-            if not username or not password:
-                raise ValueError("username and password are required when auth_type='basic'")
-            self.session.auth = (username, password)
         elif auth_type and auth_type != "none":
-            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token', 'basic', or 'none'")
+            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
 
         # Configure mTLS (client certificate)
         if client_cert:

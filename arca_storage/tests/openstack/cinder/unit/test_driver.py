@@ -28,8 +28,6 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         config.arca_storage_verify_ssl = False
         config.arca_storage_api_auth_type = "none"
         config.arca_storage_api_token = None
-        config.arca_storage_api_username = None
-        config.arca_storage_api_password = None
         config.arca_storage_svm_strategy = "shared"
         config.arca_storage_default_svm = "test-svm"
         config.arca_storage_svm_prefix = "svm-"

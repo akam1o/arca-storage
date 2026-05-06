@@ -45,10 +45,6 @@ arca_storage_verify_ssl = true
 # arca_storage_api_auth_type = token
 # arca_storage_api_token = <token>
 #
-# arca_storage_api_auth_type = basic
-# arca_storage_api_username = <username>
-# arca_storage_api_password = <password>
-#
 # （任意）TLS 設定
 # arca_storage_api_ca_bundle = /etc/ssl/certs/ca-bundle.crt
 # arca_storage_api_client_cert = /path/to/client.crt

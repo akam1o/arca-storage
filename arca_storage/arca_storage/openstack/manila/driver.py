@@ -186,8 +186,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 verify_ssl=self.configuration.arca_storage_verify_ssl,
                 auth_type=self.configuration.arca_storage_api_auth_type,
                 api_token=self.configuration.arca_storage_api_token,
-                username=self.configuration.arca_storage_api_username,
-                password=self.configuration.arca_storage_api_password,
                 ca_bundle=self.configuration.arca_storage_api_ca_bundle,
                 client_cert=self.configuration.arca_storage_api_client_cert,
                 client_key=self.configuration.arca_storage_api_client_key,

@@ -39,8 +39,6 @@ class ArcaStorageClient:
         verify_ssl: bool = True,
         auth_type: Optional[str] = None,
         api_token: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
     ):
         """Initialize ARCA Storage API client.
 
@@ -49,10 +47,8 @@ class ArcaStorageClient:
             timeout: HTTP request timeout in seconds
             retry_count: Number of retries for failed requests
             verify_ssl: Whether to verify SSL certificates
-            auth_type: Authentication type ('token', 'basic', or None)
+            auth_type: Authentication type ('token', 'none', or None)
             api_token: Bearer token for token authentication
-            username: Username for basic authentication
-            password: Password for basic authentication
 
         Raises:
             ImportError: If requests library is not installed
@@ -76,12 +72,8 @@ class ArcaStorageClient:
             if not api_token:
                 raise ValueError("api_token is required when auth_type='token'")
             self.session.headers.update({"Authorization": f"Bearer {api_token}"})
-        elif auth_type == "basic":
-            if not username or not password:
-                raise ValueError("username and password are required when auth_type='basic'")
-            self.session.auth = (username, password)
         elif auth_type and auth_type != "none":
-            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token', 'basic', or 'none'")
+            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
 
         # Configure retry strategy
         # Note: Only retry safe methods (GET) to avoid duplicate operations

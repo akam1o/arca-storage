@@ -37,8 +37,6 @@ def mock_manila_driver_config():
     # API auth (optional)
     config.arca_storage_api_auth_type = "none"
     config.arca_storage_api_token = None
-    config.arca_storage_api_username = None
-    config.arca_storage_api_password = None
     config.arca_storage_api_ca_bundle = None
     config.arca_storage_api_client_cert = None
     config.arca_storage_api_client_key = None

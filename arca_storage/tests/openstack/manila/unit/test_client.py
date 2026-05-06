@@ -10,7 +10,7 @@ from arca_storage.openstack.manila import exceptions
 
 
 class TestArcaManilaClientInit:
-    def test_init_basic(self):
+    def test_init_with_none_auth(self):
         client = manila_client.ArcaManilaClient(
             api_endpoint="http://192.168.10.5:8080",
             timeout=30,

@@ -96,8 +96,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     verify_ssl=self.configuration.arca_storage_verify_ssl,
                     auth_type=getattr(self.configuration, "arca_storage_api_auth_type", "none"),
                     api_token=getattr(self.configuration, "arca_storage_api_token", None),
-                    username=getattr(self.configuration, "arca_storage_api_username", None),
-                    password=getattr(self.configuration, "arca_storage_api_password", None),
                 )
 
             # Mount options alignment: Support standard RemoteFSDriver nfs_mount_options
