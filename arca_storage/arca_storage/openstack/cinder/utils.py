@@ -1,9 +1,12 @@
 """Utility functions for ARCA Storage Cinder Driver."""
 
+import ctypes
 import errno
 import hashlib
 import os
+import platform
 import subprocess
+import sys
 from typing import Optional
 
 from .exceptions import ArcaStorageException
@@ -435,77 +438,80 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
         raise ArcaStorageException(f"Failed to extend volume file: {error_msg}")
 
 
-def _write_all(fd: int, data: bytes) -> None:
-    """Write all bytes to a file descriptor."""
-    view = memoryview(data)
-    while view:
-        written = os.write(fd, view)
-        if written == 0:
-            raise OSError("write returned 0 bytes")
-        view = view[written:]
+def _rename_noreplace(source_path: str, dest_path: str) -> None:
+    """Atomically rename source_path to dest_path without replacing dest_path."""
+    if not sys.platform.startswith("linux"):
+        raise OSError(
+            errno.ENOSYS,
+            "renameat2(RENAME_NOREPLACE) is only available on Linux",
+            dest_path,
+        )
 
+    at_fdcwd = -100
+    rename_noreplace = 1
+    source_bytes = os.fsencode(source_path)
+    dest_bytes = os.fsencode(dest_path)
+    libc = ctypes.CDLL(None, use_errno=True)
 
-def _copy_sparse_contents(source_path: str, dest_fd: int) -> None:
-    """Copy file contents into an already-created destination fd.
-
-    The destination fd is created by the caller with O_EXCL so a concurrent
-    worker cannot be overwritten when hard-link based installation is unavailable.
-    """
-    source_fd = os.open(source_path, os.O_RDONLY)
     try:
-        file_size = os.fstat(source_fd).st_size
-        chunk_size = 1024 * 1024
+        renameat2 = libc.renameat2
+    except AttributeError:
+        syscall_numbers = {
+            "x86_64": 316,
+            "amd64": 316,
+            "aarch64": 276,
+            "arm64": 276,
+        }
+        syscall_number = syscall_numbers.get(platform.machine().lower())
+        if syscall_number is None:
+            raise OSError(
+                errno.ENOSYS,
+                f"renameat2 syscall number is unknown for {platform.machine()}",
+                dest_path,
+            )
 
-        if not hasattr(os, "SEEK_DATA") or not hasattr(os, "SEEK_HOLE"):
-            os.lseek(source_fd, 0, os.SEEK_SET)
-            while True:
-                chunk = os.read(source_fd, chunk_size)
-                if not chunk:
-                    break
-                _write_all(dest_fd, chunk)
-            os.ftruncate(dest_fd, file_size)
-            return
+        syscall = libc.syscall
+        syscall.restype = ctypes.c_long
+        rc = syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(at_fdcwd),
+            ctypes.c_char_p(source_bytes),
+            ctypes.c_int(at_fdcwd),
+            ctypes.c_char_p(dest_bytes),
+            ctypes.c_uint(rename_noreplace),
+        )
+    else:
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        rc = renameat2(
+            at_fdcwd,
+            ctypes.c_char_p(source_bytes),
+            at_fdcwd,
+            ctypes.c_char_p(dest_bytes),
+            rename_noreplace,
+        )
 
-        position = 0
-        while position < file_size:
-            try:
-                data_position = os.lseek(source_fd, position, os.SEEK_DATA)
-            except OSError as e:
-                if e.errno == errno.ENXIO:
-                    break
-                raise
-
-            try:
-                hole_position = os.lseek(source_fd, data_position, os.SEEK_HOLE)
-            except OSError:
-                hole_position = file_size
-
-            hole_position = min(hole_position, file_size)
-            os.lseek(source_fd, data_position, os.SEEK_SET)
-            os.lseek(dest_fd, data_position, os.SEEK_SET)
-
-            remaining = hole_position - data_position
-            while remaining > 0:
-                chunk = os.read(source_fd, min(chunk_size, remaining))
-                if not chunk:
-                    break
-                _write_all(dest_fd, chunk)
-                remaining -= len(chunk)
-
-            position = hole_position
-
-        os.ftruncate(dest_fd, file_size)
-    finally:
-        os.close(source_fd)
+    if rc != 0:
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise FileExistsError(error_number, os.strerror(error_number), dest_path)
+        raise OSError(error_number, os.strerror(error_number), dest_path)
 
 
 def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> None:
     """Copy a file preserving sparseness using atomic operations.
 
     Uses cp --sparse=always to copy files while preserving sparse regions.
-    The copy is performed atomically by copying to a temporary file first,
-    then renaming to the final destination. Uses secure random temp names
-    to prevent symlink attacks. Includes fsync for durability.
+    The copy is installed atomically by copying to a temporary file first,
+    then linking or no-replace renaming it to the final destination. Uses
+    secure random temp names to prevent symlink attacks. Includes fsync for
+    durability.
 
     Args:
         source_path: Path to source file
@@ -564,34 +570,20 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             raise ArcaStorageException(
                 f"Destination file was created by another worker: {dest_path}"
             )
-        except OSError:
+        except OSError as link_error:
             # If link() failed for reasons other than file exists (e.g., cross-device)
-            # install the destination via O_EXCL so a concurrent creator is not overwritten.
-            dest_fd = None
-            dest_created = False
+            # install the completed temp file with a no-overwrite atomic rename.
             try:
-                dest_fd = os.open(dest_path, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
-                dest_created = True
-                _copy_sparse_contents(temp_path, dest_fd)
-                os.fsync(dest_fd)
+                _rename_noreplace(temp_path, dest_path)
             except FileExistsError:
                 raise ArcaStorageException(
                     f"Destination file was created by another worker: {dest_path}"
                 )
-            except OSError as copy_error:
-                if dest_created:
-                    try:
-                        os.remove(dest_path)
-                    except OSError:
-                        pass
+            except OSError as rename_error:
                 raise ArcaStorageException(
-                    f"Failed to install copied file without overwriting destination: {copy_error}"
+                    "Failed to atomically install copied file without overwriting "
+                    f"destination after hard link failed ({link_error}): {rename_error}"
                 )
-            finally:
-                if dest_fd is not None:
-                    os.close(dest_fd)
-
-            os.unlink(temp_path)
 
         # Sync parent directory to ensure rename/link is durable
         dir_fd = os.open(dest_dir, os.O_RDONLY)

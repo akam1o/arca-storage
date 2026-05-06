@@ -22,6 +22,11 @@ class TestUtilityFunctions(unittest.TestCase):
             dest.write(data)
         return Mock(returncode=0)
 
+    def _fake_rename_noreplace(self, source_path, dest_path):
+        if os.path.exists(dest_path):
+            raise FileExistsError(dest_path)
+        os.rename(source_path, dest_path)
+
     def test_get_mount_point_for_volume(self):
         """Test mount point generation."""
         base_path = "/var/lib/cinder/mnt"
@@ -257,7 +262,11 @@ class TestUtilityFunctions(unittest.TestCase):
                     "arca_storage.openstack.cinder.utils.subprocess.run",
                     side_effect=self._fake_sparse_cp,
                 ):
-                    arca_utils.copy_sparse_file(source_path, dest_path)
+                    with patch(
+                        "arca_storage.openstack.cinder.utils._rename_noreplace",
+                        side_effect=self._fake_rename_noreplace,
+                    ):
+                        arca_utils.copy_sparse_file(source_path, dest_path)
 
             with open(dest_path, "rb") as dest:
                 assert dest.read() == b"source-data"
@@ -273,7 +282,7 @@ class TestUtilityFunctions(unittest.TestCase):
             def create_destination_then_fail(temp_path, final_path):
                 with open(final_path, "wb") as dest:
                     dest.write(b"concurrent-data")
-                raise OSError("hard links unavailable")
+                raise FileExistsError(final_path)
 
             with patch(
                 "arca_storage.openstack.cinder.utils.os.link",
@@ -283,11 +292,15 @@ class TestUtilityFunctions(unittest.TestCase):
                     "arca_storage.openstack.cinder.utils.subprocess.run",
                     side_effect=self._fake_sparse_cp,
                 ):
-                    with pytest.raises(
-                        arca_exceptions.ArcaStorageException,
-                        match="created by another worker",
+                    with patch(
+                        "arca_storage.openstack.cinder.utils._rename_noreplace",
+                        side_effect=create_destination_then_fail,
                     ):
-                        arca_utils.copy_sparse_file(source_path, dest_path)
+                        with pytest.raises(
+                            arca_exceptions.ArcaStorageException,
+                            match="created by another worker",
+                        ):
+                            arca_utils.copy_sparse_file(source_path, dest_path)
 
             with open(dest_path, "rb") as dest:
                 assert dest.read() == b"concurrent-data"
