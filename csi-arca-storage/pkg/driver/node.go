@@ -119,6 +119,51 @@ func readonlyBindRemountOptions() []string {
 	return []string{"bind", "remount", "ro"}
 }
 
+func validateExistingPublishReadOnly(mounter mountutils.Interface, targetPath string, readOnly bool) error {
+	mountPoints, err := mounter.List()
+	if err != nil {
+		return fmt.Errorf("failed to list mount points: %w", err)
+	}
+
+	mountPoint, ok := findMountPoint(mountPoints, targetPath)
+	if !ok {
+		return fmt.Errorf("target path %s is mounted but no mount record was found", targetPath)
+	}
+	activeReadOnly := mountPointHasOption(mountPoint, "ro")
+	if activeReadOnly != readOnly {
+		return fmt.Errorf("target path %s readonly mismatch: active=%t requested=%t", targetPath, activeReadOnly, readOnly)
+	}
+	return nil
+}
+
+func findMountPoint(mountPoints []mountutils.MountPoint, targetPath string) (mountutils.MountPoint, bool) {
+	candidates := map[string]struct{}{
+		filepath.Clean(targetPath): {},
+	}
+	if resolved, err := filepath.EvalSymlinks(targetPath); err == nil {
+		candidates[filepath.Clean(resolved)] = struct{}{}
+	}
+
+	var match mountutils.MountPoint
+	found := false
+	for _, mountPoint := range mountPoints {
+		if _, ok := candidates[filepath.Clean(mountPoint.Path)]; ok {
+			match = mountPoint
+			found = true
+		}
+	}
+	return match, found
+}
+
+func mountPointHasOption(mountPoint mountutils.MountPoint, option string) bool {
+	for _, opt := range mountPoint.Opts {
+		if opt == option {
+			return true
+		}
+	}
+	return false
+}
+
 func (d *Driver) mounter() mountutils.Interface {
 	if d.nodeMounter != nil {
 		return d.nodeMounter
@@ -362,6 +407,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	klog.V(4).Infof("Publishing volume %s from %s to %s", volumeID, stagingTargetPath, targetPath)
+	readonly := req.GetReadonly()
 
 	// Create target directory
 	if err := os.MkdirAll(targetPath, 0750); err != nil {
@@ -382,15 +428,15 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		if err := d.sourceValidator().ValidateMountSource(targetPath, stagingTargetPath); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but does not match requested source: %v", targetPath, err)
 		}
-		if !d.nodeState.HasVolumePublish(volumeID, targetPath) {
-			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but is not recorded for volume %s", targetPath, volumeID)
+		if err := d.nodeState.ValidateVolumePublish(volumeID, targetPath, readonly); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
+		}
+		if err := validateExistingPublishReadOnly(mounter, targetPath, readonly); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
 		}
 		klog.V(4).Infof("Volume %s already published at %s", volumeID, targetPath)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
-
-	// Determine if read-only mount is requested
-	readonly := req.GetReadonly()
 
 	// Step 1: Create initial bind mount
 	mountOptions := bindMountOptions()
@@ -417,7 +463,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	// Record volume publish in NodeState
-	if err := d.nodeState.RecordVolumePublish(volumeID, targetPath); err != nil {
+	if err := d.nodeState.RecordVolumePublish(volumeID, targetPath, readonly); err != nil {
 		klog.Warningf("Failed to record volume publish in node state, rolling back mount: %v", err)
 
 		// Best-effort: revert in-memory state (may also fail to persist)

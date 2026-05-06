@@ -230,10 +230,16 @@ func TestHasVolumePublishRequiresRecordedTarget(t *testing.T) {
 	if state.HasVolumePublish("volume-a", "/pods/volume-a") {
 		t.Fatal("target should not be recorded before RecordVolumePublish")
 	}
-	if err := state.RecordVolumePublish("volume-a", "/pods/volume-a"); err != nil {
+	if err := state.RecordVolumePublish("volume-a", "/pods/volume-a", false); err != nil {
 		t.Fatalf("RecordVolumePublish failed: %v", err)
 	}
 	if !state.HasVolumePublish("volume-a", "/pods/volume-a") {
 		t.Fatal("target should be recorded after RecordVolumePublish")
+	}
+	if err := state.ValidateVolumePublish("volume-a", "/pods/volume-a", false); err != nil {
+		t.Fatalf("recorded readonly state should be accepted: %v", err)
+	}
+	if err := state.ValidateVolumePublish("volume-a", "/pods/volume-a", true); err == nil {
+		t.Fatal("readonly mismatch should be rejected")
 	}
 }

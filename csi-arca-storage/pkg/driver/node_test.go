@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -168,7 +169,7 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 	if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "", "volumes/vol-a", stagingPath, nil); err != nil {
 		t.Fatalf("failed to record staging: %v", err)
 	}
-	if err := nodeState.RecordVolumePublish("vol-a", targetPath); err != nil {
+	if err := nodeState.RecordVolumePublish("vol-a", targetPath, false); err != nil {
 		t.Fatalf("failed to record publish: %v", err)
 	}
 
@@ -197,6 +198,80 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 		t.Fatalf("expected FailedPrecondition, got %v", err)
 	}
 	if !strings.Contains(err.Error(), "mount source mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNodePublishRejectsExistingMountWithReadonlyMismatch(t *testing.T) {
+	tmp := t.TempDir()
+	targetPath := filepath.Join(tmp, "target")
+	stagingPath := filepath.Join(tmp, "staging")
+	if err := os.MkdirAll(targetPath, 0750); err != nil {
+		t.Fatalf("failed to create target path: %v", err)
+	}
+	if err := os.MkdirAll(stagingPath, 0750); err != nil {
+		t.Fatalf("failed to create staging path: %v", err)
+	}
+	mountedTargetPath, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		t.Fatalf("failed to resolve target path: %v", err)
+	}
+	mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+	if err != nil {
+		t.Fatalf("failed to resolve staging path: %v", err)
+	}
+
+	stateFile := filepath.Join(tmp, "state.json")
+	stateData := map[string]any{
+		"volumes": map[string]any{
+			"vol-a": map[string]any{
+				"volume_id":       "vol-a",
+				"svm_name":        "svm-a",
+				"vip":             "10.0.0.1",
+				"volume_path":     "volumes/vol-a",
+				"staging_path":    stagingPath,
+				"published_paths": []string{targetPath},
+			},
+		},
+	}
+	rawState, err := json.Marshal(stateData)
+	if err != nil {
+		t.Fatalf("failed to marshal legacy node state: %v", err)
+	}
+	if err := os.WriteFile(stateFile, rawState, 0600); err != nil {
+		t.Fatalf("failed to write legacy node state: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	fakeMounter := mountutils.NewFakeMounter([]mountutils.MountPoint{
+		{Device: mountedStagingPath, Path: mountedTargetPath, Type: "", Opts: []string{"bind"}},
+	})
+	driver := &Driver{
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         new(arcamount.MountManager),
+		nodeMounter:          fakeMounter,
+		mountSourceValidator: fakeMountSourceValidator{},
+	}
+
+	_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetPath,
+		Readonly:          true,
+		VolumeCapability: &csi.VolumeCapability{
+			AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+			AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "readonly mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
 }

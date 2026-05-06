@@ -35,6 +35,17 @@ func cloneMountOptions(options []string) []string {
 	return append([]string(nil), options...)
 }
 
+func cloneBoolMap(values map[string]bool) map[string]bool {
+	if values == nil {
+		return nil
+	}
+	result := make(map[string]bool, len(values))
+	for key, value := range values {
+		result[key] = value
+	}
+	return result
+}
+
 func sameMountOptions(a, b []string) bool {
 	left := mountOptionMap(a)
 	right := mountOptionMap(b)

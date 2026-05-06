@@ -13,14 +13,15 @@ import (
 
 // VolumeStaging represents a staged volume's information
 type VolumeStaging struct {
-	VolumeID        string   `json:"volume_id"`
-	SVMName         string   `json:"svm_name"`
-	VIP             string   `json:"vip"`
-	ExportRoot      string   `json:"export_root,omitempty"`
-	VolumePath      string   `json:"volume_path,omitempty"`
-	StagingPath     string   `json:"staging_path"`
-	NFSMountOptions []string `json:"nfs_mount_options,omitempty"`
-	PublishedPaths  []string `json:"published_paths"` // Target paths where volume is published
+	VolumeID          string          `json:"volume_id"`
+	SVMName           string          `json:"svm_name"`
+	VIP               string          `json:"vip"`
+	ExportRoot        string          `json:"export_root,omitempty"`
+	VolumePath        string          `json:"volume_path,omitempty"`
+	StagingPath       string          `json:"staging_path"`
+	NFSMountOptions   []string        `json:"nfs_mount_options,omitempty"`
+	PublishedPaths    []string        `json:"published_paths"`              // Target paths where volume is published
+	PublishedReadOnly map[string]bool `json:"published_readonly,omitempty"` // target path -> readonly request state
 }
 
 // NodeStateData represents the persistent state on a node
@@ -212,6 +213,7 @@ func (ns *NodeState) GetStagedVolumes() map[string]*VolumeStaging {
 		staging := *v // Copy struct
 		staging.NFSMountOptions = cloneMountOptions(v.NFSMountOptions)
 		staging.PublishedPaths = cloneMountOptions(v.PublishedPaths)
+		staging.PublishedReadOnly = cloneBoolMap(v.PublishedReadOnly)
 		result[k] = &staging
 	}
 
@@ -399,8 +401,8 @@ func (ns *NodeState) Unlock() {
 	ns.mu.Unlock()
 }
 
-// RecordVolumePublish records that a volume has been published to a target path
-func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string) error {
+// RecordVolumePublish records that a volume has been published to a target path.
+func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string, readOnly bool) error {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
 
@@ -408,10 +410,28 @@ func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string) error {
 	if !exists {
 		return fmt.Errorf("volume %s not found in node state", volumeID)
 	}
+	if staging.PublishedReadOnly == nil {
+		staging.PublishedReadOnly = make(map[string]bool)
+	}
 
 	// Check if already published to this path
 	for _, path := range staging.PublishedPaths {
 		if path == targetPath {
+			if recordedReadOnly, recorded := staging.PublishedReadOnly[targetPath]; recorded && recordedReadOnly != readOnly {
+				return fmt.Errorf(
+					"volume %s publish readonly mismatch for %s: recorded=%t requested=%t",
+					volumeID,
+					targetPath,
+					recordedReadOnly,
+					readOnly,
+				)
+			}
+			if _, recorded := staging.PublishedReadOnly[targetPath]; !recorded {
+				staging.PublishedReadOnly[targetPath] = readOnly
+				if err := ns.persistLocked(); err != nil {
+					return fmt.Errorf("failed to persist state: %w", err)
+				}
+			}
 			klog.V(4).Infof("Volume %s already published to %s", volumeID, targetPath)
 			return nil
 		}
@@ -419,6 +439,7 @@ func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string) error {
 
 	// Add target path
 	staging.PublishedPaths = append(staging.PublishedPaths, targetPath)
+	staging.PublishedReadOnly[targetPath] = readOnly
 
 	// Persist updated state
 	if err := ns.persistLocked(); err != nil {
@@ -446,6 +467,35 @@ func (ns *NodeState) HasVolumePublish(volumeID, targetPath string) bool {
 	return false
 }
 
+// ValidateVolumePublish verifies that targetPath is recorded with the requested readonly state.
+func (ns *NodeState) ValidateVolumePublish(volumeID, targetPath string, readOnly bool) error {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+
+	staging, exists := ns.data.Volumes[volumeID]
+	if !exists {
+		return fmt.Errorf("target path %s is not recorded for volume %s", targetPath, volumeID)
+	}
+	for _, path := range staging.PublishedPaths {
+		if path != targetPath {
+			continue
+		}
+		if staging.PublishedReadOnly != nil {
+			if recordedReadOnly, recorded := staging.PublishedReadOnly[targetPath]; recorded && recordedReadOnly != readOnly {
+				return fmt.Errorf(
+					"volume %s publish readonly mismatch for %s: recorded=%t requested=%t",
+					volumeID,
+					targetPath,
+					recordedReadOnly,
+					readOnly,
+				)
+			}
+		}
+		return nil
+	}
+	return fmt.Errorf("target path %s is not recorded for volume %s", targetPath, volumeID)
+}
+
 // RemoveVolumePublish removes a target path from the published paths
 func (ns *NodeState) RemoveVolumePublish(volumeID, targetPath string) error {
 	ns.mu.Lock()
@@ -465,6 +515,9 @@ func (ns *NodeState) RemoveVolumePublish(volumeID, targetPath string) error {
 		}
 	}
 	staging.PublishedPaths = newPaths
+	if staging.PublishedReadOnly != nil {
+		delete(staging.PublishedReadOnly, targetPath)
+	}
 
 	// Persist updated state
 	if err := ns.persistLocked(); err != nil {
