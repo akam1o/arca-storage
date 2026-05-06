@@ -119,7 +119,7 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) 
     volume_path = f"{root_path}/{path}"
     root_squash = _csi_root_squash(ctx)
 
-    _remove_stale_csi_exports(ctx, svm, path, set(client_cidrs))
+    _remove_stale_csi_exports(ctx, svm, set(client_cidrs))
 
     for client in client_cidrs:
         export_service.ensure_internal_export(
@@ -144,13 +144,13 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) 
         )
 
 
-def _remove_stale_csi_exports(ctx: Any, svm: str, path: str, desired_clients: set[str]) -> None:
-    for volume in (path, CSI_ROOT_EXPORT_VOLUME):
-        for export in ctx.db.list_exports(svm=svm, volume=volume, limit=1_000_000):
-            spec = export.get("spec", {})
-            client = spec.get("client")
-            if client and spec.get("owner") == "csi" and client not in desired_clients:
-                export_service.remove_internal_export(svm, volume, client)
+def _remove_stale_csi_exports(ctx: Any, svm: str, desired_clients: set[str]) -> None:
+    for export in ctx.db.list_exports(svm=svm, limit=1_000_000):
+        spec = export.get("spec", {})
+        volume = spec.get("volume")
+        client = spec.get("client")
+        if volume and client and spec.get("owner") == "csi" and client not in desired_clients:
+            export_service.remove_internal_export(svm, volume, client)
 
 
 def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:

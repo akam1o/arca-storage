@@ -88,6 +88,7 @@ def test_csi_directory_prunes_stale_export_clients(fake_context):
     client = TestClient(app)
     svm_name = "k8s-default"
     volume_path = "pvc-1234567890abcdef"
+    other_volume_path = "pvc-fedcba0987654321"
     fake_context.settings.csi.client_cidrs = ["10.0.0.0/24", "10.1.0.0/24"]
 
     response = client.post(
@@ -110,11 +111,22 @@ def test_csi_directory_prunes_stale_export_clients(fake_context):
         },
     )
     assert response.status_code == 201
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": other_volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 201
     assert _export_targets(fake_context.adapters.ganesha.exports[svm_name]) == {
         (f"/exports/{svm_name}", "10.0.0.0/24"),
         (f"/exports/{svm_name}", "10.1.0.0/24"),
         (f"/exports/{svm_name}/{volume_path}", "10.0.0.0/24"),
         (f"/exports/{svm_name}/{volume_path}", "10.1.0.0/24"),
+        (f"/exports/{svm_name}/{other_volume_path}", "10.0.0.0/24"),
+        (f"/exports/{svm_name}/{other_volume_path}", "10.1.0.0/24"),
     }
 
     fake_context.settings.csi.client_cidrs = ["10.0.0.0/24"]
@@ -131,6 +143,7 @@ def test_csi_directory_prunes_stale_export_clients(fake_context):
     assert _export_targets(fake_context.adapters.ganesha.exports[svm_name]) == {
         (f"/exports/{svm_name}", "10.0.0.0/24"),
         (f"/exports/{svm_name}/{volume_path}", "10.0.0.0/24"),
+        (f"/exports/{svm_name}/{other_volume_path}", "10.0.0.0/24"),
     }
 
 
