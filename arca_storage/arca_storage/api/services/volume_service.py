@@ -55,6 +55,29 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     validate_name(svm)
 
     ctx = get_context()
+    record = ctx.db.get_volume(svm, name)
+    if not record:
+        raise NotFoundError("Volume", f"{svm}/{name}")
+
+    current_size = int(record.get("spec", {}).get("size_gib") or 0)
+    if new_size_gib < current_size:
+        raise PreconditionFailedError(
+            f"Volume '{svm}/{name}' cannot be shrunk",
+            {
+                "resource": "Volume",
+                "name": f"{svm}/{name}",
+                "current_size_gib": current_size,
+                "requested_size_gib": new_size_gib,
+            },
+        )
+    if new_size_gib == current_size:
+        vol = Volume(
+            metadata=_meta_from_record(record),
+            spec=VolumeSpec.model_validate(record["spec"]),
+            status=_parse_status(record),
+        )
+        return _volume_to_dict(vol)
+
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
     export_dir = cfg["export_dir"]
@@ -64,20 +87,15 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
     ctx.adapters.xfs.grow(mount_path)
 
-    # Update volume record in DB
-    record = ctx.db.get_volume(svm, name)
-    if record:
-        vol = Volume(
-            metadata=_meta_from_record(record),
-            spec=VolumeSpec.model_validate(record["spec"]),
-            status=_parse_status(record),
-        )
-        vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
-        vol.metadata.bump()
-        ctx.db.upsert_volume(vol)
-        return _volume_to_dict(vol)
-
-    return {"name": name, "svm": svm, "size_gib": new_size_gib, "status": "Ready"}
+    vol = Volume(
+        metadata=_meta_from_record(record),
+        spec=VolumeSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
+    vol.metadata.bump()
+    ctx.db.upsert_volume(vol)
+    return _volume_to_dict(vol)
 
 
 def delete_volume(name: str, svm: str, force: bool = False) -> None:

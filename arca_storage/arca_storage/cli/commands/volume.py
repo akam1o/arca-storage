@@ -1,18 +1,17 @@
 """
 Volume management commands.
 
-Delegates to the Volume reconciler for create/delete operations.
+Delegates mutating operations to API services.
 """
 
 from typing import Optional
 
 import typer
 
+from arca_storage.api.models import VolumeCreate
 from arca_storage.api.services import volume_service
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
-from arca_storage.models.base import Phase, ResourceMeta
-from arca_storage.models.volume import Volume, VolumeSpec, VolumeStatus
 
 app = typer.Typer(help="Volume management commands")
 
@@ -24,24 +23,18 @@ def create(
     size: int = typer.Option(..., "--size", help="Size in GiB"),
     thin: bool = typer.Option(True, "--thin/--no-thin", help="Use thin provisioning (default: True)"),
 ):
-    """Create a new volume via the reconciler."""
+    """Create a new volume."""
     try:
         validate_name(name)
         validate_name(svm)
 
         typer.echo(f"Creating volume: {name} in SVM: {svm}")
 
-        ctx = get_context()
-        volume = Volume(
-            spec=VolumeSpec(name=name, svm=svm, size_gib=size, thin=thin),
+        volume = volume_service.create_volume(
+            VolumeCreate(name=name, svm=svm, size_gib=size, thin=thin, fs_type="xfs")
         )
-        volume = ctx.volume_reconciler.reconcile(volume)
 
-        if volume.status.phase == Phase.FAILED:
-            typer.echo(f"Error creating volume: {volume.status.message}", err=True)
-            raise typer.Exit(1)
-
-        typer.echo(f"Volume {name} created successfully (phase={volume.status.phase.value})")
+        typer.echo(f"Volume {name} created successfully (phase={volume['status']})")
 
     except typer.Exit:
         raise
@@ -63,31 +56,7 @@ def resize(
 
         typer.echo(f"Resizing volume: {name} in SVM: {svm}")
 
-        ctx = get_context()
-        cfg = ctx.settings.to_reconciler_config()
-        vg_name = cfg["vg_name"]
-        export_dir = cfg["export_dir"]
-        lv_name = f"vol_{svm}_{name}"
-        mount_path = f"{export_dir}/{svm}/{name}"
-
-        ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size)
-        typer.echo(f"  Resized LV to {new_size} GiB")
-
-        ctx.adapters.xfs.grow(mount_path)
-        typer.echo(f"  Grew XFS filesystem")
-
-        # Update DB record
-        records = ctx.db.list_volumes(svm=svm, name=name)
-        if records:
-            record = records[0]
-            vol = Volume(
-                metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
-                spec=VolumeSpec.model_validate(record["spec"]),
-                status=VolumeStatus.model_validate(record["status"]),
-            )
-            vol.spec.size_gib = new_size
-            vol.metadata.bump()
-            ctx.db.upsert_volume(vol)
+        volume_service.resize_volume(name, svm, new_size)
 
         typer.echo(f"Volume {name} resized successfully")
 

@@ -11,6 +11,7 @@ from arca_storage.errors import (
     NotFoundError,
     SubprocessError,
     TimeoutError as ArcaTimeoutError,
+    UnauthorizedError,
 )
 
 
@@ -24,6 +25,11 @@ class TestErrorCodes:
         err = AlreadyExistsError("SVM", "prod")
         assert err.http_status == 409
         assert err.code == ErrorCode.ALREADY_EXISTS
+
+    def test_unauthorized_http_status(self):
+        err = UnauthorizedError()
+        assert err.http_status == 401
+        assert err.code == ErrorCode.UNAUTHORIZED
 
     def test_conflict_http_status(self):
         err = ConflictError("Volume is in use")

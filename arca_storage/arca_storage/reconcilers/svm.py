@@ -155,9 +155,12 @@ class SVMReconciler:
 
     def _reconcile_delete(self, svm: SVM) -> SVM:
         spec = svm.spec
+        vg_name = self._cfg.get("vg_name", "vg_pool_01")
         try:
             self.adapters.pacemaker.delete_group(spec.name)
             self.adapters.netns.delete_namespace(spec.name)
+            if spec.root_volume_size_gib or svm.status.lv_created:
+                self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
         except Exception as e:

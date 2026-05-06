@@ -113,6 +113,29 @@ class TestResizeVolume:
         assert data["status"] == "ok"
         assert data["data"]["volume"]["size_gib"] == 200
 
+    @pytest.mark.integration
+    def test_resize_volume_requires_existing_record_before_mutation(self, fake_context):
+        client = TestClient(app)
+        fake_context.adapters.lvm.create_thin_lv("vg_pool_01", "pool", "vol_tenant_a_missing", 10)
+        fake_context.adapters.xfs.mount("/dev/vg_pool_01/vol_tenant_a_missing", "/exports/tenant_a/missing")
+
+        response = client.patch("/v1/volumes/missing", json={"svm": "tenant_a", "new_size_gib": 20})
+
+        assert response.status_code == 404
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_missing"] == 10
+
+    @pytest.mark.integration
+    def test_resize_volume_rejects_shrink_without_mutation(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 10})
+
+        assert response.status_code == 412
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
+
 
 class TestCloneVolume:
     """Tests for POST /v1/volumes/{name}/clone."""

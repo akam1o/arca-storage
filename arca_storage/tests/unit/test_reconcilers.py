@@ -36,7 +36,9 @@ from arca_storage.reconcilers.volume import VolumeReconciler
 @pytest.fixture
 def db(tmp_path):
     """Create SQLite DB in a temp directory."""
-    return StateDB(str(tmp_path / "state.db"))
+    state = StateDB(str(tmp_path / "state.db"))
+    yield state
+    state.close()
 
 
 @pytest.fixture
@@ -145,6 +147,28 @@ class TestSVMReconciler:
         # Verify cleaned up
         assert not adapters.netns.namespace_exists("del-svm")
         assert len(db.list_svms(name="del-svm")) == 0
+
+    def test_delete_svm_removes_root_lv(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="rooted",
+                vlan_id=300,
+                ip_cidr="10.0.2.5/24",
+                gateway="10.0.2.1",
+                root_volume_size_gib=10,
+            ),
+        )
+
+        created = rec.reconcile(svm)
+        assert created.status.phase == Phase.READY
+        assert adapters.lvm.lv_exists("vg_arca", "vol_rooted")
+
+        created.status.phase = Phase.DELETING
+        rec.reconcile(created)
+
+        assert not adapters.lvm.lv_exists("vg_arca", "vol_rooted")
+        assert len(db.list_svms(name="rooted")) == 0
 
 
 # ── Volume Reconciler ─────────────────────────────────────────────

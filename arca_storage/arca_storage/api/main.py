@@ -3,10 +3,12 @@ FastAPI main application.
 """
 
 import logging
+import os
+import secrets
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Query, Request
 from fastapi.responses import JSONResponse
 
 from arca_storage.api.models import (
@@ -36,6 +38,36 @@ from arca_storage.errors import ArcaError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
+
+_AUTH_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
+
+
+def _configured_api_token() -> str:
+    return os.environ.get("ARCA_API_TOKEN", "") or os.environ.get("ARCA_AUTH_TOKEN", "")
+
+
+@app.middleware("http")
+async def require_bearer_token(request: Request, call_next):
+    """Require a bearer token when ARCA_API_TOKEN/ARCA_AUTH_TOKEN is configured."""
+    token = _configured_api_token()
+    if not token or request.url.path in _AUTH_EXEMPT_PATHS:
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, supplied = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, token):
+        request_id = str(uuid.uuid4())
+        return JSONResponse(
+            status_code=401,
+            content={
+                "request_id": request_id,
+                "status": "error",
+                "error": {"code": "UNAUTHORIZED", "message": "Unauthorized", "details": {}},
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return await call_next(request)
 
 
 @app.exception_handler(ArcaError)

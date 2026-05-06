@@ -211,6 +211,28 @@ class TestDeleteSVM:
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
 
     @pytest.mark.integration
+    def test_delete_svm_removes_root_volume(self, fake_context):
+        """Deleting an SVM with a root volume frees the backing LV."""
+        client = TestClient(app)
+        response = client.post(
+            "/v1/svms",
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+                "root_volume_size_gib": 10,
+            },
+        )
+        assert response.status_code == 201
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a")
+
+        response = client.delete("/v1/svms/tenant_a")
+
+        assert response.status_code == 200
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a")
+
+    @pytest.mark.integration
     def test_delete_svm_force_cascades_snapshots(self, fake_context):
         """force cascades through snapshots without leaving DB state behind."""
         client = TestClient(app)

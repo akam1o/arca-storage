@@ -12,7 +12,9 @@ from arca_storage.models.volume import Volume, VolumeSpec
 
 @pytest.fixture
 def db(tmp_path):
-    return StateDB(str(tmp_path / "test.db"))
+    state = StateDB(str(tmp_path / "test.db"))
+    yield state
+    state.close()
 
 
 class TestStateDB:

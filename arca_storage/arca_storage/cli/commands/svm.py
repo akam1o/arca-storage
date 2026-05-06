@@ -1,13 +1,14 @@
 """
 SVM management commands.
 
-Delegates to the SVM reconciler for create/delete operations.
+Delegates mutating operations to API services.
 """
 
 from typing import Optional
 
 import typer
 
+from arca_storage.api.models import SVMCreate
 from arca_storage.api.services import svm_service
 from arca_storage.cli.lib.validators import (
     validate_ip_cidr,
@@ -17,8 +18,6 @@ from arca_storage.cli.lib.validators import (
     validate_vlan,
 )
 from arca_storage.context import get_context
-from arca_storage.models.base import Phase
-from arca_storage.models.svm import SVM, SVMSpec
 
 app = typer.Typer(help="SVM management commands")
 
@@ -48,25 +47,18 @@ def create(
 
         typer.echo(f"Creating SVM: {name}")
 
-        ctx = get_context()
-        svm = SVM(
-            spec=SVMSpec(
+        result = svm_service.create_svm(
+            SVMCreate(
                 name=name,
                 vlan_id=vlan_id,
                 ip_cidr=ip,
                 gateway=gateway_ip,
                 mtu=mtu,
                 root_volume_size_gib=root_size,
-            ),
+            )
         )
 
-        svm = ctx.svm_reconciler.reconcile(svm)
-
-        if svm.status.phase == Phase.FAILED:
-            typer.echo(f"Error creating SVM: {svm.status.message}", err=True)
-            raise typer.Exit(1)
-
-        typer.echo(f"SVM {name} created successfully (phase={svm.status.phase.value})")
+        typer.echo(f"SVM {name} created successfully (phase={result['status']})")
 
     except typer.Exit:
         raise

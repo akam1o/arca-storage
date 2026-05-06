@@ -17,6 +17,7 @@ class ErrorCode(str, Enum):
     """Machine-readable error codes shared with CSI driver via JSON API."""
 
     ALREADY_EXISTS = "ALREADY_EXISTS"
+    UNAUTHORIZED = "UNAUTHORIZED"
     NOT_FOUND = "NOT_FOUND"
     CONFLICT = "CONFLICT"
     PRECONDITION_FAILED = "PRECONDITION_FAILED"
@@ -29,6 +30,7 @@ class ErrorCode(str, Enum):
 
 _HTTP_STATUS_MAP: dict[ErrorCode, int] = {
     ErrorCode.ALREADY_EXISTS: 409,
+    ErrorCode.UNAUTHORIZED: 401,
     ErrorCode.NOT_FOUND: 404,
     ErrorCode.CONFLICT: 409,
     ErrorCode.PRECONDITION_FAILED: 412,
@@ -81,6 +83,11 @@ class AlreadyExistsError(ArcaError):
             f"{resource} '{name}' already exists",
             {"resource": resource, "name": name},
         )
+
+
+class UnauthorizedError(ArcaError):
+    def __init__(self, message: str = "Unauthorized") -> None:
+        super().__init__(ErrorCode.UNAUTHORIZED, message)
 
 
 class NotFoundError(ArcaError):

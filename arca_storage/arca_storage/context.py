@@ -49,6 +49,9 @@ class AppContext:
         self.snapshot_reconciler = SnapshotReconciler(self.db, self.adapters, config=cfg)
         self.export_reconciler = ExportReconciler(self.db, self.adapters, config=cfg)
 
+    def close(self) -> None:
+        self.db.close()
+
 
 # Module-level lazy singleton
 _ctx: Optional[AppContext] = None
@@ -64,4 +67,7 @@ def get_context() -> AppContext:
 def reset_context(ctx: AppContext | None = None) -> None:
     """Replace the global context (useful for testing)."""
     global _ctx
+    old_ctx = _ctx
     _ctx = ctx
+    if old_ctx is not None and old_ctx is not ctx:
+        old_ctx.close()

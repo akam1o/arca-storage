@@ -97,6 +97,8 @@ class StateDB:
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._connections_lock = threading.Lock()
         # Initialise schema on first connection
         with self.transaction() as conn:
             conn.executescript(_SCHEMA_SQL)
@@ -107,13 +109,19 @@ class StateDB:
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.row_factory = sqlite3.Row
-            self._local.conn = conn
+        if conn is not None:
+            with self._connections_lock:
+                if id(conn) in self._connections:
+                    return conn
+
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.row_factory = sqlite3.Row
+        self._local.conn = conn
+        with self._connections_lock:
+            self._connections[id(conn)] = conn
         return conn
 
     @contextmanager
@@ -424,7 +432,9 @@ class StateDB:
         return d
 
     def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
+        with self._connections_lock:
+            connections = list(self._connections.values())
+            self._connections.clear()
+        for conn in connections:
             conn.close()
-            self._local.conn = None
+        self._local.conn = None
