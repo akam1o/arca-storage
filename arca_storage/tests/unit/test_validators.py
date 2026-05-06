@@ -4,8 +4,14 @@ Unit tests for validators.
 
 import pytest
 
-from arca_storage.cli.lib.validators import (validate_ip_cidr, validate_name,
-                                   validate_vlan)
+from arca_storage.cli.lib.validators import (
+    snapshot_lv_name,
+    svm_root_lv_name,
+    validate_ip_cidr,
+    validate_name,
+    validate_vlan,
+    volume_lv_name,
+)
 
 
 class TestValidateName:
@@ -113,3 +119,27 @@ class TestValidateIpCidr:
 
         with pytest.raises(ValueError, match="Prefix length must be between"):
             validate_ip_cidr("192.168.10.5/-1")
+
+
+class TestLVMNameBuilders:
+    """Tests for generated LVM object name length validation."""
+
+    @pytest.mark.unit
+    def test_volume_lv_name_allows_lvm_limit_boundary(self):
+        name = volume_lv_name("s" * 64, "v" * 58)
+
+        assert len(name) == 127
+
+    @pytest.mark.unit
+    def test_volume_lv_name_rejects_lvm_limit_overflow(self):
+        with pytest.raises(ValueError, match="too long for LVM"):
+            volume_lv_name("s" * 64, "v" * 59)
+
+    @pytest.mark.unit
+    def test_snapshot_lv_name_rejects_lvm_limit_overflow(self):
+        with pytest.raises(ValueError, match="too long for LVM"):
+            snapshot_lv_name("s" * 64, "v" * 64, "p" * 64)
+
+    @pytest.mark.unit
+    def test_svm_root_lv_name_uses_generated_name(self):
+        assert svm_root_lv_name("tenant") == "vol_tenant"

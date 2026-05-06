@@ -7,6 +7,9 @@ import re
 from typing import Tuple
 
 
+LVM_NAME_MAX_LENGTH = 127
+
+
 def validate_name(name: str) -> None:
     """
     Validate a name (SVM, volume, etc.).
@@ -26,6 +29,33 @@ def validate_name(name: str) -> None:
     # Allow alphanumeric, dots, underscores, hyphens
     if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', name):
         raise ValueError("Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens")
+
+
+def validate_lvm_name(name: str, *, resource: str = "Logical volume") -> None:
+    """Validate an LVM object name derived from API resource names."""
+    if len(name) > LVM_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"{resource} name '{name}' is too long for LVM "
+            f"({len(name)} > {LVM_NAME_MAX_LENGTH} characters)"
+        )
+
+
+def svm_root_lv_name(svm: str) -> str:
+    name = f"vol_{svm}"
+    validate_lvm_name(name, resource="SVM root logical volume")
+    return name
+
+
+def volume_lv_name(svm: str, volume: str) -> str:
+    name = f"vol_{svm}_{volume}"
+    validate_lvm_name(name, resource="Volume logical volume")
+    return name
+
+
+def snapshot_lv_name(svm: str, volume: str, snapshot: str) -> str:
+    name = f"vol_{svm}_{volume}_snap_{snapshot}"
+    validate_lvm_name(name, resource="Snapshot logical volume")
+    return name
 
 
 def validate_vlan(vlan_id: int) -> None:

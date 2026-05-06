@@ -10,7 +10,14 @@ from ipaddress import IPv4Interface
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SVMCreate
-from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
+from arca_storage.cli.lib.validators import (
+    infer_gateway_from_ip_cidr,
+    svm_root_lv_name,
+    validate_ip_cidr,
+    validate_ipv4,
+    validate_name,
+    validate_vlan,
+)
 from arca_storage.context import get_context
 from arca_storage.create_resume import (
     ACTIVE_CREATE_PHASES,
@@ -40,6 +47,8 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
             infer_gateway_from_ip_cidr(svm_data.ip_cidr)
         except ValueError as e:
             raise InvalidArgumentError(str(e), {"ip_cidr": svm_data.ip_cidr}) from e
+    if svm_data.root_volume_size_gib:
+        svm_root_lv_name(svm_data.name)
 
     ctx = get_context()
 

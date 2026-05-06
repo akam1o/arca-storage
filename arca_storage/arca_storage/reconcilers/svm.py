@@ -14,13 +14,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
-from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr
+from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, svm_root_lv_name, validate_ip_cidr
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
 from arca_storage.reconcilers.adapters import Adapters
+from arca_storage.reconcilers.lvm_resume import create_volume_lv_or_accept_existing
 
 logger = logging.getLogger(__name__)
 
@@ -90,11 +91,18 @@ class SVMReconciler:
         )
 
         if spec.root_volume_size_gib:
-            lv_name = f"vol_{spec.name}"
+            lv_name = svm_root_lv_name(spec.name)
             lv_path = f"/dev/{vg_name}/{lv_name}"
             steps.append((
                 "lv_created",
-                lambda: self.adapters.lvm.create_thin_lv(vg_name, thinpool, lv_name, spec.root_volume_size_gib),
+                lambda: create_volume_lv_or_accept_existing(
+                    self.adapters.lvm,
+                    vg_name,
+                    thinpool,
+                    lv_name,
+                    spec.root_volume_size_gib,
+                    thin=True,
+                ),
             ))
             steps.append((
                 "fs_formatted",
@@ -172,7 +180,7 @@ class SVMReconciler:
             self.adapters.pacemaker.delete_group(spec.name)
             self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:
-                self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
+                self.adapters.lvm.delete_lv(vg_name, svm_root_lv_name(spec.name))
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
         except Exception as e:

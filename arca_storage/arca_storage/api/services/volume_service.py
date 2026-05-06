@@ -22,7 +22,7 @@ from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import validate_name
+from arca_storage.cli.lib.validators import validate_name, volume_lv_name
 
 _LIST_ALL_LIMIT = 1_000_000
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
@@ -32,6 +32,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     """Create a new volume via the reconciler."""
     validate_name(volume_data.name)
     validate_name(volume_data.svm)
+    volume_lv_name(volume_data.svm, volume_data.name)
 
     ctx = get_context()
     if not ctx.db.get_svm(volume_data.svm):
@@ -102,7 +103,7 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
     export_dir = cfg["export_dir"]
-    lv_name = f"vol_{svm}_{name}"
+    lv_name = volume_lv_name(svm, name)
     mount_path = f"{export_dir}/{svm}/{name}"
 
     ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)

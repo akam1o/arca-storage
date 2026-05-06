@@ -22,7 +22,7 @@ from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgume
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import validate_name
+from arca_storage.cli.lib.validators import snapshot_lv_name, validate_name, volume_lv_name
 from arca_storage.api.services.volume_service import build_volume_export_path
 
 
@@ -31,6 +31,7 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     validate_name(snapshot_data.name)
     validate_name(snapshot_data.svm)
     validate_name(snapshot_data.volume)
+    snapshot_lv_name(snapshot_data.svm, snapshot_data.volume, snapshot_data.name)
 
     ctx = get_context()
     source_record = ctx.db.get_volume(snapshot_data.svm, snapshot_data.volume)
@@ -116,6 +117,8 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
     validate_name(clone_data.name)
     validate_name(clone_data.svm)
     validate_name(clone_data.snapshot)
+    volume_lv_name(clone_data.svm, clone_data.name)
+    snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
 
     ctx = get_context()
     if ctx.db.get_volume(clone_data.svm, clone_data.name):
@@ -133,8 +136,8 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
     source_size_gib = int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
     target_size_gib = max(clone_data.size_gib or source_size_gib, source_size_gib)
-    snap_lv = f"vol_{clone_data.svm}_{source_volume}_snap_{clone_data.snapshot}"
-    new_lv = f"vol_{clone_data.svm}_{clone_data.name}"
+    snap_lv = snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
+    new_lv = volume_lv_name(clone_data.svm, clone_data.name)
     mount_path = f"{export_dir}/{clone_data.svm}/{clone_data.name}"
 
     clone_lv_path = ctx.adapters.lvm.create_snapshot(vg_name, snap_lv, new_lv)

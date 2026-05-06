@@ -8,12 +8,14 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from arca_storage.cli.lib.validators import snapshot_lv_name, volume_lv_name
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot
 from arca_storage.reconcilers.adapters import Adapters
+from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
 
 logger = logging.getLogger(__name__)
 
@@ -44,12 +46,12 @@ class SnapshotReconciler:
         create_owner = snapshot.status.create_owner
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
-        source_lv = f"vol_{spec.svm}_{spec.volume}"
-        snap_lv = f"vol_{spec.svm}_{spec.volume}_snap_{spec.name}"
+        source_lv = volume_lv_name(spec.svm, spec.volume)
+        snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
 
         if not snapshot.status.lv_created:
             try:
-                snap_path = self.adapters.lvm.create_snapshot(vg_name, source_lv, snap_lv)
+                snap_path = create_snapshot_lv_or_accept_existing(self.adapters.lvm, vg_name, source_lv, snap_lv)
                 snapshot.status.lv_created = True
                 snapshot.status.lv_path = snap_path
                 snapshot.status.lv_name = snap_lv
@@ -76,7 +78,7 @@ class SnapshotReconciler:
     def _reconcile_delete(self, snapshot: Snapshot) -> Snapshot:
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
-        snap_lv = f"vol_{spec.svm}_{spec.volume}_snap_{spec.name}"
+        snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
         try:
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
             self.db.delete_snapshot(spec.svm, spec.volume, spec.name)

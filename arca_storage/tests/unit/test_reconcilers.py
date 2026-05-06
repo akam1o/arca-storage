@@ -135,6 +135,26 @@ class TestSVMReconciler:
         result2 = rec.reconcile(result1)
         assert result2.status.phase == Phase.READY
 
+    def test_create_svm_root_lv_accepts_matching_existing_lv(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="root-resume",
+                ip_cidr="10.0.8.5/32",
+                root_volume_size_gib=10,
+            ),
+        )
+        assign_create_lease(svm.status, "owner-1")
+        db.insert_svm(svm)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_root-resume", 10)
+
+        result = rec.reconcile(svm)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.fs_formatted is True
+        assert db.get_svm("root-resume")["status"]["phase"] == Phase.READY.value
+
     def test_delete_svm(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
         svm = SVM(
@@ -208,6 +228,34 @@ class TestVolumeReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
 
+    def test_create_volume_accepts_matching_existing_lv(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_vol1", 10)
+
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.fs_formatted is True
+        assert result.status.mounted is True
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.READY.value
+
+    def test_create_volume_rejects_existing_lv_with_wrong_type(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+        adapters.lvm.create_regular_lv("vg_arca", "vol_svm1_vol1", 10)
+
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.FAILED
+        assert "not thin-provisioned" in result.status.message
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.FAILED.value
+
     def test_create_volume_lost_lease_does_not_persist_stale_status(self, db, adapters, config):
         rec = VolumeReconciler(db, adapters, config=config)
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
@@ -276,6 +324,24 @@ class TestSnapshotReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
         assert result.status.lv_path is not None
+
+    def test_create_snapshot_accepts_matching_existing_lv(self, db, adapters, config):
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        adapters.lvm.create_snapshot("vg_arca", "vol_svm1_data", "vol_svm1_data_snap_snap1")
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        snap = Snapshot(
+            spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"),
+        )
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap)
+
+        result = rec.reconcile(snap)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.lv_name == "vol_svm1_data_snap_snap1"
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["phase"] == Phase.READY.value
 
     def test_delete_snapshot(self, db, adapters, config):
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)

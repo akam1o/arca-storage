@@ -9,11 +9,13 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.create_resume import clear_create_lease
+from arca_storage.cli.lib.validators import volume_lv_name
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume
 from arca_storage.reconcilers.adapters import Adapters
+from arca_storage.reconcilers.lvm_resume import create_volume_lv_or_accept_existing
 
 logger = logging.getLogger(__name__)
 
@@ -47,17 +49,20 @@ class VolumeReconciler:
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         thinpool = self._cfg.get("thinpool_name", "pool")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = f"vol_{spec.svm}_{spec.name}"
+        lv_name = volume_lv_name(spec.svm, spec.name)
         lv_path = f"/dev/{vg_name}/{lv_name}"
         mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
 
         steps = [
             (
                 "lv_created",
-                lambda: (
-                    self.adapters.lvm.create_thin_lv(vg_name, thinpool, lv_name, spec.size_gib)
-                    if spec.thin
-                    else self.adapters.lvm.create_regular_lv(vg_name, lv_name, spec.size_gib)
+                lambda: create_volume_lv_or_accept_existing(
+                    self.adapters.lvm,
+                    vg_name,
+                    thinpool,
+                    lv_name,
+                    spec.size_gib,
+                    thin=spec.thin,
                 ),
             ),
             ("fs_formatted", lambda: self.adapters.xfs.format_xfs(lv_path)),
@@ -98,7 +103,7 @@ class VolumeReconciler:
         spec = volume.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = f"vol_{spec.svm}_{spec.name}"
+        lv_name = volume_lv_name(spec.svm, spec.name)
         mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
 
         try:
