@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
@@ -137,7 +137,12 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
         status=_parse_status(record),
     )
     volume.status.phase = Phase.DELETING
-    ctx.volume_reconciler.reconcile(volume)
+    result = ctx.volume_reconciler.reconcile(volume)
+    if result.status.phase == Phase.FAILED:
+        raise InternalError(
+            result.status.message or f"Failed to delete Volume '{svm}/{name}'",
+            {"resource": "Volume", "name": f"{svm}/{name}"},
+        )
 
 
 def list_volumes(

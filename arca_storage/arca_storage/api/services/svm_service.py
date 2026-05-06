@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
 
@@ -134,7 +134,12 @@ def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> 
         status=_parse_status(record, "svm"),
     )
     svm.status.phase = Phase.DELETING
-    ctx.svm_reconciler.reconcile(svm)
+    result = ctx.svm_reconciler.reconcile(svm)
+    if result.status.phase == Phase.FAILED:
+        raise InternalError(
+            result.status.message or f"Failed to delete SVM '{name}'",
+            {"resource": "SVM", "name": name},
+        )
 
 
 def _svm_to_dict(svm: SVM) -> Dict[str, Any]:

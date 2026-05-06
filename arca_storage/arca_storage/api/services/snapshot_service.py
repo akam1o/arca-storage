@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
@@ -24,8 +24,18 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     validate_name(snapshot_data.volume)
 
     ctx = get_context()
-    if not ctx.db.get_volume(snapshot_data.svm, snapshot_data.volume):
+    source_record = ctx.db.get_volume(snapshot_data.svm, snapshot_data.volume)
+    if not source_record:
         raise NotFoundError("Volume", f"{snapshot_data.svm}/{snapshot_data.volume}")
+    if not bool(source_record.get("spec", {}).get("thin", True)):
+        raise PreconditionFailedError(
+            f"Volume '{snapshot_data.svm}/{snapshot_data.volume}' is not thin-provisioned; snapshots require thin volumes",
+            {
+                "resource": "Volume",
+                "name": f"{snapshot_data.svm}/{snapshot_data.volume}",
+                "thin": False,
+            },
+        )
     requested_spec = SnapshotSpec(
         name=snapshot_data.name,
         svm=snapshot_data.svm,
@@ -66,7 +76,12 @@ def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> No
         status=_parse_status(record),
     )
     snapshot.status.phase = Phase.DELETING
-    ctx.snapshot_reconciler.reconcile(snapshot)
+    result = ctx.snapshot_reconciler.reconcile(snapshot)
+    if result.status.phase == Phase.FAILED:
+        raise InternalError(
+            result.status.message or f"Failed to delete Snapshot '{svm}/{volume}/{name}'",
+            {"resource": "Snapshot", "name": f"{svm}/{volume}/{name}"},
+        )
 
 
 def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:

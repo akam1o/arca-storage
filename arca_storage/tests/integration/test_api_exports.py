@@ -78,3 +78,29 @@ class TestRemoveExport:
         data = response.json()
         assert data["status"] == "ok"
         assert data["data"]["deleted"] is True
+
+    @pytest.mark.integration
+    def test_remove_export_reports_reconciler_failure(self, fake_context):
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+
+        def fail_reload(_svm, *, host_network=False):
+            raise RuntimeError("reload failed")
+
+        fake_context.adapters.ganesha.reload = fail_reload
+
+        response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.0/24")
+
+        assert response.status_code == 500
+        assert response.json()["error"]["code"] == "INTERNAL"
+        record = fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24")
+        assert record["status"]["phase"] == "Failed"
+        assert record["status"]["message"].startswith("Delete failed:")

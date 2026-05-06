@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.context import get_context
-from arca_storage.errors import AlreadyExistsError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, InternalError, NotFoundError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
@@ -115,7 +115,12 @@ def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
         status=ExportStatus.model_validate(record["status"]),
     )
     export.status.phase = Phase.DELETING
-    ctx.export_reconciler.reconcile(export)
+    result = ctx.export_reconciler.reconcile(export)
+    if result.status.phase == Phase.FAILED:
+        raise InternalError(
+            result.status.message or f"Failed to delete Export '{svm}/{volume}/{client}'",
+            {"resource": "Export", "name": f"{svm}/{volume}/{client}"},
+        )
 
 
 def list_exports(

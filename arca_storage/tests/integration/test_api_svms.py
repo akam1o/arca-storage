@@ -233,6 +233,27 @@ class TestDeleteSVM:
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a")
 
     @pytest.mark.integration
+    def test_delete_svm_reports_reconciler_failure(self, fake_context):
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+
+        def fail_delete(_name):
+            raise RuntimeError("pacemaker delete failed")
+
+        fake_context.adapters.pacemaker.delete_group = fail_delete
+
+        response = client.delete("/v1/svms/tenant_a")
+
+        assert response.status_code == 500
+        assert response.json()["error"]["code"] == "INTERNAL"
+        record = fake_context.db.get_svm("tenant_a")
+        assert record["status"]["phase"] == "Failed"
+        assert record["status"]["message"].startswith("Delete failed:")
+
+    @pytest.mark.integration
     def test_delete_svm_force_cascades_snapshots(self, fake_context):
         """force cascades through snapshots without leaving DB state behind."""
         client = TestClient(app)

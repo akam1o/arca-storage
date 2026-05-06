@@ -182,6 +182,46 @@ class TestCloneVolume:
         assert fake_context.db.get_volume("tenant_a", "clone1") is None
 
 
+class TestSnapshots:
+    """Tests for API snapshot behavior."""
+
+    @pytest.mark.integration
+    def test_create_snapshot_rejects_thick_volume(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        response = client.post(
+            "/v1/volumes",
+            json={"name": "vol1", "svm": "tenant_a", "size_gib": 10, "thin": False},
+        )
+        assert response.status_code == 201
+
+        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
+
+    @pytest.mark.integration
+    def test_delete_snapshot_reports_reconciler_failure(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        def fail_delete(_vg, _lv):
+            raise RuntimeError("snapshot delete failed")
+
+        fake_context.adapters.lvm.delete_lv = fail_delete
+
+        response = client.delete("/v1/snapshots/snap1?svm=tenant_a&volume=vol1")
+
+        assert response.status_code == 500
+        assert response.json()["error"]["code"] == "INTERNAL"
+        record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert record["status"]["phase"] == "Failed"
+        assert record["status"]["message"].startswith("Delete failed:")
+
+
 class TestDeleteVolume:
     """Tests for DELETE /v1/volumes/{name}."""
 
@@ -253,7 +293,8 @@ class TestDeleteVolume:
         fake_context.adapters.lvm.delete_lv = fail_delete
 
         delete_response = client.delete("/v1/volumes/vol1?svm=tenant_a")
-        assert delete_response.status_code == 200
+        assert delete_response.status_code == 500
+        assert delete_response.json()["error"]["code"] == "INTERNAL"
         failed_record = fake_context.db.get_volume("tenant_a", "vol1")
         assert failed_record["status"]["phase"] == "Failed"
         assert failed_record["status"]["message"].startswith("Delete failed:")

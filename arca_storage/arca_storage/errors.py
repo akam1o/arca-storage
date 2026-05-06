@@ -114,6 +114,11 @@ class InvalidArgumentError(ArcaError):
         super().__init__(ErrorCode.INVALID_ARGUMENT, message, details)
 
 
+class InternalError(ArcaError):
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+        super().__init__(ErrorCode.INTERNAL, message, details)
+
+
 class TimeoutError(ArcaError):
     def __init__(self, operation: str, timeout_seconds: int) -> None:
         super().__init__(
