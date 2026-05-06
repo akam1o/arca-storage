@@ -26,27 +26,55 @@ const (
 	volumeContextVolumePath = "volumePath"
 
 	// Default capacity if not specified
-	defaultCapacityBytes = 1 * 1024 * 1024 * 1024 // 1 GiB
+	gibBytes             = int64(1024 * 1024 * 1024)
+	defaultCapacityBytes = gibBytes // 1 GiB
 )
 
 func bytesToGiB(bytes int64) int {
-	const gib = 1024 * 1024 * 1024
 	if bytes <= 0 {
 		return 0
 	}
-	return int((bytes + gib - 1) / gib)
+	return int((bytes + gibBytes - 1) / gibBytes)
+}
+
+func provisionedCapacityBytes(bytes int64) int64 {
+	return int64(bytesToGiB(bytes)) * gibBytes
+}
+
+func maxCapacityBytes(a, b int64) int64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+func requestedCapacityBytes(req *csi.CreateVolumeRequest) int64 {
+	capacityBytes := int64(defaultCapacityBytes)
+	if req.GetCapacityRange() != nil && req.GetCapacityRange().GetRequiredBytes() > 0 {
+		capacityBytes = req.GetCapacityRange().GetRequiredBytes()
+	}
+	return provisionedCapacityBytes(capacityBytes)
+}
+
+func capacityExceedsLimit(req *csi.CreateVolumeRequest, capacityBytes int64) bool {
+	return req.GetCapacityRange().GetLimitBytes() > 0 && capacityBytes > req.GetCapacityRange().GetLimitBytes()
 }
 
 // compareVolumeParameters checks if requested matches existing
 func compareVolumeParameters(existing *store.VolumeInfo, req *csi.CreateVolumeRequest) error {
 	// Compare capacity
-	requestedBytes := int64(defaultCapacityBytes)
-	if req.GetCapacityRange() != nil && req.GetCapacityRange().GetRequiredBytes() > 0 {
-		requestedBytes = req.GetCapacityRange().GetRequiredBytes()
-	}
-	if requestedBytes != existing.CapacityBytes {
+	requestedBytes := requestedCapacityBytes(req)
+	if req.GetVolumeContentSource() == nil && existing.CapacityBytes != requestedBytes {
 		return fmt.Errorf("capacity mismatch: requested %d, existing %d",
 			requestedBytes, existing.CapacityBytes)
+	}
+	if req.GetVolumeContentSource() != nil && existing.CapacityBytes < requestedBytes {
+		return fmt.Errorf("capacity too small: requested %d, existing %d",
+			requestedBytes, existing.CapacityBytes)
+	}
+	if limitBytes := req.GetCapacityRange().GetLimitBytes(); limitBytes > 0 && existing.CapacityBytes > limitBytes {
+		return fmt.Errorf("capacity exceeds limit: limit %d, existing %d",
+			limitBytes, existing.CapacityBytes)
 	}
 
 	// Compare content source
@@ -139,11 +167,8 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		return nil, status.Errorf(codes.Internal, "failed to check existing volume %s: %v", volumeID, err)
 	}
 
-	// Determine capacity
-	capacityBytes := int64(defaultCapacityBytes)
-	if req.GetCapacityRange() != nil && req.GetCapacityRange().GetRequiredBytes() > 0 {
-		capacityBytes = req.GetCapacityRange().GetRequiredBytes()
-	}
+	// Determine capacity as the backend-provisioned GiB-aligned size.
+	capacityBytes := requestedCapacityBytes(req)
 
 	// Handle content source first to determine which SVM to use
 	var svm *arca.SVM
@@ -167,6 +192,10 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			sourceVol, err := d.store.GetVolume(sourceVolumeID)
 			if err != nil {
 				return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+			}
+			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(sourceVol.CapacityBytes))
+			if capacityExceedsLimit(req, capacityBytes) {
+				return nil, status.Errorf(codes.OutOfRange, "requested clone capacity exceeds limit")
 			}
 
 			// Clone must use the same SVM as the source volume
@@ -243,6 +272,11 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil {
 				return nil, status.Errorf(codes.NotFound, "snapshot source volume %s not found: %v", snapshot.SourceVolumeID, err)
 			}
+			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(sourceVol.CapacityBytes))
+			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(snapshot.SizeBytes))
+			if capacityExceedsLimit(req, capacityBytes) {
+				return nil, status.Errorf(codes.OutOfRange, "requested restore capacity exceeds limit")
+			}
 
 			// Restore must use the same SVM as the snapshot
 			svm, err = d.arcaClient.GetSVM(ctx, snapshot.SVMName)
@@ -277,6 +311,10 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		}
 	} else {
 		// No content source - create new volume
+		if capacityExceedsLimit(req, capacityBytes) {
+			return nil, status.Errorf(codes.OutOfRange, "requested volume capacity exceeds limit")
+		}
+
 		// Ensure SVM exists for this namespace
 		klog.V(4).Infof("Ensuring SVM exists for namespace: %s", namespace)
 		var err error
