@@ -127,6 +127,28 @@ class TestListSVMs:
         mock_list.assert_called_once()
 
 
+class TestSVMCapacity:
+    """Tests for GET /v1/svms/{name}/capacity."""
+
+    @pytest.mark.integration
+    def test_get_svm_capacity(self, fake_context):
+        """Capacity endpoint returns scheduler-friendly numeric values."""
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        response = client.get("/v1/svms/tenant_a/capacity")
+
+        assert response.status_code == 200
+        capacity = response.json()["data"]["capacity"]
+        assert capacity["svm"] == "tenant_a"
+        assert capacity["total_gb"] >= capacity["free_gb"]
+        assert capacity["provisioned_gb"] == 10.0
+
+
 class TestDeleteSVM:
     """Tests for DELETE /v1/svms/{name}."""
 

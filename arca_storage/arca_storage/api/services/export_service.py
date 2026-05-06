@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError
+from arca_storage.errors import AlreadyExistsError, NotFoundError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
@@ -23,6 +23,12 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     validate_ip_cidr(export_data.client)
 
     ctx = get_context()
+    if not ctx.db.get_svm(export_data.svm):
+        raise NotFoundError("SVM", export_data.svm)
+    if not ctx.db.get_volume(export_data.svm, export_data.volume):
+        raise NotFoundError("Volume", f"{export_data.svm}/{export_data.volume}")
+    if ctx.db.get_export(export_data.svm, export_data.volume, export_data.client):
+        raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{export_data.client}")
 
     export = Export(
         spec=ExportSpec(

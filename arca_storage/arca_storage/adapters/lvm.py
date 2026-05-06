@@ -18,6 +18,7 @@ class LVMAdapter(Protocol):
     def resize_lv(self, vg: str, lv: str, new_size_gib: int) -> None: ...
     def delete_lv(self, vg: str, lv: str) -> None: ...
     def create_snapshot(self, vg: str, source_lv: str, snap_lv: str) -> str: ...
+    def get_vg_capacity(self, vg: str) -> dict[str, float]: ...
 
 
 class SubprocessLVMAdapter:
@@ -79,6 +80,28 @@ class SubprocessLVMAdapter:
         )
         return snap_path
 
+    def get_vg_capacity(self, vg: str) -> dict[str, float]:
+        result = run_cmd(
+            [
+                "vgs",
+                "--noheadings",
+                "--units",
+                "g",
+                "--nosuffix",
+                "--separator",
+                ",",
+                "-o",
+                "vg_size,vg_free",
+                vg,
+            ],
+            timeout=self._timeout,
+        )
+        fields = [field.strip() for field in result.stdout.strip().split(",")]
+        if len(fields) != 2:
+            raise RuntimeError(f"Unexpected vgs output for {vg}: {result.stdout.strip()}")
+        total_gb, free_gb = (float(fields[0]), float(fields[1]))
+        return {"total_gb": total_gb, "free_gb": free_gb}
+
 
 class FakeLVMAdapter:
     """In-memory fake for testing. No root required."""
@@ -117,3 +140,8 @@ class FakeLVMAdapter:
             raise AlreadyExistsError("Snapshot", f"/dev/{snap_key}")
         self.volumes[snap_key] = self.volumes[src_key]
         return f"/dev/{snap_key}"
+
+    def get_vg_capacity(self, vg: str) -> dict[str, float]:
+        provisioned = float(sum(size for key, size in self.volumes.items() if key.startswith(f"{vg}/")))
+        total = max(1000.0, provisioned)
+        return {"total_gb": total, "free_gb": max(total - provisioned, 0.0)}

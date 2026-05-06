@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
 from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError, PreconditionFailedError
+from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
@@ -26,6 +26,10 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     validate_name(volume_data.svm)
 
     ctx = get_context()
+    if not ctx.db.get_svm(volume_data.svm):
+        raise NotFoundError("SVM", volume_data.svm)
+    if ctx.db.get_volume(volume_data.svm, volume_data.name):
+        raise AlreadyExistsError("Volume", f"{volume_data.svm}/{volume_data.name}")
 
     volume = Volume(
         spec=VolumeSpec(

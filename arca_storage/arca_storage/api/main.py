@@ -109,6 +109,13 @@ def get_svm(name: str) -> Dict[str, Any]:
     return {"request_id": request_id, "status": "ok", "data": result}
 
 
+@app.get("/v1/svms/{name}/capacity", response_model=SuccessResponse)
+def get_svm_capacity(name: str) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = svm_service.get_svm_capacity(name)
+    return {"request_id": request_id, "status": "ok", "data": {"capacity": result}}
+
+
 @app.delete("/v1/svms/{name}", response_model=SuccessResponse)
 def delete_svm(
     name: str,

@@ -71,6 +71,32 @@ def get_svm(name: str) -> Dict[str, Any]:
     return _svm_record_to_dict(record)
 
 
+def get_svm_capacity(name: str) -> Dict[str, Any]:
+    """Return capacity statistics for one SVM."""
+    validate_name(name)
+    ctx = get_context()
+    if not ctx.db.get_svm(name):
+        raise NotFoundError("SVM", name)
+
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg["vg_name"]
+    vg_capacity = ctx.adapters.lvm.get_vg_capacity(vg_name)
+    volumes = ctx.db.list_volumes(svm=name, limit=_LIST_ALL_LIMIT)
+    provisioned_gb = float(sum(int(v.get("spec", {}).get("size_gib") or 0) for v in volumes))
+    total_gb = float(vg_capacity["total_gb"])
+    free_gb = float(vg_capacity["free_gb"])
+    used_gb = max(total_gb - free_gb, 0.0)
+
+    return {
+        "svm": name,
+        "vg": vg_name,
+        "total_gb": total_gb,
+        "free_gb": free_gb,
+        "used_gb": used_gb,
+        "provisioned_gb": provisioned_gb,
+    }
+
+
 def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> None:
     """Delete an SVM after dependent resources are gone or safely cascaded."""
     validate_name(name)

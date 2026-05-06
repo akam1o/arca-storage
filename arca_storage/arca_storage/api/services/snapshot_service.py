@@ -10,7 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
 from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError
+from arca_storage.errors import AlreadyExistsError, NotFoundError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
@@ -24,6 +24,10 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     validate_name(snapshot_data.volume)
 
     ctx = get_context()
+    if not ctx.db.get_volume(snapshot_data.svm, snapshot_data.volume):
+        raise NotFoundError("Volume", f"{snapshot_data.svm}/{snapshot_data.volume}")
+    if ctx.db.list_snapshots(svm=snapshot_data.svm, volume=snapshot_data.volume, name=snapshot_data.name, limit=1):
+        raise AlreadyExistsError("Snapshot", f"{snapshot_data.svm}/{snapshot_data.volume}/{snapshot_data.name}")
 
     snapshot = Snapshot(
         spec=SnapshotSpec(
@@ -69,6 +73,8 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     validate_name(clone_data.snapshot)
 
     ctx = get_context()
+    if ctx.db.get_volume(clone_data.svm, clone_data.name):
+        raise AlreadyExistsError("Volume", f"{clone_data.svm}/{clone_data.name}")
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
     export_dir = cfg["export_dir"]
@@ -80,6 +86,8 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
 
     snap_record = snapshots[0]
     source_volume = snap_record["spec"]["volume"]
+    source_record = ctx.db.get_volume(clone_data.svm, source_volume)
+    source_size_gib = int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
     snap_lv = f"vol_{clone_data.svm}_{source_volume}_snap_{clone_data.snapshot}"
     new_lv = f"vol_{clone_data.svm}_{clone_data.name}"
     mount_path = f"{export_dir}/{clone_data.svm}/{clone_data.name}"
@@ -93,7 +101,7 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
         spec=VolumeSpec(
             name=clone_data.name,
             svm=clone_data.svm,
-            size_gib=clone_data.size_gib or 10,
+            size_gib=clone_data.size_gib or source_size_gib,
             thin=True,
         ),
     )
@@ -109,7 +117,7 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     return {
         "name": clone_data.name,
         "svm": clone_data.svm,
-        "size_gib": clone_data.size_gib or 10,
+        "size_gib": clone_data.size_gib or source_size_gib,
         "status": Phase.READY.value,
         "lv_path": clone_lv_path,
         "mount_path": mount_path,

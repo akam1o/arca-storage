@@ -16,6 +16,13 @@ def client():
     return TestClient(app)
 
 
+def create_test_svm(client: TestClient) -> None:
+    client.post(
+        "/v1/svms",
+        json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+    )
+
+
 class TestCreateVolume:
     """Tests for POST /v1/volumes."""
 
@@ -53,6 +60,30 @@ class TestCreateVolume:
         )
 
         assert response.status_code == 422  # Validation error
+
+    @pytest.mark.integration
+    def test_create_volume_requires_existing_svm(self, fake_context):
+        client = TestClient(app)
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "missing", "size_gib": 10})
+
+        assert response.status_code == 404
+        assert response.json()["error"]["code"] == "NOT_FOUND"
+
+    @pytest.mark.integration
+    def test_create_volume_rejects_duplicate_without_mutating_existing(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        first = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        assert first.status_code == 201
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "ALREADY_EXISTS"
+        record = fake_context.db.get_volume("tenant_a", "vol1")
+        assert record["spec"]["size_gib"] == 10
+        assert record["status"]["phase"] == "Ready"
 
 
 class TestResizeVolume:
@@ -104,6 +135,7 @@ class TestDeleteVolume:
     def test_delete_volume_removes_exports(self, fake_context):
         """Deleting a volume cleans dependent export records and Ganesha config."""
         client = TestClient(app)
+        create_test_svm(client)
         client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
         client.post(
             "/v1/exports",
@@ -124,6 +156,7 @@ class TestDeleteVolume:
     def test_delete_volume_rejects_snapshots_unless_forced(self, fake_context):
         """Snapshots must be explicitly removed or deleted via force."""
         client = TestClient(app)
+        create_test_svm(client)
         client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
         client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
 
