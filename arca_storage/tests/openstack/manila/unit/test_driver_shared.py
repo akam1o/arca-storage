@@ -126,7 +126,13 @@ class TestArcaStorageManilaDriverSharedStrategy:
     def test_update_access_add_rule(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
         driver.update_access(Mock(), mock_manila_share, [], add_rules=mock_access_rules, delete_rules=[], share_server=None)
-        mock_arca_client.create_export.assert_called_once()
+        mock_arca_client.create_export.assert_called_once_with(
+            svm="test-svm",
+            volume="share-share-123",
+            client="192.168.1.100/32",
+            access="rw",
+            root_squash=True,
+        )
 
     def test_update_access_reports_add_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
@@ -145,6 +151,17 @@ class TestArcaStorageManilaDriverSharedStrategy:
             driver.update_access(Mock(), mock_manila_share, [], add_rules=[], delete_rules=mock_access_rules, share_server=None)
 
         mock_arca_client.delete_export.assert_called_once()
+
+    def test_update_access_delete_rule_normalizes_bare_ip(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+
+        driver.update_access(Mock(), mock_manila_share, [], add_rules=[], delete_rules=mock_access_rules, share_server=None)
+
+        mock_arca_client.delete_export.assert_called_once_with(
+            svm="test-svm",
+            volume="share-share-123",
+            client="192.168.1.100/32",
+        )
 
     def test_update_access_reconcile_fallback(self, driver, mock_arca_client, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"

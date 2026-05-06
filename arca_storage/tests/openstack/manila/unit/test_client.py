@@ -1,6 +1,6 @@
 """Unit tests for ARCA Manila API client."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 import requests
@@ -132,3 +132,20 @@ class TestArcaManilaClientOperations:
             mock_make.return_value = {"data": {"items": []}}
             client.list_exports(svm="svm1", volume="share-123")
             mock_make.assert_called_once_with("GET", "/v1/exports", params={"svm": "svm1", "volume": "share-123"})
+
+    def test_list_svms_follows_pagination(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"name": "svm1"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"name": "svm2"}], "next_cursor": None}},
+            ]
+
+            result = client.list_svms()
+
+        assert result == [{"name": "svm1"}, {"name": "svm2"}]
+        mock_make.assert_has_calls(
+            [
+                call("GET", "/v1/svms", params={"limit": 200}),
+                call("GET", "/v1/svms", params={"limit": 200, "cursor": "cursor-1"}),
+            ]
+        )

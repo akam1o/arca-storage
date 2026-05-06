@@ -1760,12 +1760,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 reason=f"Access type '{access_type}' not supported (only 'ip' allowed)"
             )
 
-        # Validate CIDR format
+        # Validate and normalize CIDR format
         try:
-            import ipaddress
-
-            ipaddress.ip_network(access_to, strict=False)
-        except ValueError as e:
+            access_to = self._normalize_access_to(access_to)
+        except ValueError:
             raise manila_exception.InvalidShareAccess(
                 reason=f"Invalid IP address or CIDR: {access_to}"
             )
@@ -1821,6 +1819,13 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         if access_type != "ip":
             LOG.warning("Skipping non-IP access rule deletion: %s", access_type)
             return
+
+        try:
+            access_to = self._normalize_access_to(access_to)
+        except ValueError:
+            raise manila_exception.InvalidShareAccess(
+                reason=f"Invalid IP address or CIDR: {access_to}"
+            )
 
         LOG.debug(
             "Deleting access rule: %s %s from volume %s on SVM %s",

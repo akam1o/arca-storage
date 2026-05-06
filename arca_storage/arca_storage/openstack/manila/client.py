@@ -497,8 +497,20 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        response = self._make_request("GET", "/v1/svms")
-        return response.get("data", {}).get("items", [])
+        items: List[Dict[str, Any]] = []
+        cursor = None
+
+        while True:
+            params = {"limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/svms", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
 
     def create_svm(
         self,
