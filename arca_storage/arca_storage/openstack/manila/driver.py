@@ -516,6 +516,41 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             "free_capacity_gb": "unknown",
         }
 
+    def _aggregate_svm_capacity(self, svms):
+        """Aggregate SVM capacities without double-counting shared backends."""
+        total_capacity = 0.0
+        free_capacity = 0.0
+        provisioned_capacity = 0.0
+        seen_backends = set()
+        capacity_count = 0
+
+        for svm in svms:
+            svm_name = svm["name"]
+            try:
+                capacity = self.arca_client.get_svm_capacity(svm_name)
+            except Exception as e:
+                LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+                continue
+
+            capacity_count += 1
+            provisioned_capacity += float(capacity.get("provisioned_gb", 0))
+            backend_key = capacity.get("vg") or svm_name
+            if backend_key in seen_backends:
+                continue
+
+            seen_backends.add(backend_key)
+            total_capacity += float(capacity.get("total_gb", 0))
+            free_capacity += float(capacity.get("free_gb", 0))
+
+        if capacity_count == 0:
+            return None
+
+        return {
+            "total_capacity_gb": total_capacity,
+            "free_capacity_gb": free_capacity,
+            "provisioned_capacity_gb": provisioned_capacity,
+        }
+
     def _get_per_project_aggregate_pool_stats(self):
         """Get aggregated pool statistics for per_project strategy.
 
@@ -562,26 +597,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             per_project_svms = [svm for svm in svms if svm["name"].startswith(prefix)]
 
             if per_project_svms:
-                # Aggregate capacity from existing SVMs
-                total_capacity = 0.0
-                free_capacity = 0.0
-                provisioned_capacity = 0.0
-
-                for svm in per_project_svms:
-                    try:
-                        capacity = self.arca_client.get_svm_capacity(svm["name"])
-                        total_capacity += float(capacity.get("total_gb", 0))
-                        free_capacity += float(capacity.get("free_gb", 0))
-                        provisioned_capacity += float(capacity.get("provisioned_gb", 0))
-                    except Exception as e:
-                        LOG.warning(
-                            "Failed to get capacity for SVM %s: %s", svm["name"], e
-                        )
-                        continue
-
-                pool["total_capacity_gb"] = total_capacity
-                pool["free_capacity_gb"] = free_capacity
-                pool["provisioned_capacity_gb"] = provisioned_capacity
+                capacity = self._aggregate_svm_capacity(per_project_svms)
+                if capacity:
+                    pool.update(capacity)
+                else:
+                    pool["total_capacity_gb"] = "unknown"
+                    pool["free_capacity_gb"] = "unknown"
             else:
                 # No existing SVMs, report unknown capacity
                 # Manila scheduler will still allow placement (infinite capacity)
@@ -646,26 +667,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             svms = self.arca_client.list_svms()
 
             if svms:
-                # Aggregate capacity from all SVMs
-                total_capacity = 0.0
-                free_capacity = 0.0
-                provisioned_capacity = 0.0
-
-                for svm in svms:
-                    try:
-                        capacity = self.arca_client.get_svm_capacity(svm["name"])
-                        total_capacity += float(capacity.get("total_gb", 0))
-                        free_capacity += float(capacity.get("free_gb", 0))
-                        provisioned_capacity += float(capacity.get("provisioned_gb", 0))
-                    except Exception as e:
-                        LOG.warning(
-                            "Failed to get capacity for SVM %s: %s", svm["name"], e
-                        )
-                        continue
-
-                pool["total_capacity_gb"] = total_capacity
-                pool["free_capacity_gb"] = free_capacity
-                pool["provisioned_capacity_gb"] = provisioned_capacity
+                capacity = self._aggregate_svm_capacity(svms)
+                if capacity:
+                    pool.update(capacity)
+                else:
+                    pool["total_capacity_gb"] = "unknown"
+                    pool["free_capacity_gb"] = "unknown"
             else:
                 # No existing SVMs, report unknown capacity
                 pool["total_capacity_gb"] = "unknown"
