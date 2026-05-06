@@ -73,8 +73,8 @@ func parsePoolConfig(cfg *PoolConfig) (*IPPool, error) {
 	if network.IP == nil {
 		return nil, fmt.Errorf("invalid CIDR %s: only IPv4 pools are supported", cfg.CIDR)
 	}
-	if cfg.VLANID < 1 || cfg.VLANID > 4094 {
-		return nil, fmt.Errorf("invalid VLAN ID %d: must be between 1 and 4094", cfg.VLANID)
+	if cfg.VLANID != 0 && (cfg.VLANID < 1 || cfg.VLANID > 4094) {
+		return nil, fmt.Errorf("invalid VLAN ID %d: must be 0 or between 1 and 4094", cfg.VLANID)
 	}
 
 	broadcast := broadcastIPInNetwork(network)

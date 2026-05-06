@@ -35,6 +35,11 @@ func TestParsePoolConfigRejectsUnsafeRanges(t *testing.T) {
 			cfg:     PoolConfig{CIDR: "10.0.0.0/24", Range: "10.0.0.20-10.0.0.30", VLANID: 100, Gateway: "10.0.1.1"},
 			wantErr: "gateway must be inside CIDR",
 		},
+		{
+			name:    "vlan too large",
+			cfg:     PoolConfig{CIDR: "10.0.0.0/24", Range: "10.0.0.20-10.0.0.30", VLANID: 4095},
+			wantErr: "invalid VLAN ID",
+		},
 	}
 
 	for _, tt := range tests {
@@ -47,6 +52,22 @@ func TestParsePoolConfigRejectsUnsafeRanges(t *testing.T) {
 				t.Fatalf("parsePoolConfig() error = %q, want substring %q", err, tt.wantErr)
 			}
 		})
+	}
+}
+
+func TestParsePoolConfigAllowsNonVLANPool(t *testing.T) {
+	pool, err := parsePoolConfig(&PoolConfig{
+		CIDR:  "10.1.0.0/24",
+		Range: "10.1.0.50-10.1.0.150",
+	})
+	if err != nil {
+		t.Fatalf("parsePoolConfig() error = %v", err)
+	}
+	if pool.VLANID != 0 {
+		t.Fatalf("VLANID = %d, want 0", pool.VLANID)
+	}
+	if pool.FirstHost.String() != "10.1.0.50" || pool.LastHost.String() != "10.1.0.150" {
+		t.Fatalf("range = %s-%s, want 10.1.0.50-10.1.0.150", pool.FirstHost, pool.LastHost)
 	}
 }
 
