@@ -6,6 +6,7 @@ from unittest.mock import MagicMock
 
 import pytest
 
+from arca_storage.adapters.pacemaker import SubprocessPacemakerAdapter
 from arca_storage.cli.lib.pacemaker import create_group
 
 
@@ -86,3 +87,93 @@ def test_create_group_without_vlan_creates_ipaddr2_and_host_ganesha(mock_subproc
     assert any(cmd[:5] == ["pcs", "resource", "create", "ip_tenant_a", "ocf:heartbeat:IPaddr2"] for cmd in calls)
     assert any("cidr_netmask=32" in cmd for cmd in calls if isinstance(cmd, list))
     assert any("systemd:nfs-ganesha-host@tenant_a" in cmd for cmd in calls if isinstance(cmd, list))
+
+
+@pytest.mark.unit
+def test_create_group_includes_existing_filesystem_on_retry(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource create netns_tenant_a
+        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    group_add = next(cmd for cmd in calls if cmd[:4] == ["pcs", "resource", "group", "add"])
+    assert group_add == [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "fs_tenant_a",
+        "netns_tenant_a",
+        "ganesha_tenant_a",
+    ]
+    assert ["pcs", "constraint", "order", "ms_drbd_r0:promote", "fs_tenant_a:start"] in calls
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_includes_existing_filesystem_on_retry(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource create netns_tenant_a
+        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    group_add = next(cmd for cmd in calls if cmd[:4] == ["pcs", "resource", "group", "add"])
+    assert group_add == [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "fs_tenant_a",
+        "netns_tenant_a",
+        "ganesha_tenant_a",
+    ]
+    assert ["pcs", "constraint", "order", "ms_drbd_r0:promote", "fs_tenant_a:start"] in calls

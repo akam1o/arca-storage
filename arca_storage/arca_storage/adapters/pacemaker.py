@@ -85,6 +85,7 @@ class SubprocessPacemakerAdapter:
                 ],
                 timeout=self._timeout,
             )
+        if create_filesystem:
             resources.append(fs_resource)
 
         if vlan_id is None:

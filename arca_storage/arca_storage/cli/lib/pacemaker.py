@@ -162,6 +162,7 @@ def create_group(
         )
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
+    if create_filesystem:
         resources.append(fs_resource)
 
     if vlan_id is None:
