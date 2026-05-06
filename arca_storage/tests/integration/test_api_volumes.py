@@ -203,6 +203,34 @@ class TestResizeVolume:
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
 
+    @pytest.mark.integration
+    def test_resize_volume_retries_grow_after_lv_extension(self, fake_context):
+        client = TestClient(app, raise_server_exceptions=False)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+
+        original_grow = fake_context.adapters.xfs.grow
+        grow_calls = {"count": 0}
+
+        def flaky_grow(mount_path):
+            grow_calls["count"] += 1
+            if grow_calls["count"] == 1:
+                raise RuntimeError("xfs_growfs failed")
+            original_grow(mount_path)
+
+        fake_context.adapters.xfs.grow = flaky_grow
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+        assert response.status_code == 500
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 40
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+
+        assert response.status_code == 200
+        assert response.json()["data"]["volume"]["size_gib"] == 40
+        assert grow_calls["count"] == 2
+
 
 class TestCloneVolume:
     """Tests for POST /v1/volumes/{name}/clone."""

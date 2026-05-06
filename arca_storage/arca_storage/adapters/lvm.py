@@ -17,6 +17,7 @@ def _parse_lvm_float(value: str) -> float:
 @runtime_checkable
 class LVMAdapter(Protocol):
     def lv_exists(self, vg: str, lv: str) -> bool: ...
+    def get_lv_size_gib(self, vg: str, lv: str) -> float: ...
     def create_thin_lv(self, vg: str, pool: str, lv: str, size_gib: int) -> str: ...
     def create_regular_lv(self, vg: str, lv: str, size_gib: int) -> str: ...
     def resize_lv(self, vg: str, lv: str, new_size_gib: int) -> None: ...
@@ -35,6 +36,26 @@ class SubprocessLVMAdapter:
         lv_path = f"/dev/{vg}/{lv}"
         result = run_cmd(["lvdisplay", lv_path], timeout=self._timeout, check=False)
         return result.returncode == 0
+
+    def get_lv_size_gib(self, vg: str, lv: str) -> float:
+        lv_path = f"/dev/{vg}/{lv}"
+        result = run_cmd(
+            [
+                "lvs",
+                "--noheadings",
+                "--units",
+                "g",
+                "--nosuffix",
+                "-o",
+                "LV_SIZE",
+                lv_path,
+            ],
+            timeout=self._timeout,
+        )
+        output = result.stdout.strip()
+        if not output:
+            raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
+        return _parse_lvm_float(output.split()[0])
 
     def create_thin_lv(self, vg: str, pool: str, lv: str, size_gib: int) -> str:
         lv_path = f"/dev/{vg}/{lv}"
@@ -60,6 +81,8 @@ class SubprocessLVMAdapter:
         lv_path = f"/dev/{vg}/{lv}"
         if not self.lv_exists(vg, lv):
             raise NotFoundError("LogicalVolume", lv_path)
+        if self.get_lv_size_gib(vg, lv) >= float(new_size_gib):
+            return
         run_cmd(
             ["lvextend", "-L", f"{new_size_gib}G", lv_path],
             timeout=self._timeout,
@@ -116,6 +139,12 @@ class FakeLVMAdapter:
     def lv_exists(self, vg: str, lv: str) -> bool:
         return f"{vg}/{lv}" in self.volumes
 
+    def get_lv_size_gib(self, vg: str, lv: str) -> float:
+        key = f"{vg}/{lv}"
+        if key not in self.volumes:
+            raise NotFoundError("LogicalVolume", f"/dev/{key}")
+        return float(self.volumes[key])
+
     def create_thin_lv(self, vg: str, pool: str, lv: str, size_gib: int) -> str:
         key = f"{vg}/{lv}"
         if key in self.volumes:
@@ -130,6 +159,8 @@ class FakeLVMAdapter:
         key = f"{vg}/{lv}"
         if key not in self.volumes:
             raise NotFoundError("LogicalVolume", f"/dev/{key}")
+        if self.volumes[key] >= new_size_gib:
+            return
         self.volumes[key] = new_size_gib
 
     def delete_lv(self, vg: str, lv: str) -> None:
