@@ -2,6 +2,8 @@ package arca
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -9,6 +11,12 @@ import (
 	"k8s.io/klog/v2"
 
 	"github.com/akam1o/csi-arca-storage/pkg/lock"
+)
+
+const (
+	svmNamePrefix       = "k8s-"
+	maxArcaSVMNameBytes = 64
+	svmNameHashBytes    = 6
 )
 
 // SVMManager manages SVM lifecycle operations
@@ -35,7 +43,7 @@ func NewSVMManager(client *Client, allocator *StandaloneAllocator, lockMgr *lock
 
 // EnsureSVM ensures an SVM exists for the given namespace (idempotent)
 func (m *SVMManager) EnsureSVM(ctx context.Context, namespace string) (*SVM, error) {
-	svmName := fmt.Sprintf("k8s-%s", namespace)
+	svmName := svmNameForNamespace(namespace)
 
 	// Try to get existing SVM first (fast path)
 	svm, err := m.client.GetSVM(ctx, svmName)
@@ -155,6 +163,18 @@ func (m *SVMManager) GetSVM(ctx context.Context, svmName string) (*SVM, error) {
 
 // GetSVMForNamespace retrieves SVM for a given namespace
 func (m *SVMManager) GetSVMForNamespace(ctx context.Context, namespace string) (*SVM, error) {
-	svmName := fmt.Sprintf("k8s-%s", namespace)
+	svmName := svmNameForNamespace(namespace)
 	return m.client.GetSVM(ctx, svmName)
+}
+
+func svmNameForNamespace(namespace string) string {
+	name := svmNamePrefix + namespace
+	if len(name) <= maxArcaSVMNameBytes {
+		return name
+	}
+
+	sum := sha256.Sum256([]byte(namespace))
+	suffix := "-" + hex.EncodeToString(sum[:svmNameHashBytes])
+	headLen := maxArcaSVMNameBytes - len(suffix)
+	return name[:headLen] + suffix
 }
