@@ -10,7 +10,13 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
 from arca_storage.context import get_context
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
+from arca_storage.create_resume import (
+    ACTIVE_CREATE_PHASES,
+    assign_create_lease,
+    create_lease_heartbeat,
+    extend_create_lease,
+    new_create_owner,
+)
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
@@ -45,6 +51,8 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
         volume=snapshot_data.volume,
     )
     snapshot = Snapshot(spec=requested_spec)
+    owner = new_create_owner()
+    assign_create_lease(snapshot.status, owner)
     try:
         ctx.db.insert_snapshot(snapshot)
     except AlreadyExistsError:
@@ -55,11 +63,19 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
             limit=1,
         )
         record = existing[0] if existing else None
-        if _can_resume_create(record, requested_spec):
-            return _resume_snapshot_create(ctx, record)
+        allow_failed_resume = _can_resume_create(record, requested_spec)
+        acquired = ctx.db.acquire_snapshot_create_lease(
+            snapshot_data.svm,
+            snapshot_data.volume,
+            snapshot_data.name,
+            owner,
+            allow_failed=allow_failed_resume,
+        )
+        if _can_resume_create(acquired, requested_spec, owner=owner):
+            return _resume_snapshot_create(ctx, acquired, owner)
         raise AlreadyExistsError("Snapshot", f"{snapshot_data.svm}/{snapshot_data.volume}/{snapshot_data.name}")
 
-    snapshot = ctx.snapshot_reconciler.reconcile(snapshot)
+    snapshot = _reconcile_snapshot_create(ctx, snapshot, owner)
 
     if snapshot.status.phase == Phase.FAILED:
         raise RuntimeError(snapshot.status.message)
@@ -228,7 +244,7 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return SnapshotStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec, *, owner: str | None = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})
@@ -236,7 +252,7 @@ def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec) -> 
     if SnapshotSpec.model_validate(record["spec"]) != requested_spec:
         return False
     if phase in ACTIVE_CREATE_PHASES:
-        return is_stale_create_reservation(record)
+        return bool(owner and status.get("create_owner") == owner)
     if phase != Phase.FAILED.value:
         return False
     if _is_failed_delete(status):
@@ -248,15 +264,25 @@ def _is_failed_delete(status: Dict[str, Any]) -> bool:
     return str(status.get("message") or "").startswith("Delete failed:")
 
 
-def _resume_snapshot_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+def _resume_snapshot_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
     snapshot = Snapshot(
         metadata=_meta_from_record(record),
         spec=SnapshotSpec.model_validate(record["spec"]),
         status=_parse_status(record),
     )
-    snapshot.status.phase = Phase.CREATING
+    assign_create_lease(snapshot.status, owner)
     snapshot.status.message = ""
-    snapshot = ctx.snapshot_reconciler.reconcile(snapshot)
+    snapshot = _reconcile_snapshot_create(ctx, snapshot, owner)
     if snapshot.status.phase == Phase.FAILED:
         raise RuntimeError(snapshot.status.message)
     return _snapshot_to_dict(snapshot)
+
+
+def _reconcile_snapshot_create(ctx: Any, snapshot: Snapshot, owner: str) -> Snapshot:
+    def refresh() -> bool:
+        if not extend_create_lease(snapshot.status, owner):
+            return False
+        return ctx.db.refresh_snapshot_create_lease(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name, owner)
+
+    with create_lease_heartbeat(refresh):
+        return ctx.snapshot_reconciler.reconcile(snapshot)

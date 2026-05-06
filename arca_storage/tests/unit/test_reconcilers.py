@@ -20,6 +20,7 @@ from arca_storage.adapters.netns import FakeNetNSAdapter
 from arca_storage.adapters.pacemaker import FakePacemakerAdapter
 from arca_storage.adapters.systemd import FakeSystemdAdapter
 from arca_storage.adapters.xfs import FakeXFSAdapter
+from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import AlreadyExistsError
 from arca_storage.models.base import Phase
@@ -293,6 +294,26 @@ class TestExportReconciler:
         record = db.get_export("svm1", "vol1", "10.0.0.0/24")
         assert record["spec"]["access"] == "rw"
         assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
+
+    def test_create_export_resumes_only_matching_live_lease_owner(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        spec = ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw")
+        reserved = Export(spec=spec)
+        assign_create_lease(reserved.status, "owner-1")
+        db.upsert_export(reserved)
+
+        rejected = Export(spec=spec)
+        assign_create_lease(rejected.status, "owner-2")
+        with pytest.raises(AlreadyExistsError):
+            rec.reconcile(rejected)
+
+        resumed = Export(spec=spec)
+        assign_create_lease(resumed.status, "owner-1")
+        result = rec.reconcile(resumed)
+
+        assert result.status.phase == Phase.READY
+        record = db.get_export("svm1", "vol1", "10.0.0.0/24")
+        assert record["status"]["create_owner"] is None
 
     def test_delete_export(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)

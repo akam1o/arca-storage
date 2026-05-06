@@ -16,6 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Generator, Optional
 
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
 from arca_storage.errors import AlreadyExistsError, NotFoundError
 from arca_storage.models.base import Phase
 
@@ -218,6 +219,12 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
+    def acquire_svm_create_lease(self, name: str, owner: str, *, allow_failed: bool = False) -> dict[str, Any] | None:
+        return self._acquire_create_lease("svms", {"name": name}, owner, allow_failed=allow_failed)
+
+    def refresh_svm_create_lease(self, name: str, owner: str) -> bool:
+        return self._refresh_create_lease("svms", {"name": name}, owner)
+
     def list_svms(
         self,
         name: Optional[str] = None,
@@ -305,6 +312,19 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
+    def acquire_volume_create_lease(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        *,
+        allow_failed: bool = False,
+    ) -> dict[str, Any] | None:
+        return self._acquire_create_lease("volumes", {"svm": svm, "name": name}, owner, allow_failed=allow_failed)
+
+    def refresh_volume_create_lease(self, svm: str, name: str, owner: str) -> bool:
+        return self._refresh_create_lease("volumes", {"svm": svm, "name": name}, owner)
+
     def list_volumes(
         self,
         svm: Optional[str] = None,
@@ -389,6 +409,25 @@ class StateDB:
                     now,
                 ),
             )
+
+    def acquire_snapshot_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        owner: str,
+        *,
+        allow_failed: bool = False,
+    ) -> dict[str, Any] | None:
+        return self._acquire_create_lease(
+            "snapshots",
+            {"svm": svm, "volume": volume, "name": name},
+            owner,
+            allow_failed=allow_failed,
+        )
+
+    def refresh_snapshot_create_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
+        return self._refresh_create_lease("snapshots", {"svm": svm, "volume": volume, "name": name}, owner)
 
     def list_snapshots(
         self,
@@ -476,6 +515,25 @@ class StateDB:
     def get_export(self, svm: str, volume: str, client: str) -> dict[str, Any] | None:
         conn = self._conn()
         return self._get_export_conn(conn, svm, volume, client)
+
+    def acquire_export_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        client: str,
+        owner: str,
+        *,
+        allow_failed: bool = False,
+    ) -> dict[str, Any] | None:
+        return self._acquire_create_lease(
+            "exports",
+            {"svm": svm, "volume": volume, "client": client},
+            owner,
+            allow_failed=allow_failed,
+        )
+
+    def refresh_export_create_lease(self, svm: str, volume: str, client: str, owner: str) -> bool:
+        return self._refresh_create_lease("exports", {"svm": svm, "volume": volume, "client": client}, owner)
 
     def _get_export_conn(
         self,
@@ -566,6 +624,70 @@ class StateDB:
         )
 
     # ---- helpers ----
+
+    def _acquire_create_lease(
+        self,
+        table: str,
+        key: dict[str, str],
+        owner: str,
+        *,
+        allow_failed: bool = False,
+    ) -> dict[str, Any] | None:
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, table, key)
+            if record is None:
+                return None
+            status = record["status"]
+            phase = status.get("phase")
+            if phase in ACTIVE_CREATE_PHASES:
+                if not create_lease_expired(record):
+                    return None
+            elif phase != Phase.FAILED.value or not allow_failed:
+                return None
+            status["phase"] = Phase.CREATING.value
+            status["create_owner"] = owner
+            status["create_lease_expires_at"] = lease_expiration().isoformat()
+            self._update_status_by_key_conn(conn, table, key, status)
+            record["status"] = status
+            return record
+
+    def _refresh_create_lease(self, table: str, key: dict[str, str], owner: str) -> bool:
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, table, key)
+            if record is None:
+                return False
+            status = record["status"]
+            if status.get("phase") not in ACTIVE_CREATE_PHASES or status.get("create_owner") != owner:
+                return False
+            status["create_lease_expires_at"] = lease_expiration().isoformat()
+            self._update_status_by_key_conn(conn, table, key, status)
+            return True
+
+    def _get_resource_by_key_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        key: dict[str, str],
+    ) -> dict[str, Any] | None:
+        where = " AND ".join(f"{column} = ?" for column in key)
+        cur = conn.execute(f"SELECT * FROM {table} WHERE {where}", tuple(key.values()))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_resource(row)
+
+    def _update_status_by_key_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        key: dict[str, str],
+        status: dict[str, Any],
+    ) -> None:
+        where = " AND ".join(f"{column} = ?" for column in key)
+        conn.execute(
+            f"UPDATE {table} SET status = ?, updated_at = ? WHERE {where}",
+            (json.dumps(status), _now_iso(), *key.values()),
+        )
 
     @staticmethod
     def _row_to_resource(row: sqlite3.Row) -> dict[str, Any]:

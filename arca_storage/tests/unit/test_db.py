@@ -1,7 +1,11 @@
 """Tests for SQLite state database."""
 
+import json
+from datetime import datetime, timedelta, timezone
+
 import pytest
 
+from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB, encode_cursor
 from arca_storage.errors import AlreadyExistsError
 from arca_storage.models.base import Phase
@@ -93,6 +97,31 @@ class TestStateDB:
 
         result = db.get_volume("svm1", "vol1")
         assert result["spec"]["size_gib"] == 10
+
+    def test_create_lease_requires_expiration_before_takeover(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+
+        assert db.acquire_volume_create_lease("svm1", "vol1", "owner-2") is None
+
+        record = db.get_volume("svm1", "vol1")
+        status = record["status"]
+        status["create_lease_expires_at"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        conn = db._conn()
+        conn.execute(
+            "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+            (json.dumps(status), "svm1", "vol1"),
+        )
+        conn.commit()
+
+        acquired = db.acquire_volume_create_lease("svm1", "vol1", "owner-2")
+
+        assert acquired is not None
+        assert acquired["status"]["phase"] == "Creating"
+        assert acquired["status"]["create_owner"] == "owner-2"
+        assert db.refresh_volume_create_lease("svm1", "vol1", "owner-1") is False
+        assert db.refresh_volume_create_lease("svm1", "vol1", "owner-2") is True
 
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):

@@ -37,6 +37,8 @@ class SVMStatus(BaseModel):
     pacemaker_group_created: bool = False
     message: str = ""
     last_reconciled: Optional[datetime] = None
+    create_owner: Optional[str] = None
+    create_lease_expires_at: Optional[datetime] = None
 
 
 class SVM(BaseModel):

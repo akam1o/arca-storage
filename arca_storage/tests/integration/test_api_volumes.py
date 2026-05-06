@@ -2,14 +2,15 @@
 Integration tests for API volume endpoints.
 """
 
-from datetime import datetime, timezone
+import json
+from datetime import datetime, timedelta, timezone
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
-from arca_storage.create_resume import STALE_CREATE_RESERVATION_AFTER
+from arca_storage.create_resume import assign_create_lease
 
 
 @pytest.fixture
@@ -111,17 +112,37 @@ class TestCreateVolume:
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
 
     @pytest.mark.integration
+    def test_create_volume_rejects_live_leased_duplicate_without_side_effects(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        volume = Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10))
+        assign_create_lease(volume.status, "live-owner")
+        fake_context.db.insert_volume(volume)
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert response.status_code == 409
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+
+    @pytest.mark.integration
     def test_create_volume_resumes_stale_reserved_duplicate(self, fake_context):
         from arca_storage.models.volume import Volume, VolumeSpec
 
         client = TestClient(app)
         create_test_svm(client)
         fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
-        stale_at = (datetime.now(timezone.utc) - STALE_CREATE_RESERVATION_AFTER * 2).isoformat()
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        record = fake_context.db.get_volume("tenant_a", "vol1")
+        status = record["status"]
+        status["phase"] = "Creating"
+        status["create_owner"] = "dead-owner"
+        status["create_lease_expires_at"] = expired_at
         conn = fake_context.db._conn()
         conn.execute(
-            "UPDATE volumes SET updated_at = ? WHERE svm = ? AND name = ?",
-            (stale_at, "tenant_a", "vol1"),
+            "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+            (json.dumps(status), "tenant_a", "vol1"),
         )
         conn.commit()
 

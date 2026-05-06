@@ -10,7 +10,13 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.context import get_context
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
+from arca_storage.create_resume import (
+    ACTIVE_CREATE_PHASES,
+    assign_create_lease,
+    create_lease_heartbeat,
+    extend_create_lease,
+    new_create_owner,
+)
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
 from arca_storage.models.base import Phase
@@ -39,13 +45,24 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     )
     existing = ctx.db.get_export(export_data.svm, export_data.volume, export_data.client)
     if existing:
-        if _can_resume_create(existing, requested_spec):
-            return _resume_export_create(ctx, existing)
+        owner = new_create_owner()
+        allow_failed_resume = _can_resume_create(existing, requested_spec)
+        acquired = ctx.db.acquire_export_create_lease(
+            export_data.svm,
+            export_data.volume,
+            export_data.client,
+            owner,
+            allow_failed=allow_failed_resume,
+        )
+        if _can_resume_create(acquired, requested_spec, owner=owner):
+            return _resume_export_create(ctx, acquired, owner)
         raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{export_data.client}")
 
     export = Export(spec=requested_spec)
+    owner = new_create_owner()
+    assign_create_lease(export.status, owner)
 
-    export = ctx.export_reconciler.reconcile(export)
+    export = _reconcile_export_create(ctx, export, owner)
 
     if export.status.phase == Phase.FAILED:
         raise RuntimeError(export.status.message)
@@ -184,13 +201,15 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
     return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec, *, owner: str | None = None) -> bool:
+    if not record:
+        return False
     status = record.get("status", {})
     phase = status.get("phase")
     if ExportSpec.model_validate(record["spec"]) != requested_spec:
         return False
     if phase in ACTIVE_CREATE_PHASES:
-        return is_stale_create_reservation(record)
+        return bool(owner and status.get("create_owner") == owner)
     if phase != Phase.FAILED.value:
         return False
     if _is_failed_delete(status):
@@ -206,15 +225,25 @@ def _has_pending_create_step(status: Dict[str, Any]) -> bool:
     return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
 
 
-def _resume_export_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+def _resume_export_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
     export = Export(
         metadata=_meta_from_record(record),
         spec=ExportSpec.model_validate(record["spec"]),
         status=ExportStatus.model_validate(record["status"]),
     )
-    export.status.phase = Phase.CREATING
+    assign_create_lease(export.status, owner)
     export.status.message = ""
-    export = ctx.export_reconciler.reconcile(export)
+    export = _reconcile_export_create(ctx, export, owner)
     if export.status.phase == Phase.FAILED:
         raise RuntimeError(export.status.message)
     return _export_to_dict(export)
+
+
+def _reconcile_export_create(ctx: Any, export: Export, owner: str) -> Export:
+    def refresh() -> bool:
+        if not extend_create_lease(export.status, owner):
+            return False
+        return ctx.db.refresh_export_create_lease(export.spec.svm, export.spec.volume, export.spec.client, owner)
+
+    with create_lease_heartbeat(refresh):
+        return ctx.export_reconciler.reconcile(export)

@@ -12,7 +12,13 @@ from typing import Any, Dict, Optional
 from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
 from arca_storage.context import get_context
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
+from arca_storage.create_resume import (
+    ACTIVE_CREATE_PHASES,
+    assign_create_lease,
+    create_lease_heartbeat,
+    extend_create_lease,
+    new_create_owner,
+)
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
@@ -46,15 +52,19 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
         root_volume_size_gib=svm_data.root_volume_size_gib,
     )
     svm = SVM(spec=requested_spec)
+    owner = new_create_owner()
+    assign_create_lease(svm.status, owner)
     try:
         ctx.db.insert_svm(svm)
     except AlreadyExistsError:
         existing = ctx.db.get_svm(svm_data.name)
-        if _can_resume_create(existing, requested_spec):
-            return _resume_svm_create(ctx, existing)
+        allow_failed_resume = _can_resume_create(existing, requested_spec)
+        acquired = ctx.db.acquire_svm_create_lease(svm_data.name, owner, allow_failed=allow_failed_resume)
+        if _can_resume_create(acquired, requested_spec, owner=owner):
+            return _resume_svm_create(ctx, acquired, owner)
         raise AlreadyExistsError("SVM", svm_data.name)
 
-    svm = ctx.svm_reconciler.reconcile(svm)
+    svm = _reconcile_svm_create(ctx, svm, owner)
 
     if svm.status.phase == Phase.FAILED:
         raise RuntimeError(svm.status.message)
@@ -223,7 +233,7 @@ def _parse_status(record: Dict[str, Any], kind: str) -> Any:
     return SVMStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec, *, owner: str | None = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})
@@ -232,7 +242,7 @@ def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec) -> bool:
     if spec != requested_spec:
         return False
     if phase in ACTIVE_CREATE_PHASES:
-        return is_stale_create_reservation(record)
+        return bool(owner and status.get("create_owner") == owner)
     if phase != Phase.FAILED.value:
         return False
     if _is_failed_delete(status):
@@ -253,18 +263,28 @@ def _has_pending_create_step(spec: SVMSpec, status: Dict[str, Any]) -> bool:
     return any(not status.get(field, False) for field in fields)
 
 
-def _resume_svm_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+def _resume_svm_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
     svm = SVM(
         metadata=_meta_from_record(record),
         spec=SVMSpec.model_validate(record["spec"]),
         status=_parse_status(record, "svm"),
     )
-    svm.status.phase = Phase.CREATING
+    assign_create_lease(svm.status, owner)
     svm.status.message = ""
-    svm = ctx.svm_reconciler.reconcile(svm)
+    svm = _reconcile_svm_create(ctx, svm, owner)
     if svm.status.phase == Phase.FAILED:
         raise RuntimeError(svm.status.message)
     return _svm_to_dict(svm, ctx)
+
+
+def _reconcile_svm_create(ctx: Any, svm: SVM, owner: str) -> SVM:
+    def refresh() -> bool:
+        if not extend_create_lease(svm.status, owner):
+            return False
+        return ctx.db.refresh_svm_create_lease(svm.spec.name, owner)
+
+    with create_lease_heartbeat(refresh):
+        return ctx.svm_reconciler.reconcile(svm)
 
 
 def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: bool) -> None:

@@ -49,6 +49,8 @@ class ExportStatus(BaseModel):
     service_reloaded: bool = False
     message: str = ""
     last_reconciled: Optional[datetime] = None
+    create_owner: Optional[str] = None
+    create_lease_expires_at: Optional[datetime] = None
 
 
 class Export(BaseModel):

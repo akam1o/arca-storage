@@ -42,6 +42,8 @@ class VolumeStatus(BaseModel):
     mount_path: Optional[str] = None
     message: str = ""
     last_reconciled: Optional[datetime] = None
+    create_owner: Optional[str] = None
+    create_lease_expires_at: Optional[datetime] = None
 
 
 class Volume(BaseModel):

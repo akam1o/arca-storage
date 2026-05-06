@@ -11,7 +11,13 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
 from arca_storage.context import get_context
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
+from arca_storage.create_resume import (
+    ACTIVE_CREATE_PHASES,
+    assign_create_lease,
+    create_lease_heartbeat,
+    extend_create_lease,
+    new_create_owner,
+)
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
@@ -39,15 +45,24 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
         fs_type=volume_data.fs_type,
     )
     volume = Volume(spec=requested_spec)
+    owner = new_create_owner()
+    assign_create_lease(volume.status, owner)
     try:
         ctx.db.insert_volume(volume)
     except AlreadyExistsError:
         existing = ctx.db.get_volume(volume_data.svm, volume_data.name)
-        if _can_resume_create(existing, requested_spec):
-            return _resume_volume_create(ctx, existing)
+        allow_failed_resume = _can_resume_create(existing, requested_spec)
+        acquired = ctx.db.acquire_volume_create_lease(
+            volume_data.svm,
+            volume_data.name,
+            owner,
+            allow_failed=allow_failed_resume,
+        )
+        if _can_resume_create(acquired, requested_spec, owner=owner):
+            return _resume_volume_create(ctx, acquired, owner)
         raise AlreadyExistsError("Volume", f"{volume_data.svm}/{volume_data.name}")
 
-    volume = ctx.volume_reconciler.reconcile(volume)
+    volume = _reconcile_volume_create(ctx, volume, owner)
 
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -233,7 +248,7 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return VolumeStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec, *, owner: str | None = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})
@@ -241,7 +256,7 @@ def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec) -> bo
     if VolumeSpec.model_validate(record["spec"]) != requested_spec:
         return False
     if phase in ACTIVE_CREATE_PHASES:
-        return is_stale_create_reservation(record)
+        return bool(owner and status.get("create_owner") == owner)
     if phase != Phase.FAILED.value:
         return False
     if _is_failed_delete(status):
@@ -257,18 +272,28 @@ def _has_pending_create_step(status: Dict[str, Any]) -> bool:
     return any(not status.get(field, False) for field in ("lv_created", "fs_formatted", "mounted"))
 
 
-def _resume_volume_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
         spec=VolumeSpec.model_validate(record["spec"]),
         status=_parse_status(record),
     )
-    volume.status.phase = Phase.CREATING
+    assign_create_lease(volume.status, owner)
     volume.status.message = ""
-    volume = ctx.volume_reconciler.reconcile(volume)
+    volume = _reconcile_volume_create(ctx, volume, owner)
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
     return _volume_to_dict(volume, ctx)
+
+
+def _reconcile_volume_create(ctx: Any, volume: Volume, owner: str) -> Volume:
+    def refresh() -> bool:
+        if not extend_create_lease(volume.status, owner):
+            return False
+        return ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner)
+
+    with create_lease_heartbeat(refresh):
+        return ctx.volume_reconciler.reconcile(volume)
 
 
 def _delete_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:

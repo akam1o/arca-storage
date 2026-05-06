@@ -15,6 +15,7 @@ from typing import Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
 from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr
+from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
@@ -126,12 +127,14 @@ class SVMReconciler:
                 self._persist(svm, f"step '{field}' completed")
             except Exception as e:
                 svm.status.phase = Phase.FAILED
+                clear_create_lease(svm.status)
                 svm.status.message = f"Step '{field}' failed: {e}"
                 self._persist(svm, svm.status.message)
                 logger.error("SVM %s reconcile failed at %s: %s", spec.name, field, e)
                 return svm
 
         svm.status.phase = Phase.READY
+        clear_create_lease(svm.status)
         svm.status.message = ""
         svm.status.last_reconciled = datetime.now(timezone.utc)
         self._persist(svm, "SVM ready")

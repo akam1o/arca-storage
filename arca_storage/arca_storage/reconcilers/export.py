@@ -10,7 +10,7 @@ from datetime import datetime, timezone
 from ipaddress import IPv4Interface
 from typing import Optional
 
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease, create_lease_expired
 from arca_storage.db import StateDB
 from arca_storage.errors import AlreadyExistsError
 from arca_storage.models.base import Phase, ResourceMeta
@@ -49,7 +49,7 @@ class ExportReconciler:
         with self.db.transaction(immediate=True) as conn:
             existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
             if existing:
-                if not allow_update and not _can_resume_create_record(existing, spec):
+                if not allow_update and not _can_resume_create_record(existing, export):
                     raise AlreadyExistsError("Export", f"{spec.svm}/{spec.volume}/{spec.client}")
                 export.metadata = _meta_from_record(existing)
                 previous_status = ExportStatus.model_validate(existing["status"])
@@ -85,6 +85,7 @@ class ExportReconciler:
             except Exception as e:
                 self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
+                clear_create_lease(export.status)
                 export.status.message = f"Config failed: {e}"
                 self._persist_conn(conn, export, export.status.message)
                 return export
@@ -96,11 +97,13 @@ class ExportReconciler:
             except Exception as e:
                 self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
+                clear_create_lease(export.status)
                 export.status.message = f"Reload failed: {e}"
                 self._persist_conn(conn, export, export.status.message)
                 return export
 
             export.status.phase = Phase.READY
+            clear_create_lease(export.status)
             export.status.message = ""
             export.status.last_reconciled = datetime.now(timezone.utc)
             self._persist_conn(conn, export, "Export ready")
@@ -264,13 +267,16 @@ def _next_export_id(records: list[dict]) -> int:
     return max(export_ids, default=0) + 1
 
 
-def _can_resume_create_record(record: dict, requested_spec: ExportSpec) -> bool:
+def _can_resume_create_record(record: dict, requested_export: Export) -> bool:
     status = record.get("status", {})
     phase = status.get("phase")
-    if ExportSpec.model_validate(record["spec"]) != requested_spec:
+    if ExportSpec.model_validate(record["spec"]) != requested_export.spec:
         return False
     if phase in ACTIVE_CREATE_PHASES:
-        return is_stale_create_reservation(record)
+        requested_owner = requested_export.status.create_owner
+        if not requested_owner:
+            return False
+        return status.get("create_owner") == requested_owner or create_lease_expired(record)
     if phase != Phase.FAILED.value:
         return False
     if str(status.get("message") or "").startswith("Delete failed:"):

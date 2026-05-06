@@ -8,6 +8,7 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot
@@ -53,12 +54,14 @@ class SnapshotReconciler:
                 self._persist(snapshot, "snapshot LV created")
             except Exception as e:
                 snapshot.status.phase = Phase.FAILED
+                clear_create_lease(snapshot.status)
                 snapshot.status.message = f"Create failed: {e}"
                 self._persist(snapshot, snapshot.status.message)
                 logger.error("Snapshot %s/%s/%s create failed: %s", spec.svm, spec.volume, spec.name, e)
                 return snapshot
 
         snapshot.status.phase = Phase.READY
+        clear_create_lease(snapshot.status)
         snapshot.status.message = ""
         snapshot.status.last_reconciled = datetime.now(timezone.utc)
         self._persist(snapshot, "Snapshot ready")
