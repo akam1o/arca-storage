@@ -135,6 +135,44 @@ def test_create_group_includes_existing_filesystem_on_retry(mock_subprocess):
 
 
 @pytest.mark.unit
+def test_create_group_repairs_constraints_when_group_exists(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert not any(cmd[:4] == ["pcs", "resource", "group", "add"] for cmd in calls)
+    assert ["pcs", "constraint", "order", "ms_drbd_r0:promote", "fs_tenant_a:start"] in calls
+    assert [
+        "pcs",
+        "constraint",
+        "colocation",
+        "add",
+        "g_svm_tenant_a",
+        "with",
+        "ms_drbd_r0:Master",
+    ] in calls
+
+
+@pytest.mark.unit
 def test_subprocess_adapter_includes_existing_filesystem_on_retry(mock_subprocess):
     mock_subprocess.side_effect = [
         MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
@@ -177,3 +215,41 @@ def test_subprocess_adapter_includes_existing_filesystem_on_retry(mock_subproces
         "ganesha_tenant_a",
     ]
     assert ["pcs", "constraint", "order", "ms_drbd_r0:promote", "fs_tenant_a:start"] in calls
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_repairs_constraints_when_group_exists(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert not any(cmd[:4] == ["pcs", "resource", "group", "add"] for cmd in calls)
+    assert ["pcs", "constraint", "order", "ms_drbd_r0:promote", "fs_tenant_a:start"] in calls
+    assert [
+        "pcs",
+        "constraint",
+        "colocation",
+        "add",
+        "g_svm_tenant_a",
+        "with",
+        "ms_drbd_r0:Master",
+    ] in calls

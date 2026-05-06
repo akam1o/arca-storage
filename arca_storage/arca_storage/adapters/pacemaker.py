@@ -63,8 +63,7 @@ class SubprocessPacemakerAdapter:
         enforce_drbd_constraints: bool = True,
     ) -> None:
         group_name = f"g_svm_{svm_name}"
-        if self.resource_exists(group_name):
-            return  # idempotent
+        group_exists = self.resource_exists(group_name)
 
         resources: list[str] = []
         master_name: Optional[str] = None
@@ -74,7 +73,7 @@ class SubprocessPacemakerAdapter:
 
         # Filesystem resource
         fs_resource = f"fs_{svm_name}"
-        if create_filesystem and not self.resource_exists(fs_resource):
+        if create_filesystem and not group_exists and not self.resource_exists(fs_resource):
             device = f"/dev/{vg_name}/vol_{svm_name}"
             run_cmd(
                 [
@@ -90,7 +89,7 @@ class SubprocessPacemakerAdapter:
 
         if vlan_id is None:
             ip_resource = f"ip_{svm_name}"
-            if not self.resource_exists(ip_resource):
+            if not group_exists and not self.resource_exists(ip_resource):
                 run_cmd(
                     [
                         "pcs", "resource", "create", ip_resource,
@@ -105,7 +104,7 @@ class SubprocessPacemakerAdapter:
         else:
             # NetnsVlan resource
             netns_resource = f"netns_{svm_name}"
-            if not self.resource_exists(netns_resource):
+            if not group_exists and not self.resource_exists(netns_resource):
                 resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
                 run_cmd(
                     [
@@ -123,7 +122,7 @@ class SubprocessPacemakerAdapter:
 
         # Ganesha resource
         ganesha_resource = f"ganesha_{svm_name}"
-        if not self.resource_exists(ganesha_resource):
+        if not group_exists and not self.resource_exists(ganesha_resource):
             run_cmd(
                 [
                     "pcs", "resource", "create", ganesha_resource,
@@ -134,11 +133,11 @@ class SubprocessPacemakerAdapter:
             )
         resources.append(ganesha_resource)
 
-        # Create group
-        run_cmd(
-            ["pcs", "resource", "group", "add", group_name, *resources],
-            timeout=self._timeout,
-        )
+        if not group_exists:
+            run_cmd(
+                ["pcs", "resource", "group", "add", group_name, *resources],
+                timeout=self._timeout,
+            )
 
         # Constraints
         if master_name:

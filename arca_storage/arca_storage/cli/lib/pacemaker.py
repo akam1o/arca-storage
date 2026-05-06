@@ -129,11 +129,7 @@ def create_group(
         RuntimeError: If resource group creation fails
     """
     group_name = f"g_svm_{svm_name}"
-    
-    # Check if group already exists
-    if _resource_exists(group_name):
-        # Group already exists, skip
-        return
+    group_exists = _resource_exists(group_name)
 
     resources: list[str] = []
 
@@ -143,7 +139,7 @@ def create_group(
 
     # Create Filesystem resource (optional)
     fs_resource = f"fs_{svm_name}"
-    if create_filesystem and not _resource_exists(fs_resource):
+    if create_filesystem and not group_exists and not _resource_exists(fs_resource):
         device = f"/dev/{vg_name}/vol_{svm_name}"
         result = _run(
             [
@@ -167,7 +163,7 @@ def create_group(
 
     if vlan_id is None:
         ip_resource = f"ip_{svm_name}"
-        if not _resource_exists(ip_resource):
+        if not group_exists and not _resource_exists(ip_resource):
             result = _run(
                 [
                     "pcs",
@@ -190,7 +186,7 @@ def create_group(
     else:
         # Create NetnsVlan resource
         netns_resource = f"netns_{svm_name}"
-        if not _resource_exists(netns_resource):
+        if not group_exists and not _resource_exists(netns_resource):
             resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
             cmd = [
                 "pcs",
@@ -216,7 +212,7 @@ def create_group(
 
     # Create nfs-ganesha resource
     ganesha_resource = f"ganesha_{svm_name}"
-    if not _resource_exists(ganesha_resource):
+    if not group_exists and not _resource_exists(ganesha_resource):
         result = _run(
             [
                 "pcs",
@@ -233,10 +229,10 @@ def create_group(
             raise RuntimeError(f"Failed to create NFS-Ganesha resource: {result.stderr.strip()}")
     resources.append(ganesha_resource)
 
-    # Create resource group
-    result = _run(["pcs", "resource", "group", "add", group_name, *resources])
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to create resource group: {result.stderr.strip()}")
+    if not group_exists:
+        result = _run(["pcs", "resource", "group", "add", group_name, *resources])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to create resource group: {result.stderr.strip()}")
 
     # Constraints (DRBD -> group/fs ordering, group colocation with DRBD master)
     if master_name:
