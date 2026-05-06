@@ -70,6 +70,8 @@ def install(
             api_env_dst = cfg_dst_dir / "api.env"
             if api_env_src.exists() and not api_env_dst.exists():
                 shutil.copy2(api_env_src, api_env_dst)
+            if api_env_dst.exists():
+                os.chmod(api_env_dst, 0o600)
 
             # Reload config after installing files so derived env matches.
             cfg = load_settings(DEFAULT_CONFIG_PATH)

@@ -54,7 +54,7 @@ install -m 0755 packaging/wrappers/arca-storage-api %{buildroot}%{_bindir}/arca-
 # Configs
 install -d %{buildroot}%{_sysconfdir}/arca-storage
 install -m 0644 arca_storage/arca_storage/resources/config/config.toml %{buildroot}%{_sysconfdir}/arca-storage/config.toml
-install -m 0644 arca_storage/arca_storage/resources/config/api.env %{buildroot}%{_sysconfdir}/arca-storage/api.env
+install -m 0600 arca_storage/arca_storage/resources/config/api.env %{buildroot}%{_sysconfdir}/arca-storage/api.env
 install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage.env %{buildroot}%{_sysconfdir}/arca-storage/arca-storage.env
 
 # systemd units
