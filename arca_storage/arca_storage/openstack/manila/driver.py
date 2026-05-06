@@ -1521,6 +1521,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         try:
             # Determine SVM for this share
             svm_name = self._get_svm_for_share(share)
+            rule_failures = []
 
             # If Manila didn't provide incremental changes, reconcile from full desired list.
             # This prevents drift when add_rules/delete_rules are omitted or empty.
@@ -1534,6 +1535,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 for rule in delete_rules:
                     try:
                         self._delete_access_rule(svm_name, volume_name, rule)
+                    except manila_exception.InvalidShareAccess:
+                        raise
                     except Exception as e:
                         # Log warning but continue with other rules
                         LOG.warning(
@@ -1542,12 +1545,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             share_id,
                             e,
                         )
+                        rule_failures.append(("delete", rule, e))
 
             # Add new rules
             if add_rules:
                 for rule in add_rules:
                     try:
                         self._add_access_rule(svm_name, volume_name, rule)
+                    except manila_exception.InvalidShareAccess:
+                        raise
                     except Exception as e:
                         # Log warning but continue with other rules
                         LOG.warning(
@@ -1556,6 +1562,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             share_id,
                             e,
                         )
+                        rule_failures.append(("add", rule, e))
+
+            if rule_failures:
+                details = ", ".join(
+                    f"{operation}:{self._access_rule_label(rule)} ({error})"
+                    for operation, rule, error in rule_failures
+                )
+                raise manila_exception.ShareBackendException(
+                    f"Failed to update {len(rule_failures)} access rule(s): {details}"
+                )
 
             LOG.info("Access rules updated for share %s", share_id)
 
@@ -1563,12 +1579,20 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Keep Manila's semantic exception when rule type is invalid.
             if isinstance(e, manila_exception.InvalidShareAccess):
                 raise
+            if isinstance(e, manila_exception.ShareBackendException):
+                raise
             # Systemic failure (e.g., can't determine SVM)
             LOG.exception("Failed to update access rules for share %s", share_id)
             raise manila_exception.ShareBackendException(
                 f"Failed to update access rules: {str(e)}"
             )
         return None
+
+    @staticmethod
+    def _access_rule_label(rule: Any) -> str:
+        if not isinstance(rule, dict):
+            return str(rule)
+        return str(rule.get("id") or rule.get("access_to") or "<unknown>")
 
     def _normalize_access_to(self, access_to: str) -> str:
         """Normalize an IP/CIDR string for stable comparisons."""

@@ -108,6 +108,24 @@ class TestArcaStorageManilaDriverSharedStrategy:
         driver.update_access(Mock(), mock_manila_share, [], add_rules=mock_access_rules, delete_rules=[], share_server=None)
         mock_arca_client.create_export.assert_called_once()
 
+    def test_update_access_reports_add_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.create_export.side_effect = RuntimeError("backend unavailable")
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to update 1 access"):
+            driver.update_access(Mock(), mock_manila_share, [], add_rules=mock_access_rules, delete_rules=[], share_server=None)
+
+        mock_arca_client.create_export.assert_called_once()
+
+    def test_update_access_reports_delete_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.delete_export.side_effect = RuntimeError("backend unavailable")
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to update 1 access"):
+            driver.update_access(Mock(), mock_manila_share, [], add_rules=[], delete_rules=mock_access_rules, share_server=None)
+
+        mock_arca_client.delete_export.assert_called_once()
+
     def test_update_access_reconcile_fallback(self, driver, mock_arca_client, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
         mock_arca_client.list_exports.return_value = [{"client": "10.0.0.0/24", "access": "rw"}]
@@ -133,4 +151,3 @@ class TestArcaStorageManilaDriverSharedStrategy:
         bad = [{"access_type": "user", "access_to": "alice"}]
         with pytest.raises(manila_driver.manila_exception.InvalidShareAccess):
             driver.update_access(Mock(), mock_manila_share, bad, add_rules=[], delete_rules=[], share_server=None)
-
