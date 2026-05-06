@@ -12,7 +12,9 @@ import (
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
 	"k8s.io/klog/v2"
-	"k8s.io/mount-utils"
+	mountutils "k8s.io/mount-utils"
+
+	arcamount "github.com/akam1o/csi-arca-storage/pkg/mount"
 )
 
 func (d *Driver) ensureNodeServiceConfigured() error {
@@ -66,6 +68,34 @@ func validateVIP(vip string) error {
 	return nil
 }
 
+func nfsMountOptionsFromCapability(capability *csi.VolumeCapability) []string {
+	if capability == nil || capability.GetMount() == nil {
+		return arcamount.GetDefaultNFSOptions()
+	}
+
+	options := make([]string, 0, len(capability.GetMount().GetMountFlags()))
+	for _, opt := range capability.GetMount().GetMountFlags() {
+		switch opt {
+		case "", "bind", "remount", "ro", "rw":
+			continue
+		default:
+			options = append(options, opt)
+		}
+	}
+	if len(options) == 0 {
+		return arcamount.GetDefaultNFSOptions()
+	}
+	return options
+}
+
+func bindMountOptions() []string {
+	return []string{"bind"}
+}
+
+func readonlyBindRemountOptions() []string {
+	return []string{"bind", "remount", "ro"}
+}
+
 // NodeStageVolume mounts the volume to a staging path
 func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	klog.V(4).Infof("NodeStageVolume called with volumeID: %s", req.GetVolumeId())
@@ -112,7 +142,8 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	klog.V(4).Infof("Staging volume %s (SVM: %s, VIP: %s, Path: %s) to %s", volumeID, svmName, vip, volumePath, stagingTargetPath)
 
 	// Ensure per-SVM shared mount exists
-	svmMountPath, err := d.mountManager.EnsureSVMMount(ctx, svmName, vip)
+	nfsMountOptions := nfsMountOptionsFromCapability(req.GetVolumeCapability())
+	svmMountPath, err := d.mountManager.EnsureSVMMount(ctx, svmName, vip, nfsMountOptions)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to ensure SVM mount: %v", err)
 	}
@@ -126,7 +157,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	sourcePath := filepath.Join(svmMountPath, volumePath)
 
 	// Check if already mounted
-	mounter := mount.New("")
+	mounter := mountutils.New("")
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -143,13 +174,12 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	// Create bind mount from SVM mount to staging path
 	klog.V(4).Infof("Creating bind mount from %s to %s", sourcePath, stagingTargetPath)
 
-	mountOptions := []string{"bind"}
-	if err := mounter.Mount(sourcePath, stagingTargetPath, "", mountOptions); err != nil {
+	if err := mounter.Mount(sourcePath, stagingTargetPath, "", bindMountOptions()); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to bind mount: %v", err)
 	}
 
 	// Record volume staging in NodeState
-	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, stagingTargetPath); err != nil {
+	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, stagingTargetPath, nfsMountOptions); err != nil {
 		klog.Warningf("Failed to record volume staging in node state, rolling back mount: %v", err)
 
 		// Best-effort: revert in-memory state (may also fail to persist)
@@ -202,7 +232,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	}
 
 	// Unmount the staging path
-	mounter := mount.New("")
+	mounter := mountutils.New("")
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -287,7 +317,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	// Check if already mounted
-	mounter := mount.New("")
+	mounter := mountutils.New("")
 	notMnt, err := mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -304,21 +334,8 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	// Determine if read-only mount is requested
 	readonly := req.GetReadonly()
 
-	// Prepare mount options (exclude 'ro' for initial bind mount)
-	mountOptions := []string{"bind"}
-
-	// Get additional mount options from capability
-	capability := req.GetVolumeCapability()
-	if mountCap := capability.GetMount(); mountCap != nil {
-		for _, opt := range mountCap.GetMountFlags() {
-			// Skip 'ro' flag - will be applied in remount if needed
-			if opt != "ro" && opt != "rw" {
-				mountOptions = append(mountOptions, opt)
-			}
-		}
-	}
-
 	// Step 1: Create initial bind mount
+	mountOptions := bindMountOptions()
 	klog.V(4).Infof("Creating bind mount from %s to %s with options: %v", stagingTargetPath, targetPath, mountOptions)
 	if err := mounter.Mount(stagingTargetPath, targetPath, "", mountOptions); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to bind mount: %v", err)
@@ -328,8 +345,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	// (Linux requires separate remount to properly enforce read-only on bind mounts)
 	if readonly {
 		klog.V(4).Infof("Remounting %s as read-only", targetPath)
-		remountOptions := append(mountOptions, "ro", "remount")
-		if err := mounter.Mount(stagingTargetPath, targetPath, "", remountOptions); err != nil {
+		if err := mounter.Mount(stagingTargetPath, targetPath, "", readonlyBindRemountOptions()); err != nil {
 			// Rollback: unmount the initial bind mount
 			klog.Errorf("Failed to remount as read-only, rolling back: %v", err)
 			if unmountErr := mounter.Unmount(targetPath); unmountErr != nil {
@@ -386,7 +402,7 @@ func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublish
 	klog.V(4).Infof("Unpublishing volume %s from %s", volumeID, targetPath)
 
 	// Unmount the target path
-	mounter := mount.New("")
+	mounter := mountutils.New("")
 	notMnt, err := mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {

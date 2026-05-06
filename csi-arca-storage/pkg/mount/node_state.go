@@ -13,11 +13,12 @@ import (
 
 // VolumeStaging represents a staged volume's information
 type VolumeStaging struct {
-	VolumeID       string   `json:"volume_id"`
-	SVMName        string   `json:"svm_name"`
-	VIP            string   `json:"vip"`
-	StagingPath    string   `json:"staging_path"`
-	PublishedPaths []string `json:"published_paths"` // Target paths where volume is published
+	VolumeID        string   `json:"volume_id"`
+	SVMName         string   `json:"svm_name"`
+	VIP             string   `json:"vip"`
+	StagingPath     string   `json:"staging_path"`
+	NFSMountOptions []string `json:"nfs_mount_options,omitempty"`
+	PublishedPaths  []string `json:"published_paths"` // Target paths where volume is published
 }
 
 // NodeStateData represents the persistent state on a node
@@ -31,6 +32,12 @@ type NodeState struct {
 	stateFilePath string
 	mu            sync.RWMutex
 	data          *NodeStateData
+}
+
+// SVMMountInfo represents the information needed to restore an SVM mount.
+type SVMMountInfo struct {
+	VIP             string
+	NFSMountOptions []string
 }
 
 // NewNodeState creates a new NodeState manager
@@ -65,15 +72,16 @@ func NewNodeState(stateFilePath string) (*NodeState, error) {
 }
 
 // RecordVolumeStaging records a volume staging operation (atomic, with fsync)
-func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, stagingPath string) error {
+func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, stagingPath string, nfsMountOptions []string) error {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
 
 	ns.data.Volumes[volumeID] = &VolumeStaging{
-		VolumeID:    volumeID,
-		SVMName:     svmName,
-		VIP:         vip,
-		StagingPath: stagingPath,
+		VolumeID:        volumeID,
+		SVMName:         svmName,
+		VIP:             vip,
+		StagingPath:     stagingPath,
+		NFSMountOptions: append([]string(nil), nfsMountOptions...),
 	}
 
 	return ns.persistLocked()
@@ -154,6 +162,25 @@ func (ns *NodeState) GetUniqueSVMs() map[string]string {
 	svms := make(map[string]string) // svmName -> VIP
 	for _, staging := range ns.data.Volumes {
 		svms[staging.SVMName] = staging.VIP
+	}
+
+	return svms
+}
+
+// GetUniqueSVMMounts returns one restore record per SVM from staged volumes.
+func (ns *NodeState) GetUniqueSVMMounts() map[string]SVMMountInfo {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+
+	svms := make(map[string]SVMMountInfo)
+	for _, staging := range ns.data.Volumes {
+		if _, exists := svms[staging.SVMName]; exists {
+			continue
+		}
+		svms[staging.SVMName] = SVMMountInfo{
+			VIP:             staging.VIP,
+			NFSMountOptions: append([]string(nil), staging.NFSMountOptions...),
+		}
 	}
 
 	return svms

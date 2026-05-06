@@ -61,9 +61,9 @@ func (m *MountManager) reconcile() error {
 	klog.Info("Reconciling SVM mounts from node state")
 
 	// Get unique SVMs from NodeState
-	svms := m.nodeState.GetUniqueSVMs()
+	svms := m.nodeState.GetUniqueSVMMounts()
 
-	for svmName, vip := range svms {
+	for svmName, info := range svms {
 		mountPath := m.getMountPath(svmName)
 
 		// Check if already mounted
@@ -75,8 +75,8 @@ func (m *MountManager) reconcile() error {
 
 		if !isMounted {
 			// Mount is missing - restore it
-			klog.Infof("Restoring missing mount for SVM %s (VIP: %s)", svmName, vip)
-			if err := m.mountSVMLocked(svmName, vip); err != nil {
+			klog.Infof("Restoring missing mount for SVM %s (VIP: %s)", svmName, info.VIP)
+			if err := m.mountSVMLocked(svmName, info.VIP, info.NFSMountOptions); err != nil {
 				klog.Errorf("Failed to restore mount for SVM %s: %v", svmName, err)
 				// Continue with other SVMs
 				continue
@@ -85,7 +85,7 @@ func (m *MountManager) reconcile() error {
 			// Mount exists - record it
 			m.mounts[svmName] = &SVMMount{
 				SVMName:   svmName,
-				VIP:       vip,
+				VIP:       info.VIP,
 				MountPath: mountPath,
 			}
 			klog.V(4).Infof("Found existing mount for SVM %s at %s", svmName, mountPath)
@@ -97,7 +97,7 @@ func (m *MountManager) reconcile() error {
 }
 
 // EnsureSVMMount ensures an SVM is mounted (creates mount if needed)
-func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string) (string, error) {
+func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string, nfsMountOptions []string) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -119,12 +119,12 @@ func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string) 
 	}
 
 	// Mount doesn't exist - create it
-	return m.ensureSVMMountLocked(svmName, vip)
+	return m.ensureSVMMountLocked(svmName, vip, nfsMountOptions)
 }
 
 // ensureSVMMountLocked mounts an SVM (must hold lock)
-func (m *MountManager) ensureSVMMountLocked(svmName, vip string) (string, error) {
-	if err := m.mountSVMLocked(svmName, vip); err != nil {
+func (m *MountManager) ensureSVMMountLocked(svmName, vip string, nfsMountOptions []string) (string, error) {
+	if err := m.mountSVMLocked(svmName, vip, nfsMountOptions); err != nil {
 		return "", err
 	}
 
@@ -132,7 +132,7 @@ func (m *MountManager) ensureSVMMountLocked(svmName, vip string) (string, error)
 }
 
 // mountSVMLocked performs the actual NFS mount (must hold lock)
-func (m *MountManager) mountSVMLocked(svmName, vip string) error {
+func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []string) error {
 	mountPath := m.getMountPath(svmName)
 
 	// Create mount point directory
@@ -140,17 +140,12 @@ func (m *MountManager) mountSVMLocked(svmName, vip string) error {
 		return fmt.Errorf("failed to create mount point: %w", err)
 	}
 
-	// NFS mount options
 	nfsSource := fmt.Sprintf("%s:/exports/%s", vip, svmName)
-	options := []string{
-		"vers=4.2",
-		"rsize=1048576",
-		"wsize=1048576",
-		"hard",
-		"timeo=600",
-		"retrans=2",
-		"noresvport",
+	options := nfsMountOptions
+	if len(options) == 0 {
+		options = GetDefaultNFSOptions()
 	}
+	options = append([]string(nil), options...)
 
 	klog.Infof("Mounting NFS: %s -> %s", nfsSource, mountPath)
 
