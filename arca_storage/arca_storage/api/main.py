@@ -34,7 +34,7 @@ from arca_storage.api.models import (
     VolumeResponse,
 )
 from arca_storage.api.services import directory_service, export_service, qos_service, snapshot_service, svm_service, volume_service
-from arca_storage.errors import ArcaError
+from arca_storage.errors import ArcaError, InvalidArgumentError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
@@ -89,6 +89,12 @@ async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
             "error": exc.to_dict(),
         },
     )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    """Return client errors for validation failures raised below FastAPI."""
+    return await arca_error_handler(request, InvalidArgumentError(str(exc)))
 
 
 @app.exception_handler(Exception)
