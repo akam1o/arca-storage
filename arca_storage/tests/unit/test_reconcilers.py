@@ -317,6 +317,27 @@ class TestExportReconciler:
         assert result.status.export_id == 1
         assert adapters.ganesha.exports["svm1"][0]["path"] == "/export/svm1/vol1"
 
+    def test_create_export_commits_reservation_before_render(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        original_render = adapters.ganesha.render_config
+
+        def assert_reservation_visible(svm_name, exports, *, bind_addr=None, host_network=False):
+            observer = StateDB(db._db_path)
+            try:
+                record = observer.get_export("svm1", "vol1", "10.0.0.0/24")
+            finally:
+                observer.close()
+            assert record is not None
+            assert record["status"]["phase"] == Phase.CREATING.value
+            assert record["status"]["export_id"] == 1
+            return original_render(svm_name, exports, bind_addr=bind_addr, host_network=host_network)
+
+        adapters.ganesha.render_config = assert_reservation_visible
+
+        result = rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")))
+
+        assert result.status.phase == Phase.READY
+
     def test_create_export_rejects_existing_key_without_overwrite(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)
         created = rec.reconcile(
@@ -365,6 +386,29 @@ class TestExportReconciler:
 
         assert len(db.list_exports(svm="svm1")) == 0
         assert adapters.ganesha.exports["svm1"] == []
+
+    def test_delete_export_commits_deleting_before_render(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        created = rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")))
+        assert created.status.phase == Phase.READY
+        original_render = adapters.ganesha.render_config
+
+        def assert_delete_visible(svm_name, exports, *, bind_addr=None, host_network=False):
+            observer = StateDB(db._db_path)
+            try:
+                record = observer.get_export("svm1", "vol1", "10.0.0.0/24")
+            finally:
+                observer.close()
+            assert record is not None
+            assert record["status"]["phase"] == Phase.DELETING.value
+            return original_render(svm_name, exports, bind_addr=bind_addr, host_network=host_network)
+
+        adapters.ganesha.render_config = assert_delete_visible
+        created.status.phase = Phase.DELETING
+
+        rec.reconcile(created)
+
+        assert len(db.list_exports(svm="svm1")) == 0
 
     def test_concurrent_export_creates_allocate_unique_ids(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)
