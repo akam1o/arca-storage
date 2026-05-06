@@ -17,8 +17,13 @@ from arca_storage.config import DEFAULT_CONFIG_PATH, load_settings
 app = typer.Typer(help="Bootstrap initial system/cluster configuration")
 
 
-def _run(cmd: list[str], *, check: bool = True) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, capture_output=True, text=True, check=check)
+def _run(
+    cmd: list[str],
+    *,
+    check: bool = True,
+    input: str | None = None,
+) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(cmd, input=input, capture_output=True, text=True, check=check)
 
 
 def _run_shell(command: str) -> subprocess.CompletedProcess[str]:
@@ -32,6 +37,14 @@ def _resource_path(*parts: str) -> Path:
 
 def _render_env(cfg) -> str:
     return cfg.to_systemd_env()
+
+
+def _pcs_host_auth(nodes: list[str], hacluster_password: str) -> subprocess.CompletedProcess[str]:
+    return _run(
+        ["pcs", "host", "auth", *nodes, "-u", "hacluster"],
+        input=f"{hacluster_password}\n",
+        check=False,
+    )
 
 
 def _write_env_file(cfg) -> Path:
@@ -283,7 +296,7 @@ def pacemaker_cluster(
         )
 
         # Authenticate and setup
-        auth = _run(["pcs", "host", "auth", *node_list, "-u", "hacluster", "-p", hacluster_password], check=False)
+        auth = _pcs_host_auth(node_list, hacluster_password)
         if auth.returncode != 0 and "Authorized" not in (auth.stdout or ""):
             raise RuntimeError(f"pcs host auth failed: {auth.stderr.strip()}")
 
