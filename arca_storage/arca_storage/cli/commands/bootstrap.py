@@ -21,7 +21,7 @@ def _run(
     cmd: list[str],
     *,
     check: bool = True,
-    input: str | None = None,
+    input: Optional[str] = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(cmd, input=input, capture_output=True, text=True, check=check)
 

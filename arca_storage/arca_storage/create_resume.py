@@ -6,7 +6,7 @@ import logging
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from typing import Any
+from typing import Any, Optional
 from uuid import uuid4
 
 from arca_storage.models.base import Phase
@@ -22,17 +22,17 @@ def new_create_owner() -> str:
     return uuid4().hex
 
 
-def lease_expiration(now: datetime | None = None) -> datetime:
+def lease_expiration(now: Optional[datetime] = None) -> datetime:
     return (now or datetime.now(timezone.utc)) + CREATE_LEASE_DURATION
 
 
-def assign_create_lease(status: Any, owner: str, now: datetime | None = None) -> None:
+def assign_create_lease(status: Any, owner: str, now: Optional[datetime] = None) -> None:
     status.phase = Phase.CREATING
     status.create_owner = owner
     status.create_lease_expires_at = lease_expiration(now)
 
 
-def extend_create_lease(status: Any, owner: str, now: datetime | None = None) -> bool:
+def extend_create_lease(status: Any, owner: str, now: Optional[datetime] = None) -> bool:
     phase = getattr(status, "phase", None)
     phase_value = phase.value if isinstance(phase, Phase) else phase
     if phase_value not in ACTIVE_CREATE_PHASES:
@@ -47,7 +47,7 @@ def clear_create_lease(status: Any) -> None:
     status.create_lease_expires_at = None
 
 
-def create_lease_expired(record: dict[str, Any], now: datetime | None = None) -> bool:
+def create_lease_expired(record: dict[str, Any], now: Optional[datetime] = None) -> bool:
     status = record.get("status", {})
     if status.get("phase") not in ACTIVE_CREATE_PHASES:
         return False

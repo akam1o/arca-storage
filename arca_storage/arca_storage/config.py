@@ -5,6 +5,7 @@ from __future__ import annotations
 import ipaddress
 import os
 from pathlib import Path
+from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -148,7 +149,7 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def load_settings(path: Path | str | None = None, *, require_file: bool = True) -> ArcaSettings:
+def load_settings(path: Optional[Union[Path, str]] = None, *, require_file: bool = True) -> ArcaSettings:
     """Load and validate configuration.
 
     Resolution order:

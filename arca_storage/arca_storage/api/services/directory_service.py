@@ -10,7 +10,7 @@ from __future__ import annotations
 
 import math
 import zlib
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
 from arca_storage.api.services import export_service, svm_service, volume_service
@@ -188,7 +188,7 @@ def _csi_root_squash(ctx: Any) -> bool:
     return bool(getattr(csi, "root_squash", True))
 
 
-def _quota_bytes_to_gib(quota_bytes: int | None) -> int:
+def _quota_bytes_to_gib(quota_bytes: Optional[int]) -> int:
     if quota_bytes is None:
         return 1
     return max(1, int(math.ceil(quota_bytes / GIB)))

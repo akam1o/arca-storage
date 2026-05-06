@@ -207,7 +207,7 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
     return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec, *, owner: str | None = None) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec, *, owner: Optional[str] = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})

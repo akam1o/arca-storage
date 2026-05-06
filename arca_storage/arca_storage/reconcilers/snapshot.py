@@ -91,7 +91,7 @@ class SnapshotReconciler:
             self._persist(snapshot, snapshot.status.message)
         return snapshot
 
-    def _persist(self, snapshot: Snapshot, detail: str, *, expected_create_owner: str | None = None) -> None:
+    def _persist(self, snapshot: Snapshot, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
         if not self.db.upsert_snapshot(snapshot, expected_create_owner=expected_create_owner):
             raise CreateLeaseLostError("Snapshot", f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}")
         self.db.log_operation(

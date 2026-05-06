@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from ipaddress import IPv4Interface
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any, Generator, Optional, Union
 
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
 from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError
@@ -93,7 +93,7 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _svm_network_key(spec: dict[str, Any]) -> tuple[int | None, str] | None:
+def _svm_network_key(spec: dict[str, Any]) -> Optional[tuple[Optional[int], str]]:
     ip_cidr = str(spec.get("ip_cidr") or "")
     if not ip_cidr:
         return None
@@ -113,7 +113,7 @@ def encode_cursor(values: list[str]) -> str:
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(cursor: str | None, expected_parts: int) -> list[str] | None:
+def _decode_cursor(cursor: Optional[str], expected_parts: int) -> Optional[list[str]]:
     if not cursor:
         return None
 
@@ -136,7 +136,7 @@ def _decode_cursor(cursor: str | None, expected_parts: int) -> list[str] | None:
 class StateDB:
     """Thread-safe SQLite state store with WAL journaling."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Union[Path, str]) -> None:
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
@@ -208,7 +208,7 @@ class StateDB:
         except sqlite3.IntegrityError as e:
             raise AlreadyExistsError("SVM", svm.spec.name) from e
 
-    def upsert_svm(self, svm: Any, *, expected_create_owner: str | None = None) -> bool:
+    def upsert_svm(self, svm: Any, *, expected_create_owner: Optional[str] = None) -> bool:
         """Insert or update an SVM record."""
         now = _now_iso()
         with self.transaction(immediate=True) as conn:
@@ -244,7 +244,7 @@ class StateDB:
             ),
         )
 
-    def get_svm(self, name: str) -> dict[str, Any] | None:
+    def get_svm(self, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         cur = conn.execute("SELECT * FROM svms WHERE name = ?", (name,))
         row = cur.fetchone()
@@ -257,9 +257,9 @@ class StateDB:
         name: str,
         owner: str,
         *,
-        expected_spec: dict[str, Any] | None = None,
+        expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "svms",
             {"name": name},
@@ -326,7 +326,7 @@ class StateDB:
         except sqlite3.IntegrityError as e:
             raise AlreadyExistsError("Volume", f"{volume.spec.svm}/{volume.spec.name}") from e
 
-    def upsert_volume(self, volume: Any, *, expected_create_owner: str | None = None) -> bool:
+    def upsert_volume(self, volume: Any, *, expected_create_owner: Optional[str] = None) -> bool:
         now = _now_iso()
         key = {"svm": volume.spec.svm, "name": volume.spec.name}
         with self.transaction(immediate=expected_create_owner is not None) as conn:
@@ -358,7 +358,7 @@ class StateDB:
             ),
         )
 
-    def get_volume(self, svm: str, name: str) -> dict[str, Any] | None:
+    def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
         row = cur.fetchone()
@@ -372,9 +372,9 @@ class StateDB:
         name: str,
         owner: str,
         *,
-        expected_spec: dict[str, Any] | None = None,
+        expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "volumes",
             {"svm": svm, "name": name},
@@ -446,7 +446,7 @@ class StateDB:
                 f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
             ) from e
 
-    def upsert_snapshot(self, snapshot: Any, *, expected_create_owner: str | None = None) -> bool:
+    def upsert_snapshot(self, snapshot: Any, *, expected_create_owner: Optional[str] = None) -> bool:
         now = _now_iso()
         key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
         with self.transaction(immediate=expected_create_owner is not None) as conn:
@@ -486,9 +486,9 @@ class StateDB:
         name: str,
         owner: str,
         *,
-        expected_spec: dict[str, Any] | None = None,
+        expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "snapshots",
             {"svm": svm, "volume": volume, "name": name},
@@ -543,7 +543,7 @@ class StateDB:
 
     # ---- Export operations ----
 
-    def upsert_export(self, export: Any, *, expected_create_owner: str | None = None) -> bool:
+    def upsert_export(self, export: Any, *, expected_create_owner: Optional[str] = None) -> bool:
         now = _now_iso()
         with self.transaction(immediate=expected_create_owner is not None) as conn:
             return self._upsert_export_conn(conn, export, now=now, expected_create_owner=expected_create_owner)
@@ -554,7 +554,7 @@ class StateDB:
         export: Any,
         *,
         now: Optional[str] = None,
-        expected_create_owner: str | None = None,
+        expected_create_owner: Optional[str] = None,
     ) -> bool:
         now = now or _now_iso()
         key = {"svm": export.spec.svm, "volume": export.spec.volume, "client": export.spec.client}
@@ -594,7 +594,7 @@ class StateDB:
         conn = self._conn()
         return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit, cursor=cursor)
 
-    def get_export(self, svm: str, volume: str, client: str) -> dict[str, Any] | None:
+    def get_export(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         return self._get_export_conn(conn, svm, volume, client)
 
@@ -605,9 +605,9 @@ class StateDB:
         client: str,
         owner: str,
         *,
-        expected_spec: dict[str, Any] | None = None,
+        expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "exports",
             {"svm": svm, "volume": volume, "client": client},
@@ -625,7 +625,7 @@ class StateDB:
         svm: str,
         volume: str,
         client: str,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         cur = conn.execute(
             "SELECT * FROM exports WHERE svm = ? AND volume = ? AND client = ?",
             (svm, volume, client),
@@ -715,9 +715,9 @@ class StateDB:
         key: dict[str, str],
         owner: str,
         *,
-        expected_spec: dict[str, Any] | None = None,
+        expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         with self.transaction(immediate=True) as conn:
             record = self._get_resource_by_key_conn(conn, table, key)
             if record is None:
@@ -743,7 +743,7 @@ class StateDB:
         conn: sqlite3.Connection,
         table: str,
         key: dict[str, str],
-        expected_owner: str | None,
+        expected_owner: Optional[str],
         *,
         allow_missing: bool = False,
     ) -> bool:
@@ -771,7 +771,7 @@ class StateDB:
         conn: sqlite3.Connection,
         table: str,
         key: dict[str, str],
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         where = " AND ".join(f"{column} = ?" for column in key)
         cur = conn.execute(f"SELECT * FROM {table} WHERE {where}", tuple(key.values()))
         row = cur.fetchone()

@@ -288,7 +288,9 @@ def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
     }
 
 
-def _can_resume_clone_volume(record: Dict[str, Any] | None, requested_spec: VolumeSpec, *, owner: str | None = None) -> bool:
+def _can_resume_clone_volume(
+    record: Optional[Dict[str, Any]], requested_spec: VolumeSpec, *, owner: Optional[str] = None
+) -> bool:
     if not record:
         return False
     status = record.get("status", {})
@@ -457,14 +459,14 @@ def _persist_clone_volume(
     volume: Volume,
     detail: str,
     *,
-    expected_create_owner: str | None = None,
+    expected_create_owner: Optional[str] = None,
 ) -> None:
     if not ctx.db.upsert_volume(volume, expected_create_owner=expected_create_owner):
         raise CreateLeaseLostError("Volume", f"{volume.spec.svm}/{volume.spec.name}")
     ctx.db.log_operation("Volume", volume.metadata.id, "clone", volume.status.phase.value, detail)
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec, *, owner: str | None = None) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec, *, owner: Optional[str] = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})

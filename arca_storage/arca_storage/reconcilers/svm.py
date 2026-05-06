@@ -200,7 +200,7 @@ class SVMReconciler:
 
     # ---- helpers ----
 
-    def _persist(self, svm: SVM, detail: str, *, expected_create_owner: str | None = None) -> None:
+    def _persist(self, svm: SVM, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
         if not self.db.upsert_svm(svm, expected_create_owner=expected_create_owner):
             raise CreateLeaseLostError("SVM", svm.spec.name)
         self.db.log_operation("SVM", svm.metadata.id, "reconcile", svm.status.phase.value, detail)

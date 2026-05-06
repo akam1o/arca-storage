@@ -5,7 +5,7 @@ XFS filesystem adapter.
 from __future__ import annotations
 
 import os
-from typing import Protocol, runtime_checkable
+from typing import Optional, Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.errors import NotFoundError, PreconditionFailedError
@@ -14,7 +14,7 @@ from arca_storage.errors import NotFoundError, PreconditionFailedError
 @runtime_checkable
 class XFSAdapter(Protocol):
     def format_xfs(self, device: str) -> None: ...
-    def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None: ...
+    def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None: ...
     def umount(self, mount_point: str) -> None: ...
     def grow(self, mount_point: str) -> None: ...
     def is_mounted(self, mount_point: str) -> bool: ...
@@ -54,7 +54,7 @@ class SubprocessXFSAdapter:
             timeout=self._timeout,
         )
 
-    def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None:
+    def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None:
         os.makedirs(mount_point, exist_ok=True)
         mounted_source = self._mounted_source(mount_point)
         if mounted_source:
@@ -96,7 +96,7 @@ class SubprocessXFSAdapter:
         )
         return result.returncode == 0
 
-    def _mounted_source(self, mount_point: str) -> str | None:
+    def _mounted_source(self, mount_point: str) -> Optional[str]:
         result = run_cmd(
             ["findmnt", "--mountpoint", mount_point, "--noheadings", "--output", "SOURCE"],
             timeout=self._timeout,
@@ -126,7 +126,7 @@ class FakeXFSAdapter:
     def format_xfs(self, device: str) -> None:
         self.formatted.add(device)
 
-    def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None:
+    def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None:
         self.mounts[mount_point] = device
         self.mount_options[mount_point] = list(extra_options or [])
 

@@ -5,6 +5,7 @@ Uvicorn server entrypoint for Arca Storage API.
 from __future__ import annotations
 
 import argparse
+from typing import Optional
 
 import uvicorn
 
@@ -19,7 +20,7 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def main(argv: list[str] | None = None) -> int:
+def main(argv: Optional[list[str]] = None) -> int:
     args = build_parser().parse_args(argv)
     cfg = load_settings()
     host = args.host or cfg.api.bind

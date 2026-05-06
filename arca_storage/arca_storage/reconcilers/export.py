@@ -167,7 +167,7 @@ class ExportReconciler:
         export: Export,
         detail: str,
         *,
-        expected_create_owner: str | None = None,
+        expected_create_owner: Optional[str] = None,
     ) -> None:
         with self.db.transaction(immediate=True) as conn:
             self._persist_conn(conn, export, detail, expected_create_owner=expected_create_owner)
@@ -178,7 +178,7 @@ class ExportReconciler:
         export: Export,
         detail: str,
         *,
-        expected_create_owner: str | None = None,
+        expected_create_owner: Optional[str] = None,
     ) -> None:
         if not self.db._upsert_export_conn(conn, export, expected_create_owner=expected_create_owner):
             raise CreateLeaseLostError("Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}")
@@ -192,7 +192,7 @@ class ExportReconciler:
         svm_name: str,
         export_dir: str,
         *,
-        include_transient_key: tuple[str, str, str] | None = None,
+        include_transient_key: Optional[tuple[str, str, str]] = None,
     ) -> list[dict]:
         records = self.db._list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
         return _records_to_config_entries(records, export_dir, include_transient_key=include_transient_key)
@@ -216,7 +216,7 @@ class ExportReconciler:
         svm_name: str,
         export_dir: str,
         *,
-        include_transient_key: tuple[str, str, str] | None = None,
+        include_transient_key: Optional[tuple[str, str, str]] = None,
     ) -> tuple[list[dict], Optional[str], bool]:
         with self.db.transaction() as conn:
             config_entries = self._config_entries_for_svm(
@@ -234,7 +234,7 @@ class ExportReconciler:
         export_dir: str,
         *,
         host_network: bool,
-        include_transient_key: tuple[str, str, str] | None = None,
+        include_transient_key: Optional[tuple[str, str, str]] = None,
     ) -> None:
         """Best-effort restore of the active config to DB-ready exports."""
         try:
@@ -292,7 +292,7 @@ def _records_to_config_entries(
     records: list[dict],
     export_dir: str,
     *,
-    include_transient_key: tuple[str, str, str] | None = None,
+    include_transient_key: Optional[tuple[str, str, str]] = None,
 ) -> list[dict]:
     entries = []
     for record in records:

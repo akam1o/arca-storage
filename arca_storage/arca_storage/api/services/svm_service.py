@@ -197,7 +197,7 @@ def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> 
         )
 
 
-def _svm_to_dict(svm: SVM, ctx: Any | None = None) -> Dict[str, Any]:
+def _svm_to_dict(svm: SVM, ctx: Optional[Any] = None) -> Dict[str, Any]:
     vip = _vip_from_ip_cidr(svm.spec.ip_cidr)
     return {
         "name": svm.spec.name,
@@ -214,7 +214,7 @@ def _svm_to_dict(svm: SVM, ctx: Any | None = None) -> Dict[str, Any]:
     }
 
 
-def _svm_record_to_dict(record: Dict[str, Any], ctx: Any | None = None) -> Dict[str, Any]:
+def _svm_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) -> Dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     ip_cidr = str(spec.get("ip_cidr") or "")
@@ -241,7 +241,7 @@ def _vip_from_ip_cidr(ip_cidr: str) -> str:
         return ip_cidr.split("/", 1)[0] if ip_cidr else ""
 
 
-def _export_root(svm_name: str, ctx: Any | None = None) -> str:
+def _export_root(svm_name: str, ctx: Optional[Any] = None) -> str:
     ctx = ctx or get_context()
     export_dir = str(ctx.settings.to_reconciler_config().get("export_dir", "/exports")).rstrip("/")
     if not svm_name:
@@ -262,7 +262,7 @@ def _parse_status(record: Dict[str, Any], kind: str) -> Any:
     return SVMStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec, *, owner: str | None = None) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec, *, owner: Optional[str] = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})

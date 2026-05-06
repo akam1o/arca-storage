@@ -29,7 +29,7 @@ from arca_storage.reconcilers.volume import VolumeReconciler
 class AppContext:
     """Singleton-ish container for all application dependencies."""
 
-    def __init__(self, settings: ArcaSettings | None = None) -> None:
+    def __init__(self, settings: Optional[ArcaSettings] = None) -> None:
         self.settings = settings or load_settings()
         self.db = StateDB(self.settings.state.db_path)
 
@@ -64,7 +64,7 @@ def get_context() -> AppContext:
     return _ctx
 
 
-def reset_context(ctx: AppContext | None = None) -> None:
+def reset_context(ctx: Optional[AppContext] = None) -> None:
     """Replace the global context (useful for testing)."""
     global _ctx
     old_ctx = _ctx

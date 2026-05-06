@@ -187,7 +187,7 @@ def list_volumes(
     return {"items": items, "next_cursor": next_cursor}
 
 
-def _volume_to_dict(vol: Volume, ctx: Any | None = None) -> Dict[str, Any]:
+def _volume_to_dict(vol: Volume, ctx: Optional[Any] = None) -> Dict[str, Any]:
     ctx = ctx or get_context()
     return {
         "name": vol.spec.name,
@@ -204,7 +204,7 @@ def _volume_to_dict(vol: Volume, ctx: Any | None = None) -> Dict[str, Any]:
     }
 
 
-def _volume_record_to_dict(record: Dict[str, Any], ctx: Any | None = None) -> Dict[str, Any]:
+def _volume_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) -> Dict[str, Any]:
     ctx = ctx or get_context()
     spec = record.get("spec", {})
     status = record.get("status", {})
@@ -224,7 +224,7 @@ def _volume_record_to_dict(record: Dict[str, Any], ctx: Any | None = None) -> Di
     }
 
 
-def build_volume_export_path(ctx: Any, svm: str | None, mount_path: str | None) -> str | None:
+def build_volume_export_path(ctx: Any, svm: Optional[str], mount_path: Optional[str]) -> Optional[str]:
     """Return the NFS export location for a mounted volume."""
     if not svm or not mount_path:
         return None
@@ -268,7 +268,7 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return VolumeStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec, *, owner: str | None = None) -> bool:
+def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec, *, owner: Optional[str] = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})
