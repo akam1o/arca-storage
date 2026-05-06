@@ -49,6 +49,7 @@ type CloneVolumeFromSnapshotRequest struct {
 // RestoreSnapshotRequest represents a request to restore from snapshot
 type RestoreSnapshotRequest struct {
 	SVMName      string `json:"svm_name"`
+	SourceVolume string `json:"source_volume"`
 	SnapshotPath string `json:"snapshot_path"`
 	TargetPath   string `json:"target_path"`
 }

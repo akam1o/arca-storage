@@ -55,9 +55,17 @@ func (c *Client) CloneVolumeFromSnapshot(ctx context.Context, req *CloneVolumeFr
 
 // RestoreSnapshot restores a volume from snapshot (reflink clone)
 func (c *Client) RestoreSnapshot(ctx context.Context, req *RestoreSnapshotRequest) error {
+	if req == nil {
+		return fmt.Errorf("restore snapshot request is required")
+	}
+	if req.SourceVolume == "" {
+		return fmt.Errorf("source volume is required")
+	}
+
 	return c.CloneVolumeFromSnapshot(ctx, &CloneVolumeFromSnapshotRequest{
-		Name:     req.TargetPath,
-		SVM:      req.SVMName,
-		Snapshot: req.SnapshotPath,
+		Name:         req.TargetPath,
+		SVM:          req.SVMName,
+		SourceVolume: req.SourceVolume,
+		Snapshot:     req.SnapshotPath,
 	})
 }

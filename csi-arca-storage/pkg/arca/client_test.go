@@ -156,3 +156,57 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 		t.Fatalf("DeleteSnapshot query = %s", deleteQuery)
 	}
 }
+
+func TestRestoreSnapshotUsesSourceVolumeInClonePath(t *testing.T) {
+	var cloneBody map[string]interface{}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/volumes/pvc-source/clone" {
+			http.NotFound(w, r)
+			return
+		}
+
+		body, _ := io.ReadAll(r.Body)
+		if err := json.Unmarshal(body, &cloneBody); err != nil {
+			t.Fatalf("clone body unmarshal error = %v", err)
+		}
+		w.WriteHeader(http.StatusCreated)
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"volume":{"name":"pvc-target"}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if err := client.RestoreSnapshot(context.Background(), &RestoreSnapshotRequest{
+		SVMName:      "k8s-default",
+		SourceVolume: "pvc-source",
+		SnapshotPath: "snap-a",
+		TargetPath:   "pvc-target",
+	}); err != nil {
+		t.Fatalf("RestoreSnapshot() error = %v", err)
+	}
+
+	if cloneBody["name"] != "pvc-target" || cloneBody["svm"] != "k8s-default" || cloneBody["snapshot"] != "snap-a" {
+		t.Fatalf("RestoreSnapshot clone body = %#v", cloneBody)
+	}
+	if _, ok := cloneBody["source_volume"]; ok {
+		t.Fatalf("RestoreSnapshot clone body leaked source_volume = %#v", cloneBody)
+	}
+}
+
+func TestRestoreSnapshotRequiresSourceVolume(t *testing.T) {
+	var client Client
+
+	err := client.RestoreSnapshot(context.Background(), &RestoreSnapshotRequest{
+		SVMName:      "k8s-default",
+		SnapshotPath: "snap-a",
+		TargetPath:   "pvc-target",
+	})
+	if err == nil || err.Error() != "source volume is required" {
+		t.Fatalf("RestoreSnapshot() error = %v", err)
+	}
+}
