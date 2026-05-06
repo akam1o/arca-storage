@@ -137,6 +137,21 @@ def get_svm_capacity(name: str) -> Dict[str, Any]:
     }
 
 
+def require_svm_ready_record(record: Dict[str, Any], name: str) -> None:
+    """Reject dependent operations until the SVM reconciler has completed."""
+    phase = str(record.get("status", {}).get("phase") or "")
+    if phase == Phase.READY.value:
+        return
+    raise PreconditionFailedError(
+        f"SVM '{name}' is not ready",
+        {
+            "resource": "SVM",
+            "name": name,
+            "phase": phase,
+        },
+    )
+
+
 def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> None:
     """Delete an SVM after dependent resources are gone or safely cascaded."""
     validate_name(name)

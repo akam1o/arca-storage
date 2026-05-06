@@ -85,6 +85,26 @@ class TestCreateVolume:
         assert response.json()["error"]["code"] == "NOT_FOUND"
 
     @pytest.mark.integration
+    def test_create_volume_rejects_unready_svm(self, fake_context):
+        from arca_storage.models.svm import SVM, SVMSpec
+
+        client = TestClient(app)
+        fake_context.db.insert_svm(
+            SVM(spec=SVMSpec(name="tenant_a", vlan_id=100, ip_cidr="192.168.10.5/24", gateway="192.168.10.1"))
+        )
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"] == {
+            "resource": "SVM",
+            "name": "tenant_a",
+            "phase": "Pending",
+        }
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+
+    @pytest.mark.integration
     def test_create_volume_rejects_duplicate_without_mutating_existing(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)

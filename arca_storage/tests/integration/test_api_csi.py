@@ -114,6 +114,36 @@ def test_csi_directory_create_reports_effective_gib_quota(fake_context):
     assert fake_context.db.get_volume(svm_name, volume_path)["spec"]["size_gib"] == 2
 
 
+def test_csi_directory_rejects_unready_svm(fake_context):
+    from arca_storage.models.svm import SVM, SVMSpec
+
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+    fake_context.db.insert_svm(
+        SVM(spec=SVMSpec(name=svm_name, vlan_id=100, ip_cidr="192.168.10.5/24", gateway="192.168.10.1"))
+    )
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+
+    assert response.status_code == 412
+    assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+    assert response.json()["error"]["details"] == {
+        "resource": "SVM",
+        "name": svm_name,
+        "phase": "Pending",
+    }
+    assert fake_context.db.get_volume(svm_name, volume_path) is None
+    assert fake_context.adapters.ganesha.exports.get(svm_name, []) == []
+
+
 def test_csi_directory_rejects_existing_unready_volume(fake_context):
     from arca_storage.models.volume import Volume, VolumeSpec
 

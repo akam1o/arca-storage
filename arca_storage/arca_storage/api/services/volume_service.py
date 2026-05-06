@@ -23,6 +23,7 @@ from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgume
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name, volume_lv_name
+from arca_storage.api.services.svm_service import require_svm_ready_record
 
 _LIST_ALL_LIMIT = 1_000_000
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
@@ -35,8 +36,10 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     volume_lv_name(volume_data.svm, volume_data.name)
 
     ctx = get_context()
-    if not ctx.db.get_svm(volume_data.svm):
+    svm_record = ctx.db.get_svm(volume_data.svm)
+    if not svm_record:
         raise NotFoundError("SVM", volume_data.svm)
+    require_svm_ready_record(svm_record, volume_data.svm)
     requested_spec = VolumeSpec(
         name=volume_data.name,
         svm=volume_data.svm,

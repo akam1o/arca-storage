@@ -13,7 +13,7 @@ import zlib
 from typing import Any, Dict
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
-from arca_storage.api.services import export_service, volume_service
+from arca_storage.api.services import export_service, svm_service, volume_service
 from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
 from arca_storage.context import get_context
 from arca_storage.errors import NotFoundError, PreconditionFailedError
@@ -29,7 +29,7 @@ def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
     _validate_directory(svm, path)
 
     ctx = get_context()
-    _require_svm(ctx, svm)
+    _require_svm(ctx, svm, ready=True)
     client_cidrs = _csi_client_cidrs(ctx)
 
     size_gib = _quota_bytes_to_gib(directory_data.quota_bytes)
@@ -59,7 +59,7 @@ def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
     _validate_directory(svm, path)
 
     ctx = get_context()
-    _require_svm(ctx, svm)
+    _require_svm(ctx, svm, ready=True)
     client_cidrs = _csi_client_cidrs(ctx)
     size_gib = _quota_bytes_to_gib(quota_data.quota_bytes)
     _ensure_volume(svm, path, size_gib)
@@ -199,9 +199,12 @@ def _validate_directory(svm: str, path: str) -> None:
     validate_name(path)
 
 
-def _require_svm(ctx: Any, svm: str) -> None:
-    if not ctx.db.get_svm(svm):
+def _require_svm(ctx: Any, svm: str, *, ready: bool = False) -> None:
+    record = ctx.db.get_svm(svm)
+    if not record:
         raise NotFoundError("SVM", svm)
+    if ready:
+        svm_service.require_svm_ready_record(record, svm)
 
 
 def _volume_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
