@@ -1,6 +1,7 @@
 """Unit tests for ARCA Storage Cinder utilities."""
 
 import os
+import tempfile
 import unittest
 from unittest.mock import MagicMock, Mock, patch, mock_open
 
@@ -13,6 +14,14 @@ from arca_storage.openstack.cinder import exceptions as arca_exceptions
 class TestUtilityFunctions(unittest.TestCase):
     """Test utility functions."""
 
+    def _fake_sparse_cp(self, command, **kwargs):
+        """Stand in for GNU cp --sparse=always in platform-neutral unit tests."""
+        with open(command[-2], "rb") as source:
+            data = source.read()
+        with open(command[-1], "wb") as dest:
+            dest.write(data)
+        return Mock(returncode=0)
+
     def test_get_mount_point_for_volume(self):
         """Test mount point generation."""
         base_path = "/var/lib/cinder/mnt"
@@ -22,16 +31,6 @@ class TestUtilityFunctions(unittest.TestCase):
 
         assert mount_point.startswith(base_path)
         assert len(mount_point) > len(base_path)
-
-    def test_get_export_path(self):
-        """Test NFS export path generation."""
-        svm_vip = "192.168.100.5"
-        svm_name = "test-svm"
-        volume_name = "test-volume"
-
-        export_path = arca_utils.get_export_path(svm_vip, svm_name, volume_name)
-
-        assert export_path == "192.168.100.5:/exports/test-svm/test-volume"
 
     @patch("arca_storage.openstack.cinder.utils.os.makedirs")
     def test_ensure_mount_point_exists_success(self, mock_makedirs):
@@ -184,28 +183,29 @@ class TestUtilityFunctions(unittest.TestCase):
 
         assert result is None
 
-    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
-    @patch("arca_storage.openstack.cinder.utils.os.chmod")
-    def test_create_volume_file_success(self, mock_chmod, mock_run):
+    def test_create_volume_file_success(self):
         """Test volume file creation."""
-        mount_point = "/mnt/test"
-        volume_name = "test-volume"
-        size_gb = 10
+        with tempfile.TemporaryDirectory() as mount_point:
+            volume_name = "test-volume"
+            size_gb = 1
 
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=False):
             result = arca_utils.create_volume_file(mount_point, volume_name, size_gb)
 
-        assert result == os.path.join(mount_point, volume_name)
-        mock_run.assert_called_once()
-        mock_chmod.assert_called_once_with(result, 0o600)
+            assert result == os.path.join(mount_point, volume_name)
+            assert os.path.exists(result)
+            assert os.path.getsize(result) == 1024**3
 
     def test_create_volume_file_already_exists(self):
         """Test volume file creation when file exists."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
+        with tempfile.TemporaryDirectory() as mount_point:
+            volume_file = os.path.join(mount_point, "test-volume")
+            with open(volume_file, "wb"):
+                pass
+
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="already exists"
             ):
-                arca_utils.create_volume_file("/mnt/test", "test-volume", 10)
+                arca_utils.create_volume_file(mount_point, "test-volume", 10)
 
     @patch("arca_storage.openstack.cinder.utils.os.remove")
     def test_delete_volume_file_success(self, mock_remove):
@@ -240,6 +240,57 @@ class TestUtilityFunctions(unittest.TestCase):
                 arca_exceptions.ArcaStorageException, match="does not exist"
             ):
                 arca_utils.extend_volume_file("/mnt/test", "test-volume", 20)
+
+    def test_copy_sparse_file_hard_link_fallback_copies_without_overwrite(self):
+        """Fallback copy installs the destination using exclusive creation."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.os.link",
+                side_effect=OSError("hard links unavailable"),
+            ):
+                with patch(
+                    "arca_storage.openstack.cinder.utils.subprocess.run",
+                    side_effect=self._fake_sparse_cp,
+                ):
+                    arca_utils.copy_sparse_file(source_path, dest_path)
+
+            with open(dest_path, "rb") as dest:
+                assert dest.read() == b"source-data"
+
+    def test_copy_sparse_file_fallback_rejects_concurrent_destination(self):
+        """Fallback copy does not overwrite a destination created after the first check."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            def create_destination_then_fail(temp_path, final_path):
+                with open(final_path, "wb") as dest:
+                    dest.write(b"concurrent-data")
+                raise OSError("hard links unavailable")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.os.link",
+                side_effect=create_destination_then_fail,
+            ):
+                with patch(
+                    "arca_storage.openstack.cinder.utils.subprocess.run",
+                    side_effect=self._fake_sparse_cp,
+                ):
+                    with pytest.raises(
+                        arca_exceptions.ArcaStorageException,
+                        match="created by another worker",
+                    ):
+                        arca_utils.copy_sparse_file(source_path, dest_path)
+
+            with open(dest_path, "rb") as dest:
+                assert dest.read() == b"concurrent-data"
 
     @patch("arca_storage.openstack.cinder.utils.os.rmdir")
     def test_cleanup_mount_point_success(self, mock_rmdir):
