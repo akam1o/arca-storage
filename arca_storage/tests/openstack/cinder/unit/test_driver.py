@@ -2,7 +2,7 @@
 
 import os
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 from cinder import exception
@@ -28,6 +28,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         config.arca_storage_verify_ssl = False
         config.arca_storage_api_auth_type = "none"
         config.arca_storage_api_token = None
+        config.arca_storage_driver_ssl_cert_path = None
         config.arca_storage_svm_strategy = "shared"
         config.arca_storage_default_svm = "test-svm"
         config.arca_storage_svm_prefix = "svm-"
@@ -47,6 +48,17 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver._context = Mock(name="context")
         self.driver.db = Mock()
         self.driver._stats = {}
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    @patch("arca_storage.openstack.cinder.driver.arca_client.ArcaStorageClient")
+    def test_do_setup_passes_ssl_cert_path_to_api_client(self, mock_client, mock_super_setup):
+        """Configured API CA bundle path is passed through to the REST client."""
+        self.driver.configuration.arca_storage_driver_ssl_cert_path = "/etc/ssl/certs/arca-ca.pem"
+
+        self.driver.do_setup(self.driver._context)
+
+        assert mock_client.call_args.kwargs["ca_bundle"] == "/etc/ssl/certs/arca-ca.pem"
+        mock_super_setup.assert_called_once_with(self.driver._context)
 
     def _create_mock_volume(self, volume_id="test-vol-id", name="test-volume", size=10):
         """Create a mock Cinder volume object."""
@@ -305,6 +317,44 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         )
         self.driver.arca_client.create_volume_from_snapshot.assert_not_called()
 
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_places_file_on_target_svm(self, mock_utils, mock_getsize):
+        """Manual strategy copies from the source SVM snapshot to the target SVM volume file."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        source_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
+        new_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "target-svm"}}
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        self.driver.db.volume_get.return_value = source_volume
+        mock_utils.get_mount_point_for_svm.side_effect = lambda base, svm: f"{base}/svm_{svm}"
+        mock_getsize.return_value = 10 * 1024**3
+
+        result = self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        assert result == {"provider_location": "192.168.100.5:/exports/target-svm"}
+        mock_utils.mount_nfs.assert_has_calls(
+            [
+                call(
+                    export_path="192.168.100.5:/exports/source-svm",
+                    mount_point="/var/lib/cinder/mnt/svm_source-svm",
+                    mount_options="rw,noatime,vers=4.1",
+                ),
+                call(
+                    export_path="192.168.100.5:/exports/target-svm",
+                    mount_point="/var/lib/cinder/mnt/svm_target-svm",
+                    mount_options="rw,noatime,vers=4.1",
+                ),
+            ]
+        )
+        mock_utils.copy_sparse_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
+            "/var/lib/cinder/mnt/svm_target-svm/volume-new-vol-id",
+            timeout=600,
+        )
+        mock_utils.extend_volume_file.assert_not_called()
+
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
@@ -348,6 +398,40 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             new_size_gb=12,
         )
         self.driver.arca_client.create_snapshot.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_cloned_volume_places_file_on_target_svm(self, mock_utils):
+        """Manual strategy clones from the source SVM into the target volume's SVM."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        source_volume = self._create_mock_volume(volume_id="source-vol-id", size=10)
+        source_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
+        new_volume = self._create_mock_volume(volume_id="clone-vol-id", size=10)
+        new_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "target-svm"}}
+        mock_utils.get_mount_point_for_svm.side_effect = lambda base, svm: f"{base}/svm_{svm}"
+
+        result = self.driver.create_cloned_volume(new_volume, source_volume)
+
+        assert result == {"provider_location": "192.168.100.5:/exports/target-svm"}
+        mock_utils.mount_nfs.assert_has_calls(
+            [
+                call(
+                    export_path="192.168.100.5:/exports/source-svm",
+                    mount_point="/var/lib/cinder/mnt/svm_source-svm",
+                    mount_options="rw,noatime,vers=4.1",
+                ),
+                call(
+                    export_path="192.168.100.5:/exports/target-svm",
+                    mount_point="/var/lib/cinder/mnt/svm_target-svm",
+                    mount_options="rw,noatime,vers=4.1",
+                ),
+            ]
+        )
+        mock_utils.copy_sparse_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm/volume-source-vol-id",
+            "/var/lib/cinder/mnt/svm_target-svm/volume-clone-vol-id",
+            timeout=600,
+        )
+        mock_utils.extend_volume_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")

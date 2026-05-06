@@ -39,6 +39,7 @@ class ArcaStorageClient:
         verify_ssl: bool = True,
         auth_type: Optional[str] = None,
         api_token: Optional[str] = None,
+        ca_bundle: Optional[str] = None,
     ):
         """Initialize ARCA Storage API client.
 
@@ -49,6 +50,7 @@ class ArcaStorageClient:
             verify_ssl: Whether to verify SSL certificates
             auth_type: Authentication type ('token', 'none', or None)
             api_token: Bearer token for token authentication
+            ca_bundle: Path to CA bundle file for SSL verification
 
         Raises:
             ImportError: If requests library is not installed
@@ -63,7 +65,7 @@ class ArcaStorageClient:
         self.base_url = api_endpoint.rstrip("/")
         self.timeout = timeout
         self.retry_count = retry_count
-        self.verify_ssl = verify_ssl
+        self.verify_ssl = ca_bundle or verify_ssl
 
         # Create session with connection pooling
         self.session = requests.Session()

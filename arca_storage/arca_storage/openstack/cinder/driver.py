@@ -96,6 +96,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     verify_ssl=self.configuration.arca_storage_verify_ssl,
                     auth_type=getattr(self.configuration, "arca_storage_api_auth_type", "none"),
                     api_token=getattr(self.configuration, "arca_storage_api_token", None),
+                    ca_bundle=getattr(self.configuration, "arca_storage_driver_ssl_cert_path", None),
                 )
 
             # Mount options alignment: Support standard RemoteFSDriver nfs_mount_options
@@ -546,6 +547,20 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             )
         )
 
+    def _mount_svm_export(self, svm_name: str) -> tuple[str, str]:
+        """Mount an SVM export and return (export_path, mount_point)."""
+        export_path = self._get_export_path(svm_name)
+        mount_point = arca_utils.get_mount_point_for_svm(
+            self.configuration.arca_storage_nfs_mount_point_base,
+            svm_name,
+        )
+        arca_utils.mount_nfs(
+            export_path=export_path,
+            mount_point=mount_point,
+            mount_options=self.configuration.arca_storage_nfs_mount_options,
+        )
+        return export_path, mount_point
+
     def _get_volume_type_extra_specs(self, volume_type) -> Dict[str, Any]:
         """Return extra_specs dict from either an object or a dict-like."""
         if volume_type is None:
@@ -765,7 +780,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             snapshot_id,
         )
 
-        mount_point = None
         volume_file = None
         volume_file_created = False
         try:
@@ -774,29 +788,22 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             context = self._get_operation_context(volume=volume, snapshot=snapshot)
             source_volume = self.db.volume_get(context, source_volume_id)
 
-            # Determine SVM from SOURCE volume (where snapshot resides)
-            svm_name = self._get_svm_for_volume(source_volume)
-
-            # Get NFS export path (per-SVM, not per-volume)
-            export_path = self._get_export_path(svm_name)
-
-            # Mount SVM's NFS export (idempotent - won't remount if already mounted)
-            mount_point = arca_utils.get_mount_point_for_svm(
-                self.configuration.arca_storage_nfs_mount_point_base,
-                svm_name,
-            )
-
-            arca_utils.mount_nfs(
-                export_path=export_path,
-                mount_point=mount_point,
-                mount_options=self.configuration.arca_storage_nfs_mount_options,
-            )
+            # Snapshot data lives in the source SVM, while the new volume must
+            # be placed according to the target volume's SVM mapping.
+            source_svm_name = self._get_svm_for_volume(source_volume)
+            target_svm_name = self._get_svm_for_volume(volume)
+            source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
+            if target_svm_name == source_svm_name:
+                target_export_path = source_export_path
+                target_mount_point = source_mount_point
+            else:
+                target_export_path, target_mount_point = self._mount_svm_export(target_svm_name)
 
             # Snapshot file path (using snapshot ID)
-            snapshot_file = os.path.join(mount_point, f"snapshot-{snapshot_id}")
+            snapshot_file = os.path.join(source_mount_point, f"snapshot-{snapshot_id}")
 
             # New volume file path (using volume ID)
-            volume_file = os.path.join(mount_point, f"volume-{volume_id}")
+            volume_file = os.path.join(target_mount_point, f"volume-{volume_id}")
 
             # Get timeout from configuration
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
@@ -815,14 +822,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # If new volume size is larger than snapshot, extend the file
             if volume_size > snapshot_size_gib:
                 arca_utils.extend_volume_file(
-                    mount_point=mount_point,
+                    mount_point=target_mount_point,
                     volume_name=f"volume-{volume_id}",
                     new_size_gb=volume_size,
                 )
                 LOG.info("Extended volume file to %sGB", volume_size)
 
             # Store provider location (export path)
-            provider_location = export_path
+            provider_location = target_export_path
 
             # Note: We do NOT unmount to avoid concurrency issues
 
@@ -868,34 +875,24 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         LOG.info("Creating cloned volume: %s (id=%s) from source: %s (id=%s)",
                  volume_name, volume_id, src_volume_name, src_volume_id)
 
-        mount_point = None
         volume_file = None
         volume_file_created = False
 
         try:
-            # Determine SVM for source volume
-            svm_name = self._get_svm_for_volume(src_vref)
-
-            # Get NFS export path (per-SVM, not per-volume)
-            export_path = self._get_export_path(svm_name)
-
-            # Mount SVM's NFS export (idempotent - won't remount if already mounted)
-            mount_point = arca_utils.get_mount_point_for_svm(
-                self.configuration.arca_storage_nfs_mount_point_base,
-                svm_name,
-            )
-
-            arca_utils.mount_nfs(
-                export_path=export_path,
-                mount_point=mount_point,
-                mount_options=self.configuration.arca_storage_nfs_mount_options,
-            )
+            source_svm_name = self._get_svm_for_volume(src_vref)
+            target_svm_name = self._get_svm_for_volume(volume)
+            source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
+            if target_svm_name == source_svm_name:
+                target_export_path = source_export_path
+                target_mount_point = source_mount_point
+            else:
+                target_export_path, target_mount_point = self._mount_svm_export(target_svm_name)
 
             # Source volume file path
-            source_file = os.path.join(mount_point, f"volume-{src_volume_id}")
+            source_file = os.path.join(source_mount_point, f"volume-{src_volume_id}")
 
             # New volume file path
-            volume_file = os.path.join(mount_point, f"volume-{volume_id}")
+            volume_file = os.path.join(target_mount_point, f"volume-{volume_id}")
 
             # Get timeout from configuration
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
@@ -908,14 +905,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # If new volume size is larger than source, extend the file
             if volume_size > src_volume_size:
                 arca_utils.extend_volume_file(
-                    mount_point=mount_point,
+                    mount_point=target_mount_point,
                     volume_name=f"volume-{volume_id}",
                     new_size_gb=volume_size,
                 )
                 LOG.info("Extended cloned volume file to %sGB", volume_size)
 
             # Store provider location (export path)
-            provider_location = export_path
+            provider_location = target_export_path
 
             # Note: We do NOT unmount to avoid concurrency issues
 

@@ -158,7 +158,7 @@ def _get_arca_storage_opts():
         cfg.StrOpt(
             "arca_storage_driver_ssl_cert_path",
             default=None,
-            help="Path to SSL certificate file for API authentication (optional)",
+            help="Path to CA bundle/certificate file for API TLS verification (optional)",
         ),
         cfg.StrOpt(
             "arca_storage_volume_backend_name",
