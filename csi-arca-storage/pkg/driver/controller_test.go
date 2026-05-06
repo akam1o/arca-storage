@@ -147,6 +147,8 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 	var snapshotCreated bool
 	var snapshotDeleted bool
 	var deletedVolume string
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -155,6 +157,7 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 			snapshotCreated = true
 			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/source-path/clone":
+			cancel()
 			http.Error(w, "clone failed", http.StatusInternalServerError)
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+temporarySnapshotName:
 			snapshotDeleted = true
@@ -179,7 +182,7 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
 	}
 
-	_, err = driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	_, err = driver.CreateVolume(ctx, &csi.CreateVolumeRequest{
 		Name: "clone-pvc",
 		Parameters: map[string]string{
 			paramNamespace: "ns-a",

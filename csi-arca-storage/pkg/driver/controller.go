@@ -181,7 +181,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				if !temporarySnapshotReady {
 					return
 				}
-				if err := d.arcaClient.DeleteSnapshot(ctx, temporarySnapshotName, sourceVol.SVMName, sourceVol.Path); err != nil {
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := d.arcaClient.DeleteSnapshot(cleanupCtx, temporarySnapshotName, sourceVol.SVMName, sourceVol.Path); err != nil {
 					klog.Warningf("Failed to delete temporary clone snapshot %s: %v", temporarySnapshotName, err)
 				}
 				temporarySnapshotReady = false
