@@ -25,6 +25,7 @@ type MountManager struct {
 	nodeState     *NodeState           // Reference to NodeState for refcount derivation
 	baseMountPath string               // Base path for SVM mounts
 	mounter       mount.Interface
+	validator     MountSourceValidator
 	mu            sync.Mutex
 }
 
@@ -44,6 +45,7 @@ func NewMountManager(nodeState *NodeState, baseMountPath string) (*MountManager,
 		nodeState:     nodeState,
 		baseMountPath: baseMountPath,
 		mounter:       mount.New(""),
+		validator:     ProcMountInfoSourceValidator{},
 	}
 
 	// Reconcile mounts from NodeState on startup
@@ -86,6 +88,9 @@ func (m *MountManager) reconcile() error {
 				continue
 			}
 		} else {
+			if err := m.validateSVMMountSource(mountPath, svmName, info.VIP); err != nil {
+				return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
+			}
 			// Mount exists - record it
 			m.mounts[svmName] = &SVMMount{
 				SVMName:         svmName,
@@ -114,6 +119,9 @@ func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string, 
 			return "", fmt.Errorf("failed to check mount point: %w", err)
 		}
 		if isMounted {
+			if err := m.validateSVMMountSource(mount.MountPath, svmName, vip); err != nil {
+				return "", fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mount.MountPath, err)
+			}
 			if !sameMountOptions(mount.NFSMountOptions, nfsMountOptions) {
 				return "", fmt.Errorf(
 					"SVM %s already mounted with different NFS options: active=%v requested=%v",
@@ -153,8 +161,25 @@ func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []str
 		return fmt.Errorf("failed to create mount point: %w", err)
 	}
 
-	nfsSource := fmt.Sprintf("%s:/exports/%s", vip, svmName)
+	nfsSource := nfsSourceForSVM(vip, svmName)
 	options := normalizeNFSMountOptions(nfsMountOptions)
+
+	isMounted, err := m.isMountPoint(mountPath)
+	if err != nil {
+		return fmt.Errorf("failed to check mount point: %w", err)
+	}
+	if isMounted {
+		if err := m.validateSVMMountSource(mountPath, svmName, vip); err != nil {
+			return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
+		}
+		m.mounts[svmName] = &SVMMount{
+			SVMName:         svmName,
+			VIP:             vip,
+			MountPath:       mountPath,
+			NFSMountOptions: cloneMountOptions(options),
+		}
+		return nil
+	}
 
 	klog.Infof("Mounting NFS: %s -> %s", nfsSource, mountPath)
 
@@ -258,4 +283,19 @@ func (m *MountManager) isMountPoint(path string) (bool, error) {
 // IsMountPoint checks if a path is a mount point (public wrapper)
 func (m *MountManager) IsMountPoint(path string) (bool, error) {
 	return m.isMountPoint(path)
+}
+
+func (m *MountManager) validateSVMMountSource(mountPath, svmName, vip string) error {
+	return m.mountSourceValidator().ValidateMountSource(mountPath, nfsSourceForSVM(vip, svmName))
+}
+
+func (m *MountManager) mountSourceValidator() MountSourceValidator {
+	if m.validator != nil {
+		return m.validator
+	}
+	return ProcMountInfoSourceValidator{}
+}
+
+func nfsSourceForSVM(vip, svmName string) string {
+	return fmt.Sprintf("%s:/exports/%s", vip, svmName)
 }

@@ -105,32 +105,11 @@ func (d *Driver) mounter() mountutils.Interface {
 	return mountutils.New("")
 }
 
-func normalizedMountPath(path string) string {
-	if resolved, err := filepath.EvalSymlinks(path); err == nil {
-		return filepath.Clean(resolved)
+func (d *Driver) sourceValidator() arcamount.MountSourceValidator {
+	if d.mountSourceValidator != nil {
+		return d.mountSourceValidator
 	}
-	return filepath.Clean(path)
-}
-
-func validateExistingMountSource(mounter mountutils.Interface, targetPath, expectedSource string) error {
-	mountPoints, err := mounter.List()
-	if err != nil {
-		return fmt.Errorf("failed to inspect mount table: %w", err)
-	}
-
-	normalizedTarget := normalizedMountPath(targetPath)
-	normalizedExpectedSource := normalizedMountPath(expectedSource)
-	for _, mountPoint := range mountPoints {
-		if normalizedMountPath(mountPoint.Path) != normalizedTarget {
-			continue
-		}
-		if normalizedMountPath(mountPoint.Device) != normalizedExpectedSource {
-			return fmt.Errorf("mount source mismatch: active=%s requested=%s", mountPoint.Device, expectedSource)
-		}
-		return nil
-	}
-
-	return fmt.Errorf("mount point %s is mounted but no source entry was found", targetPath)
+	return arcamount.ProcMountInfoSourceValidator{}
 }
 
 // NodeStageVolume mounts the volume to a staging path
@@ -208,7 +187,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	}
 
 	if !notMnt {
-		if err := validateExistingMountSource(mounter, stagingTargetPath, sourcePath); err != nil {
+		if err := d.sourceValidator().ValidateMountSource(stagingTargetPath, sourcePath); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested source: %v", stagingTargetPath, err)
 		}
 		if err := d.nodeState.ValidateVolumeStaging(volumeID, svmName, vip, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
@@ -374,7 +353,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	if !notMnt {
-		if err := validateExistingMountSource(mounter, targetPath, stagingTargetPath); err != nil {
+		if err := d.sourceValidator().ValidateMountSource(targetPath, stagingTargetPath); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but does not match requested source: %v", targetPath, err)
 		}
 		if !d.nodeState.HasVolumePublish(volumeID, targetPath) {

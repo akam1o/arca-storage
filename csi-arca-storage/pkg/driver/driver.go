@@ -39,9 +39,10 @@ type Driver struct {
 	allocator  *arca.StandaloneAllocator
 
 	// Mount management (for node service)
-	mountManager *mount.MountManager
-	nodeState    *mount.NodeState
-	nodeMounter  mountutils.Interface
+	mountManager         *mount.MountManager
+	nodeState            *mount.NodeState
+	nodeMounter          mountutils.Interface
+	mountSourceValidator mount.MountSourceValidator
 
 	// Idempotency helpers
 	volumeIDGen   *idempotency.VolumeIDGenerator
@@ -95,20 +96,21 @@ func NewDriver(cfg *DriverConfig) (*Driver, error) {
 	}
 
 	d := &Driver{
-		name:          cfg.Name,
-		version:       cfg.Version,
-		mode:          cfg.Mode,
-		nodeID:        cfg.NodeID,
-		endpoint:      cfg.Endpoint,
-		arcaClient:    cfg.ArcaClient,
-		svmManager:    cfg.SVMManager,
-		allocator:     cfg.Allocator,
-		k8sClient:     cfg.K8sClient,
-		lockManager:   cfg.LockManager,
-		store:         storeInstance,
-		volumeIDGen:   idempotency.NewVolumeIDGenerator(),
-		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
-		nodeMounter:   mountutils.New(""),
+		name:                 cfg.Name,
+		version:              cfg.Version,
+		mode:                 cfg.Mode,
+		nodeID:               cfg.NodeID,
+		endpoint:             cfg.Endpoint,
+		arcaClient:           cfg.ArcaClient,
+		svmManager:           cfg.SVMManager,
+		allocator:            cfg.Allocator,
+		k8sClient:            cfg.K8sClient,
+		lockManager:          cfg.LockManager,
+		store:                storeInstance,
+		volumeIDGen:          idempotency.NewVolumeIDGenerator(),
+		snapshotIDGen:        idempotency.NewSnapshotIDGenerator(),
+		nodeMounter:          mountutils.New(""),
+		mountSourceValidator: mount.ProcMountInfoSourceValidator{},
 	}
 
 	// Initialize node-specific components if this is a node plugin.

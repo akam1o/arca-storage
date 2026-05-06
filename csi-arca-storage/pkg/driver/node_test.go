@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -15,6 +16,14 @@ import (
 
 	arcamount "github.com/akam1o/csi-arca-storage/pkg/mount"
 )
+
+type fakeMountSourceValidator struct {
+	err error
+}
+
+func (v fakeMountSourceValidator) ValidateMountSource(targetPath, expectedSource string) error {
+	return v.err
+}
 
 func TestNFSMountOptionsFromCapabilityUsesMountFlags(t *testing.T) {
 	capability := &csi.VolumeCapability{
@@ -112,11 +121,12 @@ func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 		{Device: mountedStagingPath, Path: mountedTargetPath, Type: "", Opts: []string{"bind"}},
 	})
 	driver := &Driver{
-		mode:         "node",
-		nodeID:       "node-a",
-		nodeState:    nodeState,
-		mountManager: new(arcamount.MountManager),
-		nodeMounter:  fakeMounter,
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         new(arcamount.MountManager),
+		nodeMounter:          fakeMounter,
+		mountSourceValidator: fakeMountSourceValidator{},
 	}
 
 	_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
@@ -166,11 +176,12 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 		{Device: "/var/lib/kubelet/plugins/stale-volume", Path: mountedTargetPath, Type: "", Opts: []string{"bind"}},
 	})
 	driver := &Driver{
-		mode:         "node",
-		nodeID:       "node-a",
-		nodeState:    nodeState,
-		mountManager: new(arcamount.MountManager),
-		nodeMounter:  fakeMounter,
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         new(arcamount.MountManager),
+		nodeMounter:          fakeMounter,
+		mountSourceValidator: fakeMountSourceValidator{err: fmt.Errorf("mount source mismatch: active=stale requested=%s", stagingPath)},
 	}
 
 	_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{

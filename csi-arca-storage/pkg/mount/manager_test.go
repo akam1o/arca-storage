@@ -2,6 +2,8 @@ package mount
 
 import (
 	"context"
+	"fmt"
+	"os"
 	"path/filepath"
 	"reflect"
 	"strings"
@@ -17,7 +19,26 @@ func newTestMountManager(t *testing.T) *MountManager {
 		nodeState:     &NodeState{data: &NodeStateData{Volumes: make(map[string]*VolumeStaging)}},
 		baseMountPath: t.TempDir(),
 		mounter:       mountutils.NewFakeMounter(nil),
+		validator:     &fakeMountSourceValidator{},
 	}
+}
+
+type fakeMountSourceValidator struct {
+	err   error
+	calls []mountSourceValidationCall
+}
+
+type mountSourceValidationCall struct {
+	targetPath     string
+	expectedSource string
+}
+
+func (v *fakeMountSourceValidator) ValidateMountSource(targetPath, expectedSource string) error {
+	v.calls = append(v.calls, mountSourceValidationCall{
+		targetPath:     targetPath,
+		expectedSource: expectedSource,
+	})
+	return v.err
 }
 
 func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
@@ -38,6 +59,42 @@ func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "different NFS options") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureSVMMountRejectsWrongExistingSource(t *testing.T) {
+	validator := &fakeMountSourceValidator{
+		err: fmt.Errorf("mount source mismatch: active=192.0.2.99:/exports/tenant-a requested=192.0.2.10:/exports/tenant-a"),
+	}
+	manager := &MountManager{
+		mounts:        make(map[string]*SVMMount),
+		nodeState:     &NodeState{data: &NodeStateData{Volumes: make(map[string]*VolumeStaging)}},
+		baseMountPath: t.TempDir(),
+		mounter:       mountutils.NewFakeMounter(nil),
+		validator:     validator,
+	}
+	mountPath := manager.getMountPath("tenant-a")
+	if err := os.MkdirAll(mountPath, 0750); err != nil {
+		t.Fatalf("failed to create mount path: %v", err)
+	}
+	if err := manager.mounter.Mount("192.0.2.99:/exports/tenant-a", mountPath, "nfs4", nil); err != nil {
+		t.Fatalf("failed to seed fake mount: %v", err)
+	}
+	manager.mounts["tenant-a"] = &SVMMount{
+		SVMName:   "tenant-a",
+		VIP:       "192.0.2.99",
+		MountPath: mountPath,
+	}
+
+	_, err := manager.EnsureSVMMount(context.Background(), "tenant-a", "192.0.2.10", nil)
+	if err == nil {
+		t.Fatal("expected wrong existing source to be rejected")
+	}
+	if !strings.Contains(err.Error(), "not safe to reuse") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if len(validator.calls) != 1 || validator.calls[0].expectedSource != "192.0.2.10:/exports/tenant-a" {
+		t.Fatalf("unexpected validator calls: %#v", validator.calls)
 	}
 }
 
