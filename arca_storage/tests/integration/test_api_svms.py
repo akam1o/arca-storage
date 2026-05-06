@@ -85,6 +85,15 @@ class TestCreateSVM:
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
+    @pytest.mark.parametrize("ip_cidr", ["0.0.0.0/0", "192.168.10.0/24", "192.168.10.255/24", "224.0.0.1/24"])
+    def test_create_svm_rejects_non_host_vip(self, client, ip_cidr):
+        """Test creating SVM rejects non-host VIP addresses."""
+        response = client.post("/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": ip_cidr})
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+
+    @pytest.mark.integration
     def test_create_svm_without_vlan(self, fake_context):
         """Test creating an SVM without a VLAN ID."""
         client = TestClient(app)

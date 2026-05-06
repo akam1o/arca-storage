@@ -108,6 +108,35 @@ def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
         raise ValueError(f"Invalid IP address: {e}")
 
 
+def validate_svm_ip_cidr(cidr: str) -> Tuple[str, int]:
+    """
+    Validate an SVM VIP with CIDR notation.
+
+    Unlike generic client CIDRs, an SVM VIP must be a usable unicast host
+    address so it can be bound by Ganesha, netns, and Pacemaker resources.
+    """
+    try:
+        iface = ipaddress.IPv4Interface(cidr)
+    except Exception as e:
+        raise ValueError(f"Invalid CIDR format: {e}")
+
+    ip_addr = iface.ip
+    network = iface.network
+
+    if ip_addr.is_unspecified:
+        raise ValueError("SVM IP address must not be unspecified")
+    if ip_addr.is_multicast:
+        raise ValueError("SVM IP address must not be multicast")
+    if ip_addr.is_loopback:
+        raise ValueError("SVM IP address must not be loopback")
+    if ip_addr.is_reserved:
+        raise ValueError("SVM IP address must not be reserved")
+    if network.prefixlen < 31 and ip_addr in (network.network_address, network.broadcast_address):
+        raise ValueError("SVM IP address must be a usable host address")
+
+    return str(ip_addr), network.prefixlen
+
+
 def normalize_ip_cidr(cidr: str) -> str:
     """
     Validate and canonicalize an IPv4 network CIDR.

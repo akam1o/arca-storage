@@ -9,6 +9,7 @@ from arca_storage.cli.lib.validators import (
     svm_root_lv_name,
     validate_ip_cidr,
     validate_name,
+    validate_svm_ip_cidr,
     validate_vlan,
     volume_lv_name,
 )
@@ -119,6 +120,38 @@ class TestValidateIpCidr:
 
         with pytest.raises(ValueError, match="Prefix length must be between"):
             validate_ip_cidr("192.168.10.5/-1")
+
+
+class TestValidateSvmIpCidr:
+    """Tests for validate_svm_ip_cidr function."""
+
+    @pytest.mark.unit
+    def test_valid_host_cidr(self):
+        """Test valid SVM VIP CIDRs."""
+        ip, prefix = validate_svm_ip_cidr("192.168.10.5/24")
+        assert ip == "192.168.10.5"
+        assert prefix == 24
+
+        ip, prefix = validate_svm_ip_cidr("192.168.10.5/32")
+        assert ip == "192.168.10.5"
+        assert prefix == 32
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cidr",
+        [
+            "0.0.0.0/0",
+            "192.168.10.0/24",
+            "192.168.10.255/24",
+            "224.0.0.1/24",
+            "127.0.0.1/8",
+            "240.0.0.1/24",
+        ],
+    )
+    def test_rejects_non_unicast_host_addresses(self, cidr):
+        """Test SVM VIP rejects addresses that cannot be bound as service hosts."""
+        with pytest.raises(ValueError):
+            validate_svm_ip_cidr(cidr)
 
 
 class TestLVMNameBuilders:

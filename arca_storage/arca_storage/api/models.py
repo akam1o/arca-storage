@@ -8,7 +8,7 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from arca_storage.cli.lib.validators import normalize_ip_cidr
+from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_svm_ip_cidr
 
 
 class SVMStatus(str, Enum):
@@ -73,18 +73,7 @@ class SVMCreate(BaseModel):
 
     @field_validator("ip_cidr")
     def validate_ip_cidr(cls, v: str) -> str:
-        import ipaddress
-
-        try:
-            parts = v.split("/")
-            if len(parts) != 2:
-                raise ValueError("CIDR must be in format IP/PREFIX")
-            ipaddress.IPv4Address(parts[0])
-            prefix = int(parts[1])
-            if prefix < 0 or prefix > 32:
-                raise ValueError("Prefix must be between 0 and 32")
-        except Exception as e:
-            raise ValueError(f"Invalid CIDR format: {e}")
+        validate_svm_ip_cidr(v)
         return v
 
     @field_validator("gateway")

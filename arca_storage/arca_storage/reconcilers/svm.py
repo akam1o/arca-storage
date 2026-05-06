@@ -14,7 +14,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
-from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, svm_root_lv_name, validate_ip_cidr
+from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, svm_root_lv_name, validate_svm_ip_cidr
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
@@ -57,7 +57,7 @@ class SVMReconciler:
         create_owner = svm.status.create_owner
         spec = svm.spec
 
-        ip_addr, prefix = validate_ip_cidr(spec.ip_cidr)
+        ip_addr, prefix = validate_svm_ip_cidr(spec.ip_cidr)
         uses_vlan = spec.vlan_id is not None
         gateway = spec.gateway or (infer_gateway_from_ip_cidr(spec.ip_cidr) if uses_vlan else None)
         parent_if = self._cfg.get("parent_if", "bond0")
