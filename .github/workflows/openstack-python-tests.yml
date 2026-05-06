@@ -12,10 +12,10 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Run only on Python 3.9 to reduce CI usage (EL9 baseline)
+      # OpenStack Cinder 28 requires Python 3.10 or newer.
       matrix:
         python-version:
-          - '3.9'
+          - '3.10'
           # - '3.11'
           # - '3.12'
 
@@ -62,7 +62,7 @@ jobs:
           cp coverage-openstack.xml $GITHUB_WORKSPACE/arca_storage/
 
       - name: Upload OpenStack coverage reports
-        if: matrix.python-version == '3.9'
+        if: matrix.python-version == '3.10'
         uses: codecov/codecov-action@v4
         with:
           file: ./arca_storage/coverage-openstack.xml
