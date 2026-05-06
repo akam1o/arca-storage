@@ -338,7 +338,10 @@ def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: b
 
         for export in exports:
             spec = export["spec"]
-            export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
+            if spec.get("owner", "api") == "api":
+                export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
+            else:
+                export_service.remove_internal_export(spec["svm"], spec["volume"], spec["client"])
 
 
 def _volume_ref(volume: Dict[str, Any]) -> str:

@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.api.services import export_service
 from arca_storage.errors import NotFoundError
 
 
@@ -288,3 +289,27 @@ class TestDeleteSVM:
         assert fake_context.db.get_svm("tenant_a") is None
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
+
+    @pytest.mark.integration
+    def test_delete_svm_force_removes_internal_root_export(self, fake_context):
+        """force removes CSI root exports that do not pass public volume validation."""
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        export_service.ensure_internal_export(
+            "tenant_a",
+            "__csi_root__",
+            "10.0.0.0/24",
+            path="/exports/tenant_a",
+            pseudo="/exports/tenant_a",
+            owner="csi",
+        )
+        assert fake_context.db.get_export("tenant_a", "__csi_root__", "10.0.0.0/24") is not None
+
+        response = client.delete("/v1/svms/tenant_a?force=true")
+
+        assert response.status_code == 200
+        assert fake_context.db.get_svm("tenant_a") is None
+        assert fake_context.db.list_exports(svm="tenant_a") == []
