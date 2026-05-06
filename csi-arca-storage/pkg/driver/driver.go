@@ -7,6 +7,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
@@ -56,6 +57,9 @@ type Driver struct {
 
 	// Metadata store
 	store store.Store
+
+	volumeCreateLocksMu sync.Mutex
+	volumeCreateLocks   map[string]*volumeCreateLock
 
 	// CSI capabilities
 	csi.UnimplementedIdentityServer

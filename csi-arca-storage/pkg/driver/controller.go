@@ -152,6 +152,12 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	// Generate stable volume ID (idempotent)
 	volumeID := d.volumeIDGen.GenerateVolumeID(req.GetName())
 
+	releaseVolumeCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
+	if err != nil {
+		return nil, status.FromContextError(err).Err()
+	}
+	defer releaseVolumeCreateLock()
+
 	// Check if volume already exists (idempotency)
 	existingVol, err := d.store.GetVolume(volumeID)
 	if err == nil {

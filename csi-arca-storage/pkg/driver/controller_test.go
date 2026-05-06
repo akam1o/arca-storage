@@ -8,6 +8,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -228,6 +229,101 @@ func TestCreateVolumeDoesNotMutateQuotaWhenCreateRaceIsIncompatible(t *testing.T
 	}
 	if stored.CapacityBytes != 1<<30 {
 		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, int64(1<<30))
+	}
+}
+
+func TestCreateVolumeWaitsForQuotaBeforeIdempotentSuccess(t *testing.T) {
+	st := store.NewMemoryStore()
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	volumeID := volumeIDGen.GenerateVolumeID("race-pvc")
+	quotaEntered := make(chan struct{})
+	releaseQuota := make(chan struct{})
+	var quotaCalls int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-ns-a","ip_cidr":"10.0.0.10/24","vip":"10.0.0.10","export_root":"/exports/k8s-ns-a","gateway":"","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/directories":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"directory":{}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			if atomic.AddInt32(&quotaCalls, 1) == 1 {
+				close(quotaEntered)
+				<-releaseQuota
+			}
+			http.Error(w, "quota failed", http.StatusBadRequest)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		svmManager:    arca.NewSVMManager(client, nil, nil, 1500),
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+	req := &csi.CreateVolumeRequest{
+		Name: "race-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "race-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := driver.CreateVolume(context.Background(), req)
+		firstDone <- err
+	}()
+
+	select {
+	case <-quotaEntered:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for first quota call")
+	}
+
+	secondStarted := make(chan struct{})
+	secondDone := make(chan error, 1)
+	go func() {
+		close(secondStarted)
+		_, err := driver.CreateVolume(context.Background(), req)
+		secondDone <- err
+	}()
+	<-secondStarted
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second CreateVolume returned before quota completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseQuota)
+
+	if err := <-firstDone; status.Code(err) != codes.Internal {
+		t.Fatalf("first CreateVolume code = %v, want Internal", status.Code(err))
+	}
+	if err := <-secondDone; status.Code(err) != codes.Internal {
+		t.Fatalf("second CreateVolume code = %v, want Internal", status.Code(err))
+	}
+	if _, err := st.GetVolume(volumeID); !store.IsNotFound(err) {
+		t.Fatalf("stored volume error = %v, want not found", err)
+	}
+	if calls := atomic.LoadInt32(&quotaCalls); calls != 2 {
+		t.Fatalf("quota calls = %d, want 2", calls)
 	}
 }
 
