@@ -8,7 +8,7 @@ import os
 from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
-from arca_storage.errors import NotFoundError
+from arca_storage.errors import NotFoundError, PreconditionFailedError
 
 
 @runtime_checkable
@@ -47,8 +47,18 @@ class SubprocessXFSAdapter:
 
     def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None:
         os.makedirs(mount_point, exist_ok=True)
-        if self.is_mounted(mount_point):
-            return  # idempotent
+        mounted_source = self._mounted_source(mount_point)
+        if mounted_source:
+            if self._same_device(mounted_source, device):
+                return  # idempotent
+            raise PreconditionFailedError(
+                f"Mount point {mount_point} is already mounted from {mounted_source}, expected {device}",
+                {
+                    "mount_point": mount_point,
+                    "mounted_source": mounted_source,
+                    "expected_device": device,
+                },
+            )
         options = ["rw", "noatime", "nodiratime", "logbsize=256k", "inode64"]
         for option in extra_options or []:
             if option not in options:
@@ -76,6 +86,24 @@ class SubprocessXFSAdapter:
             check=False,
         )
         return result.returncode == 0
+
+    def _mounted_source(self, mount_point: str) -> str | None:
+        result = run_cmd(
+            ["findmnt", "--mountpoint", mount_point, "--noheadings", "--output", "SOURCE"],
+            timeout=self._timeout,
+            check=False,
+        )
+        if result.returncode != 0:
+            return None
+        source = result.stdout.strip()
+        return source or None
+
+    @staticmethod
+    def _same_device(mounted_source: str, expected_device: str) -> bool:
+        try:
+            return os.path.samefile(mounted_source, expected_device)
+        except OSError:
+            return os.path.realpath(mounted_source) == os.path.realpath(expected_device)
 
 
 class FakeXFSAdapter:
