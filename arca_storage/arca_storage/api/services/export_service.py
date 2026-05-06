@@ -152,10 +152,25 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec) -> bool:
-    phase = record.get("status", {}).get("phase")
+    status = record.get("status", {})
+    phase = status.get("phase")
     if phase not in (Phase.FAILED.value, Phase.CREATING.value):
         return False
-    return ExportSpec.model_validate(record["spec"]) == requested_spec
+    if ExportSpec.model_validate(record["spec"]) != requested_spec:
+        return False
+    if phase == Phase.CREATING.value:
+        return True
+    if _is_failed_delete(status):
+        return False
+    return _has_pending_create_step(status)
+
+
+def _is_failed_delete(status: Dict[str, Any]) -> bool:
+    return str(status.get("message") or "").startswith("Delete failed:")
+
+
+def _has_pending_create_step(status: Dict[str, Any]) -> bool:
+    return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
 
 
 def _resume_export_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:

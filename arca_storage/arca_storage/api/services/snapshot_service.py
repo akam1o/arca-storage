@@ -181,10 +181,21 @@ def _parse_status(record: Dict[str, Any]) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec) -> bool:
-    phase = record.get("status", {}).get("phase")
+    status = record.get("status", {})
+    phase = status.get("phase")
     if phase not in (Phase.FAILED.value, Phase.CREATING.value):
         return False
-    return SnapshotSpec.model_validate(record["spec"]) == requested_spec
+    if SnapshotSpec.model_validate(record["spec"]) != requested_spec:
+        return False
+    if phase == Phase.CREATING.value:
+        return True
+    if _is_failed_delete(status):
+        return False
+    return not status.get("lv_created", False)
+
+
+def _is_failed_delete(status: Dict[str, Any]) -> bool:
+    return str(status.get("message") or "").startswith("Delete failed:")
 
 
 def _resume_snapshot_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:

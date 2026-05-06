@@ -31,7 +31,7 @@ class ExportReconciler:
         elif phase == Phase.DELETING:
             return self._reconcile_delete(export)
         elif phase == Phase.FAILED:
-            if self._has_pending_create_step(export):
+            if not self._is_failed_delete(export) and self._has_pending_create_step(export):
                 export.status.phase = Phase.CREATING
                 return self._reconcile_create(export)
             return export
@@ -180,6 +180,10 @@ class ExportReconciler:
     @staticmethod
     def _has_pending_create_step(export: Export) -> bool:
         return not export.status.ganesha_configured or not export.status.service_reloaded
+
+    @staticmethod
+    def _is_failed_delete(export: Export) -> bool:
+        return export.status.message.startswith("Delete failed:")
 
 
 def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dict]:

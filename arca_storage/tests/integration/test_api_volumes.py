@@ -240,3 +240,26 @@ class TestDeleteVolume:
         assert response.status_code == 200
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
+
+    @pytest.mark.integration
+    def test_create_volume_does_not_resume_failed_delete(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        def fail_delete(_vg, _lv):
+            raise RuntimeError("delete failed")
+
+        fake_context.adapters.lvm.delete_lv = fail_delete
+
+        delete_response = client.delete("/v1/volumes/vol1?svm=tenant_a")
+        assert delete_response.status_code == 200
+        failed_record = fake_context.db.get_volume("tenant_a", "vol1")
+        assert failed_record["status"]["phase"] == "Failed"
+        assert failed_record["status"]["message"].startswith("Delete failed:")
+        assert "/exports/tenant_a/vol1" not in fake_context.adapters.xfs.mounts
+
+        create_response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert create_response.status_code == 409
+        assert fake_context.db.get_volume("tenant_a", "vol1")["status"]["phase"] == "Failed"

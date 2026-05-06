@@ -193,10 +193,31 @@ def _parse_status(record: Dict[str, Any], kind: str) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec) -> bool:
-    phase = record.get("status", {}).get("phase")
+    status = record.get("status", {})
+    phase = status.get("phase")
     if phase not in (Phase.FAILED.value, Phase.CREATING.value):
         return False
-    return SVMSpec.model_validate(record["spec"]) == requested_spec
+    spec = SVMSpec.model_validate(record["spec"])
+    if spec != requested_spec:
+        return False
+    if phase == Phase.CREATING.value:
+        return True
+    if _is_failed_delete(status):
+        return False
+    return _has_pending_create_step(spec, status)
+
+
+def _is_failed_delete(status: Dict[str, Any]) -> bool:
+    return str(status.get("message") or "").startswith("Delete failed:")
+
+
+def _has_pending_create_step(spec: SVMSpec, status: Dict[str, Any]) -> bool:
+    fields = ["ganesha_configured", "pacemaker_group_created"]
+    if spec.vlan_id is not None:
+        fields.extend(["namespace_created", "vlan_attached"])
+    if spec.root_volume_size_gib:
+        fields.extend(["lv_created", "fs_formatted"])
+    return any(not status.get(field, False) for field in fields)
 
 
 def _resume_svm_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:

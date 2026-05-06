@@ -29,7 +29,7 @@ class VolumeReconciler:
         elif phase == Phase.DELETING:
             return self._reconcile_delete(volume)
         elif phase == Phase.FAILED:
-            if self._has_pending_create_step(volume):
+            if not self._is_failed_delete(volume) and self._has_pending_create_step(volume):
                 volume.status.phase = Phase.CREATING
                 return self._reconcile_create(volume)
             return volume
@@ -114,3 +114,7 @@ class VolumeReconciler:
             not getattr(volume.status, field, False)
             for field in ("lv_created", "fs_formatted", "mounted")
         )
+
+    @staticmethod
+    def _is_failed_delete(volume: Volume) -> bool:
+        return volume.status.message.startswith("Delete failed:")

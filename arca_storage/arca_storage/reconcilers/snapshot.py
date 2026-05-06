@@ -29,7 +29,7 @@ class SnapshotReconciler:
         elif phase == Phase.DELETING:
             return self._reconcile_delete(snapshot)
         elif phase == Phase.FAILED:
-            if not snapshot.status.lv_created:
+            if not self._is_failed_delete(snapshot) and not snapshot.status.lv_created:
                 snapshot.status.phase = Phase.CREATING
                 return self._reconcile_create(snapshot)
             return snapshot
@@ -83,3 +83,7 @@ class SnapshotReconciler:
         self.db.log_operation(
             "Snapshot", snapshot.metadata.id, "reconcile", snapshot.status.phase.value, detail
         )
+
+    @staticmethod
+    def _is_failed_delete(snapshot: Snapshot) -> bool:
+        return snapshot.status.message.startswith("Delete failed:")

@@ -175,10 +175,25 @@ def _parse_status(record: Dict[str, Any]) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec) -> bool:
-    phase = record.get("status", {}).get("phase")
+    status = record.get("status", {})
+    phase = status.get("phase")
     if phase not in (Phase.FAILED.value, Phase.CREATING.value):
         return False
-    return VolumeSpec.model_validate(record["spec"]) == requested_spec
+    if VolumeSpec.model_validate(record["spec"]) != requested_spec:
+        return False
+    if phase == Phase.CREATING.value:
+        return True
+    if _is_failed_delete(status):
+        return False
+    return _has_pending_create_step(status)
+
+
+def _is_failed_delete(status: Dict[str, Any]) -> bool:
+    return str(status.get("message") or "").startswith("Delete failed:")
+
+
+def _has_pending_create_step(status: Dict[str, Any]) -> bool:
+    return any(not status.get(field, False) for field in ("lv_created", "fs_formatted", "mounted"))
 
 
 def _resume_volume_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:

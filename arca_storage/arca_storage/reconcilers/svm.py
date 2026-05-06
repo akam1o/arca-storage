@@ -41,7 +41,7 @@ class SVMReconciler:
         elif phase == Phase.READY:
             return self._reconcile_drift(svm)
         elif phase == Phase.FAILED:
-            if self._has_pending_create_step(svm):
+            if not self._is_failed_delete(svm) and self._has_pending_create_step(svm):
                 svm.status.phase = Phase.CREATING
                 return self._reconcile_create(svm)
             return svm  # failed delete or completed resource needs manual intervention
@@ -193,3 +193,7 @@ class SVMReconciler:
         if svm.spec.root_volume_size_gib:
             fields.extend(["lv_created", "fs_formatted"])
         return any(not getattr(svm.status, field, False) for field in fields)
+
+    @staticmethod
+    def _is_failed_delete(svm: SVM) -> bool:
+        return svm.status.message.startswith("Delete failed:")
