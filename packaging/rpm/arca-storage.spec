@@ -61,6 +61,7 @@ install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage.env %{b
 install -d %{buildroot}%{_unitdir}
 install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage-api.service %{buildroot}%{_unitdir}/arca-storage-api.service
 install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha@.service %{buildroot}%{_unitdir}/nfs-ganesha@.service
+install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha-host@.service %{buildroot}%{_unitdir}/nfs-ganesha-host@.service
 
 # Pacemaker RA
 install -d %{buildroot}%{_prefix}/lib/ocf/resource.d/local
@@ -76,6 +77,7 @@ install -m 0755 arca_storage/arca_storage/resources/pacemaker/NetnsVlan %{buildr
 %config(noreplace) %{_sysconfdir}/arca-storage/arca-storage.env
 %{_unitdir}/arca-storage-api.service
 %{_unitdir}/nfs-ganesha@.service
+%{_unitdir}/nfs-ganesha-host@.service
 %{_prefix}/lib/ocf/resource.d/local/NetnsVlan
 
 %changelog

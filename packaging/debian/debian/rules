@@ -33,6 +33,7 @@ override_dh_auto_install:
 	install -d $(CURDIR)/debian/arca-storage/lib/systemd/system
 	install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage-api.service $(CURDIR)/debian/arca-storage/lib/systemd/system/arca-storage-api.service
 	install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha@.service $(CURDIR)/debian/arca-storage/lib/systemd/system/nfs-ganesha@.service
+	install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha-host@.service $(CURDIR)/debian/arca-storage/lib/systemd/system/nfs-ganesha-host@.service
 
 	# Pacemaker RA
 	install -d $(CURDIR)/debian/arca-storage/usr/lib/ocf/resource.d/local

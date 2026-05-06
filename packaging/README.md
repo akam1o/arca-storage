@@ -20,7 +20,7 @@ System resources are installed to standard locations:
 - config (conffile): `/etc/arca-storage/config.toml`
 - optional API env file (conffile): `/etc/arca-storage/api.env`
 - derived systemd env file (conffile, refresh with `arca bootstrap render-env`): `/etc/arca-storage/arca-storage.env`
-- systemd units: `arca-storage-api.service`, `nfs-ganesha@.service`
+- systemd units: `arca-storage-api.service`, `nfs-ganesha@.service`, `nfs-ganesha-host@.service`
 - Pacemaker RA: `/usr/lib/ocf/resource.d/local/NetnsVlan`
 
 ## Wheelhouse requirement
