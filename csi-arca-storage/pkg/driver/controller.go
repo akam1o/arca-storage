@@ -776,9 +776,13 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 		return nil, status.Error(codes.InvalidArgument, "capacity range is required")
 	}
 
-	newCapacityBytes := req.GetCapacityRange().GetRequiredBytes()
-	if newCapacityBytes == 0 {
+	requiredBytes := req.GetCapacityRange().GetRequiredBytes()
+	if requiredBytes == 0 {
 		return nil, status.Error(codes.InvalidArgument, "required bytes must be greater than 0")
+	}
+	newCapacityBytes := provisionedCapacityBytes(requiredBytes)
+	if limitBytes := req.GetCapacityRange().GetLimitBytes(); limitBytes > 0 && newCapacityBytes > limitBytes {
+		return nil, status.Errorf(codes.OutOfRange, "requested expansion capacity exceeds limit")
 	}
 
 	// Get volume info

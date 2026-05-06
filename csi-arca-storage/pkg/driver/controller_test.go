@@ -450,6 +450,136 @@ func TestCreateVolumeFromSnapshotRecordsEffectiveSourceCapacity(t *testing.T) {
 	}
 }
 
+func TestControllerExpandVolumeRecordsProvisionedCapacity(t *testing.T) {
+	st := store.NewMemoryStore()
+	const (
+		initialCapacity  = int64(4 << 30)
+		expectedCapacity = int64(5 << 30)
+	)
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: initialCapacity,
+	}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	var quotaBody struct {
+		SVMName    string `json:"svm_name"`
+		Path       string `json:"path"`
+		QuotaBytes int64  `json:"quota_bytes"`
+	}
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &quotaBody); err != nil {
+				t.Fatalf("quota body unmarshal error = %v", err)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	resp, err := driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      "vol-a",
+		CapacityRange: &csi.CapacityRange{RequiredBytes: initialCapacity + 1},
+	})
+
+	if err != nil {
+		t.Fatalf("ControllerExpandVolume() error = %v", err)
+	}
+	if quotaBody.SVMName != "svm-a" || quotaBody.Path != "path-a" || quotaBody.QuotaBytes != expectedCapacity {
+		t.Fatalf("SetQuota body = %#v", quotaBody)
+	}
+	if resp.GetCapacityBytes() != expectedCapacity {
+		t.Fatalf("response capacity = %d, want %d", resp.GetCapacityBytes(), expectedCapacity)
+	}
+	stored, err := st.GetVolume("vol-a")
+	if err != nil {
+		t.Fatalf("stored volume not found: %v", err)
+	}
+	if stored.CapacityBytes != expectedCapacity {
+		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, expectedCapacity)
+	}
+}
+
+func TestControllerExpandVolumeRejectsProvisionedCapacityAboveLimit(t *testing.T) {
+	st := store.NewMemoryStore()
+	const initialCapacity = int64(4 << 30)
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: initialCapacity,
+	}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	var quotaCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	_, err = driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId: "vol-a",
+		CapacityRange: &csi.CapacityRange{
+			RequiredBytes: initialCapacity + 1,
+			LimitBytes:    initialCapacity + 1,
+		},
+	})
+
+	if status.Code(err) != codes.OutOfRange {
+		t.Fatalf("expected OutOfRange error, got %v", err)
+	}
+	if quotaCalled {
+		t.Fatalf("quota endpoint was called")
+	}
+	stored, err := st.GetVolume("vol-a")
+	if err != nil {
+		t.Fatalf("stored volume not found: %v", err)
+	}
+	if stored.CapacityBytes != initialCapacity {
+		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, initialCapacity)
+	}
+}
+
 func TestControllerExpandVolumeFailsWhenMetadataUpdateFails(t *testing.T) {
 	st := &failingCreateStore{MemoryStore: store.NewMemoryStore(), failUpdate: true}
 	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
