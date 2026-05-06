@@ -772,8 +772,7 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 	// Update volume metadata
 	volumeInfo.CapacityBytes = newCapacityBytes
 	if err := d.store.UpdateVolume(volumeInfo); err != nil {
-		klog.Warningf("Failed to update volume metadata for %s: %v", volumeID, err)
-		// Continue anyway - the quota is already expanded
+		return nil, status.Errorf(codes.Internal, "failed to update volume metadata: %v", err)
 	}
 
 	klog.Infof("Volume %s expanded successfully to %d bytes", volumeID, newCapacityBytes)

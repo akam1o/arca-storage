@@ -22,6 +22,7 @@ import (
 type failingCreateStore struct {
 	*store.MemoryStore
 	failCreate bool
+	failUpdate bool
 }
 
 func (s *failingCreateStore) CreateVolume(info *store.VolumeInfo) error {
@@ -29,6 +30,13 @@ func (s *failingCreateStore) CreateVolume(info *store.VolumeInfo) error {
 		return errors.New("store create failed")
 	}
 	return s.MemoryStore.CreateVolume(info)
+}
+
+func (s *failingCreateStore) UpdateVolume(info *store.VolumeInfo) error {
+	if s.failUpdate {
+		return errors.New("store update failed")
+	}
+	return s.MemoryStore.UpdateVolume(info)
 }
 
 func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
@@ -213,5 +221,54 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 	}
 	if deletedVolume != "source-path" {
 		t.Fatalf("deleted snapshot volume = %q, want source-path", deletedVolume)
+	}
+}
+
+func TestControllerExpandVolumeFailsWhenMetadataUpdateFails(t *testing.T) {
+	st := &failingCreateStore{MemoryStore: store.NewMemoryStore(), failUpdate: true}
+	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	var quotaCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	_, err = driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      "vol-a",
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 2 << 30},
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if !quotaCalled {
+		t.Fatalf("quota endpoint was not called")
 	}
 }
