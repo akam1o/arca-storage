@@ -61,6 +61,49 @@ class TestAddExport:
 
         assert response.status_code == 422  # Validation error
 
+    @pytest.mark.integration
+    def test_add_export_rejects_unsupported_sec_type(self, client):
+        response = client.post(
+            "/v1/exports",
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "sec": ["sys", "bad; token"],
+            },
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.integration
+    def test_add_export_rolls_back_rendered_config_on_reload_failure(self, fake_context):
+        client = TestClient(app, raise_server_exceptions=False)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "ready", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "ready", "client": "10.0.0.0/24", "access": "rw"},
+        )
+        client.post("/v1/volumes", json={"name": "failed", "svm": "tenant_a", "size_gib": 10})
+
+        def fail_reload(_svm, *, host_network=False):
+            raise RuntimeError("reload failed")
+
+        fake_context.adapters.ganesha.reload = fail_reload
+
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "failed", "client": "10.0.1.0/24", "access": "rw"},
+        )
+
+        assert response.status_code == 500
+        assert [entry["path"] for entry in fake_context.adapters.ganesha.exports["tenant_a"]] == [
+            "/exports/tenant_a/ready"
+        ]
+
 
 class TestRemoveExport:
     """Tests for DELETE /v1/exports."""
@@ -104,6 +147,9 @@ class TestRemoveExport:
         record = fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24")
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["message"].startswith("Delete failed:")
+        assert [entry["path"] for entry in fake_context.adapters.ganesha.exports["tenant_a"]] == [
+            "/exports/tenant_a/vol1"
+        ]
 
 
 class TestListExports:

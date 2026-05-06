@@ -43,14 +43,20 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
         svm=snapshot_data.svm,
         volume=snapshot_data.volume,
     )
-    existing = ctx.db.list_snapshots(svm=snapshot_data.svm, volume=snapshot_data.volume, name=snapshot_data.name, limit=1)
-    if existing:
-        record = existing[0]
+    snapshot = Snapshot(spec=requested_spec)
+    try:
+        ctx.db.insert_snapshot(snapshot)
+    except AlreadyExistsError:
+        existing = ctx.db.list_snapshots(
+            svm=snapshot_data.svm,
+            volume=snapshot_data.volume,
+            name=snapshot_data.name,
+            limit=1,
+        )
+        record = existing[0] if existing else None
         if _can_resume_create(record, requested_spec):
             return _resume_snapshot_create(ctx, record)
         raise AlreadyExistsError("Snapshot", f"{snapshot_data.svm}/{snapshot_data.volume}/{snapshot_data.name}")
-
-    snapshot = Snapshot(spec=requested_spec)
 
     snapshot = ctx.snapshot_reconciler.reconcile(snapshot)
 
@@ -222,14 +228,14 @@ def _parse_status(record: Dict[str, Any]) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec) -> bool:
+    if not record:
+        return False
     status = record.get("status", {})
     phase = status.get("phase")
-    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+    if phase != Phase.FAILED.value:
         return False
     if SnapshotSpec.model_validate(record["spec"]) != requested_spec:
         return False
-    if phase == Phase.CREATING.value:
-        return True
     if _is_failed_delete(status):
         return False
     return not status.get("lv_created", False)

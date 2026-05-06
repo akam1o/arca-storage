@@ -87,3 +87,21 @@ def test_failed_create_with_pending_steps_can_resume():
         ),
         volume_spec,
     )
+
+
+def test_active_creating_records_are_not_create_resume_candidates():
+    volume_spec = VolumeSpec(name="vol1", svm="tenant", size_gib=10)
+
+    assert not volume_service._can_resume_create(
+        _record(
+            volume_spec,
+            {
+                "phase": "Creating",
+                "message": "",
+                "lv_created": True,
+                "fs_formatted": False,
+                "mounted": False,
+            },
+        ),
+        volume_spec,
+    )

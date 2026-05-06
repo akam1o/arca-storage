@@ -62,6 +62,15 @@ class TestCreateVolume:
         assert response.status_code == 422  # Validation error
 
     @pytest.mark.integration
+    def test_create_volume_rejects_unsupported_fs_type(self, client):
+        response = client.post(
+            "/v1/volumes",
+            json={"name": "vol1", "svm": "tenant_a", "size_gib": 100, "fs_type": "ext4"},
+        )
+
+        assert response.status_code == 422
+
+    @pytest.mark.integration
     def test_create_volume_requires_existing_svm(self, fake_context):
         client = TestClient(app)
 
@@ -85,6 +94,19 @@ class TestCreateVolume:
         record = fake_context.db.get_volume("tenant_a", "vol1")
         assert record["spec"]["size_gib"] == 10
         assert record["status"]["phase"] == "Ready"
+
+    @pytest.mark.integration
+    def test_create_volume_rejects_reserved_duplicate_without_side_effects(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert response.status_code == 409
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
 
 
 class TestResizeVolume:

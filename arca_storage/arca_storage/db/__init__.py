@@ -164,6 +164,28 @@ class StateDB:
 
     # ---- SVM operations ----
 
+    def insert_svm(self, svm: Any) -> None:
+        """Insert a new SVM record without overwriting an existing one."""
+        now = _now_iso()
+        try:
+            with self.transaction(immediate=True) as conn:
+                conn.execute(
+                    """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        svm.metadata.id,
+                        svm.spec.name,
+                        svm.spec.model_dump_json(),
+                        svm.status.model_dump_json(),
+                        svm.metadata.generation,
+                        svm.metadata.created_at.isoformat(),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError("SVM", svm.spec.name) from e
+
     def upsert_svm(self, svm: Any) -> None:
         """Insert or update an SVM record."""
         now = _now_iso()
@@ -227,6 +249,29 @@ class StateDB:
             return cur.rowcount > 0
 
     # ---- Volume operations ----
+
+    def insert_volume(self, volume: Any) -> None:
+        """Insert a new volume record without overwriting an existing one."""
+        now = _now_iso()
+        try:
+            with self.transaction(immediate=True) as conn:
+                conn.execute(
+                    """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        volume.metadata.id,
+                        volume.spec.name,
+                        volume.spec.svm,
+                        volume.spec.model_dump_json(),
+                        volume.status.model_dump_json(),
+                        volume.metadata.generation,
+                        volume.metadata.created_at.isoformat(),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError("Volume", f"{volume.spec.svm}/{volume.spec.name}") from e
 
     def upsert_volume(self, volume: Any) -> None:
         now = _now_iso()
@@ -292,6 +337,33 @@ class StateDB:
             return cur.rowcount > 0
 
     # ---- Snapshot operations ----
+
+    def insert_snapshot(self, snapshot: Any) -> None:
+        """Insert a new snapshot record without overwriting an existing one."""
+        now = _now_iso()
+        try:
+            with self.transaction(immediate=True) as conn:
+                conn.execute(
+                    """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot.metadata.id,
+                        snapshot.spec.name,
+                        snapshot.spec.svm,
+                        snapshot.spec.volume,
+                        snapshot.spec.model_dump_json(),
+                        snapshot.status.model_dump_json(),
+                        snapshot.metadata.generation,
+                        snapshot.metadata.created_at.isoformat(),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError(
+                "Snapshot",
+                f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+            ) from e
 
     def upsert_snapshot(self, snapshot: Any) -> None:
         now = _now_iso()

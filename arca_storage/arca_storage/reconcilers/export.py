@@ -79,6 +79,7 @@ class ExportReconciler:
                 export.status.ganesha_configured = True
                 self._persist_conn(conn, export, "ganesha config rendered")
             except Exception as e:
+                self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
                 export.status.message = f"Config failed: {e}"
                 self._persist_conn(conn, export, export.status.message)
@@ -89,6 +90,7 @@ class ExportReconciler:
                 export.status.service_reloaded = True
                 self._persist_conn(conn, export, "ganesha reloaded")
             except Exception as e:
+                self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
                 export.status.message = f"Reload failed: {e}"
                 self._persist_conn(conn, export, export.status.message)
@@ -139,6 +141,7 @@ class ExportReconciler:
                 self.db._delete_export_conn(conn, spec.svm, spec.volume, spec.client)
                 self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "completed")
             except Exception as e:
+                self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
                 export.status.message = f"Delete failed: {e}"
                 self._persist_conn(conn, export, export.status.message)
@@ -175,6 +178,20 @@ class ExportReconciler:
             )
             self.adapters.ganesha.reload(svm_name, host_network=host_network)
             return path
+
+    def _rollback_svm_config(self, conn, svm_name: str, export_dir: str, *, host_network: bool) -> None:
+        """Best-effort restore of the active config to DB-ready exports."""
+        try:
+            config_entries = self._config_entries_for_svm(conn, svm_name, export_dir)
+            bind_addr, _ = self._ganesha_network_for_svm(conn, svm_name)
+            self.adapters.ganesha.render_config(
+                svm_name,
+                config_entries,
+                bind_addr=bind_addr,
+                host_network=host_network,
+            )
+        except Exception as rollback_error:
+            logger.warning("Failed to roll back Ganesha config for SVM %s: %s", svm_name, rollback_error)
 
     def _ganesha_network_for_svm(self, conn, svm_name: str) -> tuple[Optional[str], bool]:
         record = conn.execute("SELECT spec FROM svms WHERE name = ?", (svm_name,)).fetchone()

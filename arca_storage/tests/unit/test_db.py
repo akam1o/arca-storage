@@ -3,6 +3,7 @@
 import pytest
 
 from arca_storage.db import StateDB, encode_cursor
+from arca_storage.errors import AlreadyExistsError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -28,6 +29,17 @@ class TestStateDB:
         assert result is not None
         assert result["spec"]["name"] == "svm1"
         assert result["status"]["phase"] == "Ready"
+
+    def test_insert_svm_rejects_existing_name_without_overwrite(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"))
+        db.insert_svm(svm)
+
+        duplicate = SVM(spec=SVMSpec(name="svm1", vlan_id=200, ip_cidr="10.0.1.5/24", gateway="10.0.1.1"))
+        with pytest.raises(AlreadyExistsError):
+            db.insert_svm(duplicate)
+
+        result = db.get_svm("svm1")
+        assert result["spec"]["vlan_id"] == 100
 
     def test_list_svms(self, db):
         for i in range(3):
@@ -71,6 +83,17 @@ class TestStateDB:
         page = db.list_volumes(svm="svm1", limit=2, cursor=encode_cursor(["svm1", "vol1"]))
         assert [item["spec"]["name"] for item in page] == ["vol2", "vol3"]
 
+    def test_insert_volume_rejects_existing_key_without_overwrite(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        db.insert_volume(vol)
+
+        duplicate = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=20))
+        with pytest.raises(AlreadyExistsError):
+            db.insert_volume(duplicate)
+
+        result = db.get_volume("svm1", "vol1")
+        assert result["spec"]["size_gib"] == 10
+
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):
             snap = Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1"))
@@ -83,6 +106,18 @@ class TestStateDB:
 
         page = db.list_snapshots(svm="svm1", limit=2, cursor=encode_cursor(["svm1", "vol1", "snap1"]))
         assert [item["spec"]["name"] for item in page] == ["snap2", "snap3"]
+
+    def test_insert_snapshot_rejects_existing_key_without_overwrite(self, db):
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        db.insert_snapshot(snap)
+
+        duplicate = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        duplicate.status.phase = Phase.READY
+        with pytest.raises(AlreadyExistsError):
+            db.insert_snapshot(duplicate)
+
+        result = db.list_snapshots(svm="svm1", volume="vol1", name="snap1")
+        assert result[0]["status"]["phase"] == "Pending"
 
     def test_upsert_and_list_exports(self, db):
         for client in ("10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"):

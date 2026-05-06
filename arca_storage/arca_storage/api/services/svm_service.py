@@ -10,7 +10,7 @@ from ipaddress import IPv4Interface
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SVMCreate
-from arca_storage.cli.lib.validators import validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
+from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
 from arca_storage.context import get_context
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
@@ -28,6 +28,11 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     validate_ip_cidr(svm_data.ip_cidr)
     if svm_data.gateway is not None:
         validate_ipv4(svm_data.gateway)
+    elif svm_data.vlan_id is not None:
+        try:
+            infer_gateway_from_ip_cidr(svm_data.ip_cidr)
+        except ValueError as e:
+            raise InvalidArgumentError(str(e), {"ip_cidr": svm_data.ip_cidr}) from e
 
     ctx = get_context()
 
@@ -39,13 +44,14 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
         mtu=svm_data.mtu,
         root_volume_size_gib=svm_data.root_volume_size_gib,
     )
-    existing = ctx.db.get_svm(svm_data.name)
-    if existing:
+    svm = SVM(spec=requested_spec)
+    try:
+        ctx.db.insert_svm(svm)
+    except AlreadyExistsError:
+        existing = ctx.db.get_svm(svm_data.name)
         if _can_resume_create(existing, requested_spec):
             return _resume_svm_create(ctx, existing)
         raise AlreadyExistsError("SVM", svm_data.name)
-
-    svm = SVM(spec=requested_spec)
 
     svm = ctx.svm_reconciler.reconcile(svm)
 
@@ -217,15 +223,15 @@ def _parse_status(record: Dict[str, Any], kind: str) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec) -> bool:
+    if not record:
+        return False
     status = record.get("status", {})
     phase = status.get("phase")
-    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+    if phase != Phase.FAILED.value:
         return False
     spec = SVMSpec.model_validate(record["spec"])
     if spec != requested_spec:
         return False
-    if phase == Phase.CREATING.value:
-        return True
     if _is_failed_delete(status):
         return False
     return _has_pending_create_step(spec, status)

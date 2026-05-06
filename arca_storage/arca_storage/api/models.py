@@ -207,6 +207,13 @@ class VolumeCreate(BaseModel):
             )
         return v
 
+    @field_validator("fs_type")
+    def validate_fs_type(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized != "xfs":
+            raise ValueError("fs_type must be 'xfs'")
+        return normalized
+
 
 class VolumeResize(BaseModel):
     """Request model for resizing a volume."""
@@ -365,7 +372,7 @@ class ExportCreate(BaseModel):
     client: str = Field(..., description="Client CIDR (e.g., 10.0.0.0/24)")
     access: str = Field("rw", description="Access type: rw or ro")
     root_squash: bool = Field(True, description="Enable root squash")
-    sec: List[str] = Field(["sys"], description="Security types")
+    sec: List[str] = Field(default_factory=lambda: ["sys"], description="Security types")
 
     @field_validator("access")
     def validate_access(cls, v: str) -> str:
@@ -385,6 +392,17 @@ class ExportCreate(BaseModel):
         except Exception as e:
             raise ValueError(f"Invalid CIDR format: {e}")
         return v
+
+    @field_validator("sec")
+    def validate_sec(cls, v: List[str]) -> List[str]:
+        allowed = {"sys", "krb5", "krb5i", "krb5p"}
+        values = [item.strip().lower() for item in v if item.strip()]
+        if not values:
+            raise ValueError("sec must contain at least one security type")
+        unsupported = [item for item in values if item not in allowed]
+        if unsupported:
+            raise ValueError(f"Unsupported security types: {unsupported}")
+        return values
 
 
 class Export(BaseModel):

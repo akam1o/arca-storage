@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from arca_storage.models.base import Phase, ResourceMeta
 
@@ -20,6 +20,14 @@ class VolumeSpec(BaseModel):
     size_gib: int = Field(..., gt=0)
     thin: bool = True
     fs_type: str = "xfs"
+
+    @field_validator("fs_type")
+    @classmethod
+    def validate_fs_type(cls, value: str) -> str:
+        normalized = value.strip().lower()
+        if normalized != "xfs":
+            raise ValueError("fs_type must be 'xfs'")
+        return normalized
 
 
 class VolumeStatus(BaseModel):

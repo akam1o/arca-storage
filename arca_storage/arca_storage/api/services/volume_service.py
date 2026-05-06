@@ -37,13 +37,14 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
         thin=volume_data.thin,
         fs_type=volume_data.fs_type,
     )
-    existing = ctx.db.get_volume(volume_data.svm, volume_data.name)
-    if existing:
+    volume = Volume(spec=requested_spec)
+    try:
+        ctx.db.insert_volume(volume)
+    except AlreadyExistsError:
+        existing = ctx.db.get_volume(volume_data.svm, volume_data.name)
         if _can_resume_create(existing, requested_spec):
             return _resume_volume_create(ctx, existing)
         raise AlreadyExistsError("Volume", f"{volume_data.svm}/{volume_data.name}")
-
-    volume = Volume(spec=requested_spec)
 
     volume = ctx.volume_reconciler.reconcile(volume)
 
@@ -232,14 +233,14 @@ def _parse_status(record: Dict[str, Any]) -> Any:
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec) -> bool:
+    if not record:
+        return False
     status = record.get("status", {})
     phase = status.get("phase")
-    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+    if phase != Phase.FAILED.value:
         return False
     if VolumeSpec.model_validate(record["spec"]) != requested_spec:
         return False
-    if phase == Phase.CREATING.value:
-        return True
     if _is_failed_delete(status):
         return False
     return _has_pending_create_step(status)
