@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -37,6 +38,21 @@ func (s *failingCreateStore) UpdateVolume(info *store.VolumeInfo) error {
 		return errors.New("store update failed")
 	}
 	return s.MemoryStore.UpdateVolume(info)
+}
+
+type racingCreateStore struct {
+	*store.MemoryStore
+	existing *store.VolumeInfo
+}
+
+func (s *racingCreateStore) CreateVolume(info *store.VolumeInfo) error {
+	if s.existing != nil && s.existing.VolumeID == info.VolumeID {
+		if err := s.MemoryStore.CreateVolume(s.existing); err != nil && !store.IsAlreadyExists(err) {
+			return err
+		}
+		return fmt.Errorf("%w: volume %s", store.ErrAlreadyExists, info.VolumeID)
+	}
+	return s.MemoryStore.CreateVolume(info)
 }
 
 func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
@@ -134,6 +150,84 @@ func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 	}
 	if cleanupPath != targetPath {
 		t.Fatalf("cleanup path = %q, want %q", cleanupPath, targetPath)
+	}
+}
+
+func TestCreateVolumeDoesNotMutateQuotaWhenCreateRaceIsIncompatible(t *testing.T) {
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	volumeID := volumeIDGen.GenerateVolumeID("race-pvc")
+	st := &racingCreateStore{
+		MemoryStore: store.NewMemoryStore(),
+		existing: &store.VolumeInfo{
+			VolumeID:      volumeID,
+			Name:          "race-pvc",
+			SVMName:       "k8s-ns-a",
+			VIP:           "10.0.0.10",
+			ExportRoot:    "/exports/k8s-ns-a",
+			Path:          volumeID,
+			CapacityBytes: 1 << 30,
+			CreatedAt:     time.Now(),
+		},
+	}
+
+	var directoryCreated bool
+	var quotaCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-ns-a","ip_cidr":"10.0.0.10/24","vip":"10.0.0.10","export_root":"/exports/k8s-ns-a","gateway":"","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/directories":
+			directoryCreated = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"directory":{}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		svmManager:    arca.NewSVMManager(client, nil, nil, 1500),
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	_, err = driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "race-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "race-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 2 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+	})
+
+	if status.Code(err) != codes.AlreadyExists {
+		t.Fatalf("expected AlreadyExists error, got %v", err)
+	}
+	if !directoryCreated {
+		t.Fatalf("directory endpoint was not called")
+	}
+	if quotaCalled {
+		t.Fatalf("quota endpoint was called")
+	}
+	stored, err := st.GetVolume(volumeID)
+	if err != nil {
+		t.Fatalf("stored volume not found: %v", err)
+	}
+	if stored.CapacityBytes != 1<<30 {
+		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, int64(1<<30))
 	}
 }
 

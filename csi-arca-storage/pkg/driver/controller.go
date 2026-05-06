@@ -348,18 +348,6 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		ContentSource: contentSource,
 	}
 
-	// Set quota
-	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeID, capacityBytes)
-	err = d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
-		SVMName:    svm.Name,
-		Path:       volumePath,
-		QuotaBytes: capacityBytes,
-	})
-	if err != nil {
-		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
-		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
-	}
-
 	if err := d.store.CreateVolume(volumeInfo); err != nil {
 		if store.IsAlreadyExists(err) {
 			existingVol, getErr := d.store.GetVolume(volumeID)
@@ -373,6 +361,21 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		}
 		d.cleanupProvisionedVolume(ctx, volumeInfo, "metadata store failure")
 		return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
+	}
+
+	// Set quota only after the metadata create wins the idempotency race.
+	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeID, capacityBytes)
+	err = d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
+		SVMName:    svm.Name,
+		Path:       volumePath,
+		QuotaBytes: capacityBytes,
+	})
+	if err != nil {
+		if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
+			klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
+		}
+		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
+		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
 	}
 
 	klog.Infof("Volume %s created successfully (SVM: %s, Path: %s)", volumeID, svm.Name, volumePath)
