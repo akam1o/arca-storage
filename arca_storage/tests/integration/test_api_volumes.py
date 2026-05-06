@@ -206,6 +206,22 @@ class TestResizeVolume:
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
 
     @pytest.mark.integration
+    def test_resize_volume_rejects_unready_record_without_mutation(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=20)))
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["phase"] == "Pending"
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+
+    @pytest.mark.integration
     def test_resize_volume_retries_grow_after_lv_extension(self, fake_context):
         client = TestClient(app, raise_server_exceptions=False)
         create_test_svm(client)
@@ -396,6 +412,22 @@ class TestSnapshots:
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
+
+    @pytest.mark.integration
+    def test_create_snapshot_rejects_unready_source_volume(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+
+        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["phase"] == "Pending"
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1_snap_snap1")
 
     @pytest.mark.integration
     def test_delete_snapshot_reports_reconciler_failure(self, fake_context):

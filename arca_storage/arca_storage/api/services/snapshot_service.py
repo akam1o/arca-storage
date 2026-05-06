@@ -31,7 +31,7 @@ from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import snapshot_lv_name, validate_name, volume_lv_name
-from arca_storage.api.services.volume_service import build_volume_export_path
+from arca_storage.api.services.volume_service import build_volume_export_path, require_volume_ready_record
 from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
 
 
@@ -46,6 +46,7 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     source_record = ctx.db.get_volume(snapshot_data.svm, snapshot_data.volume)
     if not source_record:
         raise NotFoundError("Volume", f"{snapshot_data.svm}/{snapshot_data.volume}")
+    require_volume_ready_record(source_record, snapshot_data.svm, snapshot_data.volume)
     if not bool(source_record.get("spec", {}).get("thin", True)):
         raise PreconditionFailedError(
             f"Volume '{snapshot_data.svm}/{snapshot_data.volume}' is not thin-provisioned; snapshots require thin volumes",

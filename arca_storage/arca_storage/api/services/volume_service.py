@@ -80,6 +80,7 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     record = ctx.db.get_volume(svm, name)
     if not record:
         raise NotFoundError("Volume", f"{svm}/{name}")
+    require_volume_ready_record(record, svm, name)
 
     current_size = int(record.get("spec", {}).get("size_gib") or 0)
     if new_size_gib < current_size:
@@ -237,6 +238,21 @@ def build_volume_export_path(ctx: Any, svm: str | None, mount_path: str | None) 
     if not vip:
         return None
     return f"{vip}:{mount_path}"
+
+
+def require_volume_ready_record(record: Dict[str, Any], svm: str, name: str) -> None:
+    """Reject dependent operations until the volume reconciler has completed."""
+    phase = str(record.get("status", {}).get("phase") or "")
+    if phase == Phase.READY.value:
+        return
+    raise PreconditionFailedError(
+        f"Volume '{svm}/{name}' is not ready",
+        {
+            "resource": "Volume",
+            "name": f"{svm}/{name}",
+            "phase": phase,
+        },
+    )
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:

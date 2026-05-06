@@ -22,6 +22,7 @@ from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgume
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
+from arca_storage.api.services.volume_service import require_volume_ready_record
 
 
 def add_export(export_data: ExportCreate) -> Dict[str, Any]:
@@ -33,8 +34,10 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     ctx = get_context()
     if not ctx.db.get_svm(export_data.svm):
         raise NotFoundError("SVM", export_data.svm)
-    if not ctx.db.get_volume(export_data.svm, export_data.volume):
+    volume_record = ctx.db.get_volume(export_data.svm, export_data.volume)
+    if not volume_record:
         raise NotFoundError("Volume", f"{export_data.svm}/{export_data.volume}")
+    require_volume_ready_record(volume_record, export_data.svm, export_data.volume)
     requested_spec = ExportSpec(
         svm=export_data.svm,
         volume=export_data.volume,

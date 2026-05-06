@@ -137,6 +137,28 @@ class TestAddExport:
         assert response.status_code == 200
         assert fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24") is None
 
+    @pytest.mark.integration
+    def test_add_export_rejects_unready_volume(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["phase"] == "Pending"
+        assert fake_context.db.list_exports(svm="tenant_a", volume="vol1") == []
+        assert fake_context.adapters.ganesha.exports.get("tenant_a", []) == []
+
 
 class TestRemoveExport:
     """Tests for DELETE /v1/exports."""
