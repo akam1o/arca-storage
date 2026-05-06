@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,8 @@ import (
 
 	"k8s.io/klog/v2"
 )
+
+const bytesPerGiB = int64(1024 * 1024 * 1024)
 
 // Client is an ARCA REST API client
 type Client struct {
@@ -176,7 +179,11 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 	if err != nil {
 		return nil, fmt.Errorf("http request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.Warningf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read response body
 	respBody, err := io.ReadAll(resp.Body)
@@ -278,13 +285,45 @@ func (c *Client) GetSVMCapacity(ctx context.Context, svmName string) (*CapacityI
 	}
 
 	var response struct {
-		Data CapacityInfo `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &response); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	return &response.Data, nil
+	if len(response.Data) == 0 {
+		return nil, fmt.Errorf("%w: missing data field", ErrInvalidResponse)
+	}
+
+	var direct CapacityInfo
+	if err := json.Unmarshal(response.Data, &direct); err == nil && !direct.isZero() {
+		return &direct, nil
+	}
+
+	var nested struct {
+		Capacity struct {
+			TotalGB float64 `json:"total_gb"`
+			FreeGB  float64 `json:"free_gb"`
+			UsedGB  float64 `json:"used_gb"`
+		} `json:"capacity"`
+	}
+	if err := json.Unmarshal(response.Data, &nested); err == nil && nested.Capacity.TotalGB > 0 {
+		return &CapacityInfo{
+			TotalBytes:     gibToBytes(nested.Capacity.TotalGB),
+			AvailableBytes: gibToBytes(nested.Capacity.FreeGB),
+			UsedBytes:      gibToBytes(nested.Capacity.UsedGB),
+		}, nil
+	}
+
+	return nil, fmt.Errorf("%w: missing capacity object in response", ErrInvalidResponse)
+}
+
+func (c CapacityInfo) isZero() bool {
+	return c.TotalBytes == 0 && c.AvailableBytes == 0 && c.UsedBytes == 0
+}
+
+func gibToBytes(gib float64) int64 {
+	return int64(math.Round(gib * float64(bytesPerGiB)))
 }
 
 func decodeSVMResponse(respBody []byte) (*SVM, error) {

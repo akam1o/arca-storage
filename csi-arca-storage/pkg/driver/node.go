@@ -409,7 +409,9 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 			if unmountErr := mounter.Unmount(targetPath); unmountErr != nil {
 				klog.Errorf("Failed to rollback bind mount: %v", unmountErr)
 			}
-			os.Remove(targetPath)
+			if rmErr := os.Remove(targetPath); rmErr != nil && !os.IsNotExist(rmErr) {
+				klog.Warningf("Failed to remove target path %s during rollback: %v", targetPath, rmErr)
+			}
 			return nil, status.Errorf(codes.Internal, "failed to remount as read-only: %v", err)
 		}
 	}

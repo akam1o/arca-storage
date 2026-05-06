@@ -79,7 +79,7 @@ func (d *Duration) UnmarshalYAML(node *yaml.Node) error {
 }
 
 func (d Duration) MarshalYAML() (interface{}, error) {
-	return d.Duration.String(), nil
+	return d.String(), nil
 }
 
 // LoadConfig loads configuration from a file

@@ -96,6 +96,38 @@ func TestClientMapsFastAPIResourceErrorDetails(t *testing.T) {
 	}
 }
 
+func TestGetSVMCapacityDecodesFastAPIShape(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/svms/k8s-default/capacity" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"capacity":{"svm":"k8s-default","vg":"vg_pool_01","total_gb":100.0,"free_gb":25.5,"used_gb":74.5,"provisioned_gb":80.0}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	capacity, err := client.GetSVMCapacity(context.Background(), "k8s-default")
+	if err != nil {
+		t.Fatalf("GetSVMCapacity() error = %v", err)
+	}
+
+	if capacity.TotalBytes != 100*1024*1024*1024 {
+		t.Fatalf("TotalBytes = %d", capacity.TotalBytes)
+	}
+	if capacity.AvailableBytes != 255*1024*1024*1024/10 {
+		t.Fatalf("AvailableBytes = %d", capacity.AvailableBytes)
+	}
+	if capacity.UsedBytes != 745*1024*1024*1024/10 {
+		t.Fatalf("UsedBytes = %d", capacity.UsedBytes)
+	}
+}
+
 func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	var createBody map[string]interface{}
 	var cloneBody map[string]interface{}

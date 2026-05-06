@@ -184,10 +184,11 @@ func (d *Driver) Run(ctx context.Context) error {
 	// Register CSI services based on mode
 	csi.RegisterIdentityServer(d.srv, d)
 
-	if d.mode == "controller" {
+	switch d.mode {
+	case "controller":
 		csi.RegisterControllerServer(d.srv, d)
 		klog.Info("Registered Identity and Controller services")
-	} else if d.mode == "node" {
+	case "node":
 		csi.RegisterNodeServer(d.srv, d)
 		klog.Info("Registered Identity and Node services")
 	}

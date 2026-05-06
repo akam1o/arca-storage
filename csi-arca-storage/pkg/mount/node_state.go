@@ -317,36 +317,59 @@ func (ns *NodeState) persistLocked() error {
 	}
 
 	if _, err := f.Write(data); err != nil {
-		f.Close()
-		os.Remove(tempPath)
+		if closeErr := f.Close(); closeErr != nil {
+			removeTempStateFile(tempPath)
+			return fmt.Errorf("failed to write temp file: %w; also failed to close temp file: %v", err, closeErr)
+		}
+		removeTempStateFile(tempPath)
 		return fmt.Errorf("failed to write temp file: %w", err)
 	}
 
 	// Fsync to ensure data is on disk
 	if err := f.Sync(); err != nil {
-		f.Close()
-		os.Remove(tempPath)
+		if closeErr := f.Close(); closeErr != nil {
+			removeTempStateFile(tempPath)
+			return fmt.Errorf("failed to fsync temp file: %w; also failed to close temp file: %v", err, closeErr)
+		}
+		removeTempStateFile(tempPath)
 		return fmt.Errorf("failed to fsync temp file: %w", err)
 	}
 
-	f.Close()
+	if err := f.Close(); err != nil {
+		removeTempStateFile(tempPath)
+		return fmt.Errorf("failed to close temp file: %w", err)
+	}
 
 	// Atomic rename
 	if err := os.Rename(tempPath, ns.stateFilePath); err != nil {
-		os.Remove(tempPath)
+		removeTempStateFile(tempPath)
 		return fmt.Errorf("failed to rename temp file: %w", err)
 	}
 
 	// Fsync directory to ensure rename is persisted
 	dir, err := os.Open(filepath.Dir(ns.stateFilePath))
-	if err == nil {
-		dir.Sync()
-		dir.Close()
+	if err != nil {
+		return fmt.Errorf("failed to open state directory for fsync: %w", err)
+	}
+	if err := dir.Sync(); err != nil {
+		if closeErr := dir.Close(); closeErr != nil {
+			return fmt.Errorf("failed to fsync state directory: %w; also failed to close state directory: %v", err, closeErr)
+		}
+		return fmt.Errorf("failed to fsync state directory: %w", err)
+	}
+	if err := dir.Close(); err != nil {
+		return fmt.Errorf("failed to close state directory: %w", err)
 	}
 
 	klog.V(4).Infof("Persisted node state with %d volumes", len(ns.data.Volumes))
 
 	return nil
+}
+
+func removeTempStateFile(tempPath string) {
+	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
+		klog.Warningf("Failed to remove temp state file %s: %v", tempPath, err)
+	}
 }
 
 // quarantineCorruptState moves corrupt state file to a timestamped backup

@@ -11,7 +11,7 @@ import (
 
 func TestReleaseSkipsLeaseHeldByAnotherHolder(t *testing.T) {
 	ctx := context.Background()
-	clientset := fake.NewSimpleClientset()
+	clientset := fake.NewClientset()
 	manager := NewManager(clientset, "kube-system", "controller-a")
 
 	lock, err := manager.AcquireLock(ctx, "tenant-a", 10*time.Second)

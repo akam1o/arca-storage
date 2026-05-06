@@ -378,7 +378,7 @@ func TestCreateVolumeUsesDistributedLockBeforeIdempotentSuccess(t *testing.T) {
 		t.Fatalf("NewClient() error = %v", err)
 	}
 
-	k8sClient := k8sfake.NewSimpleClientset()
+	k8sClient := k8sfake.NewClientset()
 	newDriver := func(identity string) *Driver {
 		return &Driver{
 			mode:          "controller",
