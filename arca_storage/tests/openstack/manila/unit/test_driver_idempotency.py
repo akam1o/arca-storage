@@ -193,8 +193,8 @@ class TestDeleteOperationIdempotency:
             "Internal server error"
         )
 
-        # Non-404 errors should be raised
-        with pytest.raises(arca_exceptions.ArcaManilaAPIError):
+        # Non-404 errors are wrapped as Manila backend errors.
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Internal server error"):
             driver.delete_share(Mock(), mock_manila_share, None)
 
 

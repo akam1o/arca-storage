@@ -35,7 +35,7 @@ class TestSVMCreate:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.stdout
+        assert "Error" in result.output + result.stderr
 
     @pytest.mark.integration
     def test_create_svm_invalid_vlan(self):
@@ -46,7 +46,7 @@ class TestSVMCreate:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.stdout
+        assert "Error" in result.output + result.stderr
 
     @pytest.mark.integration
     def test_create_svm_invalid_ip(self):
@@ -55,7 +55,7 @@ class TestSVMCreate:
         result = runner.invoke(app, ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "invalid-ip"])  # invalid IP
 
         assert result.exit_code == 1
-        assert "Error" in result.stdout
+        assert "Error" in result.output + result.stderr
 
     @pytest.mark.integration
     def test_create_svm_without_vlan(self, fake_context):

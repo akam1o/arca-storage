@@ -28,8 +28,8 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
 
     def test_do_setup_parses_pools(self, driver):
         assert driver._svm_strategy_effective == "per_project"
-        assert len(driver._ip_vlan_pools) == 1
-        pool = driver._ip_vlan_pools[0]
+        assert len(driver._network_allocator._ip_vlan_pools) == 1
+        pool = driver._network_allocator._ip_vlan_pools[0]
         assert str(pool["ip_network"]) == "192.168.100.0/24"
         assert pool["vlan_id"] == 100
 
@@ -67,4 +67,3 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
             root_volume_size_gib=None,
         )
         mock_arca_client.create_volume.assert_called_once()
-

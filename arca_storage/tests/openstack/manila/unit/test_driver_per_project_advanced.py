@@ -141,8 +141,8 @@ class TestPerProjectNetworkConflictRetry:
         mock_arca_client.list_svms.return_value = []
 
         # create_svm fails because another worker created it
-        mock_arca_client.create_svm.side_effect = arca_exceptions.ArcaNetworkConflict(
-            "SVM name already exists"
+        mock_arca_client.create_svm.side_effect = arca_exceptions.ArcaSVMAlreadyExists(
+            svm_name="manila_test-project-id"
         )
 
         mock_arca_client.create_volume.return_value = {
@@ -174,7 +174,7 @@ class TestPerProjectPoolValidation:
                 "invalid-format"  # Missing required parts
             ]
 
-            with pytest.raises(manila_driver.manila_exception.ShareBackendException):
+            with pytest.raises(manila_driver.manila_exception.ManilaException):
                 drv.do_setup(Mock())
 
     def test_gateway_in_allocatable_range_raises_error(self, mock_manila_driver_config, mock_arca_client):
@@ -192,7 +192,7 @@ class TestPerProjectPoolValidation:
                 "192.168.100.0/24|192.168.100.1-192.168.100.10:100"
             ]
 
-            with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="[Gg]ateway"):
+            with pytest.raises(manila_driver.manila_exception.ManilaException, match="[Gg]ateway"):
                 drv.do_setup(Mock())
 
     def test_network_address_excluded_from_pool(self, mock_manila_driver_config, mock_arca_client):
@@ -211,7 +211,7 @@ class TestPerProjectPoolValidation:
             drv.do_setup(Mock())
 
             # Verify pool was parsed (should succeed without gateway conflict)
-            assert len(drv._ip_vlan_pools) == 1
+            assert len(drv._network_allocator._ip_vlan_pools) == 1
 
     def test_multiple_pools_parsed_correctly(self, mock_manila_driver_config, mock_arca_client):
         """Test that multiple IP/VLAN pools are parsed correctly."""
@@ -229,9 +229,9 @@ class TestPerProjectPoolValidation:
             ]
             drv.do_setup(Mock())
 
-            assert len(drv._ip_vlan_pools) == 2
-            assert drv._ip_vlan_pools[0]["vlan_id"] == 100
-            assert drv._ip_vlan_pools[1]["vlan_id"] == 101
+            assert len(drv._network_allocator._ip_vlan_pools) == 2
+            assert drv._network_allocator._ip_vlan_pools[0]["vlan_id"] == 100
+            assert drv._network_allocator._ip_vlan_pools[1]["vlan_id"] == 101
 
 
 class TestPerProjectCrossProjectRestrictions:

@@ -6,6 +6,20 @@ import pytest
 
 
 @pytest.fixture
+def _configure_oslo_lock_path(tmp_path):
+    try:
+        from oslo_concurrency import lockutils
+    except ImportError:
+        return
+    lockutils.set_defaults(str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def configure_oslo_lock_path(_configure_oslo_lock_path):
+    pass
+
+
+@pytest.fixture
 def mock_manila_driver_config():
     """Create a mock oslo.config-like configuration object for the driver."""
     config = Mock()
@@ -35,6 +49,7 @@ def mock_manila_driver_config():
     config.arca_storage_svm_prefix = "manila_"
 
     # per_project network allocation
+    config.arca_storage_network_plugin_mode = "standalone"
     config.arca_storage_per_project_ip_pools = []
     config.arca_storage_per_project_mtu = 1500
     config.arca_storage_per_project_root_volume_size_gib = None

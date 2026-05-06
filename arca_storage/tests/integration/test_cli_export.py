@@ -31,7 +31,7 @@ class TestExportAdd:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.stdout
+        assert "Error" in result.output + result.stderr
 
 
 class TestExportRemove:

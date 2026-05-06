@@ -143,7 +143,7 @@ class TestErrorHandling:
         result = runner.invoke(cli_app, ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24"])
 
         assert result.exit_code == 1
-        assert "Error" in result.stdout
+        assert "Error" in result.output + result.stderr
 
     @pytest.mark.integration
     @patch("arca_storage.api.services.svm_service.create_svm")
