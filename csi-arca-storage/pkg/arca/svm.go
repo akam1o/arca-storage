@@ -74,7 +74,9 @@ func (m *SVMManager) createSVMWithLock(ctx context.Context, namespace, svmName s
 		return nil, fmt.Errorf("failed to acquire lock for namespace %s: %w", namespace, err)
 	}
 	defer func() {
-		if err := lockHandle.Release(ctx); err != nil {
+		releaseCtx, releaseCancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer releaseCancel()
+		if err := lockHandle.Release(releaseCtx); err != nil {
 			klog.Warningf("Failed to release lock for namespace %s: %v", namespace, err)
 		}
 	}()

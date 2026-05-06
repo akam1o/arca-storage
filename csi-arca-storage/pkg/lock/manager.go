@@ -3,8 +3,10 @@ package lock
 import (
 	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -13,6 +15,12 @@ import (
 	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+)
+
+const (
+	leaseNamePrefix    = "arca-csi-svm-"
+	maxLeaseNameLength = 63
+	leaseNameHashBytes = 6
 )
 
 // Manager manages distributed locks using Kubernetes Leases
@@ -43,16 +51,13 @@ func NewManager(clientset kubernetes.Interface, namespace, identity string) *Man
 
 // AcquireLock acquires a distributed lock for the given resource
 func (m *Manager) AcquireLock(ctx context.Context, resourceName string, ttl time.Duration) (*Lock, error) {
-	leaseName := fmt.Sprintf("arca-csi-svm-%s", resourceName)
+	leaseName := leaseNameForResource(resourceName)
 	holderIdentity := newLockHolderIdentity(m.identity)
 
-	lockCtx, cancel := context.WithCancel(ctx)
 	lock := &Lock{
 		manager:        m,
 		leaseName:      leaseName,
 		holderIdentity: holderIdentity,
-		ctx:            lockCtx,
-		cancel:         cancel,
 	}
 
 	// Try to acquire the lease
@@ -60,12 +65,12 @@ func (m *Manager) AcquireLock(ctx context.Context, resourceName string, ttl time
 	for time.Now().Before(deadline) {
 		acquired, leaseUID, err := m.tryAcquireLease(ctx, leaseName, holderIdentity, ttl)
 		if err != nil {
-			cancel()
 			return nil, fmt.Errorf("failed to acquire lease: %w", err)
 		}
 
 		if acquired {
 			lock.leaseUID = leaseUID
+			lock.ctx, lock.cancel = context.WithCancel(context.Background())
 			// Start renewing the lease in background
 			go lock.renewLoop(ttl)
 			klog.V(4).Infof("Acquired lock for resource %s (lease: %s)", resourceName, leaseName)
@@ -76,12 +81,10 @@ func (m *Manager) AcquireLock(ctx context.Context, resourceName string, ttl time
 		select {
 		case <-time.After(time.Second):
 		case <-ctx.Done():
-			cancel()
 			return nil, ctx.Err()
 		}
 	}
 
-	cancel()
 	return nil, fmt.Errorf("failed to acquire lock for %s within %v", resourceName, ttl)
 }
 
@@ -170,7 +173,9 @@ func (l *Lock) renewLoop(ttl time.Duration) {
 
 // Release releases the lock
 func (l *Lock) Release(ctx context.Context) error {
-	l.cancel() // Stop renewal
+	if l.cancel != nil {
+		l.cancel() // Stop renewal
+	}
 
 	// Delete the lease
 	leaseClient := l.manager.clientset.CoordinationV1().Leases(l.manager.namespace)
@@ -212,4 +217,49 @@ func newLockHolderIdentity(identity string) string {
 		return fmt.Sprintf("%s-%s", identity, hex.EncodeToString(random))
 	}
 	return fmt.Sprintf("%s-%d", identity, time.Now().UnixNano())
+}
+
+func leaseNameForResource(resourceName string) string {
+	namePart := sanitizeLeaseNamePart(resourceName)
+	candidate := leaseNamePrefix + namePart
+	if len(candidate) <= maxLeaseNameLength {
+		return candidate
+	}
+
+	sum := sha256.Sum256([]byte(resourceName))
+	suffix := "-" + hex.EncodeToString(sum[:leaseNameHashBytes])
+	headLen := maxLeaseNameLength - len(leaseNamePrefix) - len(suffix)
+	if headLen < 1 {
+		return leaseNamePrefix + "resource" + suffix
+	}
+	if headLen > len(namePart) {
+		headLen = len(namePart)
+	}
+	head := strings.TrimRight(namePart[:headLen], "-")
+	if head == "" {
+		head = "resource"
+	}
+	return leaseNamePrefix + head + suffix
+}
+
+func sanitizeLeaseNamePart(raw string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(raw) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-':
+			builder.WriteRune(r)
+		default:
+			builder.WriteRune('-')
+		}
+	}
+
+	name := strings.Trim(builder.String(), "-")
+	if name == "" {
+		return "resource"
+	}
+	return name
 }
