@@ -257,7 +257,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
 			}
-			temporarySnapshotReady = err == nil
+			temporarySnapshotReady = true
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
 				Name:         volumePath,
