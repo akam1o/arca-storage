@@ -1525,7 +1525,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
             # If Manila didn't provide incremental changes, reconcile from full desired list.
             # This prevents drift when add_rules/delete_rules are omitted or empty.
-            if access_rules and not add_rules and not delete_rules:
+            if access_rules is not None and not add_rules and not delete_rules:
                 self._reconcile_access_rules(svm_name, volume_name, access_rules)
                 LOG.info("Access rules reconciled for share %s", share_id)
                 return None
@@ -1605,7 +1605,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         """Reconcile backend exports against desired Manila access rules.
 
         This is a safety-net for cases where Manila doesn't provide incremental
-        diffs (add_rules/delete_rules). Best-effort: individual failures are logged.
+        diffs (add_rules/delete_rules). Individual failures are collected so
+        Manila can retry instead of marking the desired ACL state as applied.
 
         Uses backend-returned raw client strings for delete operations to avoid
         format mismatches, while normalizing for comparison.
@@ -1668,6 +1669,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         # Apply deletions first to allow access-level changes via delete+add
         # Use raw backend strings for delete operations
+        rule_failures = []
         for client_norm in to_delete + to_update:
             client_raw = current[client_norm][0]
             try:
@@ -1681,6 +1683,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     volume_name,
                     e,
                 )
+                rule_failures.append(("delete", client_raw, e))
 
         # Apply additions (including updates)
         # Use normalized strings for create operations (backend will normalize)
@@ -1701,6 +1704,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     volume_name,
                     e,
                 )
+                rule_failures.append(("add", client_norm, e))
+
+        if rule_failures:
+            details = ", ".join(
+                f"{operation}:{self._access_rule_label(rule)} ({error})"
+                for operation, rule, error in rule_failures
+            )
+            raise manila_exception.ShareBackendException(
+                f"Failed to reconcile {len(rule_failures)} access rule(s): {details}"
+            )
 
     def _add_access_rule(self, svm_name, volume_name, rule):
         """Add access rule to share.
