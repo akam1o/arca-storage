@@ -207,6 +207,24 @@ class TestSnapshots:
     """Tests for API snapshot behavior."""
 
     @pytest.mark.integration
+    def test_list_snapshots_returns_public_shape(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        response = client.get("/v1/snapshots?svm=tenant_a&volume=vol1")
+
+        assert response.status_code == 200
+        item = response.json()["data"]["items"][0]
+        assert item["name"] == "snap1"
+        assert item["svm"] == "tenant_a"
+        assert item["volume"] == "vol1"
+        assert item["lv_name"] == "vol_tenant_a_vol1_snap_snap1"
+        assert "spec" not in item
+        assert "status" in item
+
+    @pytest.mark.integration
     def test_create_snapshot_rejects_thick_volume(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)

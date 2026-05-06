@@ -171,7 +171,10 @@ def list_snapshots(
 ) -> Dict[str, Any]:
     """List snapshots from the database."""
     ctx = get_context()
-    items = ctx.db.list_snapshots(svm=svm, volume=volume, name=name, limit=limit)
+    items = [
+        _snapshot_record_to_dict(record)
+        for record in ctx.db.list_snapshots(svm=svm, volume=volume, name=name, limit=limit)
+    ]
     return {"items": items, "next_cursor": None}
 
 
@@ -184,6 +187,20 @@ def _snapshot_to_dict(snap: Snapshot) -> Dict[str, Any]:
         "lv_name": snap.status.lv_name,
         "status": snap.status.phase.value,
         "created_at": snap.metadata.created_at,
+    }
+
+
+def _snapshot_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+    spec = record.get("spec", {})
+    status = record.get("status", {})
+    return {
+        "name": spec.get("name"),
+        "svm": spec.get("svm"),
+        "volume": spec.get("volume"),
+        "lv_path": status.get("lv_path"),
+        "lv_name": status.get("lv_name"),
+        "status": status.get("phase"),
+        "created_at": record.get("created_at"),
     }
 
 

@@ -104,3 +104,32 @@ class TestRemoveExport:
         record = fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24")
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["message"].startswith("Delete failed:")
+
+
+class TestListExports:
+    """Tests for GET /v1/exports."""
+
+    @pytest.mark.integration
+    def test_list_exports_returns_public_shape(self, fake_context):
+        client = TestClient(app)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+
+        response = client.get("/v1/exports?svm=tenant_a&volume=vol1")
+
+        assert response.status_code == 200
+        item = response.json()["data"]["items"][0]
+        assert item["svm"] == "tenant_a"
+        assert item["volume"] == "vol1"
+        assert item["client"] == "10.0.0.0/24"
+        assert item["access"] == "rw"
+        assert item["export_id"] == 1
+        assert "spec" not in item
+        assert "status" in item

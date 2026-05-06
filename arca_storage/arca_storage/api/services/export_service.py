@@ -132,7 +132,10 @@ def list_exports(
 ) -> Dict[str, Any]:
     """List exports from the database."""
     ctx = get_context()
-    items = ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit)
+    items = [
+        _export_record_to_dict(record)
+        for record in ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit)
+    ]
     return {"items": items, "next_cursor": None}
 
 
@@ -148,6 +151,23 @@ def _export_to_dict(export: Export) -> Dict[str, Any]:
         "export_id": export.status.export_id,
         "status": export.status.phase.value,
         "created_at": export.metadata.created_at,
+    }
+
+
+def _export_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+    spec = record.get("spec", {})
+    status = record.get("status", {})
+    return {
+        "svm": spec.get("svm"),
+        "volume": spec.get("volume"),
+        "client": spec.get("client"),
+        "access": spec.get("access"),
+        "root_squash": spec.get("root_squash", True),
+        "sec": spec.get("sec") or ["sys"],
+        "pseudo": status.get("pseudo"),
+        "export_id": status.get("export_id"),
+        "status": status.get("phase"),
+        "created_at": record.get("created_at"),
     }
 
 
