@@ -84,6 +84,70 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     assert fake_context.adapters.ganesha.exports[svm_name] == []
 
 
+def test_csi_directory_create_reports_effective_gib_quota(fake_context):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": GIB + 1,
+        },
+    )
+
+    assert response.status_code == 201
+    assert response.json()["data"]["directory"]["quota_bytes"] == 2 * GIB
+    assert fake_context.db.get_volume(svm_name, volume_path)["spec"]["size_gib"] == 2
+
+
+def test_csi_directory_rejects_existing_unready_volume(fake_context):
+    from arca_storage.models.volume import Volume, VolumeSpec
+
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+    fake_context.db.insert_volume(Volume(spec=VolumeSpec(name=volume_path, svm=svm_name, size_gib=2)))
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+
+    assert response.status_code == 412
+    assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+    assert response.json()["error"]["details"]["phase"] == "Pending"
+    assert fake_context.adapters.ganesha.exports.get(svm_name, []) == []
+
+
 def test_csi_directory_prunes_stale_export_clients(fake_context):
     client = TestClient(app)
     svm_name = "k8s-default"

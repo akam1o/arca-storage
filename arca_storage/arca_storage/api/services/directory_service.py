@@ -35,7 +35,7 @@ def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
     size_gib = _quota_bytes_to_gib(directory_data.quota_bytes)
     volume = _ensure_volume(svm, path, size_gib)
     _ensure_csi_exports(ctx, svm, path, client_cidrs)
-    return _directory_response(svm, path, volume, directory_data.quota_bytes)
+    return _directory_response(svm, path, volume)
 
 
 def delete_directory(svm_name: str, path: str) -> None:
@@ -106,6 +106,7 @@ def _ensure_volume(svm: str, path: str, size_gib: int) -> Dict[str, Any]:
             VolumeCreate(name=path, svm=svm, size_gib=size_gib, thin=True, fs_type="xfs")
         )
 
+    volume_service.require_volume_ready_record(record, svm, path)
     current_size = int(record.get("spec", {}).get("size_gib") or 0)
     if current_size < size_gib:
         return volume_service.resize_volume(path, svm, size_gib)
@@ -224,12 +225,11 @@ def _directory_response(
     svm: str,
     path: str,
     volume: Dict[str, Any],
-    requested_quota_bytes: int | None,
 ) -> Dict[str, Any]:
     size_gib = int(volume.get("size_gib") or 0)
     return {
         "svm_name": svm,
         "path": path,
-        "quota_bytes": requested_quota_bytes or size_gib * GIB,
+        "quota_bytes": size_gib * GIB,
         "volume": volume,
     }
