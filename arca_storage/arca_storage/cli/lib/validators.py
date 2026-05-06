@@ -123,6 +123,8 @@ def validate_svm_ip_cidr(cidr: str) -> Tuple[str, int]:
     ip_addr = iface.ip
     network = iface.network
 
+    if network.prefixlen == 0:
+        raise ValueError("SVM IP address prefix must not be /0")
     if ip_addr.is_unspecified:
         raise ValueError("SVM IP address must not be unspecified")
     if ip_addr.is_multicast:
