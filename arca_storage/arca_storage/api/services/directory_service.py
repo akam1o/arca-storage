@@ -30,10 +30,11 @@ def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
 
     ctx = get_context()
     _require_svm(ctx, svm)
+    client_cidrs = _csi_client_cidrs(ctx)
 
     size_gib = _quota_bytes_to_gib(directory_data.quota_bytes)
     volume = _ensure_volume(svm, path, size_gib)
-    _ensure_csi_exports(ctx, svm, path)
+    _ensure_csi_exports(ctx, svm, path, client_cidrs)
     return _directory_response(svm, path, volume, directory_data.quota_bytes)
 
 
@@ -59,9 +60,10 @@ def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
 
     ctx = get_context()
     _require_svm(ctx, svm)
+    client_cidrs = _csi_client_cidrs(ctx)
     size_gib = _quota_bytes_to_gib(quota_data.quota_bytes)
     _ensure_volume(svm, path, size_gib)
-    _ensure_csi_exports(ctx, svm, path)
+    _ensure_csi_exports(ctx, svm, path, client_cidrs)
     return get_quota(svm, path)
 
 
@@ -110,14 +112,16 @@ def _ensure_volume(svm: str, path: str, size_gib: int) -> Dict[str, Any]:
     return _volume_record_to_dict(record)
 
 
-def _ensure_csi_exports(ctx: Any, svm: str, path: str) -> None:
+def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) -> None:
     cfg = ctx.settings.to_reconciler_config()
     export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
     root_path = f"{export_dir}/{svm}"
     volume_path = f"{root_path}/{path}"
     root_squash = _csi_root_squash(ctx)
 
-    for client in _csi_client_cidrs(ctx):
+    _remove_stale_csi_exports(ctx, svm, path, set(client_cidrs))
+
+    for client in client_cidrs:
         export_service.ensure_internal_export(
             svm,
             CSI_ROOT_EXPORT_VOLUME,
@@ -138,6 +142,15 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str) -> None:
             root_squash=root_squash,
             owner="csi",
         )
+
+
+def _remove_stale_csi_exports(ctx: Any, svm: str, path: str, desired_clients: set[str]) -> None:
+    for volume in (path, CSI_ROOT_EXPORT_VOLUME):
+        for export in ctx.db.list_exports(svm=svm, volume=volume, limit=1_000_000):
+            spec = export.get("spec", {})
+            client = spec.get("client")
+            if client and spec.get("owner") == "csi" and client not in desired_clients:
+                export_service.remove_internal_export(svm, volume, client)
 
 
 def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
