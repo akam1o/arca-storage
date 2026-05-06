@@ -123,6 +123,71 @@ class TestStateDB:
         assert db.refresh_volume_create_lease("svm1", "vol1", "owner-1") is False
         assert db.refresh_volume_create_lease("svm1", "vol1", "owner-2") is True
 
+    def test_create_lease_takeover_requires_matching_spec(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+
+        record = db.get_volume("svm1", "vol1")
+        status = record["status"]
+        status["create_lease_expires_at"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        conn = db._conn()
+        conn.execute(
+            "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+            (json.dumps(status), "svm1", "vol1"),
+        )
+        conn.commit()
+
+        mismatched_spec = VolumeSpec(name="vol1", svm="svm1", size_gib=20).model_dump(mode="json")
+
+        assert db.acquire_volume_create_lease(
+            "svm1",
+            "vol1",
+            "owner-2",
+            expected_spec=mismatched_spec,
+        ) is None
+        assert db.get_volume("svm1", "vol1")["status"]["create_owner"] == "owner-1"
+
+        acquired = db.acquire_volume_create_lease(
+            "svm1",
+            "vol1",
+            "owner-3",
+            expected_spec=vol.spec.model_dump(mode="json"),
+        )
+
+        assert acquired is not None
+        assert acquired["status"]["create_owner"] == "owner-3"
+
+    def test_create_guarded_upsert_rejects_lost_lease_owner(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+
+        record = db.get_volume("svm1", "vol1")
+        status = record["status"]
+        status["create_lease_expires_at"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        conn = db._conn()
+        conn.execute(
+            "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+            (json.dumps(status), "svm1", "vol1"),
+        )
+        conn.commit()
+        assert db.acquire_volume_create_lease(
+            "svm1",
+            "vol1",
+            "owner-2",
+            expected_spec=vol.spec.model_dump(mode="json"),
+        ) is not None
+
+        stale = Volume(spec=vol.spec)
+        assign_create_lease(stale.status, "owner-1")
+        stale.status.lv_created = True
+
+        assert db.upsert_volume(stale, expected_create_owner="owner-1") is False
+        record = db.get_volume("svm1", "vol1")
+        assert record["status"]["create_owner"] == "owner-2"
+        assert record["status"]["lv_created"] is False
+
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):
             snap = Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1"))

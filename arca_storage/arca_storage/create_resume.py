@@ -74,7 +74,9 @@ def create_lease_heartbeat(refresh: Any, *, interval: float = CREATE_LEASE_HEART
     def beat() -> None:
         while not stop.wait(interval):
             try:
-                refresh()
+                if refresh() is False:
+                    logger.warning("Create lease refresh was rejected")
+                    return
             except Exception as e:
                 logger.warning("Failed to refresh create lease: %s", e)
 

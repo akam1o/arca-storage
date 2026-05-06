@@ -56,6 +56,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
             volume_data.svm,
             volume_data.name,
             owner,
+            expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
@@ -288,9 +289,9 @@ def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
 
 def _reconcile_volume_create(ctx: Any, volume: Volume, owner: str) -> Volume:
     def refresh() -> bool:
-        if not extend_create_lease(volume.status, owner):
+        if not ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner):
             return False
-        return ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner)
+        return extend_create_lease(volume.status, owner)
 
     with create_lease_heartbeat(refresh):
         return ctx.volume_reconciler.reconcile(volume)

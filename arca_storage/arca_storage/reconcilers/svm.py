@@ -17,6 +17,7 @@ from arca_storage.cli.lib.netns import allocate_vlan_ifname
 from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
+from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
 from arca_storage.reconcilers.adapters import Adapters
@@ -52,6 +53,7 @@ class SVMReconciler:
 
     def _reconcile_create(self, svm: SVM) -> SVM:
         svm.status.phase = Phase.CREATING
+        create_owner = svm.status.create_owner
         spec = svm.spec
 
         ip_addr, prefix = validate_ip_cidr(spec.ip_cidr)
@@ -124,20 +126,24 @@ class SVMReconciler:
             try:
                 action()
                 setattr(svm.status, field, True)
-                self._persist(svm, f"step '{field}' completed")
+                self._persist(svm, f"step '{field}' completed", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
                 svm.status.phase = Phase.FAILED
+                expected_owner = create_owner
                 clear_create_lease(svm.status)
                 svm.status.message = f"Step '{field}' failed: {e}"
-                self._persist(svm, svm.status.message)
+                self._persist(svm, svm.status.message, expected_create_owner=expected_owner)
                 logger.error("SVM %s reconcile failed at %s: %s", spec.name, field, e)
                 return svm
 
         svm.status.phase = Phase.READY
+        expected_owner = create_owner
         clear_create_lease(svm.status)
         svm.status.message = ""
         svm.status.last_reconciled = datetime.now(timezone.utc)
-        self._persist(svm, "SVM ready")
+        self._persist(svm, "SVM ready", expected_create_owner=expected_owner)
         return svm
 
     def _attach_vlan(self, svm: SVM, parent_if: str, gateway: str) -> None:
@@ -184,8 +190,9 @@ class SVMReconciler:
 
     # ---- helpers ----
 
-    def _persist(self, svm: SVM, detail: str) -> None:
-        self.db.upsert_svm(svm)
+    def _persist(self, svm: SVM, detail: str, *, expected_create_owner: str | None = None) -> None:
+        if not self.db.upsert_svm(svm, expected_create_owner=expected_create_owner):
+            raise CreateLeaseLostError("SVM", svm.spec.name)
         self.db.log_operation("SVM", svm.metadata.id, "reconcile", svm.status.phase.value, detail)
 
     @staticmethod

@@ -10,6 +10,7 @@ from typing import Optional
 
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
+from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume
 from arca_storage.reconcilers.adapters import Adapters
@@ -40,6 +41,7 @@ class VolumeReconciler:
 
     def _reconcile_create(self, volume: Volume) -> Volume:
         volume.status.phase = Phase.CREATING
+        create_owner = volume.status.create_owner
         spec = volume.spec
 
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
@@ -72,20 +74,24 @@ class VolumeReconciler:
                 volume.status.lv_path = lv_path
                 volume.status.lv_name = lv_name
                 volume.status.mount_path = mount_path
-                self._persist(volume, f"step '{field}' completed")
+                self._persist(volume, f"step '{field}' completed", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
                 volume.status.phase = Phase.FAILED
+                expected_owner = create_owner
                 clear_create_lease(volume.status)
                 volume.status.message = f"Step '{field}' failed: {e}"
-                self._persist(volume, volume.status.message)
+                self._persist(volume, volume.status.message, expected_create_owner=expected_owner)
                 logger.error("Volume %s/%s reconcile failed at %s: %s", spec.svm, spec.name, field, e)
                 return volume
 
         volume.status.phase = Phase.READY
+        expected_owner = create_owner
         clear_create_lease(volume.status)
         volume.status.message = ""
         volume.status.last_reconciled = datetime.now(timezone.utc)
-        self._persist(volume, "Volume ready")
+        self._persist(volume, "Volume ready", expected_create_owner=expected_owner)
         return volume
 
     def _reconcile_delete(self, volume: Volume) -> Volume:
@@ -107,8 +113,9 @@ class VolumeReconciler:
             logger.error("Volume %s/%s delete failed: %s", spec.svm, spec.name, e)
         return volume
 
-    def _persist(self, volume: Volume, detail: str) -> None:
-        self.db.upsert_volume(volume)
+    def _persist(self, volume: Volume, detail: str, *, expected_create_owner: str | None = None) -> None:
+        if not self.db.upsert_volume(volume, expected_create_owner=expected_create_owner):
+            raise CreateLeaseLostError("Volume", f"{volume.spec.svm}/{volume.spec.name}")
         self.db.log_operation("Volume", volume.metadata.id, "reconcile", volume.status.phase.value, detail)
 
     @staticmethod

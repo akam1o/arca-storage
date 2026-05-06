@@ -104,6 +104,14 @@ class ConflictError(ArcaError):
         super().__init__(ErrorCode.CONFLICT, message, details)
 
 
+class CreateLeaseLostError(ConflictError):
+    def __init__(self, resource: str, name: str) -> None:
+        super().__init__(
+            f"{resource} '{name}' create lease was lost",
+            {"resource": resource, "name": name},
+        )
+
+
 class PreconditionFailedError(ArcaError):
     def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(ErrorCode.PRECONDITION_FAILED, message, details)

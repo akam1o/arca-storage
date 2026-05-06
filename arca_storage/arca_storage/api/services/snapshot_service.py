@@ -69,6 +69,7 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
             snapshot_data.volume,
             snapshot_data.name,
             owner,
+            expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
@@ -280,9 +281,9 @@ def _resume_snapshot_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dic
 
 def _reconcile_snapshot_create(ctx: Any, snapshot: Snapshot, owner: str) -> Snapshot:
     def refresh() -> bool:
-        if not extend_create_lease(snapshot.status, owner):
+        if not ctx.db.refresh_snapshot_create_lease(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name, owner):
             return False
-        return ctx.db.refresh_snapshot_create_lease(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name, owner)
+        return extend_create_lease(snapshot.status, owner)
 
     with create_lease_heartbeat(refresh):
         return ctx.snapshot_reconciler.reconcile(snapshot)

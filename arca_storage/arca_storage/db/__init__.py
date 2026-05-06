@@ -187,29 +187,36 @@ class StateDB:
         except sqlite3.IntegrityError as e:
             raise AlreadyExistsError("SVM", svm.spec.name) from e
 
-    def upsert_svm(self, svm: Any) -> None:
+    def upsert_svm(self, svm: Any, *, expected_create_owner: str | None = None) -> bool:
         """Insert or update an SVM record."""
         now = _now_iso()
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    svm.metadata.id,
-                    svm.spec.name,
-                    svm.spec.model_dump_json(),
-                    svm.status.model_dump_json(),
-                    svm.metadata.generation,
-                    svm.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            if not self._create_owner_matches_conn(conn, "svms", {"name": svm.spec.name}, expected_create_owner):
+                return False
+            self._upsert_svm_conn(conn, svm, now=now)
+            return True
+
+    def _upsert_svm_conn(self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        conn.execute(
+            """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                svm.metadata.id,
+                svm.spec.name,
+                svm.spec.model_dump_json(),
+                svm.status.model_dump_json(),
+                svm.metadata.generation,
+                svm.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
 
     def get_svm(self, name: str) -> dict[str, Any] | None:
         conn = self._conn()
@@ -219,8 +226,21 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
-    def acquire_svm_create_lease(self, name: str, owner: str, *, allow_failed: bool = False) -> dict[str, Any] | None:
-        return self._acquire_create_lease("svms", {"name": name}, owner, allow_failed=allow_failed)
+    def acquire_svm_create_lease(
+        self,
+        name: str,
+        owner: str,
+        *,
+        expected_spec: dict[str, Any] | None = None,
+        allow_failed: bool = False,
+    ) -> dict[str, Any] | None:
+        return self._acquire_create_lease(
+            "svms",
+            {"name": name},
+            owner,
+            expected_spec=expected_spec,
+            allow_failed=allow_failed,
+        )
 
     def refresh_svm_create_lease(self, name: str, owner: str) -> bool:
         return self._refresh_create_lease("svms", {"name": name}, owner)
@@ -280,29 +300,37 @@ class StateDB:
         except sqlite3.IntegrityError as e:
             raise AlreadyExistsError("Volume", f"{volume.spec.svm}/{volume.spec.name}") from e
 
-    def upsert_volume(self, volume: Any) -> None:
+    def upsert_volume(self, volume: Any, *, expected_create_owner: str | None = None) -> bool:
         now = _now_iso()
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(svm, name) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    volume.metadata.id,
-                    volume.spec.name,
-                    volume.spec.svm,
-                    volume.spec.model_dump_json(),
-                    volume.status.model_dump_json(),
-                    volume.metadata.generation,
-                    volume.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+        key = {"svm": volume.spec.svm, "name": volume.spec.name}
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            if not self._create_owner_matches_conn(conn, "volumes", key, expected_create_owner):
+                return False
+            self._upsert_volume_conn(conn, volume, now=now)
+            return True
+
+    def _upsert_volume_conn(self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        conn.execute(
+            """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(svm, name) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                volume.metadata.id,
+                volume.spec.name,
+                volume.spec.svm,
+                volume.spec.model_dump_json(),
+                volume.status.model_dump_json(),
+                volume.metadata.generation,
+                volume.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
 
     def get_volume(self, svm: str, name: str) -> dict[str, Any] | None:
         conn = self._conn()
@@ -318,9 +346,16 @@ class StateDB:
         name: str,
         owner: str,
         *,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
     ) -> dict[str, Any] | None:
-        return self._acquire_create_lease("volumes", {"svm": svm, "name": name}, owner, allow_failed=allow_failed)
+        return self._acquire_create_lease(
+            "volumes",
+            {"svm": svm, "name": name},
+            owner,
+            expected_spec=expected_spec,
+            allow_failed=allow_failed,
+        )
 
     def refresh_volume_create_lease(self, svm: str, name: str, owner: str) -> bool:
         return self._refresh_create_lease("volumes", {"svm": svm, "name": name}, owner)
@@ -385,30 +420,38 @@ class StateDB:
                 f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
             ) from e
 
-    def upsert_snapshot(self, snapshot: Any) -> None:
+    def upsert_snapshot(self, snapshot: Any, *, expected_create_owner: str | None = None) -> bool:
         now = _now_iso()
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(svm, volume, name) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    snapshot.metadata.id,
-                    snapshot.spec.name,
-                    snapshot.spec.svm,
-                    snapshot.spec.volume,
-                    snapshot.spec.model_dump_json(),
-                    snapshot.status.model_dump_json(),
-                    snapshot.metadata.generation,
-                    snapshot.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+        key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            if not self._create_owner_matches_conn(conn, "snapshots", key, expected_create_owner):
+                return False
+            self._upsert_snapshot_conn(conn, snapshot, now=now)
+            return True
+
+    def _upsert_snapshot_conn(self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        conn.execute(
+            """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(svm, volume, name) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                snapshot.metadata.id,
+                snapshot.spec.name,
+                snapshot.spec.svm,
+                snapshot.spec.volume,
+                snapshot.spec.model_dump_json(),
+                snapshot.status.model_dump_json(),
+                snapshot.metadata.generation,
+                snapshot.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
 
     def acquire_snapshot_create_lease(
         self,
@@ -417,12 +460,14 @@ class StateDB:
         name: str,
         owner: str,
         *,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
     ) -> dict[str, Any] | None:
         return self._acquire_create_lease(
             "snapshots",
             {"svm": svm, "volume": volume, "name": name},
             owner,
+            expected_spec=expected_spec,
             allow_failed=allow_failed,
         )
 
@@ -472,13 +517,23 @@ class StateDB:
 
     # ---- Export operations ----
 
-    def upsert_export(self, export: Any) -> None:
+    def upsert_export(self, export: Any, *, expected_create_owner: str | None = None) -> bool:
         now = _now_iso()
-        with self.transaction() as conn:
-            self._upsert_export_conn(conn, export, now=now)
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            return self._upsert_export_conn(conn, export, now=now, expected_create_owner=expected_create_owner)
 
-    def _upsert_export_conn(self, conn: sqlite3.Connection, export: Any, *, now: Optional[str] = None) -> None:
+    def _upsert_export_conn(
+        self,
+        conn: sqlite3.Connection,
+        export: Any,
+        *,
+        now: Optional[str] = None,
+        expected_create_owner: str | None = None,
+    ) -> bool:
         now = now or _now_iso()
+        key = {"svm": export.spec.svm, "volume": export.spec.volume, "client": export.spec.client}
+        if not self._create_owner_matches_conn(conn, "exports", key, expected_create_owner, allow_missing=True):
+            return False
         conn.execute(
             """INSERT INTO exports (id, svm, volume, client, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -500,6 +555,7 @@ class StateDB:
                 now,
             ),
         )
+        return True
 
     def list_exports(
         self,
@@ -523,12 +579,14 @@ class StateDB:
         client: str,
         owner: str,
         *,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
     ) -> dict[str, Any] | None:
         return self._acquire_create_lease(
             "exports",
             {"svm": svm, "volume": volume, "client": client},
             owner,
+            expected_spec=expected_spec,
             allow_failed=allow_failed,
         )
 
@@ -631,11 +689,14 @@ class StateDB:
         key: dict[str, str],
         owner: str,
         *,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
     ) -> dict[str, Any] | None:
         with self.transaction(immediate=True) as conn:
             record = self._get_resource_by_key_conn(conn, table, key)
             if record is None:
+                return None
+            if expected_spec is not None and record.get("spec") != expected_spec:
                 return None
             status = record["status"]
             phase = status.get("phase")
@@ -650,6 +711,22 @@ class StateDB:
             self._update_status_by_key_conn(conn, table, key, status)
             record["status"] = status
             return record
+
+    def _create_owner_matches_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        key: dict[str, str],
+        expected_owner: str | None,
+        *,
+        allow_missing: bool = False,
+    ) -> bool:
+        if expected_owner is None:
+            return True
+        record = self._get_resource_by_key_conn(conn, table, key)
+        if record is None:
+            return allow_missing
+        return record["status"].get("create_owner") == expected_owner
 
     def _refresh_create_lease(self, table: str, key: dict[str, str], owner: str) -> bool:
         with self.transaction(immediate=True) as conn:

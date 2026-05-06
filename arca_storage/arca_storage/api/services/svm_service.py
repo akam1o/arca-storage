@@ -59,7 +59,12 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     except AlreadyExistsError:
         existing = ctx.db.get_svm(svm_data.name)
         allow_failed_resume = _can_resume_create(existing, requested_spec)
-        acquired = ctx.db.acquire_svm_create_lease(svm_data.name, owner, allow_failed=allow_failed_resume)
+        acquired = ctx.db.acquire_svm_create_lease(
+            svm_data.name,
+            owner,
+            expected_spec=requested_spec.model_dump(mode="json"),
+            allow_failed=allow_failed_resume,
+        )
         if _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_svm_create(ctx, acquired, owner)
         raise AlreadyExistsError("SVM", svm_data.name)
@@ -279,9 +284,9 @@ def _resume_svm_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str
 
 def _reconcile_svm_create(ctx: Any, svm: SVM, owner: str) -> SVM:
     def refresh() -> bool:
-        if not extend_create_lease(svm.status, owner):
+        if not ctx.db.refresh_svm_create_lease(svm.spec.name, owner):
             return False
-        return ctx.db.refresh_svm_create_lease(svm.spec.name, owner)
+        return extend_create_lease(svm.status, owner)
 
     with create_lease_heartbeat(refresh):
         return ctx.svm_reconciler.reconcile(svm)

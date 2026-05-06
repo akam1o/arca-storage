@@ -10,9 +10,9 @@ from datetime import datetime, timezone
 from ipaddress import IPv4Interface
 from typing import Optional
 
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease, create_lease_expired
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
 from arca_storage.db import StateDB
-from arca_storage.errors import AlreadyExistsError
+from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
 from arca_storage.models.base import Phase, ResourceMeta
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
@@ -43,6 +43,7 @@ class ExportReconciler:
 
     def _reconcile_create(self, export: Export, *, allow_update: bool = False) -> Export:
         export.status.phase = Phase.CREATING
+        create_owner = export.status.create_owner
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
 
@@ -64,7 +65,7 @@ class ExportReconciler:
             export.status.ganesha_configured = False
             export.status.service_reloaded = False
             export.status.message = ""
-            self._persist_conn(conn, export, "export state reserved")
+            self._persist_conn(conn, export, "export state reserved", expected_create_owner=create_owner)
 
             config_entries = self._config_entries_for_svm(
                 conn,
@@ -81,32 +82,39 @@ class ExportReconciler:
                     host_network=host_network,
                 )
                 export.status.ganesha_configured = True
-                self._persist_conn(conn, export, "ganesha config rendered")
+                self._persist_conn(conn, export, "ganesha config rendered", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
                 self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
+                expected_owner = create_owner
                 clear_create_lease(export.status)
                 export.status.message = f"Config failed: {e}"
-                self._persist_conn(conn, export, export.status.message)
+                self._persist_conn(conn, export, export.status.message, expected_create_owner=expected_owner)
                 return export
 
             try:
                 self.adapters.ganesha.reload(spec.svm, host_network=host_network)
                 export.status.service_reloaded = True
-                self._persist_conn(conn, export, "ganesha reloaded")
+                self._persist_conn(conn, export, "ganesha reloaded", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
                 self._rollback_svm_config(conn, spec.svm, export_dir, host_network=host_network)
                 export.status.phase = Phase.FAILED
+                expected_owner = create_owner
                 clear_create_lease(export.status)
                 export.status.message = f"Reload failed: {e}"
-                self._persist_conn(conn, export, export.status.message)
+                self._persist_conn(conn, export, export.status.message, expected_create_owner=expected_owner)
                 return export
 
             export.status.phase = Phase.READY
+            expected_owner = create_owner
             clear_create_lease(export.status)
             export.status.message = ""
             export.status.last_reconciled = datetime.now(timezone.utc)
-            self._persist_conn(conn, export, "Export ready")
+            self._persist_conn(conn, export, "Export ready", expected_create_owner=expected_owner)
         return export
 
     def _reconcile_delete(self, export: Export) -> Export:
@@ -154,8 +162,16 @@ class ExportReconciler:
                 self._persist_conn(conn, export, export.status.message)
         return export
 
-    def _persist_conn(self, conn, export: Export, detail: str) -> None:
-        self.db._upsert_export_conn(conn, export)
+    def _persist_conn(
+        self,
+        conn,
+        export: Export,
+        detail: str,
+        *,
+        expected_create_owner: str | None = None,
+    ) -> None:
+        if not self.db._upsert_export_conn(conn, export, expected_create_owner=expected_create_owner):
+            raise CreateLeaseLostError("Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}")
         self.db._log_operation_conn(
             conn, "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
         )
@@ -276,7 +292,7 @@ def _can_resume_create_record(record: dict, requested_export: Export) -> bool:
         requested_owner = requested_export.status.create_owner
         if not requested_owner:
             return False
-        return status.get("create_owner") == requested_owner or create_lease_expired(record)
+        return status.get("create_owner") == requested_owner
     if phase != Phase.FAILED.value:
         return False
     if str(status.get("message") or "").startswith("Delete failed:"):

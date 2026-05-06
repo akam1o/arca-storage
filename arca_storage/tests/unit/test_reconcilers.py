@@ -9,7 +9,9 @@ implementations.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -22,7 +24,7 @@ from arca_storage.adapters.systemd import FakeSystemdAdapter
 from arca_storage.adapters.xfs import FakeXFSAdapter
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB
-from arca_storage.errors import AlreadyExistsError
+from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -205,6 +207,40 @@ class TestVolumeReconciler:
 
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
+
+    def test_create_volume_lost_lease_does_not_persist_stale_status(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+        original_create = adapters.lvm.create_thin_lv
+
+        def steal_lease_then_create(vg: str, thinpool: str, name: str, size_gib: int):
+            record = db.get_volume("svm1", "vol1")
+            status = record["status"]
+            status["create_lease_expires_at"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+            conn = db._conn()
+            conn.execute(
+                "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+                (json.dumps(status), "svm1", "vol1"),
+            )
+            conn.commit()
+            assert db.acquire_volume_create_lease(
+                "svm1",
+                "vol1",
+                "owner-2",
+                expected_spec=vol.spec.model_dump(mode="json"),
+            ) is not None
+            return original_create(vg, thinpool, name, size_gib)
+
+        adapters.lvm.create_thin_lv = steal_lease_then_create
+
+        with pytest.raises(CreateLeaseLostError):
+            rec.reconcile(vol)
+
+        record = db.get_volume("svm1", "vol1")
+        assert record["status"]["create_owner"] == "owner-2"
+        assert record["status"]["lv_created"] is False
 
     def test_delete_volume(self, db, adapters, config):
         rec = VolumeReconciler(db, adapters, config=config)
