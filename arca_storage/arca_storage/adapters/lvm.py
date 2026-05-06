@@ -7,7 +7,7 @@ from __future__ import annotations
 from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
-from arca_storage.errors import AlreadyExistsError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
 
 
 def _parse_lvm_float(value: str) -> float:
@@ -81,8 +81,20 @@ class SubprocessLVMAdapter:
         lv_path = f"/dev/{vg}/{lv}"
         if not self.lv_exists(vg, lv):
             raise NotFoundError("LogicalVolume", lv_path)
-        if self.get_lv_size_gib(vg, lv) >= float(new_size_gib):
+        current_size_gib = self.get_lv_size_gib(vg, lv)
+        requested_size_gib = float(new_size_gib)
+        if current_size_gib == requested_size_gib:
             return
+        if current_size_gib > requested_size_gib:
+            raise PreconditionFailedError(
+                f"Logical volume '{lv_path}' is already larger than requested size",
+                {
+                    "resource": "LogicalVolume",
+                    "name": lv_path,
+                    "current_size_gib": current_size_gib,
+                    "requested_size_gib": new_size_gib,
+                },
+            )
         run_cmd(
             ["lvextend", "-L", f"{new_size_gib}G", lv_path],
             timeout=self._timeout,
@@ -159,8 +171,19 @@ class FakeLVMAdapter:
         key = f"{vg}/{lv}"
         if key not in self.volumes:
             raise NotFoundError("LogicalVolume", f"/dev/{key}")
-        if self.volumes[key] >= new_size_gib:
+        current_size_gib = self.volumes[key]
+        if current_size_gib == new_size_gib:
             return
+        if current_size_gib > new_size_gib:
+            raise PreconditionFailedError(
+                f"Logical volume '/dev/{key}' is already larger than requested size",
+                {
+                    "resource": "LogicalVolume",
+                    "name": f"/dev/{key}",
+                    "current_size_gib": current_size_gib,
+                    "requested_size_gib": new_size_gib,
+                },
+            )
         self.volumes[key] = new_size_gib
 
     def delete_lv(self, vg: str, lv: str) -> None:

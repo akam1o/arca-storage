@@ -116,8 +116,14 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     if not result.stdout.strip():
         raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
     current_size_gib = _parse_lvm_float(result.stdout.strip().split()[0])
-    if current_size_gib >= float(new_size_gib):
+    requested_size_gib = float(new_size_gib)
+    if current_size_gib == requested_size_gib:
         return
+    if current_size_gib > requested_size_gib:
+        raise RuntimeError(
+            f"Logical volume {lv_path} is already larger than requested size "
+            f"({current_size_gib:g}GiB > {new_size_gib}GiB)"
+        )
     
     # Resize LV
     result = subprocess.run(

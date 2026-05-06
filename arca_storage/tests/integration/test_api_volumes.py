@@ -225,6 +225,12 @@ class TestResizeVolume:
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 40
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
 
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30})
+        assert response.status_code == 412
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 40
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+        assert grow_calls["count"] == 1
+
         response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
 
         assert response.status_code == 200
