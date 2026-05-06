@@ -67,6 +67,46 @@ def _write_cgroup_file(cgroup_path: Path, filename: str, content: str) -> None:
         f.write(content)
 
 
+def _is_kernel_cgroup_path(cgroup_path: Path) -> bool:
+    try:
+        cgroup_path.resolve().relative_to(Path("/sys/fs/cgroup"))
+    except ValueError:
+        return False
+    return True
+
+
+def _read_io_max_lines(io_max_file: Path) -> list[str]:
+    if not io_max_file.exists():
+        return []
+    return [line for line in io_max_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+
+
+def _io_max_line_device(line: str) -> str:
+    return line.split(maxsplit=1)[0] if line.split() else ""
+
+
+def _write_io_max_limit(cgroup_path: Path, device_id: str, line: str) -> None:
+    if _is_kernel_cgroup_path(cgroup_path):
+        _write_cgroup_file(cgroup_path, "io.max", line)
+        return
+
+    io_max_file = cgroup_path / "io.max"
+    lines = [existing for existing in _read_io_max_lines(io_max_file) if _io_max_line_device(existing) != device_id]
+    lines.append(line)
+    io_max_file.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _clear_io_max_limit(cgroup_path: Path, device_id: str) -> None:
+    reset_line = f"{device_id} rbps=max wbps=max riops=max wiops=max"
+    if _is_kernel_cgroup_path(cgroup_path):
+        _write_cgroup_file(cgroup_path, "io.max", reset_line)
+        return
+
+    io_max_file = cgroup_path / "io.max"
+    lines = [existing for existing in _read_io_max_lines(io_max_file) if _io_max_line_device(existing) != device_id]
+    io_max_file.write_text("\n".join(lines), encoding="utf-8")
+
+
 def _attach_ganesha_process(ctx: Any, svm: str, cgroup_path: Path) -> None:
     pid = _get_ganesha_pid(ctx, svm)
     _write_cgroup_file(cgroup_path, "cgroup.procs", str(pid))
@@ -141,10 +181,10 @@ def apply_qos_to_volume(
 
     if not limits:
         io_max_content = f"{device_id} rbps=max wbps=max riops=max wiops=max"
+        _clear_io_max_limit(cgroup_path, device_id)
     else:
         io_max_content = f"{device_id} {' '.join(limits)}"
-
-    _write_cgroup_file(cgroup_path, "io.max", io_max_content)
+        _write_io_max_limit(cgroup_path, device_id, io_max_content)
 
     qos_settings: Dict[str, Any] = {
         "svm": svm,
@@ -184,8 +224,7 @@ def remove_qos_from_volume(svm: str, volume: str) -> None:
         return
 
     device_id = _get_device_id(lv_path)
-    io_max_content = f"{device_id} rbps=max wbps=max riops=max wiops=max"
-    _write_cgroup_file(cgroup_path, "io.max", io_max_content)
+    _clear_io_max_limit(cgroup_path, device_id)
 
 
 def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
@@ -213,19 +252,16 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     if not io_max_file.exists():
         return {"svm": svm, "volume": volume, "qos_enabled": False}
 
-    with open(io_max_file, "r", encoding="utf-8") as f:
-        io_max_content = f.read().strip()
-
     settings: Dict[str, Any] = {
         "svm": svm,
         "volume": volume,
-        "qos_enabled": True,
+        "qos_enabled": False,
         "device_id": device_id,
         "cgroup_path": str(cgroup_path),
     }
 
-    for line in io_max_content.split("\n"):
-        if not line or not line.startswith(device_id):
+    for line in _read_io_max_lines(io_max_file):
+        if _io_max_line_device(line) != device_id:
             continue
         parts = line.split()
         for part in parts[1:]:
@@ -233,6 +269,7 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
                 key, value = part.split("=", 1)
                 if value == "max":
                     continue
+                settings["qos_enabled"] = True
                 if key == "rbps":
                     settings["read_bps"] = int(value)
                 elif key == "wbps":
