@@ -27,19 +27,21 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
         raise NotFoundError("SVM", export_data.svm)
     if not ctx.db.get_volume(export_data.svm, export_data.volume):
         raise NotFoundError("Volume", f"{export_data.svm}/{export_data.volume}")
-    if ctx.db.get_export(export_data.svm, export_data.volume, export_data.client):
+    requested_spec = ExportSpec(
+        svm=export_data.svm,
+        volume=export_data.volume,
+        client=export_data.client,
+        access=export_data.access,
+        root_squash=export_data.root_squash,
+        sec=export_data.sec,
+    )
+    existing = ctx.db.get_export(export_data.svm, export_data.volume, export_data.client)
+    if existing:
+        if _can_resume_create(existing, requested_spec):
+            return _resume_export_create(ctx, existing)
         raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{export_data.client}")
 
-    export = Export(
-        spec=ExportSpec(
-            svm=export_data.svm,
-            volume=export_data.volume,
-            client=export_data.client,
-            access=export_data.access,
-            root_squash=export_data.root_squash,
-            sec=export_data.sec,
-        ),
-    )
+    export = Export(spec=requested_spec)
 
     export = ctx.export_reconciler.reconcile(export)
 
@@ -147,3 +149,24 @@ def _export_to_dict(export: Export) -> Dict[str, Any]:
 def _meta_from_record(record: Dict[str, Any]) -> Any:
     from arca_storage.models.base import ResourceMeta
     return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+
+
+def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec) -> bool:
+    phase = record.get("status", {}).get("phase")
+    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+        return False
+    return ExportSpec.model_validate(record["spec"]) == requested_spec
+
+
+def _resume_export_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+    export = Export(
+        metadata=_meta_from_record(record),
+        spec=ExportSpec.model_validate(record["spec"]),
+        status=ExportStatus.model_validate(record["status"]),
+    )
+    export.status.phase = Phase.CREATING
+    export.status.message = ""
+    export = ctx.export_reconciler.reconcile(export)
+    if export.status.phase == Phase.FAILED:
+        raise RuntimeError(export.status.message)
+    return _export_to_dict(export)

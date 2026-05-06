@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import stat
 from types import SimpleNamespace
 
 from arca_storage.api.services import qos_service
@@ -92,3 +94,11 @@ def test_qos_updates_preserve_other_device_limits(monkeypatch, tmp_path):
 
     assert (cgroup_path / "io.max").read_text(encoding="utf-8").splitlines() == ["8:1 rbps=1024"]
     assert qos_service.get_qos_settings("tenant-a", "test-vol")["qos_enabled"] is False
+
+
+def test_get_device_id_uses_target_block_device_rdev(monkeypatch):
+    device_stat = SimpleNamespace(st_mode=stat.S_IFBLK, st_rdev=os.makedev(8, 16))
+
+    monkeypatch.setattr(qos_service.os, "stat", lambda path: device_stat)
+
+    assert qos_service._get_device_id("/dev/vg_arca/test-vol") == "8:16"

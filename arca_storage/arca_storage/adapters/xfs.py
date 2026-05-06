@@ -14,7 +14,7 @@ from arca_storage.errors import NotFoundError
 @runtime_checkable
 class XFSAdapter(Protocol):
     def format_xfs(self, device: str) -> None: ...
-    def mount(self, device: str, mount_point: str) -> None: ...
+    def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None: ...
     def umount(self, mount_point: str) -> None: ...
     def grow(self, mount_point: str) -> None: ...
     def is_mounted(self, mount_point: str) -> bool: ...
@@ -45,11 +45,15 @@ class SubprocessXFSAdapter:
             timeout=self._timeout,
         )
 
-    def mount(self, device: str, mount_point: str) -> None:
+    def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None:
         os.makedirs(mount_point, exist_ok=True)
         if self.is_mounted(mount_point):
             return  # idempotent
-        mount_options = "rw,noatime,nodiratime,logbsize=256k,inode64"
+        options = ["rw", "noatime", "nodiratime", "logbsize=256k", "inode64"]
+        for option in extra_options or []:
+            if option not in options:
+                options.append(option)
+        mount_options = ",".join(options)
         run_cmd(
             ["mount", "-o", mount_options, device, mount_point],
             timeout=self._timeout,
@@ -80,15 +84,18 @@ class FakeXFSAdapter:
     def __init__(self) -> None:
         self.formatted: set[str] = set()
         self.mounts: dict[str, str] = {}  # mount_point -> device
+        self.mount_options: dict[str, list[str]] = {}
 
     def format_xfs(self, device: str) -> None:
         self.formatted.add(device)
 
-    def mount(self, device: str, mount_point: str) -> None:
+    def mount(self, device: str, mount_point: str, *, extra_options: list[str] | None = None) -> None:
         self.mounts[mount_point] = device
+        self.mount_options[mount_point] = list(extra_options or [])
 
     def umount(self, mount_point: str) -> None:
         self.mounts.pop(mount_point, None)
+        self.mount_options.pop(mount_point, None)
 
     def grow(self, mount_point: str) -> None:
         if mount_point not in self.mounts:

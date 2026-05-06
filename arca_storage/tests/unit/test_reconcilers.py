@@ -349,3 +349,24 @@ class TestReconcilerErrors:
         result = rec.reconcile(svm)
         assert result.status.phase == Phase.FAILED
         assert result.status.message is not None
+
+    def test_failed_svm_create_can_resume_from_persisted_steps(self, db, adapters, config):
+        adapters.pacemaker = FakePacemakerAdapter()
+        adapters.pacemaker.groups = None
+
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(name="retry-svm", vlan_id=401, ip_cidr="10.0.4.5/24", gateway="10.0.4.1"),
+        )
+
+        failed = rec.reconcile(svm)
+        assert failed.status.phase == Phase.FAILED
+        assert failed.status.namespace_created is True
+        assert failed.status.pacemaker_group_created is False
+
+        adapters.pacemaker.groups = {}
+        resumed = rec.reconcile(failed)
+
+        assert resumed.status.phase == Phase.READY
+        assert resumed.status.pacemaker_group_created is True
+        assert db.get_svm("retry-svm")["status"]["phase"] == Phase.READY.value

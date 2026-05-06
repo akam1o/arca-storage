@@ -28,7 +28,12 @@ class SnapshotReconciler:
             return self._reconcile_create(snapshot)
         elif phase == Phase.DELETING:
             return self._reconcile_delete(snapshot)
-        elif phase in (Phase.READY, Phase.FAILED):
+        elif phase == Phase.FAILED:
+            if not snapshot.status.lv_created:
+                snapshot.status.phase = Phase.CREATING
+                return self._reconcile_create(snapshot)
+            return snapshot
+        elif phase == Phase.READY:
             return snapshot
         return snapshot
 

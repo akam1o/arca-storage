@@ -28,18 +28,20 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     ctx = get_context()
     if not ctx.db.get_svm(volume_data.svm):
         raise NotFoundError("SVM", volume_data.svm)
-    if ctx.db.get_volume(volume_data.svm, volume_data.name):
+    requested_spec = VolumeSpec(
+        name=volume_data.name,
+        svm=volume_data.svm,
+        size_gib=volume_data.size_gib,
+        thin=volume_data.thin,
+        fs_type=volume_data.fs_type,
+    )
+    existing = ctx.db.get_volume(volume_data.svm, volume_data.name)
+    if existing:
+        if _can_resume_create(existing, requested_spec):
+            return _resume_volume_create(ctx, existing)
         raise AlreadyExistsError("Volume", f"{volume_data.svm}/{volume_data.name}")
 
-    volume = Volume(
-        spec=VolumeSpec(
-            name=volume_data.name,
-            svm=volume_data.svm,
-            size_gib=volume_data.size_gib,
-            thin=volume_data.thin,
-            fs_type=volume_data.fs_type,
-        ),
-    )
+    volume = Volume(spec=requested_spec)
 
     volume = ctx.volume_reconciler.reconcile(volume)
 
@@ -170,6 +172,27 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _parse_status(record: Dict[str, Any]) -> Any:
     from arca_storage.models.volume import VolumeStatus
     return VolumeStatus.model_validate(record["status"])
+
+
+def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec) -> bool:
+    phase = record.get("status", {}).get("phase")
+    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+        return False
+    return VolumeSpec.model_validate(record["spec"]) == requested_spec
+
+
+def _resume_volume_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+    volume = Volume(
+        metadata=_meta_from_record(record),
+        spec=VolumeSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    volume.status.phase = Phase.CREATING
+    volume.status.message = ""
+    volume = ctx.volume_reconciler.reconcile(volume)
+    if volume.status.phase == Phase.FAILED:
+        raise RuntimeError(volume.status.message)
+    return _volume_to_dict(volume)
 
 
 def _delete_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:

@@ -157,6 +157,29 @@ class TestCloneVolume:
         assert volume["size_gib"] == 20
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
         assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20
+        assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
+
+    @pytest.mark.integration
+    def test_clone_volume_cleans_up_new_lv_on_mount_or_grow_failure(self, fake_context):
+        client = TestClient(app, raise_server_exceptions=False)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        def fail_grow(_mount_path):
+            raise RuntimeError("grow failed")
+
+        fake_context.adapters.xfs.grow = fail_grow
+
+        response = client.post(
+            "/v1/volumes/clone1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+        )
+
+        assert response.status_code == 500
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
+        assert "/exports/tenant_a/clone1" not in fake_context.adapters.xfs.mounts
+        assert fake_context.db.get_volume("tenant_a", "clone1") is None
 
 
 class TestDeleteVolume:

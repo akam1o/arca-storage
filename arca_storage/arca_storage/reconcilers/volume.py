@@ -28,7 +28,12 @@ class VolumeReconciler:
             return self._reconcile_create(volume)
         elif phase == Phase.DELETING:
             return self._reconcile_delete(volume)
-        elif phase in (Phase.READY, Phase.FAILED):
+        elif phase == Phase.FAILED:
+            if self._has_pending_create_step(volume):
+                volume.status.phase = Phase.CREATING
+                return self._reconcile_create(volume)
+            return volume
+        elif phase == Phase.READY:
             return volume
         return volume
 
@@ -102,3 +107,10 @@ class VolumeReconciler:
     def _persist(self, volume: Volume, detail: str) -> None:
         self.db.upsert_volume(volume)
         self.db.log_operation("Volume", volume.metadata.id, "reconcile", volume.status.phase.value, detail)
+
+    @staticmethod
+    def _has_pending_create_step(volume: Volume) -> bool:
+        return any(
+            not getattr(volume.status, field, False)
+            for field in ("lv_created", "fs_formatted", "mounted")
+        )

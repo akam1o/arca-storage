@@ -30,21 +30,21 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
 
     ctx = get_context()
 
-    # Check for duplicates
+    requested_spec = SVMSpec(
+        name=svm_data.name,
+        vlan_id=svm_data.vlan_id,
+        ip_cidr=svm_data.ip_cidr,
+        gateway=svm_data.gateway,
+        mtu=svm_data.mtu,
+        root_volume_size_gib=svm_data.root_volume_size_gib,
+    )
     existing = ctx.db.get_svm(svm_data.name)
     if existing:
+        if _can_resume_create(existing, requested_spec):
+            return _resume_svm_create(ctx, existing)
         raise AlreadyExistsError("SVM", svm_data.name)
 
-    svm = SVM(
-        spec=SVMSpec(
-            name=svm_data.name,
-            vlan_id=svm_data.vlan_id,
-            ip_cidr=svm_data.ip_cidr,
-            gateway=svm_data.gateway,
-            mtu=svm_data.mtu,
-            root_volume_size_gib=svm_data.root_volume_size_gib,
-        ),
-    )
+    svm = SVM(spec=requested_spec)
 
     svm = ctx.svm_reconciler.reconcile(svm)
 
@@ -190,6 +190,27 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _parse_status(record: Dict[str, Any], kind: str) -> Any:
     from arca_storage.models.svm import SVMStatus
     return SVMStatus.model_validate(record["status"])
+
+
+def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec) -> bool:
+    phase = record.get("status", {}).get("phase")
+    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+        return False
+    return SVMSpec.model_validate(record["spec"]) == requested_spec
+
+
+def _resume_svm_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+    svm = SVM(
+        metadata=_meta_from_record(record),
+        spec=SVMSpec.model_validate(record["spec"]),
+        status=_parse_status(record, "svm"),
+    )
+    svm.status.phase = Phase.CREATING
+    svm.status.message = ""
+    svm = ctx.svm_reconciler.reconcile(svm)
+    if svm.status.phase == Phase.FAILED:
+        raise RuntimeError(svm.status.message)
+    return _svm_to_dict(svm)
 
 
 def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: bool) -> None:

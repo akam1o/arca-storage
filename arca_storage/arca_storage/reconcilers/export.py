@@ -30,7 +30,12 @@ class ExportReconciler:
             return self._reconcile_create(export)
         elif phase == Phase.DELETING:
             return self._reconcile_delete(export)
-        elif phase in (Phase.READY, Phase.FAILED):
+        elif phase == Phase.FAILED:
+            if self._has_pending_create_step(export):
+                export.status.phase = Phase.CREATING
+                return self._reconcile_create(export)
+            return export
+        elif phase == Phase.READY:
             return export
         return export
 
@@ -171,6 +176,10 @@ class ExportReconciler:
         except Exception:
             bind_addr = ip_cidr.split("/", 1)[0] if ip_cidr else None
         return bind_addr, spec.get("vlan_id") is None
+
+    @staticmethod
+    def _has_pending_create_step(export: Export) -> bool:
+        return not export.status.ganesha_configured or not export.status.service_reloaded
 
 
 def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dict]:

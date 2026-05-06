@@ -41,7 +41,10 @@ class SVMReconciler:
         elif phase == Phase.READY:
             return self._reconcile_drift(svm)
         elif phase == Phase.FAILED:
-            return svm  # manual intervention needed
+            if self._has_pending_create_step(svm):
+                svm.status.phase = Phase.CREATING
+                return self._reconcile_create(svm)
+            return svm  # failed delete or completed resource needs manual intervention
         return svm
 
     # ---- create ----
@@ -181,3 +184,12 @@ class SVMReconciler:
     def _persist(self, svm: SVM, detail: str) -> None:
         self.db.upsert_svm(svm)
         self.db.log_operation("SVM", svm.metadata.id, "reconcile", svm.status.phase.value, detail)
+
+    @staticmethod
+    def _has_pending_create_step(svm: SVM) -> bool:
+        fields = ["ganesha_configured", "pacemaker_group_created"]
+        if svm.spec.vlan_id is not None:
+            fields.extend(["namespace_created", "vlan_attached"])
+        if svm.spec.root_volume_size_gib:
+            fields.extend(["lv_created", "fs_formatted"])
+        return any(not getattr(svm.status, field, False) for field in fields)

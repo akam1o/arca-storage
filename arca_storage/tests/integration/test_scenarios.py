@@ -146,6 +146,28 @@ class TestErrorHandling:
         assert "Error" in result.output + result.stderr
 
     @pytest.mark.integration
+    def test_failed_svm_create_retries_existing_record(self, fake_context):
+        """A repeated create resumes a failed SVM instead of returning AlreadyExists."""
+        client = TestClient(api_app, raise_server_exceptions=False)
+        fake_context.adapters.pacemaker.groups = None
+
+        response = client.post(
+            "/v1/svms",
+            json={"name": "tenant_retry", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"},
+        )
+        assert response.status_code == 500
+        assert fake_context.db.get_svm("tenant_retry")["status"]["phase"] == "Failed"
+
+        fake_context.adapters.pacemaker.groups = {}
+        response = client.post(
+            "/v1/svms",
+            json={"name": "tenant_retry", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["data"]["svm"]["status"] == "Ready"
+
+    @pytest.mark.integration
     @patch("arca_storage.api.services.svm_service.create_svm")
     def test_api_error_response(self, mock_create_svm):
         """Test API returns proper error response."""

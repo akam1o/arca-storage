@@ -4,6 +4,8 @@ QoS (Quality of Service) management using cgroups v2 I/O Controller.
 
 from __future__ import annotations
 
+import os
+import stat
 import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
@@ -45,19 +47,16 @@ def _enable_io_controller(cgroup_path: Path) -> None:
 
 
 def _get_device_id(lv_path: str) -> str:
-    result = subprocess.run(
-        ["stat", "--format=%t:%T", lv_path],
-        capture_output=True,
-        text=True,
-        check=False,
-        timeout=10,
-    )
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to stat device {lv_path}: {result.stderr}")
+    try:
+        device_stat = os.stat(lv_path)
+    except OSError as e:
+        raise RuntimeError(f"Failed to stat device {lv_path}: {e}") from e
 
-    hex_major, hex_minor = result.stdout.strip().split(":")
-    major = int(hex_major, 16)
-    minor = int(hex_minor, 16)
+    if not stat.S_ISBLK(device_stat.st_mode):
+        raise RuntimeError(f"Path {lv_path} is not a block device")
+
+    major = os.major(device_stat.st_rdev)
+    minor = os.minor(device_stat.st_rdev)
     return f"{major}:{minor}"
 
 

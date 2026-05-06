@@ -26,16 +26,19 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     ctx = get_context()
     if not ctx.db.get_volume(snapshot_data.svm, snapshot_data.volume):
         raise NotFoundError("Volume", f"{snapshot_data.svm}/{snapshot_data.volume}")
-    if ctx.db.list_snapshots(svm=snapshot_data.svm, volume=snapshot_data.volume, name=snapshot_data.name, limit=1):
+    requested_spec = SnapshotSpec(
+        name=snapshot_data.name,
+        svm=snapshot_data.svm,
+        volume=snapshot_data.volume,
+    )
+    existing = ctx.db.list_snapshots(svm=snapshot_data.svm, volume=snapshot_data.volume, name=snapshot_data.name, limit=1)
+    if existing:
+        record = existing[0]
+        if _can_resume_create(record, requested_spec):
+            return _resume_snapshot_create(ctx, record)
         raise AlreadyExistsError("Snapshot", f"{snapshot_data.svm}/{snapshot_data.volume}/{snapshot_data.name}")
 
-    snapshot = Snapshot(
-        spec=SnapshotSpec(
-            name=snapshot_data.name,
-            svm=snapshot_data.svm,
-            volume=snapshot_data.volume,
-        ),
-    )
+    snapshot = Snapshot(spec=requested_spec)
 
     snapshot = ctx.snapshot_reconciler.reconcile(snapshot)
 
@@ -93,12 +96,25 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     new_lv = f"vol_{clone_data.svm}_{clone_data.name}"
     mount_path = f"{export_dir}/{clone_data.svm}/{clone_data.name}"
 
-    # Create writable clone from snapshot
     clone_lv_path = ctx.adapters.lvm.create_snapshot(vg_name, snap_lv, new_lv)
-    ctx.adapters.xfs.mount(clone_lv_path, mount_path)
-    if target_size_gib > source_size_gib:
-        ctx.adapters.lvm.resize_lv(vg_name, new_lv, target_size_gib)
-        ctx.adapters.xfs.grow(mount_path)
+    mounted = False
+    try:
+        ctx.adapters.xfs.mount(clone_lv_path, mount_path, extra_options=["nouuid"])
+        mounted = True
+        if target_size_gib > source_size_gib:
+            ctx.adapters.lvm.resize_lv(vg_name, new_lv, target_size_gib)
+            ctx.adapters.xfs.grow(mount_path)
+    except Exception:
+        if mounted:
+            try:
+                ctx.adapters.xfs.umount(mount_path)
+            except Exception:
+                pass
+        try:
+            ctx.adapters.lvm.delete_lv(vg_name, new_lv)
+        except Exception:
+            pass
+        raise
 
     # Store as volume
     volume = Volume(
@@ -162,3 +178,24 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _parse_status(record: Dict[str, Any]) -> Any:
     from arca_storage.models.snapshot import SnapshotStatus
     return SnapshotStatus.model_validate(record["status"])
+
+
+def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec) -> bool:
+    phase = record.get("status", {}).get("phase")
+    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
+        return False
+    return SnapshotSpec.model_validate(record["spec"]) == requested_spec
+
+
+def _resume_snapshot_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
+    snapshot = Snapshot(
+        metadata=_meta_from_record(record),
+        spec=SnapshotSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    snapshot.status.phase = Phase.CREATING
+    snapshot.status.message = ""
+    snapshot = ctx.snapshot_reconciler.reconcile(snapshot)
+    if snapshot.status.phase == Phase.FAILED:
+        raise RuntimeError(snapshot.status.message)
+    return _snapshot_to_dict(snapshot)
