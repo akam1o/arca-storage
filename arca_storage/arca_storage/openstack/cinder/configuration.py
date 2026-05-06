@@ -63,6 +63,32 @@ def _get_arca_storage_opts():
             default=True,
             help="Verify SSL certificates for API requests",
         ),
+        cfg.StrOpt(
+            "arca_storage_api_auth_type",
+            default="none",
+            choices=["token", "basic", "none"],
+            help=(
+                "Authentication type for ARCA Storage API: "
+                "'token' (Bearer token), 'basic' (HTTP Basic Auth), 'none' (no auth)"
+            ),
+        ),
+        cfg.StrOpt(
+            "arca_storage_api_token",
+            default=None,
+            secret=True,
+            help="API authentication token (for auth_type=token)",
+        ),
+        cfg.StrOpt(
+            "arca_storage_api_username",
+            default=None,
+            help="API username (for auth_type=basic)",
+        ),
+        cfg.StrOpt(
+            "arca_storage_api_password",
+            default=None,
+            secret=True,
+            help="API password (for auth_type=basic)",
+        ),
         # Multi-tenancy Configuration
         cfg.StrOpt(
             "arca_storage_svm_strategy",
