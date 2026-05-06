@@ -15,6 +15,7 @@ type VolumeInfo struct {
 	Name          string // Original PVC name
 	SVMName       string
 	VIP           string
+	ExportRoot    string
 	Path          string
 	CapacityBytes int64
 	CreatedAt     time.Time
@@ -228,10 +229,18 @@ func (v *VolumeInfo) ToCSIVolume() *csi.Volume {
 		VolumeContext: map[string]string{
 			"svm":        v.SVMName,
 			"vip":        v.VIP,
+			"exportRoot": defaultExportRoot(v.SVMName, v.ExportRoot),
 			"volumePath": v.Path,
 		},
 		ContentSource: v.ContentSource,
 	}
+}
+
+func defaultExportRoot(svmName, exportRoot string) string {
+	if exportRoot == "" {
+		return "/exports/" + svmName
+	}
+	return exportRoot
 }
 
 // ToCSISnapshot converts SnapshotInfo to CSI Snapshot

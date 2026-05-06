@@ -46,19 +46,35 @@ func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
 	ctx := context.Background()
 	initialOptions := MergeNFSMountOptions([]string{"nconnect=8"})
 
-	if _, err := manager.EnsureSVMMount(ctx, "tenant-a", "192.0.2.10", initialOptions); err != nil {
+	if _, err := manager.EnsureSVMMount(ctx, "tenant-a", "192.0.2.10", "", initialOptions); err != nil {
 		t.Fatalf("initial mount failed: %v", err)
 	}
-	if _, err := manager.EnsureSVMMount(ctx, "tenant-a", "192.0.2.10", []string{"nconnect=8"}); err != nil {
+	if _, err := manager.EnsureSVMMount(ctx, "tenant-a", "192.0.2.10", "", []string{"nconnect=8"}); err != nil {
 		t.Fatalf("same options should be accepted: %v", err)
 	}
 
-	_, err := manager.EnsureSVMMount(ctx, "tenant-a", "192.0.2.10", []string{"nconnect=16"})
+	_, err := manager.EnsureSVMMount(ctx, "tenant-a", "192.0.2.10", "", []string{"nconnect=16"})
 	if err == nil {
 		t.Fatal("expected conflicting options to be rejected")
 	}
 	if !strings.Contains(err.Error(), "different NFS options") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestEnsureSVMMountUsesConfiguredExportRoot(t *testing.T) {
+	manager := newTestMountManager(t)
+
+	if _, err := manager.EnsureSVMMount(context.Background(), "tenant-a", "192.0.2.10", "/srv/arca/tenant-a", nil); err != nil {
+		t.Fatalf("mount failed: %v", err)
+	}
+
+	fakeMounter := manager.mounter.(*mountutils.FakeMounter)
+	if len(fakeMounter.MountPoints) != 1 {
+		t.Fatalf("mount points = %#v", fakeMounter.MountPoints)
+	}
+	if fakeMounter.MountPoints[0].Device != "192.0.2.10:/srv/arca/tenant-a" {
+		t.Fatalf("mounted source = %q", fakeMounter.MountPoints[0].Device)
 	}
 }
 
@@ -86,7 +102,7 @@ func TestEnsureSVMMountRejectsWrongExistingSource(t *testing.T) {
 		MountPath: mountPath,
 	}
 
-	_, err := manager.EnsureSVMMount(context.Background(), "tenant-a", "192.0.2.10", nil)
+	_, err := manager.EnsureSVMMount(context.Background(), "tenant-a", "192.0.2.10", "", nil)
 	if err == nil {
 		t.Fatal("expected wrong existing source to be rejected")
 	}
@@ -115,6 +131,9 @@ func TestGetUniqueSVMMountsNormalizesLegacyOptions(t *testing.T) {
 	if !reflect.DeepEqual(got["tenant-a"].NFSMountOptions, want) {
 		t.Fatalf("unexpected normalized options: got %v want %v", got["tenant-a"].NFSMountOptions, want)
 	}
+	if got["tenant-a"].ExportRoot != "/exports/tenant-a" {
+		t.Fatalf("unexpected export root: %s", got["tenant-a"].ExportRoot)
+	}
 }
 
 func TestGetUniqueSVMMountsRejectsConflictingOptions(t *testing.T) {
@@ -137,6 +156,26 @@ func TestGetUniqueSVMMountsRejectsConflictingOptions(t *testing.T) {
 	}
 }
 
+func TestGetUniqueSVMMountsRejectsConflictingExportRoots(t *testing.T) {
+	nodeState := &NodeState{data: &NodeStateData{Volumes: map[string]*VolumeStaging{
+		"volume-a": {
+			SVMName:    "tenant-a",
+			VIP:        "192.0.2.10",
+			ExportRoot: "/exports/tenant-a",
+		},
+		"volume-b": {
+			SVMName:    "tenant-a",
+			VIP:        "192.0.2.10",
+			ExportRoot: "/srv/arca/tenant-a",
+		},
+	}}}
+
+	_, err := nodeState.GetUniqueSVMMounts()
+	if err == nil {
+		t.Fatal("expected conflicting export roots to be rejected")
+	}
+}
+
 func TestValidateVolumeStagingDetectsMismatchedVolumePath(t *testing.T) {
 	state, err := NewNodeState(filepath.Join(t.TempDir(), "state.json"))
 	if err != nil {
@@ -146,6 +185,7 @@ func TestValidateVolumeStagingDetectsMismatchedVolumePath(t *testing.T) {
 		"volume-a",
 		"tenant-a",
 		"192.0.2.10",
+		"",
 		"pvc-a",
 		"/stage/volume-a",
 		[]string{"nconnect=8"},
@@ -157,6 +197,7 @@ func TestValidateVolumeStagingDetectsMismatchedVolumePath(t *testing.T) {
 		"volume-a",
 		"tenant-a",
 		"192.0.2.10",
+		"",
 		"pvc-b",
 		"/stage/volume-a",
 		MergeNFSMountOptions([]string{"nconnect=8"}),
@@ -178,6 +219,7 @@ func TestHasVolumePublishRequiresRecordedTarget(t *testing.T) {
 		"volume-a",
 		"tenant-a",
 		"192.0.2.10",
+		"",
 		"pvc-a",
 		"/stage/volume-a",
 		nil,

@@ -16,6 +16,7 @@ type VolumeStaging struct {
 	VolumeID        string   `json:"volume_id"`
 	SVMName         string   `json:"svm_name"`
 	VIP             string   `json:"vip"`
+	ExportRoot      string   `json:"export_root,omitempty"`
 	VolumePath      string   `json:"volume_path,omitempty"`
 	StagingPath     string   `json:"staging_path"`
 	NFSMountOptions []string `json:"nfs_mount_options,omitempty"`
@@ -38,6 +39,7 @@ type NodeState struct {
 // SVMMountInfo represents the information needed to restore an SVM mount.
 type SVMMountInfo struct {
 	VIP             string
+	ExportRoot      string
 	NFSMountOptions []string
 }
 
@@ -73,7 +75,15 @@ func NewNodeState(stateFilePath string) (*NodeState, error) {
 }
 
 // RecordVolumeStaging records a volume staging operation (atomic, with fsync)
-func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, volumePath, stagingPath string, nfsMountOptions []string) error {
+func (ns *NodeState) RecordVolumeStaging(
+	volumeID,
+	svmName,
+	vip,
+	exportRoot,
+	volumePath,
+	stagingPath string,
+	nfsMountOptions []string,
+) error {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
 
@@ -81,6 +91,7 @@ func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, volumePath, sta
 		VolumeID:        volumeID,
 		SVMName:         svmName,
 		VIP:             vip,
+		ExportRoot:      defaultExportRoot(svmName, exportRoot),
 		VolumePath:      volumePath,
 		StagingPath:     stagingPath,
 		NFSMountOptions: append([]string(nil), nfsMountOptions...),
@@ -91,7 +102,15 @@ func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, volumePath, sta
 
 // ValidateVolumeStaging verifies that an existing staged mount belongs to the
 // requested volume before treating NodeStageVolume as idempotent.
-func (ns *NodeState) ValidateVolumeStaging(volumeID, svmName, vip, volumePath, stagingPath string, nfsMountOptions []string) error {
+func (ns *NodeState) ValidateVolumeStaging(
+	volumeID,
+	svmName,
+	vip,
+	exportRoot,
+	volumePath,
+	stagingPath string,
+	nfsMountOptions []string,
+) error {
 	ns.mu.RLock()
 	defer ns.mu.RUnlock()
 
@@ -104,6 +123,14 @@ func (ns *NodeState) ValidateVolumeStaging(volumeID, svmName, vip, volumePath, s
 	}
 	if staging.VIP != vip {
 		return fmt.Errorf("volume %s VIP mismatch: recorded=%s requested=%s", volumeID, staging.VIP, vip)
+	}
+	if defaultExportRoot(svmName, staging.ExportRoot) != defaultExportRoot(svmName, exportRoot) {
+		return fmt.Errorf(
+			"volume %s export root mismatch: recorded=%s requested=%s",
+			volumeID,
+			defaultExportRoot(svmName, staging.ExportRoot),
+			defaultExportRoot(svmName, exportRoot),
+		)
 	}
 	if staging.VolumePath != "" && staging.VolumePath != volumePath {
 		return fmt.Errorf("volume %s path mismatch: recorded=%s requested=%s", volumeID, staging.VolumePath, volumePath)
@@ -221,6 +248,14 @@ func (ns *NodeState) GetUniqueSVMMounts() (map[string]SVMMountInfo, error) {
 					staging.VIP,
 				)
 			}
+			if defaultExportRoot(staging.SVMName, existing.ExportRoot) != defaultExportRoot(staging.SVMName, staging.ExportRoot) {
+				return nil, fmt.Errorf(
+					"conflicting export roots for SVM %s in node state: existing=%s requested=%s",
+					staging.SVMName,
+					defaultExportRoot(staging.SVMName, existing.ExportRoot),
+					defaultExportRoot(staging.SVMName, staging.ExportRoot),
+				)
+			}
 			if !sameMountOptions(existing.NFSMountOptions, options) {
 				return nil, fmt.Errorf(
 					"conflicting NFS mount options for SVM %s in node state: existing=%v requested=%v",
@@ -233,6 +268,7 @@ func (ns *NodeState) GetUniqueSVMMounts() (map[string]SVMMountInfo, error) {
 		}
 		svms[staging.SVMName] = SVMMountInfo{
 			VIP:             staging.VIP,
+			ExportRoot:      defaultExportRoot(staging.SVMName, staging.ExportRoot),
 			NFSMountOptions: cloneMountOptions(options),
 		}
 	}

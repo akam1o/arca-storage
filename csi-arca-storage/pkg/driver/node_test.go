@@ -165,7 +165,7 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 	if err != nil {
 		t.Fatalf("failed to create node state: %v", err)
 	}
-	if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "volumes/vol-a", stagingPath, nil); err != nil {
+	if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "", "volumes/vol-a", stagingPath, nil); err != nil {
 		t.Fatalf("failed to record staging: %v", err)
 	}
 	if err := nodeState.RecordVolumePublish("vol-a", targetPath); err != nil {

@@ -4,14 +4,15 @@ import "time"
 
 // SVM represents an ARCA Storage Virtual Machine
 type SVM struct {
-	Name      string    `json:"name"`
-	VLANID    int       `json:"vlan_id"`
-	IPCIDR    string    `json:"ip_cidr"`
-	VIP       string    `json:"vip"`
-	Gateway   string    `json:"gateway"`
-	MTU       int       `json:"mtu"`
-	State     string    `json:"state"`
-	CreatedAt time.Time `json:"created_at"`
+	Name       string    `json:"name"`
+	VLANID     int       `json:"vlan_id"`
+	IPCIDR     string    `json:"ip_cidr"`
+	VIP        string    `json:"vip"`
+	Gateway    string    `json:"gateway"`
+	MTU        int       `json:"mtu"`
+	ExportRoot string    `json:"export_root"`
+	State      string    `json:"state"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // CreateSVMRequest represents a request to create an SVM

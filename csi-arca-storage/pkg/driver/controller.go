@@ -22,6 +22,7 @@ const (
 	// Volume context keys
 	volumeContextSVM        = "svm"
 	volumeContextVIP        = "vip"
+	volumeContextExportRoot = "exportRoot"
 	volumeContextVolumePath = "volumePath"
 
 	// Default capacity if not specified
@@ -170,8 +171,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 			// Clone must use the same SVM as the source volume
 			svm = &arca.SVM{
-				Name: sourceVol.SVMName,
-				VIP:  sourceVol.VIP,
+				Name:       sourceVol.SVMName,
+				VIP:        sourceVol.VIP,
+				ExportRoot: sourceVol.ExportRoot,
 			}
 			klog.V(4).Infof("Using source SVM for clone: %s with VIP: %s", svm.Name, svm.VIP)
 
@@ -247,6 +249,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to get SVM %s for snapshot restore: %v", snapshot.SVMName, err)
 			}
+			if svm.ExportRoot == "" {
+				svm.ExportRoot = sourceVol.ExportRoot
+			}
 			klog.V(4).Infof("Using snapshot SVM for restore: %s (VIP: %s)", svm.Name, svm.VIP)
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
@@ -298,6 +303,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		Name:          pvcName,
 		SVMName:       svm.Name,
 		VIP:           svm.VIP,
+		ExportRoot:    defaultExportRoot(svm.Name, svm.ExportRoot),
 		Path:          volumePath,
 		CapacityBytes: capacityBytes,
 		CreatedAt:     time.Now(),

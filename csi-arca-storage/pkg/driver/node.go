@@ -82,6 +82,27 @@ func validateVIP(vip string) error {
 	return nil
 }
 
+func defaultExportRoot(svmName, exportRoot string) string {
+	if exportRoot == "" {
+		return "/exports/" + svmName
+	}
+	return exportRoot
+}
+
+func validateExportRoot(exportRoot string) error {
+	if exportRoot == "" {
+		return fmt.Errorf("export root cannot be empty")
+	}
+	if !filepath.IsAbs(exportRoot) {
+		return fmt.Errorf("export root must be absolute: %s", exportRoot)
+	}
+	cleaned := filepath.Clean(exportRoot)
+	if cleaned != exportRoot {
+		return fmt.Errorf("export root must be canonical: %s", exportRoot)
+	}
+	return nil
+}
+
 func nfsMountOptionsFromCapability(capability *csi.VolumeCapability) []string {
 	if capability == nil || capability.GetMount() == nil {
 		return arcamount.MergeNFSMountOptions(nil)
@@ -139,6 +160,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	volumeContext := req.GetVolumeContext()
 	svmName := volumeContext[volumeContextSVM]
 	vip := volumeContext[volumeContextVIP]
+	exportRoot := defaultExportRoot(svmName, volumeContext[volumeContextExportRoot])
 	volumePath := volumeContext[volumeContextVolumePath]
 
 	if svmName == "" || vip == "" || volumePath == "" {
@@ -154,6 +176,10 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 		return nil, status.Errorf(codes.InvalidArgument, "invalid VIP: %v", err)
 	}
 
+	if err := validateExportRoot(exportRoot); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid export root: %v", err)
+	}
+
 	// Validate volume path to prevent path traversal attacks
 	if err := validateVolumePath(volumePath); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid volume path: %v", err)
@@ -163,7 +189,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 
 	// Ensure per-SVM shared mount exists
 	nfsMountOptions := nfsMountOptionsFromCapability(req.GetVolumeCapability())
-	svmMountPath, err := d.mountManager.EnsureSVMMount(ctx, svmName, vip, nfsMountOptions)
+	svmMountPath, err := d.mountManager.EnsureSVMMount(ctx, svmName, vip, exportRoot, nfsMountOptions)
 	if err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to ensure SVM mount: %v", err)
 	}
@@ -190,7 +216,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 		if err := d.sourceValidator().ValidateMountSource(stagingTargetPath, sourcePath); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested source: %v", stagingTargetPath, err)
 		}
-		if err := d.nodeState.ValidateVolumeStaging(volumeID, svmName, vip, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
+		if err := d.nodeState.ValidateVolumeStaging(volumeID, svmName, vip, exportRoot, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested volume: %v", stagingTargetPath, err)
 		}
 		klog.V(4).Infof("Volume %s already staged at %s", volumeID, stagingTargetPath)
@@ -205,7 +231,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	}
 
 	// Record volume staging in NodeState
-	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
+	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, exportRoot, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
 		klog.Warningf("Failed to record volume staging in node state, rolling back mount: %v", err)
 
 		// Best-effort: revert in-memory state (may also fail to persist)

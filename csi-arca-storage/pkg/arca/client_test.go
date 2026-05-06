@@ -15,12 +15,12 @@ func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 		w.Header().Set("Content-Type", "application/json")
 		switch {
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-default":
-			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-default","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5","gateway":"192.168.10.1","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-default","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5","export_root":"/srv/arca/k8s-default","gateway":"192.168.10.1","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/svms":
 			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"svm":{"name":"k8s-default","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5","gateway":"192.168.10.1","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}}`))
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"svm":{"name":"k8s-default","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5","export_root":"/srv/arca/k8s-default","gateway":"192.168.10.1","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}}`))
 		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms":
-			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"k8s-default","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5","gateway":"192.168.10.1","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":null}}`))
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"k8s-default","vlan_id":100,"ip_cidr":"192.168.10.5/24","vip":"192.168.10.5","export_root":"/srv/arca/k8s-default","gateway":"192.168.10.1","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":null}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -37,7 +37,7 @@ func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetSVM() error = %v", err)
 	}
-	if svm.Name != "k8s-default" || svm.VIP != "192.168.10.5" {
+	if svm.Name != "k8s-default" || svm.VIP != "192.168.10.5" || svm.ExportRoot != "/srv/arca/k8s-default" {
 		t.Fatalf("GetSVM() = %#v", svm)
 	}
 

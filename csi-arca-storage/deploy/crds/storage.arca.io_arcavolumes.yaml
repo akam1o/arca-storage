@@ -87,6 +87,10 @@ spec:
               createdAt:
                 format: date-time
                 type: string
+              exportRoot:
+                maxLength: 4096
+                pattern: ^/.*
+                type: string
               name:
                 maxLength: 253
                 minLength: 1

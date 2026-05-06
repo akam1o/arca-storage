@@ -15,6 +15,7 @@ import (
 type SVMMount struct {
 	SVMName         string
 	VIP             string
+	ExportRoot      string
 	MountPath       string
 	NFSMountOptions []string
 }
@@ -82,19 +83,20 @@ func (m *MountManager) reconcile() error {
 		if !isMounted {
 			// Mount is missing - restore it
 			klog.Infof("Restoring missing mount for SVM %s (VIP: %s)", svmName, info.VIP)
-			if err := m.mountSVMLocked(svmName, info.VIP, info.NFSMountOptions); err != nil {
+			if err := m.mountSVMLocked(svmName, info.VIP, info.ExportRoot, info.NFSMountOptions); err != nil {
 				klog.Errorf("Failed to restore mount for SVM %s: %v", svmName, err)
 				// Continue with other SVMs
 				continue
 			}
 		} else {
-			if err := m.validateSVMMountSource(mountPath, svmName, info.VIP); err != nil {
+			if err := m.validateSVMMountSource(mountPath, svmName, info.VIP, info.ExportRoot); err != nil {
 				return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
 			}
 			// Mount exists - record it
 			m.mounts[svmName] = &SVMMount{
 				SVMName:         svmName,
 				VIP:             info.VIP,
+				ExportRoot:      defaultExportRoot(svmName, info.ExportRoot),
 				MountPath:       mountPath,
 				NFSMountOptions: cloneMountOptions(info.NFSMountOptions),
 			}
@@ -107,9 +109,17 @@ func (m *MountManager) reconcile() error {
 }
 
 // EnsureSVMMount ensures an SVM is mounted (creates mount if needed)
-func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string, nfsMountOptions []string) (string, error) {
+func (m *MountManager) EnsureSVMMount(
+	ctx context.Context,
+	svmName,
+	vip,
+	exportRoot string,
+	nfsMountOptions []string,
+) (string, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+
+	exportRoot = defaultExportRoot(svmName, exportRoot)
 
 	// Check if already mounted
 	if mount, exists := m.mounts[svmName]; exists {
@@ -119,8 +129,11 @@ func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string, 
 			return "", fmt.Errorf("failed to check mount point: %w", err)
 		}
 		if isMounted {
-			if err := m.validateSVMMountSource(mount.MountPath, svmName, vip); err != nil {
+			if err := m.validateSVMMountSource(mount.MountPath, svmName, vip, exportRoot); err != nil {
 				return "", fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mount.MountPath, err)
+			}
+			if mount.ExportRoot != "" && mount.ExportRoot != exportRoot {
+				return "", fmt.Errorf("SVM %s already mounted with different export root: active=%s requested=%s", svmName, mount.ExportRoot, exportRoot)
 			}
 			if !sameMountOptions(mount.NFSMountOptions, nfsMountOptions) {
 				return "", fmt.Errorf(
@@ -140,12 +153,12 @@ func (m *MountManager) EnsureSVMMount(ctx context.Context, svmName, vip string, 
 	}
 
 	// Mount doesn't exist - create it
-	return m.ensureSVMMountLocked(svmName, vip, nfsMountOptions)
+	return m.ensureSVMMountLocked(svmName, vip, exportRoot, nfsMountOptions)
 }
 
 // ensureSVMMountLocked mounts an SVM (must hold lock)
-func (m *MountManager) ensureSVMMountLocked(svmName, vip string, nfsMountOptions []string) (string, error) {
-	if err := m.mountSVMLocked(svmName, vip, nfsMountOptions); err != nil {
+func (m *MountManager) ensureSVMMountLocked(svmName, vip, exportRoot string, nfsMountOptions []string) (string, error) {
+	if err := m.mountSVMLocked(svmName, vip, exportRoot, nfsMountOptions); err != nil {
 		return "", err
 	}
 
@@ -153,15 +166,16 @@ func (m *MountManager) ensureSVMMountLocked(svmName, vip string, nfsMountOptions
 }
 
 // mountSVMLocked performs the actual NFS mount (must hold lock)
-func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []string) error {
+func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountOptions []string) error {
 	mountPath := m.getMountPath(svmName)
+	exportRoot = defaultExportRoot(svmName, exportRoot)
 
 	// Create mount point directory
 	if err := os.MkdirAll(mountPath, 0750); err != nil {
 		return fmt.Errorf("failed to create mount point: %w", err)
 	}
 
-	nfsSource := nfsSourceForSVM(vip, svmName)
+	nfsSource := nfsSourceForSVM(vip, exportRoot)
 	options := normalizeNFSMountOptions(nfsMountOptions)
 
 	isMounted, err := m.isMountPoint(mountPath)
@@ -169,12 +183,13 @@ func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []str
 		return fmt.Errorf("failed to check mount point: %w", err)
 	}
 	if isMounted {
-		if err := m.validateSVMMountSource(mountPath, svmName, vip); err != nil {
+		if err := m.validateSVMMountSource(mountPath, svmName, vip, exportRoot); err != nil {
 			return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
 		}
 		m.mounts[svmName] = &SVMMount{
 			SVMName:         svmName,
 			VIP:             vip,
+			ExportRoot:      exportRoot,
 			MountPath:       mountPath,
 			NFSMountOptions: cloneMountOptions(options),
 		}
@@ -192,6 +207,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip string, nfsMountOptions []str
 	m.mounts[svmName] = &SVMMount{
 		SVMName:         svmName,
 		VIP:             vip,
+		ExportRoot:      exportRoot,
 		MountPath:       mountPath,
 		NFSMountOptions: cloneMountOptions(options),
 	}
@@ -285,8 +301,8 @@ func (m *MountManager) IsMountPoint(path string) (bool, error) {
 	return m.isMountPoint(path)
 }
 
-func (m *MountManager) validateSVMMountSource(mountPath, svmName, vip string) error {
-	return m.mountSourceValidator().ValidateMountSource(mountPath, nfsSourceForSVM(vip, svmName))
+func (m *MountManager) validateSVMMountSource(mountPath, svmName, vip, exportRoot string) error {
+	return m.mountSourceValidator().ValidateMountSource(mountPath, nfsSourceForSVM(vip, exportRoot))
 }
 
 func (m *MountManager) mountSourceValidator() MountSourceValidator {
@@ -296,6 +312,13 @@ func (m *MountManager) mountSourceValidator() MountSourceValidator {
 	return ProcMountInfoSourceValidator{}
 }
 
-func nfsSourceForSVM(vip, svmName string) string {
-	return fmt.Sprintf("%s:/exports/%s", vip, svmName)
+func nfsSourceForSVM(vip, exportRoot string) string {
+	return fmt.Sprintf("%s:%s", vip, exportRoot)
+}
+
+func defaultExportRoot(svmName, exportRoot string) string {
+	if exportRoot == "" {
+		return "/exports/" + svmName
+	}
+	return exportRoot
 }

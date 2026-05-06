@@ -65,6 +65,12 @@ type ArcaVolumeSpec struct {
 	// +kubebuilder:validation:MaxLength=45
 	VIP string `json:"vip"`
 
+	// ExportRoot is the NFS pseudo root exported by the SVM.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:Pattern=`^/.*`
+	// +kubebuilder:validation:MaxLength=4096
+	ExportRoot string `json:"exportRoot,omitempty"`
+
 	// Path is the backend path/location of the volume (relative path, no leading slash).
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
