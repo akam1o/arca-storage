@@ -300,7 +300,62 @@ class TestCloneVolume:
         assert response.status_code == 500
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
         assert "/exports/tenant_a/clone1" not in fake_context.adapters.xfs.mounts
-        assert fake_context.db.get_volume("tenant_a", "clone1") is None
+        record = fake_context.db.get_volume("tenant_a", "clone1")
+        assert record["status"]["phase"] == "Failed"
+        assert record["status"]["lv_created"] is False
+
+        def grow(mount_path):
+            return type(fake_context.adapters.xfs).grow(fake_context.adapters.xfs, mount_path)
+
+        fake_context.adapters.xfs.grow = grow
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["data"]["volume"]["status"] == "Ready"
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
+
+    @pytest.mark.integration
+    def test_clone_volume_resumes_existing_lv_after_stale_lease(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        clone = Volume(spec=VolumeSpec(name="clone1", svm="tenant_a", size_gib=20, thin=True))
+        assign_create_lease(clone.status, "dead-owner")
+        fake_context.db.insert_volume(clone)
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        record = fake_context.db.get_volume("tenant_a", "clone1")
+        status = record["status"]
+        status["create_lease_expires_at"] = expired_at
+        conn = fake_context.db._conn()
+        conn.execute(
+            "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+            (json.dumps(status), "tenant_a", "clone1"),
+        )
+        conn.commit()
+        fake_context.adapters.lvm.create_snapshot(
+            "vg_pool_01",
+            "vol_tenant_a_vol1_snap_snap1",
+            "vol_tenant_a_clone1",
+        )
+
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+        )
+
+        assert response.status_code == 201
+        volume = response.json()["data"]["volume"]
+        assert volume["status"] == "Ready"
+        assert volume["size_gib"] == 20
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
+        assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
 
 
 class TestSnapshots:

@@ -13,17 +13,26 @@ from arca_storage.context import get_context
 from arca_storage.create_resume import (
     ACTIVE_CREATE_PHASES,
     assign_create_lease,
+    clear_create_lease,
     create_lease_heartbeat,
     extend_create_lease,
     new_create_owner,
 )
 from arca_storage.db import encode_cursor
-from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    CreateLeaseLostError,
+    InternalError,
+    InvalidArgumentError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import snapshot_lv_name, validate_name, volume_lv_name
 from arca_storage.api.services.volume_service import build_volume_export_path
+from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
 
 
 def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
@@ -121,73 +130,53 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
     snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
 
     ctx = get_context()
-    if ctx.db.get_volume(clone_data.svm, clone_data.name):
-        raise AlreadyExistsError("Volume", f"{clone_data.svm}/{clone_data.name}")
-    cfg = ctx.settings.to_reconciler_config()
-    vg_name = cfg["vg_name"]
-    export_dir = cfg["export_dir"]
-
-    # Find the snapshot on the source volume from the route path.
-    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
-    if not snapshots:
-        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
-
-    snap_record = snapshots[0]
-    source_record = ctx.db.get_volume(clone_data.svm, source_volume)
-    source_size_gib = int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
+    source_size_gib = _clone_source_size_gib(ctx, source_volume, clone_data)
     target_size_gib = max(clone_data.size_gib or source_size_gib, source_size_gib)
-    snap_lv = snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
-    new_lv = volume_lv_name(clone_data.svm, clone_data.name)
-    mount_path = f"{export_dir}/{clone_data.svm}/{clone_data.name}"
-
-    clone_lv_path = ctx.adapters.lvm.create_snapshot(vg_name, snap_lv, new_lv)
-    mounted = False
-    try:
-        ctx.adapters.xfs.mount(clone_lv_path, mount_path, extra_options=["nouuid"])
-        mounted = True
-        if target_size_gib > source_size_gib:
-            ctx.adapters.lvm.resize_lv(vg_name, new_lv, target_size_gib)
-            ctx.adapters.xfs.grow(mount_path)
-    except Exception:
-        if mounted:
-            try:
-                ctx.adapters.xfs.umount(mount_path)
-            except Exception:
-                pass
-        try:
-            ctx.adapters.lvm.delete_lv(vg_name, new_lv)
-        except Exception:
-            pass
-        raise
-
-    # Store as volume
-    volume = Volume(
-        spec=VolumeSpec(
-            name=clone_data.name,
-            svm=clone_data.svm,
-            size_gib=target_size_gib,
-            thin=True,
-        ),
+    requested_spec = VolumeSpec(
+        name=clone_data.name,
+        svm=clone_data.svm,
+        size_gib=target_size_gib,
+        thin=True,
+        fs_type="xfs",
     )
-    volume.status.phase = Phase.READY
-    volume.status.lv_created = True
-    volume.status.fs_formatted = True
-    volume.status.mounted = True
-    volume.status.lv_path = clone_lv_path
-    volume.status.lv_name = new_lv
-    volume.status.mount_path = mount_path
-    ctx.db.upsert_volume(volume)
+    volume = Volume(spec=requested_spec)
+    owner = new_create_owner()
+    assign_create_lease(volume.status, owner)
 
-    return {
-        "name": clone_data.name,
-        "svm": clone_data.svm,
-        "size_gib": target_size_gib,
-        "status": Phase.READY.value,
-        "lv_path": clone_lv_path,
-        "mount_path": mount_path,
-        "export_path": build_volume_export_path(ctx, clone_data.svm, mount_path),
-        "created_at": volume.metadata.created_at,
-    }
+    try:
+        ctx.db.insert_volume(volume)
+    except AlreadyExistsError:
+        existing = ctx.db.get_volume(clone_data.svm, clone_data.name)
+        allow_failed_resume = _can_resume_clone_volume(existing, requested_spec)
+        acquired = ctx.db.acquire_volume_create_lease(
+            clone_data.svm,
+            clone_data.name,
+            owner,
+            expected_spec=requested_spec.model_dump(mode="json"),
+            allow_failed=allow_failed_resume,
+        )
+        if _can_resume_clone_volume(acquired, requested_spec, owner=owner):
+            return _resume_clone_volume_from_snapshot(
+                ctx,
+                acquired,
+                owner,
+                source_volume,
+                clone_data.snapshot,
+                source_size_gib,
+            )
+        raise AlreadyExistsError("Volume", f"{clone_data.svm}/{clone_data.name}")
+
+    volume = _reconcile_clone_volume_from_snapshot(
+        ctx,
+        volume,
+        owner,
+        source_volume,
+        clone_data.snapshot,
+        source_size_gib,
+    )
+    if volume.status.phase == Phase.FAILED:
+        raise RuntimeError(volume.status.message)
+    return _clone_volume_to_dict(volume, ctx)
 
 
 def list_snapshots(
@@ -246,6 +235,204 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _parse_status(record: Dict[str, Any]) -> Any:
     from arca_storage.models.snapshot import SnapshotStatus
     return SnapshotStatus.model_validate(record["status"])
+
+
+def _clone_source_size_gib(ctx: Any, source_volume: str, clone_data: VolumeCloneCreate) -> int:
+    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
+    if not snapshots:
+        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
+
+    source_record = ctx.db.get_volume(clone_data.svm, source_volume)
+    return int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
+
+
+def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
+    return {
+        "name": vol.spec.name,
+        "svm": vol.spec.svm,
+        "size_gib": vol.spec.size_gib,
+        "status": vol.status.phase.value,
+        "lv_path": vol.status.lv_path,
+        "mount_path": vol.status.mount_path,
+        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path),
+        "created_at": vol.metadata.created_at,
+    }
+
+
+def _can_resume_clone_volume(record: Dict[str, Any] | None, requested_spec: VolumeSpec, *, owner: str | None = None) -> bool:
+    if not record:
+        return False
+    status = record.get("status", {})
+    phase = status.get("phase")
+    if VolumeSpec.model_validate(record["spec"]) != requested_spec:
+        return False
+    if phase in ACTIVE_CREATE_PHASES:
+        return bool(owner and status.get("create_owner") == owner)
+    if phase != Phase.FAILED.value:
+        return False
+    if _is_failed_delete(status):
+        return False
+    return _has_pending_clone_create_step(status)
+
+
+def _has_pending_clone_create_step(status: Dict[str, Any]) -> bool:
+    return any(not status.get(field, False) for field in ("lv_created", "fs_formatted", "mounted"))
+
+
+def _resume_clone_volume_from_snapshot(
+    ctx: Any,
+    record: Dict[str, Any],
+    owner: str,
+    source_volume: str,
+    snapshot_name: str,
+    source_size_gib: int,
+) -> Dict[str, Any]:
+    volume = Volume(
+        metadata=_meta_from_record(record),
+        spec=VolumeSpec.model_validate(record["spec"]),
+        status=_parse_volume_status(record),
+    )
+    assign_create_lease(volume.status, owner)
+    volume.status.message = ""
+    volume = _reconcile_clone_volume_from_snapshot(
+        ctx,
+        volume,
+        owner,
+        source_volume,
+        snapshot_name,
+        source_size_gib,
+    )
+    if volume.status.phase == Phase.FAILED:
+        raise RuntimeError(volume.status.message)
+    return _clone_volume_to_dict(volume, ctx)
+
+
+def _parse_volume_status(record: Dict[str, Any]) -> Any:
+    from arca_storage.models.volume import VolumeStatus
+    return VolumeStatus.model_validate(record["status"])
+
+
+def _reconcile_clone_volume_from_snapshot(
+    ctx: Any,
+    volume: Volume,
+    owner: str,
+    source_volume: str,
+    snapshot_name: str,
+    source_size_gib: int,
+) -> Volume:
+    def refresh() -> bool:
+        if not ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner):
+            return False
+        return extend_create_lease(volume.status, owner)
+
+    with create_lease_heartbeat(refresh):
+        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, source_size_gib)
+
+
+def _run_clone_volume_steps(
+    ctx: Any,
+    volume: Volume,
+    source_volume: str,
+    snapshot_name: str,
+    source_size_gib: int,
+) -> Volume:
+    create_owner = volume.status.create_owner
+    spec = volume.spec
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg["vg_name"]
+    export_dir = cfg["export_dir"]
+    snap_lv = snapshot_lv_name(spec.svm, source_volume, snapshot_name)
+    new_lv = volume_lv_name(spec.svm, spec.name)
+    clone_lv_path = f"/dev/{vg_name}/{new_lv}"
+    mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+
+    if volume.status.lv_created and not ctx.adapters.lvm.lv_exists(vg_name, new_lv):
+        volume.status.lv_created = False
+        volume.status.lv_path = None
+        volume.status.lv_name = None
+        volume.status.fs_formatted = False
+        volume.status.mounted = False
+        volume.status.mount_path = None
+        _persist_clone_volume(ctx, volume, "Clone LV state reset", expected_create_owner=create_owner)
+
+    try:
+        if not volume.status.lv_created:
+            clone_lv_path = create_snapshot_lv_or_accept_existing(
+                ctx.adapters.lvm,
+                vg_name,
+                snap_lv,
+                new_lv,
+            )
+            volume.status.lv_created = True
+            volume.status.lv_path = clone_lv_path
+            volume.status.lv_name = new_lv
+            volume.status.fs_formatted = True
+            _persist_clone_volume(ctx, volume, "Clone LV created", expected_create_owner=create_owner)
+        else:
+            clone_lv_path = volume.status.lv_path or clone_lv_path
+
+        if not volume.status.mounted or not ctx.adapters.xfs.is_mounted(mount_path):
+            ctx.adapters.xfs.mount(clone_lv_path, mount_path, extra_options=["nouuid"])
+            volume.status.mounted = True
+            volume.status.mount_path = mount_path
+            volume.status.fs_formatted = True
+            _persist_clone_volume(ctx, volume, "Clone LV mounted", expected_create_owner=create_owner)
+
+        if spec.size_gib > source_size_gib:
+            ctx.adapters.lvm.resize_lv(vg_name, new_lv, spec.size_gib)
+            ctx.adapters.xfs.grow(mount_path)
+
+        volume.status.phase = Phase.READY
+        expected_owner = create_owner
+        clear_create_lease(volume.status)
+        volume.status.message = ""
+        _persist_clone_volume(ctx, volume, "Clone volume ready", expected_create_owner=expected_owner)
+        return volume
+    except CreateLeaseLostError:
+        raise
+    except Exception as e:
+        _cleanup_failed_clone_volume(ctx, volume, vg_name, new_lv, mount_path)
+        volume.status.phase = Phase.FAILED
+        expected_owner = create_owner
+        clear_create_lease(volume.status)
+        volume.status.message = f"Clone failed: {e}"
+        _persist_clone_volume(ctx, volume, volume.status.message, expected_create_owner=expected_owner)
+        return volume
+
+
+def _cleanup_failed_clone_volume(ctx: Any, volume: Volume, vg_name: str, lv_name: str, mount_path: str) -> None:
+    try:
+        mounted = volume.status.mounted or ctx.adapters.xfs.is_mounted(mount_path)
+    except Exception:
+        mounted = volume.status.mounted
+    if mounted:
+        try:
+            ctx.adapters.xfs.umount(mount_path)
+        except Exception:
+            pass
+    if volume.status.lv_created:
+        try:
+            ctx.adapters.lvm.delete_lv(vg_name, lv_name)
+        except Exception:
+            pass
+    volume.status.lv_created = False
+    volume.status.lv_path = None
+    volume.status.lv_name = None
+    volume.status.fs_formatted = False
+    volume.status.mounted = False
+    volume.status.mount_path = None
+
+
+def _persist_clone_volume(
+    ctx: Any,
+    volume: Volume,
+    detail: str,
+    *,
+    expected_create_owner: str | None = None,
+) -> None:
+    if not ctx.db.upsert_volume(volume, expected_create_owner=expected_create_owner):
+        raise CreateLeaseLostError("Volume", f"{volume.spec.svm}/{volume.spec.name}")
+    ctx.db.log_operation("Volume", volume.metadata.id, "clone", volume.status.phase.value, detail)
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec, *, owner: str | None = None) -> bool:
