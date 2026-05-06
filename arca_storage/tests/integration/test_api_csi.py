@@ -147,6 +147,49 @@ def test_csi_directory_prunes_stale_export_clients(fake_context):
     }
 
 
+def test_csi_directory_normalizes_configured_client_cidrs(fake_context):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+    fake_context.settings.csi.client_cidrs = ["10.0.0.1/24"]
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 201
+    assert _export_targets(fake_context.adapters.ganesha.exports[svm_name]) == {
+        (f"/exports/{svm_name}", "10.0.0.0/24"),
+        (f"/exports/{svm_name}/{volume_path}", "10.0.0.0/24"),
+    }
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 201
+    assert len(fake_context.adapters.ganesha.exports[svm_name]) == 2
+
+
 def test_csi_directory_requires_configured_client_cidrs(fake_context):
     client = TestClient(app)
     svm_name = "k8s-default"

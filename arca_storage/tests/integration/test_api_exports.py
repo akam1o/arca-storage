@@ -106,6 +106,37 @@ class TestAddExport:
             "/exports/tenant_a/ready"
         ]
 
+    @pytest.mark.integration
+    def test_export_client_cidr_is_canonical_for_matching(self, fake_context):
+        client = TestClient(app, raise_server_exceptions=False)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.1/24", "access": "rw"},
+        )
+        assert response.status_code == 201
+        assert response.json()["data"]["export"]["client"] == "10.0.0.0/24"
+        assert fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24") is not None
+
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+        assert response.status_code == 409
+
+        response = client.get("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24")
+        assert response.status_code == 200
+        assert [item["client"] for item in response.json()["data"]["items"]] == ["10.0.0.0/24"]
+
+        response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24")
+        assert response.status_code == 200
+        assert fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24") is None
+
 
 class TestRemoveExport:
     """Tests for DELETE /v1/exports."""

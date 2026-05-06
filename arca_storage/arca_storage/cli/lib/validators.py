@@ -108,6 +108,22 @@ def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
         raise ValueError(f"Invalid IP address: {e}")
 
 
+def normalize_ip_cidr(cidr: str) -> str:
+    """
+    Validate and canonicalize an IPv4 network CIDR.
+
+    Host bits are accepted for compatibility with existing API callers and
+    normalized to the containing network.
+    """
+    try:
+        parts = cidr.split("/")
+        if len(parts) != 2:
+            raise ValueError("CIDR must be in format IP/PREFIX (e.g., 192.168.10.0/24)")
+        return str(ipaddress.IPv4Network(cidr, strict=False))
+    except Exception as e:
+        raise ValueError(f"Invalid CIDR format: {e}")
+
+
 def validate_ipv4(ip: str) -> None:
     """
     Validate an IPv4 address string.

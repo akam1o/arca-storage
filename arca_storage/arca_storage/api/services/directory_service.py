@@ -14,7 +14,7 @@ from typing import Any, Dict
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
 from arca_storage.api.services import export_service, volume_service
-from arca_storage.cli.lib.validators import validate_name
+from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
 from arca_storage.context import get_context
 from arca_storage.errors import NotFoundError, PreconditionFailedError
 
@@ -179,7 +179,7 @@ def _csi_client_cidrs(ctx: Any) -> list[str]:
             "CSI NFS client CIDRs are not configured",
             {"resource": "CSIExport", "config": "csi.client_cidrs"},
         )
-    return client_cidrs
+    return [normalize_ip_cidr(cidr) for cidr in client_cidrs]
 
 
 def _csi_root_squash(ctx: Any) -> bool:

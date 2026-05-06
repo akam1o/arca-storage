@@ -8,6 +8,8 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
+from arca_storage.cli.lib.validators import normalize_ip_cidr
+
 
 class SVMStatus(str, Enum):
     """SVM status values."""
@@ -382,16 +384,7 @@ class ExportCreate(BaseModel):
 
     @field_validator("client")
     def validate_client(cls, v: str) -> str:
-        import ipaddress
-
-        try:
-            parts = v.split("/")
-            if len(parts) != 2:
-                raise ValueError("CIDR must be in format IP/PREFIX")
-            ipaddress.IPv4Network(v, strict=False)
-        except Exception as e:
-            raise ValueError(f"Invalid CIDR format: {e}")
-        return v
+        return normalize_ip_cidr(v)
 
     @field_validator("sec")
     def validate_sec(cls, v: List[str]) -> List[str]:

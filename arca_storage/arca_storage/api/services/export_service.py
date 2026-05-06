@@ -21,14 +21,14 @@ from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
-from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
+from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
 
 
 def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     """Add an NFS export via the reconciler."""
     validate_name(export_data.svm)
     validate_name(export_data.volume)
-    validate_ip_cidr(export_data.client)
+    client = normalize_ip_cidr(export_data.client)
 
     ctx = get_context()
     if not ctx.db.get_svm(export_data.svm):
@@ -38,26 +38,26 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     requested_spec = ExportSpec(
         svm=export_data.svm,
         volume=export_data.volume,
-        client=export_data.client,
+        client=client,
         access=export_data.access,
         root_squash=export_data.root_squash,
         sec=export_data.sec,
     )
-    existing = ctx.db.get_export(export_data.svm, export_data.volume, export_data.client)
+    existing = ctx.db.get_export(export_data.svm, export_data.volume, client)
     if existing:
         owner = new_create_owner()
         allow_failed_resume = _can_resume_create(existing, requested_spec)
         acquired = ctx.db.acquire_export_create_lease(
             export_data.svm,
             export_data.volume,
-            export_data.client,
+            client,
             owner,
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_export_create(ctx, acquired, owner)
-        raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{export_data.client}")
+        raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{client}")
 
     export = Export(spec=requested_spec)
     owner = new_create_owner()
@@ -75,7 +75,7 @@ def remove_export(svm: str, volume: str, client: str) -> None:
     """Remove an NFS export via the reconciler."""
     validate_name(svm)
     validate_name(volume)
-    validate_ip_cidr(client)
+    client = normalize_ip_cidr(client)
 
     _remove_export_by_key(svm, volume, client)
 
@@ -94,7 +94,7 @@ def ensure_internal_export(
 ) -> Dict[str, Any]:
     """Create or update an internal export whose path is not derived from volume."""
     validate_name(svm)
-    validate_ip_cidr(client)
+    client = normalize_ip_cidr(client)
 
     export = Export(
         spec=ExportSpec(
@@ -119,7 +119,7 @@ def ensure_internal_export(
 def remove_internal_export(svm: str, volume: str, client: str) -> None:
     """Remove an internal export without applying public volume-name validation."""
     validate_name(svm)
-    validate_ip_cidr(client)
+    client = normalize_ip_cidr(client)
     _remove_export_by_key(svm, volume, client)
 
 
@@ -152,6 +152,8 @@ def list_exports(
 ) -> Dict[str, Any]:
     """List exports from the database."""
     ctx = get_context()
+    if client:
+        client = normalize_ip_cidr(client)
     try:
         records = ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit + 1, cursor=cursor)
     except ValueError as e:
