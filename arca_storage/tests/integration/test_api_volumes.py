@@ -114,6 +114,28 @@ class TestResizeVolume:
         assert data["data"]["volume"]["size_gib"] == 200
 
 
+class TestCloneVolume:
+    """Tests for POST /v1/volumes/{name}/clone."""
+
+    @pytest.mark.integration
+    def test_clone_volume_applies_larger_requested_size(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        response = client.post(
+            "/v1/volumes/clone1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+        )
+
+        assert response.status_code == 201
+        volume = response.json()["data"]["volume"]
+        assert volume["size_gib"] == 20
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
+        assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20
+
+
 class TestDeleteVolume:
     """Tests for DELETE /v1/volumes/{name}."""
 

@@ -88,6 +88,7 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     source_volume = snap_record["spec"]["volume"]
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
     source_size_gib = int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
+    target_size_gib = max(clone_data.size_gib or source_size_gib, source_size_gib)
     snap_lv = f"vol_{clone_data.svm}_{source_volume}_snap_{clone_data.snapshot}"
     new_lv = f"vol_{clone_data.svm}_{clone_data.name}"
     mount_path = f"{export_dir}/{clone_data.svm}/{clone_data.name}"
@@ -95,13 +96,16 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     # Create writable clone from snapshot
     clone_lv_path = ctx.adapters.lvm.create_snapshot(vg_name, snap_lv, new_lv)
     ctx.adapters.xfs.mount(clone_lv_path, mount_path)
+    if target_size_gib > source_size_gib:
+        ctx.adapters.lvm.resize_lv(vg_name, new_lv, target_size_gib)
+        ctx.adapters.xfs.grow(mount_path)
 
     # Store as volume
     volume = Volume(
         spec=VolumeSpec(
             name=clone_data.name,
             svm=clone_data.svm,
-            size_gib=clone_data.size_gib or source_size_gib,
+            size_gib=target_size_gib,
             thin=True,
         ),
     )
@@ -117,7 +121,7 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     return {
         "name": clone_data.name,
         "svm": clone_data.svm,
-        "size_gib": clone_data.size_gib or source_size_gib,
+        "size_gib": target_size_gib,
         "status": Phase.READY.value,
         "lv_path": clone_lv_path,
         "mount_path": mount_path,
