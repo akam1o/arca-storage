@@ -38,7 +38,12 @@ func (c *Client) DeleteSnapshot(ctx context.Context, name, svmName, volume strin
 
 // CloneVolumeFromSnapshot creates a new volume from a snapshot.
 func (c *Client) CloneVolumeFromSnapshot(ctx context.Context, req *CloneVolumeFromSnapshotRequest) error {
-	_, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/volumes/%s/clone", url.PathEscape(req.Name)), req)
+	sourceVolume := req.SourceVolume
+	if sourceVolume == "" {
+		sourceVolume = req.Name
+	}
+
+	_, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/volumes/%s/clone", url.PathEscape(sourceVolume)), req)
 	if err != nil {
 		if IsAlreadyExistsError(err) {
 			return nil

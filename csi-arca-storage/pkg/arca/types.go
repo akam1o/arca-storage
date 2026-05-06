@@ -39,10 +39,11 @@ type CreateSnapshotRequest struct {
 
 // CloneVolumeFromSnapshotRequest represents a request to create a volume from a snapshot
 type CloneVolumeFromSnapshotRequest struct {
-	Name     string `json:"name"`
-	SVM      string `json:"svm"`
-	Snapshot string `json:"snapshot"`
-	SizeGiB  int    `json:"size_gib,omitempty"`
+	Name         string `json:"name"`
+	SVM          string `json:"svm"`
+	SourceVolume string `json:"-"`
+	Snapshot     string `json:"snapshot"`
+	SizeGiB      int    `json:"size_gib,omitempty"`
 }
 
 // RestoreSnapshotRequest represents a request to restore from snapshot

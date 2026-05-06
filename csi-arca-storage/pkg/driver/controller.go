@@ -186,10 +186,11 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
-				Name:     volumePath,
-				SVM:      sourceVol.SVMName,
-				Snapshot: temporarySnapshotName,
-				SizeGiB:  bytesToGiB(capacityBytes),
+				Name:         volumePath,
+				SVM:          sourceVol.SVMName,
+				SourceVolume: sourceVol.Path,
+				Snapshot:     temporarySnapshotName,
+				SizeGiB:      bytesToGiB(capacityBytes),
 			})
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to clone volume: %v", err)
@@ -223,6 +224,11 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				return nil, status.Errorf(codes.Unavailable, "snapshot %s is not ready", snapshotID)
 			}
 
+			sourceVol, err := d.store.GetVolume(snapshot.SourceVolumeID)
+			if err != nil {
+				return nil, status.Errorf(codes.NotFound, "snapshot source volume %s not found: %v", snapshot.SourceVolumeID, err)
+			}
+
 			// Restore must use the same SVM as the snapshot
 			svm, err = d.arcaClient.GetSVM(ctx, snapshot.SVMName)
 			if err != nil {
@@ -231,10 +237,11 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			klog.V(4).Infof("Using snapshot SVM for restore: %s (VIP: %s)", svm.Name, svm.VIP)
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
-				Name:     volumePath,
-				SVM:      snapshot.SVMName,
-				Snapshot: snapshot.SnapshotID,
-				SizeGiB:  bytesToGiB(capacityBytes),
+				Name:         volumePath,
+				SVM:          snapshot.SVMName,
+				SourceVolume: sourceVol.Path,
+				Snapshot:     snapshot.SnapshotID,
+				SizeGiB:      bytesToGiB(capacityBytes),
 			})
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to restore from snapshot: %v", err)
@@ -272,17 +279,6 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		}
 	}
 
-	// Set quota
-	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeID, capacityBytes)
-	err = d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
-		SVMName:    svm.Name,
-		Path:       volumePath,
-		QuotaBytes: capacityBytes,
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
-	}
-
 	// Store volume metadata
 	volumeInfo := &store.VolumeInfo{
 		VolumeID:      volumeID,
@@ -295,6 +291,18 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		ContentSource: contentSource,
 	}
 
+	// Set quota
+	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeID, capacityBytes)
+	err = d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
+		SVMName:    svm.Name,
+		Path:       volumePath,
+		QuotaBytes: capacityBytes,
+	})
+	if err != nil {
+		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
+		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+	}
+
 	if err := d.store.CreateVolume(volumeInfo); err != nil {
 		if store.IsAlreadyExists(err) {
 			existingVol, getErr := d.store.GetVolume(volumeID)
@@ -304,7 +312,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				}
 				return &csi.CreateVolumeResponse{Volume: existingVol.ToCSIVolume()}, nil
 			}
+			return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 		}
+		d.cleanupProvisionedVolume(ctx, volumeInfo, "metadata store failure")
 		return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 	}
 
@@ -313,6 +323,17 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	return &csi.CreateVolumeResponse{
 		Volume: volumeInfo.ToCSIVolume(),
 	}, nil
+}
+
+func (d *Driver) cleanupProvisionedVolume(ctx context.Context, volumeInfo *store.VolumeInfo, reason string) {
+	if volumeInfo == nil || d.arcaClient == nil {
+		return
+	}
+
+	klog.Warningf("Cleaning up provisioned volume %s after %s", volumeInfo.VolumeID, reason)
+	if err := d.arcaClient.DeleteDirectory(ctx, volumeInfo.SVMName, volumeInfo.Path); err != nil && !arca.IsNotFoundError(err) {
+		klog.Warningf("Failed to clean up backend volume %s on SVM %s: %v", volumeInfo.Path, volumeInfo.SVMName, err)
+	}
 }
 
 // DeleteVolume deletes a volume

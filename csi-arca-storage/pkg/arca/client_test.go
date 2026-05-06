@@ -111,7 +111,7 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{"name":"abcd","svm":"k8s-default","volume":"pvc-1234"}}}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/pvc-5678/clone":
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/pvc-1234/clone":
 			body, _ := io.ReadAll(r.Body)
 			if err := json.Unmarshal(body, &cloneBody); err != nil {
 				t.Fatalf("clone body unmarshal error = %v", err)
@@ -136,7 +136,7 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	if err := client.CreateSnapshot(ctx, &CreateSnapshotRequest{Name: "abcd", SVM: "k8s-default", Volume: "pvc-1234"}); err != nil {
 		t.Fatalf("CreateSnapshot() error = %v", err)
 	}
-	if err := client.CloneVolumeFromSnapshot(ctx, &CloneVolumeFromSnapshotRequest{Name: "pvc-5678", SVM: "k8s-default", Snapshot: "abcd", SizeGiB: 2}); err != nil {
+	if err := client.CloneVolumeFromSnapshot(ctx, &CloneVolumeFromSnapshotRequest{Name: "pvc-5678", SVM: "k8s-default", SourceVolume: "pvc-1234", Snapshot: "abcd", SizeGiB: 2}); err != nil {
 		t.Fatalf("CloneVolumeFromSnapshot() error = %v", err)
 	}
 	if err := client.DeleteSnapshot(ctx, "abcd", "k8s-default", "pvc-1234"); err != nil {
@@ -148,6 +148,9 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	}
 	if cloneBody["name"] != "pvc-5678" || cloneBody["svm"] != "k8s-default" || cloneBody["snapshot"] != "abcd" || cloneBody["size_gib"].(float64) != 2 {
 		t.Fatalf("CloneVolumeFromSnapshot body = %#v", cloneBody)
+	}
+	if _, ok := cloneBody["source_volume"]; ok {
+		t.Fatalf("CloneVolumeFromSnapshot body leaked source_volume = %#v", cloneBody)
 	}
 	if deleteQuery != "svm=k8s-default&volume=pvc-1234" {
 		t.Fatalf("DeleteSnapshot query = %s", deleteQuery)
