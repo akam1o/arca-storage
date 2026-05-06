@@ -480,6 +480,19 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 		return nil, status.Errorf(codes.Internal, "failed to get volume %s: %v", volumeID, err)
 	}
 
+	snapshots, _, err := d.store.ListSnapshots(volumeID, "", 1)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check snapshots for volume %s: %v", volumeID, err)
+	}
+	if len(snapshots) > 0 {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"volume %s has snapshot %s; delete snapshots before deleting the volume",
+			volumeID,
+			snapshots[0].SnapshotID,
+		)
+	}
+
 	// Delete directory from ARCA
 	klog.V(4).Infof("Deleting directory: %s on SVM: %s", volumeInfo.Path, volumeInfo.SVMName)
 	err = d.arcaClient.DeleteDirectory(ctx, volumeInfo.SVMName, volumeInfo.Path)

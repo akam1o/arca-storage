@@ -74,6 +74,45 @@ func (s *racingCreateStore) CreateVolume(info *store.VolumeInfo) error {
 	return s.MemoryStore.CreateVolume(info)
 }
 
+func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+	if err := st.CreateSnapshot(&store.SnapshotInfo{
+		SnapshotID:     "snap-a",
+		SourceVolumeID: "source-vol",
+		SVMName:        "svm-a",
+		Path:           "snap-a",
+		SizeBytes:      1 << 30,
+		ReadyToUse:     true,
+	}); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{
+		VolumeId: "source-vol",
+	})
+
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition error, got %v", err)
+	}
+	if _, err := st.GetVolume("source-vol"); err != nil {
+		t.Fatalf("source volume metadata should remain after rejected delete: %v", err)
+	}
+}
+
 func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	st := &failingCreateStore{MemoryStore: memoryStore}
