@@ -59,7 +59,8 @@ class TestAddExport:
         """Test adding export with invalid client CIDR."""
         response = client.post("/v1/exports", json={"svm": "tenant_a", "volume": "vol1", "client": "invalid-cidr"})
 
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_add_export_rejects_unsupported_sec_type(self, client):
@@ -73,7 +74,8 @@ class TestAddExport:
             },
         )
 
-        assert response.status_code == 422
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_add_export_rolls_back_rendered_config_on_reload_failure(self, fake_context):

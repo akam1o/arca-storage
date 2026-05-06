@@ -60,7 +60,8 @@ class TestCreateSVM:
             "/v1/svms", json={"name": "tenant a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"}  # space in name
         )
 
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_create_svm_invalid_vlan(self, client):
@@ -69,7 +70,8 @@ class TestCreateSVM:
             "/v1/svms", json={"name": "tenant_a", "vlan_id": 5000, "ip_cidr": "192.168.10.5/24"}  # invalid VLAN ID
         )
 
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_create_svm_invalid_ip(self, client):
@@ -78,7 +80,8 @@ class TestCreateSVM:
             "/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "invalid-ip"}  # invalid IP
         )
 
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_create_svm_without_vlan(self, fake_context):

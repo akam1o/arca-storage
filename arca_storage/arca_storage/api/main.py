@@ -9,6 +9,8 @@ import uuid
 from typing import Any, Dict, Optional
 
 from fastapi import FastAPI, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from arca_storage.api.models import (
@@ -95,6 +97,18 @@ async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
 async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     """Return client errors for validation failures raised below FastAPI."""
     return await arca_error_handler(request, InvalidArgumentError(str(exc)))
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return structured client errors for request parsing and model validation failures."""
+    return await arca_error_handler(
+        request,
+        InvalidArgumentError(
+            "Request validation failed",
+            {"errors": jsonable_encoder(exc.errors())},
+        ),
+    )
 
 
 @app.exception_handler(Exception)

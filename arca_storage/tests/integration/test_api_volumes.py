@@ -62,7 +62,8 @@ class TestCreateVolume:
             "/v1/volumes", json={"name": "vol 1", "svm": "tenant_a", "size_gib": 100}  # space in name
         )
 
-        assert response.status_code == 422  # Validation error
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_create_volume_rejects_unsupported_fs_type(self, client):
@@ -71,7 +72,8 @@ class TestCreateVolume:
             json={"name": "vol1", "svm": "tenant_a", "size_gib": 100, "fs_type": "ext4"},
         )
 
-        assert response.status_code == 422
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
     def test_create_volume_requires_existing_svm(self, fake_context):
