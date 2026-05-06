@@ -21,6 +21,7 @@ from arca_storage.adapters.pacemaker import FakePacemakerAdapter
 from arca_storage.adapters.systemd import FakeSystemdAdapter
 from arca_storage.adapters.xfs import FakeXFSAdapter
 from arca_storage.db import StateDB
+from arca_storage.errors import AlreadyExistsError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -278,6 +279,20 @@ class TestExportReconciler:
         assert result.status.service_reloaded is True
         assert result.status.export_id == 1
         assert adapters.ganesha.exports["svm1"][0]["path"] == "/export/svm1/vol1"
+
+    def test_create_export_rejects_existing_key_without_overwrite(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        created = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw"))
+        )
+        assert created.status.phase == Phase.READY
+
+        with pytest.raises(AlreadyExistsError):
+            rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="ro")))
+
+        record = db.get_export("svm1", "vol1", "10.0.0.0/24")
+        assert record["spec"]["access"] == "rw"
+        assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
 
     def test_delete_export(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)

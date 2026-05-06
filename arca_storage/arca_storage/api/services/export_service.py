@@ -10,6 +10,7 @@ from typing import Any, Dict, Optional
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.context import get_context
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
 from arca_storage.models.base import Phase
@@ -91,7 +92,7 @@ def ensure_internal_export(
         ),
     )
     ctx = get_context()
-    export = ctx.export_reconciler.reconcile(export)
+    export = ctx.export_reconciler.reconcile(export, allow_update=True)
     if export.status.phase == Phase.FAILED:
         raise RuntimeError(export.status.message)
     return _export_to_dict(export)
@@ -186,12 +187,12 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec) -> bool:
     status = record.get("status", {})
     phase = status.get("phase")
-    if phase not in (Phase.FAILED.value, Phase.CREATING.value):
-        return False
     if ExportSpec.model_validate(record["spec"]) != requested_spec:
         return False
-    if phase == Phase.CREATING.value:
-        return True
+    if phase in ACTIVE_CREATE_PHASES:
+        return is_stale_create_reservation(record)
+    if phase != Phase.FAILED.value:
+        return False
     if _is_failed_delete(status):
         return False
     return _has_pending_create_step(status)

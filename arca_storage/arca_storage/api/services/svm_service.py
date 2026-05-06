@@ -12,6 +12,7 @@ from typing import Any, Dict, Optional
 from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr, validate_ipv4, validate_name, validate_vlan
 from arca_storage.context import get_context
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
@@ -227,10 +228,12 @@ def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec) -> bool:
         return False
     status = record.get("status", {})
     phase = status.get("phase")
-    if phase != Phase.FAILED.value:
-        return False
     spec = SVMSpec.model_validate(record["spec"])
     if spec != requested_spec:
+        return False
+    if phase in ACTIVE_CREATE_PHASES:
+        return is_stale_create_reservation(record)
+    if phase != Phase.FAILED.value:
         return False
     if _is_failed_delete(status):
         return False

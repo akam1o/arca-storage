@@ -2,12 +2,14 @@
 Integration tests for API volume endpoints.
 """
 
+from datetime import datetime, timezone
 from unittest.mock import patch
 
 import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.create_resume import STALE_CREATE_RESERVATION_AFTER
 
 
 @pytest.fixture
@@ -107,6 +109,27 @@ class TestCreateVolume:
 
         assert response.status_code == 409
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+
+    @pytest.mark.integration
+    def test_create_volume_resumes_stale_reserved_duplicate(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+        stale_at = (datetime.now(timezone.utc) - STALE_CREATE_RESERVATION_AFTER * 2).isoformat()
+        conn = fake_context.db._conn()
+        conn.execute(
+            "UPDATE volumes SET updated_at = ? WHERE svm = ? AND name = ?",
+            (stale_at, "tenant_a", "vol1"),
+        )
+        conn.commit()
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert response.status_code == 201
+        assert response.json()["data"]["volume"]["status"] == "Ready"
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
 
 
 class TestResizeVolume:

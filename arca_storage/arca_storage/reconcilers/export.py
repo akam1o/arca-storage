@@ -10,7 +10,9 @@ from datetime import datetime, timezone
 from ipaddress import IPv4Interface
 from typing import Optional
 
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, is_stale_create_reservation
 from arca_storage.db import StateDB
+from arca_storage.errors import AlreadyExistsError
 from arca_storage.models.base import Phase, ResourceMeta
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
@@ -24,22 +26,22 @@ class ExportReconciler:
         self.adapters = adapters
         self._cfg = config or {}
 
-    def reconcile(self, export: Export) -> Export:
+    def reconcile(self, export: Export, *, allow_update: bool = False) -> Export:
         phase = export.status.phase
         if phase in (Phase.PENDING, Phase.CREATING):
-            return self._reconcile_create(export)
+            return self._reconcile_create(export, allow_update=allow_update)
         elif phase == Phase.DELETING:
             return self._reconcile_delete(export)
         elif phase == Phase.FAILED:
             if not self._is_failed_delete(export) and self._has_pending_create_step(export):
                 export.status.phase = Phase.CREATING
-                return self._reconcile_create(export)
+                return self._reconcile_create(export, allow_update=allow_update)
             return export
         elif phase == Phase.READY:
             return export
         return export
 
-    def _reconcile_create(self, export: Export) -> Export:
+    def _reconcile_create(self, export: Export, *, allow_update: bool = False) -> Export:
         export.status.phase = Phase.CREATING
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
@@ -47,6 +49,8 @@ class ExportReconciler:
         with self.db.transaction(immediate=True) as conn:
             existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
             if existing:
+                if not allow_update and not _can_resume_create_record(existing, spec):
+                    raise AlreadyExistsError("Export", f"{spec.svm}/{spec.volume}/{spec.client}")
                 export.metadata = _meta_from_record(existing)
                 previous_status = ExportStatus.model_validate(existing["status"])
                 export.status.export_id = previous_status.export_id
@@ -258,6 +262,20 @@ def _next_export_id(records: list[dict]) -> int:
         if raw is not None:
             export_ids.append(int(raw))
     return max(export_ids, default=0) + 1
+
+
+def _can_resume_create_record(record: dict, requested_spec: ExportSpec) -> bool:
+    status = record.get("status", {})
+    phase = status.get("phase")
+    if ExportSpec.model_validate(record["spec"]) != requested_spec:
+        return False
+    if phase in ACTIVE_CREATE_PHASES:
+        return is_stale_create_reservation(record)
+    if phase != Phase.FAILED.value:
+        return False
+    if str(status.get("message") or "").startswith("Delete failed:"):
+        return False
+    return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
 
 
 def _export_path(spec: ExportSpec, export_dir: str) -> str:
