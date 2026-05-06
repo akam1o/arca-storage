@@ -768,6 +768,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         )
 
         mount_point = None
+        volume_file = None
+        volume_file_created = False
         try:
             # Get source volume to determine SVM
             # IMPORTANT: Use snapshot's volume, not the new volume
@@ -803,6 +805,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             # Copy snapshot file to volume file (preserving sparseness)
             arca_utils.copy_sparse_file(snapshot_file, volume_file, timeout=copy_timeout)
+            volume_file_created = True
 
             LOG.info("Created volume file from snapshot: %s -> %s", snapshot_file, volume_file)
 
@@ -828,6 +831,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return {"provider_location": provider_location}
 
         except Exception as e:
+            if volume_file_created and volume_file:
+                try:
+                    os.remove(volume_file)
+                    LOG.info("Deleted incomplete volume file after create-from-snapshot failure: %s", volume_file)
+                except FileNotFoundError:
+                    pass
+                except Exception as cleanup_error:
+                    LOG.warning("Failed to delete incomplete volume file %s: %s", volume_file, cleanup_error)
             msg = _("Failed to create volume from snapshot %s: %s") % (snapshot_name, e)
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
@@ -860,6 +871,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                  volume_name, volume_id, src_volume_name, src_volume_id)
 
         mount_point = None
+        volume_file = None
+        volume_file_created = False
 
         try:
             # Determine SVM for source volume
@@ -891,6 +904,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             # Directly copy source to volume (single atomic operation)
             arca_utils.copy_sparse_file(source_file, volume_file, timeout=copy_timeout)
+            volume_file_created = True
             LOG.info("Created cloned volume file: %s", volume_file)
 
             # If new volume size is larger than source, extend the file
@@ -910,6 +924,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return {"provider_location": provider_location}
 
         except Exception as e:
+            if volume_file_created and volume_file:
+                try:
+                    os.remove(volume_file)
+                    LOG.info("Deleted incomplete cloned volume file after failure: %s", volume_file)
+                except FileNotFoundError:
+                    pass
+                except Exception as cleanup_error:
+                    LOG.warning("Failed to delete incomplete cloned volume file %s: %s", volume_file, cleanup_error)
             msg = _("Failed to create cloned volume %s: %s") % (volume_name, e)
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)

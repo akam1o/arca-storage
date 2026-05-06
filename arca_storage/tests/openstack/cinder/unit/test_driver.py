@@ -294,6 +294,27 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         )
         self.driver.arca_client.create_volume_from_snapshot.assert_not_called()
 
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_cleans_up_file_after_post_copy_failure(
+        self, mock_utils, mock_getsize, mock_remove
+    ):
+        """Post-copy failures remove the newly-created destination file."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=20)
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        mount_point = "/var/lib/cinder/mnt/svm_test-svm"
+        self.driver.db.volume_get.return_value = source_volume
+        mock_utils.get_mount_point_for_svm.return_value = mount_point
+        mock_getsize.return_value = 10 * 1024**3
+        mock_utils.extend_volume_file.side_effect = RuntimeError("extend failed")
+
+        with pytest.raises(exception.VolumeBackendAPIException):
+            self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        mock_remove.assert_called_once_with(os.path.join(mount_point, "volume-new-vol-id"))
+
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_cloned_volume_copies_source_volume_file(self, mock_utils):
         """Clone creates a new volume-id file by copying the source volume-id file."""
@@ -316,6 +337,21 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             new_size_gb=12,
         )
         self.driver.arca_client.create_snapshot.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_cloned_volume_cleans_up_file_after_post_copy_failure(self, mock_utils, mock_remove):
+        """Post-copy failures remove the newly-created cloned file."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id", size=10)
+        new_volume = self._create_mock_volume(volume_id="clone-vol-id", size=12)
+        mount_point = "/var/lib/cinder/mnt/svm_test-svm"
+        mock_utils.get_mount_point_for_svm.return_value = mount_point
+        mock_utils.extend_volume_file.side_effect = RuntimeError("extend failed")
+
+        with pytest.raises(exception.VolumeBackendAPIException):
+            self.driver.create_cloned_volume(new_volume, source_volume)
+
+        mock_remove.assert_called_once_with(os.path.join(mount_point, "volume-clone-vol-id"))
 
     def test_get_qos_specs_no_volume_type(self):
         """QoS extraction returns no specs when the volume has no type."""
