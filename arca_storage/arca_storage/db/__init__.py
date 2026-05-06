@@ -13,11 +13,12 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from ipaddress import IPv4Interface
 from pathlib import Path
 from typing import Any, Generator, Optional
 
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
-from arca_storage.errors import AlreadyExistsError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError
 from arca_storage.models.base import Phase
 
 
@@ -90,6 +91,21 @@ CREATE TABLE IF NOT EXISTS operation_log (
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _svm_network_key(spec: dict[str, Any]) -> tuple[int | None, str] | None:
+    ip_cidr = str(spec.get("ip_cidr") or "")
+    if not ip_cidr:
+        return None
+    try:
+        vip = str(IPv4Interface(ip_cidr).ip)
+    except Exception:
+        vip = ip_cidr.split("/", 1)[0]
+    if not vip:
+        return None
+    raw_vlan = spec.get("vlan_id")
+    vlan_id = int(raw_vlan) if raw_vlan is not None else None
+    return vlan_id, vip
 
 
 def encode_cursor(values: list[str]) -> str:
@@ -170,6 +186,11 @@ class StateDB:
         now = _now_iso()
         try:
             with self.transaction(immediate=True) as conn:
+                self._raise_svm_network_conflict_conn(
+                    conn,
+                    svm.spec.model_dump(mode="json"),
+                    exclude_name=svm.spec.name,
+                )
                 conn.execute(
                     """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -190,7 +211,7 @@ class StateDB:
     def upsert_svm(self, svm: Any, *, expected_create_owner: str | None = None) -> bool:
         """Insert or update an SVM record."""
         now = _now_iso()
-        with self.transaction(immediate=expected_create_owner is not None) as conn:
+        with self.transaction(immediate=True) as conn:
             if not self._create_owner_matches_conn(conn, "svms", {"name": svm.spec.name}, expected_create_owner):
                 return False
             self._upsert_svm_conn(conn, svm, now=now)
@@ -198,6 +219,11 @@ class StateDB:
 
     def _upsert_svm_conn(self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        self._raise_svm_network_conflict_conn(
+            conn,
+            svm.spec.model_dump(mode="json"),
+            exclude_name=svm.spec.name,
+        )
         conn.execute(
             """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -765,6 +791,36 @@ class StateDB:
             f"UPDATE {table} SET status = ?, updated_at = ? WHERE {where}",
             (json.dumps(status), _now_iso(), *key.values()),
         )
+
+    def _raise_svm_network_conflict_conn(
+        self,
+        conn: sqlite3.Connection,
+        spec: dict[str, Any],
+        *,
+        exclude_name: str,
+    ) -> None:
+        key = _svm_network_key(spec)
+        if key is None:
+            return
+        vlan_id, vip = key
+        cur = conn.execute("SELECT name, spec FROM svms")
+        for row in cur.fetchall():
+            existing_name = row["name"]
+            if existing_name == exclude_name:
+                continue
+            existing_spec = json.loads(row["spec"])
+            if _svm_network_key(existing_spec) == key:
+                vlan_label = "host network" if vlan_id is None else f"VLAN {vlan_id}"
+                raise ConflictError(
+                    f"IP address {vip} is already in use on {vlan_label} by SVM '{existing_name}'",
+                    {
+                        "resource": "SVM",
+                        "name": exclude_name,
+                        "ip": vip,
+                        "vlan_id": vlan_id,
+                        "conflicting_svm": existing_name,
+                    },
+                )
 
     @staticmethod
     def _row_to_resource(row: sqlite3.Row) -> dict[str, Any]:

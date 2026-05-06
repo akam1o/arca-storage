@@ -7,7 +7,7 @@ import pytest
 
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB, encode_cursor
-from arca_storage.errors import AlreadyExistsError
+from arca_storage.errors import AlreadyExistsError, ConflictError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -44,6 +44,39 @@ class TestStateDB:
 
         result = db.get_svm("svm1")
         assert result["spec"]["vlan_id"] == 100
+
+    def test_insert_svm_rejects_duplicate_vip_on_same_vlan(self, db):
+        db.insert_svm(
+            SVM(spec=SVMSpec(name="svm1", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"))
+        )
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.insert_svm(
+                SVM(spec=SVMSpec(name="svm2", vlan_id=100, ip_cidr="10.0.0.5/32", gateway="10.0.0.1"))
+            )
+
+        assert exc_info.value.details["conflicting_svm"] == "svm1"
+        assert exc_info.value.details["ip"] == "10.0.0.5"
+        assert exc_info.value.details["vlan_id"] == 100
+
+    def test_upsert_svm_rejects_duplicate_host_network_vip(self, db):
+        db.upsert_svm(SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32")))
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.upsert_svm(SVM(spec=SVMSpec(name="svm2", ip_cidr="10.0.0.5/24")))
+
+        assert exc_info.value.details["conflicting_svm"] == "svm1"
+        assert exc_info.value.details["vlan_id"] is None
+
+    def test_insert_svm_allows_same_vip_on_different_vlans(self, db):
+        db.insert_svm(
+            SVM(spec=SVMSpec(name="svm1", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"))
+        )
+        db.insert_svm(
+            SVM(spec=SVMSpec(name="svm2", vlan_id=101, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"))
+        )
+
+        assert {record["spec"]["name"] for record in db.list_svms()} == {"svm1", "svm2"}
 
     def test_list_svms(self, db):
         for i in range(3):
