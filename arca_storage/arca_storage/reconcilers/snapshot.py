@@ -78,7 +78,7 @@ class SnapshotReconciler:
     def _reconcile_delete(self, snapshot: Snapshot) -> Snapshot:
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
-        snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        snap_lv = snapshot.status.lv_name or f"vol_{spec.svm}_{spec.volume}_snap_{spec.name}"
         try:
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
             self.db.delete_snapshot(spec.svm, spec.volume, spec.name)

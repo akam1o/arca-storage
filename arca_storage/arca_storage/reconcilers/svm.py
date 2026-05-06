@@ -180,7 +180,7 @@ class SVMReconciler:
             self.adapters.pacemaker.delete_group(spec.name)
             self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:
-                self.adapters.lvm.delete_lv(vg_name, svm_root_lv_name(spec.name))
+                self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
         except Exception as e:

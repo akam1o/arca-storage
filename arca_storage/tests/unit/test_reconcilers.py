@@ -305,6 +305,19 @@ class TestVolumeReconciler:
         assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_to-delete")
         assert len(db.list_volumes(svm="svm1", name="to-delete")) == 0
 
+    def test_delete_volume_removes_oversized_legacy_record(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(
+            spec=VolumeSpec(name="v" * 59, svm="s" * 64, size_gib=5),
+        )
+        db.insert_volume(vol)
+
+        vol.status.phase = Phase.DELETING
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.DELETING
+        assert db.get_volume("s" * 64, "v" * 59) is None
+
 
 # ── Snapshot Reconciler ───────────────────────────────────────────
 
@@ -358,6 +371,19 @@ class TestSnapshotReconciler:
         rec.reconcile(created)
 
         assert len(db.list_snapshots(svm="svm1", name="snap-del")) == 0
+
+    def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
+        rec = SnapshotReconciler(db, adapters, config=config)
+        snap = Snapshot(
+            spec=SnapshotSpec(name="p" * 64, svm="s" * 64, volume="v" * 64),
+        )
+        db.insert_snapshot(snap)
+
+        snap.status.phase = Phase.DELETING
+        result = rec.reconcile(snap)
+
+        assert result.status.phase == Phase.DELETING
+        assert db.list_snapshots(svm="s" * 64, volume="v" * 64, name="p" * 64) == []
 
 
 # ── Export Reconciler ─────────────────────────────────────────────

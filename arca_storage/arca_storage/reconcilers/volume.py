@@ -103,7 +103,7 @@ class VolumeReconciler:
         spec = volume.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = volume_lv_name(spec.svm, spec.name)
+        lv_name = volume.status.lv_name or f"vol_{spec.svm}_{spec.name}"
         mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
 
         try:
