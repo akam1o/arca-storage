@@ -32,9 +32,17 @@ type CreateDirectoryRequest struct {
 
 // CreateSnapshotRequest represents a request to create a snapshot
 type CreateSnapshotRequest struct {
-	SVMName      string `json:"svm_name"`
-	SourcePath   string `json:"source_path"`
-	SnapshotPath string `json:"snapshot_path"`
+	Name   string `json:"name"`
+	SVM    string `json:"svm"`
+	Volume string `json:"volume"`
+}
+
+// CloneVolumeFromSnapshotRequest represents a request to create a volume from a snapshot
+type CloneVolumeFromSnapshotRequest struct {
+	Name     string `json:"name"`
+	SVM      string `json:"svm"`
+	Snapshot string `json:"snapshot"`
+	SizeGiB  int    `json:"size_gib,omitempty"`
 }
 
 // RestoreSnapshotRequest represents a request to restore from snapshot

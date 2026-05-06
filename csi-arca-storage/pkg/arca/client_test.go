@@ -3,6 +3,7 @@ package arca
 import (
 	"context"
 	"encoding/json"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -92,5 +93,63 @@ func TestClientMapsFastAPIResourceErrorDetails(t *testing.T) {
 
 	if err := client.DeleteDirectory(context.Background(), "k8s-default", "pvc-1234"); err != nil {
 		t.Fatalf("DeleteDirectory() error = %v", err)
+	}
+}
+
+func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
+	var createBody map[string]interface{}
+	var cloneBody map[string]interface{}
+	var deleteQuery string
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &createBody); err != nil {
+				t.Fatalf("create body unmarshal error = %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{"name":"abcd","svm":"k8s-default","volume":"pvc-1234"}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/pvc-5678/clone":
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &cloneBody); err != nil {
+				t.Fatalf("clone body unmarshal error = %v", err)
+			}
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"volume":{"name":"pvc-5678"}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/abcd":
+			deleteQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if err := client.CreateSnapshot(ctx, &CreateSnapshotRequest{Name: "abcd", SVM: "k8s-default", Volume: "pvc-1234"}); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	if err := client.CloneVolumeFromSnapshot(ctx, &CloneVolumeFromSnapshotRequest{Name: "pvc-5678", SVM: "k8s-default", Snapshot: "abcd", SizeGiB: 2}); err != nil {
+		t.Fatalf("CloneVolumeFromSnapshot() error = %v", err)
+	}
+	if err := client.DeleteSnapshot(ctx, "abcd", "k8s-default", "pvc-1234"); err != nil {
+		t.Fatalf("DeleteSnapshot() error = %v", err)
+	}
+
+	if createBody["name"] != "abcd" || createBody["svm"] != "k8s-default" || createBody["volume"] != "pvc-1234" {
+		t.Fatalf("CreateSnapshot body = %#v", createBody)
+	}
+	if cloneBody["name"] != "pvc-5678" || cloneBody["svm"] != "k8s-default" || cloneBody["snapshot"] != "abcd" || cloneBody["size_gib"].(float64) != 2 {
+		t.Fatalf("CloneVolumeFromSnapshot body = %#v", cloneBody)
+	}
+	if deleteQuery != "svm=k8s-default&volume=pvc-1234" {
+		t.Fatalf("DeleteSnapshot query = %s", deleteQuery)
 	}
 }

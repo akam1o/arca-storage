@@ -21,11 +21,12 @@ func (c *Client) CreateSnapshot(ctx context.Context, req *CreateSnapshotRequest)
 }
 
 // DeleteSnapshot deletes a snapshot via ARCA API (idempotent)
-func (c *Client) DeleteSnapshot(ctx context.Context, svmName, snapshotPath string) error {
+func (c *Client) DeleteSnapshot(ctx context.Context, name, svmName, volume string) error {
 	params := url.Values{}
-	params.Set("path", snapshotPath)
+	params.Set("svm", svmName)
+	params.Set("volume", volume)
 
-	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/snapshots/%s", svmName), nil, params)
+	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/snapshots/%s", url.PathEscape(name)), nil, params)
 	if err != nil {
 		if errors.Is(err, ErrSnapshotNotFound) {
 			return nil // Idempotent
@@ -35,8 +36,23 @@ func (c *Client) DeleteSnapshot(ctx context.Context, svmName, snapshotPath strin
 	return nil
 }
 
+// CloneVolumeFromSnapshot creates a new volume from a snapshot.
+func (c *Client) CloneVolumeFromSnapshot(ctx context.Context, req *CloneVolumeFromSnapshotRequest) error {
+	_, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/volumes/%s/clone", url.PathEscape(req.Name)), req)
+	if err != nil {
+		if IsAlreadyExistsError(err) {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // RestoreSnapshot restores a volume from snapshot (reflink clone)
 func (c *Client) RestoreSnapshot(ctx context.Context, req *RestoreSnapshotRequest) error {
-	_, err := c.doRequest(ctx, http.MethodPost, "/v1/snapshots/restore", req)
-	return err
+	return c.CloneVolumeFromSnapshot(ctx, &CloneVolumeFromSnapshotRequest{
+		Name:     req.TargetPath,
+		SVM:      req.SVMName,
+		Snapshot: req.SnapshotPath,
+	})
 }

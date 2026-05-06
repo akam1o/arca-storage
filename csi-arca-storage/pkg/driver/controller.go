@@ -28,6 +28,14 @@ const (
 	defaultCapacityBytes = 1 * 1024 * 1024 * 1024 // 1 GiB
 )
 
+func bytesToGiB(bytes int64) int {
+	const gib = 1024 * 1024 * 1024
+	if bytes <= 0 {
+		return 0
+	}
+	return int((bytes + gib - 1) / gib)
+}
+
 // compareVolumeParameters checks if requested matches existing
 func compareVolumeParameters(existing *store.VolumeInfo, req *csi.CreateVolumeRequest) error {
 	// Compare capacity
@@ -167,14 +175,28 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 			klog.V(4).Infof("Using source SVM for clone: %s with VIP: %s", svm.Name, svm.VIP)
 
-			// Create snapshot of source volume first (server-side reflink)
+			temporarySnapshotName := fmt.Sprintf("clone-%s", volumeID)
 			err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-				SVMName:      sourceVol.SVMName,
-				SourcePath:   sourceVol.Path,
-				SnapshotPath: volumePath,
+				Name:   temporarySnapshotName,
+				SVM:    sourceVol.SVMName,
+				Volume: sourceVol.Path,
+			})
+			if err != nil && !arca.IsAlreadyExistsError(err) {
+				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
+			}
+
+			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
+				Name:     volumePath,
+				SVM:      sourceVol.SVMName,
+				Snapshot: temporarySnapshotName,
+				SizeGiB:  bytesToGiB(capacityBytes),
 			})
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to clone volume: %v", err)
+			}
+
+			if err := d.arcaClient.DeleteSnapshot(ctx, temporarySnapshotName, sourceVol.SVMName, sourceVol.Path); err != nil {
+				klog.Warningf("Failed to delete temporary clone snapshot %s: %v", temporarySnapshotName, err)
 			}
 
 			contentSource = &csi.VolumeContentSource{
@@ -208,11 +230,11 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 			klog.V(4).Infof("Using snapshot SVM for restore: %s (VIP: %s)", svm.Name, svm.VIP)
 
-			// Copy snapshot to new volume path (server-side reflink)
-			err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-				SVMName:      snapshot.SVMName,
-				SourcePath:   snapshot.Path,
-				SnapshotPath: volumePath,
+			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
+				Name:     volumePath,
+				SVM:      snapshot.SVMName,
+				Snapshot: snapshot.SnapshotID,
+				SizeGiB:  bytesToGiB(capacityBytes),
 			})
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to restore from snapshot: %v", err)
@@ -501,15 +523,12 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
 	}
 
-	// Create snapshot path (relative path for consistency)
-	snapshotPath := fmt.Sprintf(".snapshots/%s", snapshotID)
-
 	// Create snapshot via ARCA API (server-side reflink)
 	klog.V(4).Infof("Creating snapshot %s from volume %s", snapshotID, sourceVolumeID)
 	err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-		SVMName:      sourceVolume.SVMName,
-		SourcePath:   sourceVolume.Path,
-		SnapshotPath: snapshotPath,
+		Name:   snapshotID,
+		SVM:    sourceVolume.SVMName,
+		Volume: sourceVolume.Path,
 	})
 	if err != nil && !arca.IsAlreadyExistsError(err) {
 		return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
@@ -521,7 +540,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		Name:           req.GetName(),
 		SourceVolumeID: sourceVolumeID,
 		SVMName:        sourceVolume.SVMName,
-		Path:           snapshotPath,
+		Path:           snapshotID,
 		SizeBytes:      sourceVolume.CapacityBytes,
 		CreatedAt:      time.Now(),
 		ReadyToUse:     false, // Initially false, will be set via status update
@@ -581,9 +600,21 @@ func (d *Driver) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequ
 		return nil, status.Errorf(codes.Internal, "failed to get snapshot %s: %v", snapshotID, err)
 	}
 
+	sourceVolume, err := d.store.GetVolume(snapshotInfo.SourceVolumeID)
+	if err != nil {
+		if store.IsNotFound(err) {
+			klog.Warningf("Source volume %s for snapshot %s is gone; deleting snapshot metadata", snapshotInfo.SourceVolumeID, snapshotID)
+			if delErr := d.store.DeleteSnapshot(snapshotID); delErr != nil && !store.IsNotFound(delErr) {
+				return nil, status.Errorf(codes.Internal, "failed to delete snapshot metadata: %v", delErr)
+			}
+			return &csi.DeleteSnapshotResponse{}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get source volume %s: %v", snapshotInfo.SourceVolumeID, err)
+	}
+
 	// Delete snapshot from ARCA
-	klog.V(4).Infof("Deleting snapshot: %s on SVM: %s", snapshotInfo.Path, snapshotInfo.SVMName)
-	err = d.arcaClient.DeleteSnapshot(ctx, snapshotInfo.SVMName, snapshotInfo.Path)
+	klog.V(4).Infof("Deleting snapshot: %s on SVM: %s", snapshotInfo.SnapshotID, snapshotInfo.SVMName)
+	err = d.arcaClient.DeleteSnapshot(ctx, snapshotInfo.SnapshotID, snapshotInfo.SVMName, sourceVolume.Path)
 	if err != nil && !arca.IsNotFoundError(err) {
 		return nil, status.Errorf(codes.Internal, "failed to delete snapshot: %v", err)
 	}
