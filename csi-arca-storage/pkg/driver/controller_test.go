@@ -498,6 +498,125 @@ func TestCreateVolumeResumesPendingMetadata(t *testing.T) {
 	}
 }
 
+func TestListVolumesSkipsPendingVolumes(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-ready",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "ready-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(true),
+	}); err != nil {
+		t.Fatalf("seed ready volume: %v", err)
+	}
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-pending",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "pending-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(false),
+	}); err != nil {
+		t.Fatalf("seed pending volume: %v", err)
+	}
+
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	resp, err := driver.ListVolumes(context.Background(), &csi.ListVolumesRequest{})
+	if err != nil {
+		t.Fatalf("ListVolumes() error = %v", err)
+	}
+	if len(resp.GetEntries()) != 1 {
+		t.Fatalf("entries = %d, want 1: %#v", len(resp.GetEntries()), resp.GetEntries())
+	}
+	if got := resp.GetEntries()[0].GetVolume().GetVolumeId(); got != "vol-ready" {
+		t.Fatalf("listed volume = %q, want vol-ready", got)
+	}
+}
+
+func TestValidateVolumeCapabilitiesRejectsPendingVolume(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-pending",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "pending-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(false),
+	}); err != nil {
+		t.Fatalf("seed pending volume: %v", err)
+	}
+
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	_, err := driver.ValidateVolumeCapabilities(context.Background(), &csi.ValidateVolumeCapabilitiesRequest{
+		VolumeId:           "vol-pending",
+		VolumeCapabilities: testVolumeCapabilities(),
+	})
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable error, got %v", err)
+	}
+}
+
+func TestCreateSnapshotRejectsPendingSourceVolume(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-pending",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "pending-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(false),
+	}); err != nil {
+		t.Fatalf("seed pending volume: %v", err)
+	}
+
+	var snapshotCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			snapshotCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	_, err = driver.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{
+		Name:           "snap-a",
+		SourceVolumeId: "vol-pending",
+	})
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable error, got %v", err)
+	}
+	if snapshotCalled {
+		t.Fatalf("snapshot endpoint was called")
+	}
+}
+
 func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{
@@ -878,6 +997,56 @@ func TestControllerExpandVolumeRecordsProvisionedCapacity(t *testing.T) {
 	}
 	if stored.CapacityBytes != expectedCapacity {
 		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, expectedCapacity)
+	}
+}
+
+func TestControllerExpandVolumeRejectsPendingVolume(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-pending",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "pending-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(false),
+	}); err != nil {
+		t.Fatalf("seed pending volume: %v", err)
+	}
+
+	var quotaCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	_, err = driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      "vol-pending",
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 2 << 30},
+	})
+
+	if status.Code(err) != codes.Unavailable {
+		t.Fatalf("expected Unavailable error, got %v", err)
+	}
+	if quotaCalled {
+		t.Fatalf("quota endpoint was called")
 	}
 }
 

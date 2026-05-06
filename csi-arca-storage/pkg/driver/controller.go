@@ -529,9 +529,12 @@ func (d *Driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 	}
 
 	// Check if volume exists
-	_, err := d.store.GetVolume(volumeID)
+	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+	}
+	if !store.IsVolumeReady(volumeInfo) {
+		return nil, status.Errorf(codes.Unavailable, "volume %s is not ready", volumeID)
 	}
 
 	// Validate capabilities
@@ -564,11 +567,14 @@ func (d *Driver) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (
 		return nil, status.Errorf(codes.Internal, "failed to list volumes: %v", err)
 	}
 
-	entries := make([]*csi.ListVolumesResponse_Entry, len(volumes))
-	for i, vol := range volumes {
-		entries[i] = &csi.ListVolumesResponse_Entry{
-			Volume: vol.ToCSIVolume(),
+	entries := make([]*csi.ListVolumesResponse_Entry, 0, len(volumes))
+	for _, vol := range volumes {
+		if !store.IsVolumeReady(vol) {
+			continue
 		}
+		entries = append(entries, &csi.ListVolumesResponse_Entry{
+			Volume: vol.ToCSIVolume(),
+		})
 	}
 
 	return &csi.ListVolumesResponse{
@@ -662,6 +668,9 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	sourceVolume, err := d.store.GetVolume(sourceVolumeID)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+	}
+	if !store.IsVolumeReady(sourceVolume) {
+		return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
 	}
 
 	// Create snapshot via ARCA API (server-side reflink)
@@ -852,6 +861,9 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
 		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+	}
+	if !store.IsVolumeReady(volumeInfo) {
+		return nil, status.Errorf(codes.Unavailable, "volume %s is not ready", volumeID)
 	}
 
 	// Check if expansion is needed
