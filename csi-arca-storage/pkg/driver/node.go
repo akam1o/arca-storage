@@ -6,6 +6,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -17,12 +18,25 @@ import (
 	arcamount "github.com/akam1o/csi-arca-storage/pkg/mount"
 )
 
+var svmNamePattern = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9._-]*$`)
+
 func (d *Driver) ensureNodeServiceConfigured() error {
 	if d.mode != "node" {
 		return status.Errorf(codes.FailedPrecondition, "node service is not available in %s mode", d.mode)
 	}
 	if d.nodeID == "" || d.nodeState == nil || d.mountManager == nil {
 		return status.Error(codes.FailedPrecondition, "node service is not configured (run as node plugin with node-id)")
+	}
+	return nil
+}
+
+// validateSVMName validates SVM names sourced from CSI volume context.
+func validateSVMName(name string) error {
+	if name == "" {
+		return fmt.Errorf("SVM name cannot be empty")
+	}
+	if !svmNamePattern.MatchString(name) {
+		return fmt.Errorf("invalid SVM name %q: must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens", name)
 	}
 	return nil
 }
@@ -84,6 +98,41 @@ func readonlyBindRemountOptions() []string {
 	return []string{"bind", "remount", "ro"}
 }
 
+func (d *Driver) mounter() mountutils.Interface {
+	if d.nodeMounter != nil {
+		return d.nodeMounter
+	}
+	return mountutils.New("")
+}
+
+func normalizedMountPath(path string) string {
+	if resolved, err := filepath.EvalSymlinks(path); err == nil {
+		return filepath.Clean(resolved)
+	}
+	return filepath.Clean(path)
+}
+
+func validateExistingMountSource(mounter mountutils.Interface, targetPath, expectedSource string) error {
+	mountPoints, err := mounter.List()
+	if err != nil {
+		return fmt.Errorf("failed to inspect mount table: %w", err)
+	}
+
+	normalizedTarget := normalizedMountPath(targetPath)
+	normalizedExpectedSource := normalizedMountPath(expectedSource)
+	for _, mountPoint := range mountPoints {
+		if normalizedMountPath(mountPoint.Path) != normalizedTarget {
+			continue
+		}
+		if normalizedMountPath(mountPoint.Device) != normalizedExpectedSource {
+			return fmt.Errorf("mount source mismatch: active=%s requested=%s", mountPoint.Device, expectedSource)
+		}
+		return nil
+	}
+
+	return fmt.Errorf("mount point %s is mounted but no source entry was found", targetPath)
+}
+
 // NodeStageVolume mounts the volume to a staging path
 func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	klog.V(4).Infof("NodeStageVolume called with volumeID: %s", req.GetVolumeId())
@@ -117,6 +166,10 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 		return nil, status.Error(codes.InvalidArgument, "volume context must contain svm, vip, and volumePath")
 	}
 
+	if err := validateSVMName(svmName); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid SVM name: %v", err)
+	}
+
 	// Validate VIP to prevent injection attacks
 	if err := validateVIP(vip); err != nil {
 		return nil, status.Errorf(codes.InvalidArgument, "invalid VIP: %v", err)
@@ -145,7 +198,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	sourcePath := filepath.Join(svmMountPath, volumePath)
 
 	// Check if already mounted
-	mounter := mountutils.New("")
+	mounter := d.mounter()
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -155,6 +208,12 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	}
 
 	if !notMnt {
+		if err := validateExistingMountSource(mounter, stagingTargetPath, sourcePath); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested source: %v", stagingTargetPath, err)
+		}
+		if err := d.nodeState.ValidateVolumeStaging(volumeID, svmName, vip, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested volume: %v", stagingTargetPath, err)
+		}
 		klog.V(4).Infof("Volume %s already staged at %s", volumeID, stagingTargetPath)
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
@@ -167,7 +226,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	}
 
 	// Record volume staging in NodeState
-	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, stagingTargetPath, nfsMountOptions); err != nil {
+	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
 		klog.Warningf("Failed to record volume staging in node state, rolling back mount: %v", err)
 
 		// Best-effort: revert in-memory state (may also fail to persist)
@@ -220,7 +279,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	}
 
 	// Unmount the staging path
-	mounter := mountutils.New("")
+	mounter := d.mounter()
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -305,7 +364,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	// Check if already mounted
-	mounter := mountutils.New("")
+	mounter := d.mounter()
 	notMnt, err := mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
@@ -315,6 +374,12 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	}
 
 	if !notMnt {
+		if err := validateExistingMountSource(mounter, targetPath, stagingTargetPath); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but does not match requested source: %v", targetPath, err)
+		}
+		if !d.nodeState.HasVolumePublish(volumeID, targetPath) {
+			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but is not recorded for volume %s", targetPath, volumeID)
+		}
 		klog.V(4).Infof("Volume %s already published at %s", volumeID, targetPath)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
@@ -390,7 +455,7 @@ func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublish
 	klog.V(4).Infof("Unpublishing volume %s from %s", volumeID, targetPath)
 
 	// Unmount the target path
-	mounter := mountutils.New("")
+	mounter := d.mounter()
 	notMnt, err := mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {

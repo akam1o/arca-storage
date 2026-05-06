@@ -16,6 +16,7 @@ type VolumeStaging struct {
 	VolumeID        string   `json:"volume_id"`
 	SVMName         string   `json:"svm_name"`
 	VIP             string   `json:"vip"`
+	VolumePath      string   `json:"volume_path,omitempty"`
 	StagingPath     string   `json:"staging_path"`
 	NFSMountOptions []string `json:"nfs_mount_options,omitempty"`
 	PublishedPaths  []string `json:"published_paths"` // Target paths where volume is published
@@ -72,7 +73,7 @@ func NewNodeState(stateFilePath string) (*NodeState, error) {
 }
 
 // RecordVolumeStaging records a volume staging operation (atomic, with fsync)
-func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, stagingPath string, nfsMountOptions []string) error {
+func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, volumePath, stagingPath string, nfsMountOptions []string) error {
 	ns.mu.Lock()
 	defer ns.mu.Unlock()
 
@@ -80,11 +81,45 @@ func (ns *NodeState) RecordVolumeStaging(volumeID, svmName, vip, stagingPath str
 		VolumeID:        volumeID,
 		SVMName:         svmName,
 		VIP:             vip,
+		VolumePath:      volumePath,
 		StagingPath:     stagingPath,
 		NFSMountOptions: append([]string(nil), nfsMountOptions...),
 	}
 
 	return ns.persistLocked()
+}
+
+// ValidateVolumeStaging verifies that an existing staged mount belongs to the
+// requested volume before treating NodeStageVolume as idempotent.
+func (ns *NodeState) ValidateVolumeStaging(volumeID, svmName, vip, volumePath, stagingPath string, nfsMountOptions []string) error {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+
+	staging, exists := ns.data.Volumes[volumeID]
+	if !exists {
+		return fmt.Errorf("volume %s is mounted at %s but is not recorded in node state", volumeID, stagingPath)
+	}
+	if staging.SVMName != svmName {
+		return fmt.Errorf("volume %s SVM mismatch: recorded=%s requested=%s", volumeID, staging.SVMName, svmName)
+	}
+	if staging.VIP != vip {
+		return fmt.Errorf("volume %s VIP mismatch: recorded=%s requested=%s", volumeID, staging.VIP, vip)
+	}
+	if staging.VolumePath != "" && staging.VolumePath != volumePath {
+		return fmt.Errorf("volume %s path mismatch: recorded=%s requested=%s", volumeID, staging.VolumePath, volumePath)
+	}
+	if staging.StagingPath != stagingPath {
+		return fmt.Errorf("volume %s staging path mismatch: recorded=%s requested=%s", volumeID, staging.StagingPath, stagingPath)
+	}
+	if !sameMountOptions(staging.NFSMountOptions, nfsMountOptions) {
+		return fmt.Errorf(
+			"volume %s NFS options mismatch: recorded=%v requested=%v",
+			volumeID,
+			normalizeNFSMountOptions(staging.NFSMountOptions),
+			normalizeNFSMountOptions(nfsMountOptions),
+		)
+	}
+	return nil
 }
 
 // RemoveVolumeStaging removes a volume from staging records (atomic, with fsync)
@@ -333,6 +368,23 @@ func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string) error {
 
 	klog.V(4).Infof("Recorded volume %s publish to %s", volumeID, targetPath)
 	return nil
+}
+
+// HasVolumePublish returns true when targetPath is recorded for volumeID.
+func (ns *NodeState) HasVolumePublish(volumeID, targetPath string) bool {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+
+	staging, exists := ns.data.Volumes[volumeID]
+	if !exists {
+		return false
+	}
+	for _, path := range staging.PublishedPaths {
+		if path == targetPath {
+			return true
+		}
+	}
+	return false
 }
 
 // RemoveVolumePublish removes a target path from the published paths

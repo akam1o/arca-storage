@@ -12,6 +12,7 @@ import (
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	mountutils "k8s.io/mount-utils"
 
 	"github.com/akam1o/csi-arca-storage/pkg/arca"
 	"github.com/akam1o/csi-arca-storage/pkg/idempotency"
@@ -40,6 +41,7 @@ type Driver struct {
 	// Mount management (for node service)
 	mountManager *mount.MountManager
 	nodeState    *mount.NodeState
+	nodeMounter  mountutils.Interface
 
 	// Idempotency helpers
 	volumeIDGen   *idempotency.VolumeIDGenerator
@@ -106,6 +108,7 @@ func NewDriver(cfg *DriverConfig) (*Driver, error) {
 		store:         storeInstance,
 		volumeIDGen:   idempotency.NewVolumeIDGenerator(),
 		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+		nodeMounter:   mountutils.New(""),
 	}
 
 	// Initialize node-specific components if this is a node plugin.

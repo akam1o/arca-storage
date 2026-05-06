@@ -2,6 +2,7 @@ package mount
 
 import (
 	"context"
+	"path/filepath"
 	"reflect"
 	"strings"
 	"testing"
@@ -76,5 +77,64 @@ func TestGetUniqueSVMMountsRejectsConflictingOptions(t *testing.T) {
 	_, err := nodeState.GetUniqueSVMMounts()
 	if err == nil {
 		t.Fatal("expected conflicting options to be rejected")
+	}
+}
+
+func TestValidateVolumeStagingDetectsMismatchedVolumePath(t *testing.T) {
+	state, err := NewNodeState(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("NewNodeState failed: %v", err)
+	}
+	if err := state.RecordVolumeStaging(
+		"volume-a",
+		"tenant-a",
+		"192.0.2.10",
+		"pvc-a",
+		"/stage/volume-a",
+		[]string{"nconnect=8"},
+	); err != nil {
+		t.Fatalf("RecordVolumeStaging failed: %v", err)
+	}
+
+	err = state.ValidateVolumeStaging(
+		"volume-a",
+		"tenant-a",
+		"192.0.2.10",
+		"pvc-b",
+		"/stage/volume-a",
+		MergeNFSMountOptions([]string{"nconnect=8"}),
+	)
+	if err == nil {
+		t.Fatal("expected volume path mismatch to be rejected")
+	}
+	if !strings.Contains(err.Error(), "path mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestHasVolumePublishRequiresRecordedTarget(t *testing.T) {
+	state, err := NewNodeState(filepath.Join(t.TempDir(), "state.json"))
+	if err != nil {
+		t.Fatalf("NewNodeState failed: %v", err)
+	}
+	if err := state.RecordVolumeStaging(
+		"volume-a",
+		"tenant-a",
+		"192.0.2.10",
+		"pvc-a",
+		"/stage/volume-a",
+		nil,
+	); err != nil {
+		t.Fatalf("RecordVolumeStaging failed: %v", err)
+	}
+
+	if state.HasVolumePublish("volume-a", "/pods/volume-a") {
+		t.Fatal("target should not be recorded before RecordVolumePublish")
+	}
+	if err := state.RecordVolumePublish("volume-a", "/pods/volume-a"); err != nil {
+		t.Fatalf("RecordVolumePublish failed: %v", err)
+	}
+	if !state.HasVolumePublish("volume-a", "/pods/volume-a") {
+		t.Fatal("target should be recorded after RecordVolumePublish")
 	}
 }
