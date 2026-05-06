@@ -25,8 +25,10 @@ import (
 
 type failingCreateStore struct {
 	*store.MemoryStore
-	failCreate bool
-	failUpdate bool
+	failCreate               bool
+	failUpdate               bool
+	failCreateSnapshot       bool
+	failUpdateSnapshotStatus bool
 }
 
 func (s *failingCreateStore) CreateVolume(info *store.VolumeInfo) error {
@@ -41,6 +43,20 @@ func (s *failingCreateStore) UpdateVolume(info *store.VolumeInfo) error {
 		return errors.New("store update failed")
 	}
 	return s.MemoryStore.UpdateVolume(info)
+}
+
+func (s *failingCreateStore) CreateSnapshot(info *store.SnapshotInfo) error {
+	if s.failCreateSnapshot {
+		return errors.New("store snapshot create failed")
+	}
+	return s.MemoryStore.CreateSnapshot(info)
+}
+
+func (s *failingCreateStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) error {
+	if s.failUpdateSnapshotStatus {
+		return errors.New("store snapshot status update failed")
+	}
+	return s.MemoryStore.UpdateSnapshotStatus(snapshotID, readyToUse)
 }
 
 type racingCreateStore struct {
@@ -614,6 +630,130 @@ func TestCreateSnapshotRejectsPendingSourceVolume(t *testing.T) {
 	}
 	if snapshotCalled {
 		t.Fatalf("snapshot endpoint was called")
+	}
+}
+
+func TestCreateSnapshotCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
+	st := &failingCreateStore{
+		MemoryStore:        store.NewMemoryStore(),
+		failCreateSnapshot: true,
+	}
+	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
+	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
+	var snapshotCreated bool
+	var deletedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			snapshotCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+snapshotID:
+			deletedQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		snapshotIDGen: snapshotIDGen,
+	}
+
+	_, err = driver.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{
+		Name:           "snap-a",
+		SourceVolumeId: "source-vol",
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if !snapshotCreated {
+		t.Fatalf("snapshot endpoint was not called")
+	}
+	if deletedQuery != "svm=svm-a&volume=source-path" {
+		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
+	}
+}
+
+func TestCreateSnapshotCleansUpBackendWhenStatusStoreFails(t *testing.T) {
+	st := &failingCreateStore{
+		MemoryStore:              store.NewMemoryStore(),
+		failUpdateSnapshotStatus: true,
+	}
+	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
+	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
+	var deletedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+snapshotID:
+			deletedQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		snapshotIDGen: snapshotIDGen,
+	}
+
+	_, err = driver.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{
+		Name:           "snap-a",
+		SourceVolumeId: "source-vol",
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if deletedQuery != "svm=svm-a&volume=source-path" {
+		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
+	}
+	if _, err := st.GetSnapshot(snapshotID); !store.IsNotFound(err) {
+		t.Fatalf("snapshot metadata was not removed, err=%v", err)
 	}
 }
 

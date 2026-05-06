@@ -257,7 +257,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil && !arca.IsAlreadyExistsError(err) {
 				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
 			}
-			temporarySnapshotReady = true
+			temporarySnapshotReady = err == nil
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
 				Name:         volumePath,
@@ -683,6 +683,17 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	if err != nil && !arca.IsAlreadyExistsError(err) {
 		return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
 	}
+	backendSnapshotCreated := err == nil
+	cleanupBackendSnapshot := func(reason string) {
+		if !backendSnapshotCreated {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if cleanupErr := d.arcaClient.DeleteSnapshot(cleanupCtx, snapshotID, sourceVolume.SVMName, sourceVolume.Path); cleanupErr != nil && !arca.IsNotFoundError(cleanupErr) {
+			klog.Warningf("Failed to clean up backend snapshot %s after %s: %v", snapshotID, reason, cleanupErr)
+		}
+	}
 
 	// Store snapshot metadata (initially not ready)
 	snapshotInfo := &store.SnapshotInfo{
@@ -702,7 +713,9 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 			if getErr == nil {
 				return &csi.CreateSnapshotResponse{Snapshot: existingSnap.ToCSISnapshot()}, nil
 			}
+			return nil, status.Errorf(codes.Internal, "failed to get existing snapshot metadata: %v", getErr)
 		}
+		cleanupBackendSnapshot("metadata store failure")
 		return nil, status.Errorf(codes.Internal, "failed to store snapshot metadata: %v", err)
 	}
 
@@ -714,6 +727,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		if delErr := d.store.DeleteSnapshot(snapshotID); delErr != nil {
 			klog.Errorf("Failed to cleanup snapshot metadata after status update failure: %v", delErr)
 		}
+		cleanupBackendSnapshot("status persistence failure")
 		return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
 	}
 	// Update our in-memory info to reflect the status

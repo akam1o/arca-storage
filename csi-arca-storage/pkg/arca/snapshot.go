@@ -8,16 +8,10 @@ import (
 	"net/url"
 )
 
-// CreateSnapshot creates a snapshot via ARCA API (server-side reflink, idempotent)
+// CreateSnapshot creates a snapshot via ARCA API (server-side reflink).
 func (c *Client) CreateSnapshot(ctx context.Context, req *CreateSnapshotRequest) error {
 	_, err := c.doRequest(ctx, http.MethodPost, "/v1/snapshots", req)
-	if err != nil {
-		if errors.Is(err, ErrSnapshotAlreadyExists) {
-			return nil // Idempotent
-		}
-		return err
-	}
-	return nil
+	return err
 }
 
 // DeleteSnapshot deletes a snapshot via ARCA API (idempotent)
