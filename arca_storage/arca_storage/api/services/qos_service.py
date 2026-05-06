@@ -17,14 +17,31 @@ def _get_cgroup_base() -> Path:
     return Path("/sys/fs/cgroup/arca")
 
 
-def _get_cgroup_path(svm: str, volume: str) -> Path:
-    return _get_cgroup_base() / f"svm_{svm}" / f"vol_{volume}"
+def _get_cgroup_path(svm: str, _volume: str) -> Path:
+    return _get_cgroup_base() / f"svm_{svm}"
 
 
 def _ensure_cgroup_hierarchy() -> None:
     base_path = _get_cgroup_base()
     if not base_path.exists():
         base_path.mkdir(parents=True, exist_ok=True)
+    _enable_io_controller(Path("/sys/fs/cgroup"))
+    _enable_io_controller(base_path)
+
+
+def _enable_io_controller(cgroup_path: Path) -> None:
+    controllers_file = cgroup_path / "cgroup.controllers"
+    subtree_file = cgroup_path / "cgroup.subtree_control"
+    if not controllers_file.exists() or not subtree_file.exists():
+        return
+
+    controllers = controllers_file.read_text(encoding="utf-8").split()
+    if "io" not in controllers:
+        raise RuntimeError(f"cgroup io controller is not available under {cgroup_path}")
+
+    enabled = subtree_file.read_text(encoding="utf-8").split()
+    if "io" not in enabled:
+        subtree_file.write_text("+io", encoding="utf-8")
 
 
 def _get_device_id(lv_path: str) -> str:
@@ -48,6 +65,37 @@ def _write_cgroup_file(cgroup_path: Path, filename: str, content: str) -> None:
     file_path = cgroup_path / filename
     with open(file_path, "w", encoding="utf-8") as f:
         f.write(content)
+
+
+def _attach_ganesha_process(ctx: Any, svm: str, cgroup_path: Path) -> None:
+    pid = _get_ganesha_pid(ctx, svm)
+    _write_cgroup_file(cgroup_path, "cgroup.procs", str(pid))
+
+
+def _get_ganesha_pid(ctx: Any, svm: str) -> int:
+    svm_record = ctx.db.get_svm(svm) or {}
+    uses_host_network = svm_record.get("spec", {}).get("vlan_id") is None
+    preferred_unit = "nfs-ganesha-host" if uses_host_network else "nfs-ganesha"
+    for unit in dict.fromkeys((preferred_unit, "nfs-ganesha-host", "nfs-ganesha")):
+        result = subprocess.run(
+            ["systemctl", "show", "--property=MainPID", "--value", f"{unit}@{svm}"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=10,
+        )
+        if result.returncode == 0:
+            raw = result.stdout.strip()
+            if raw.isdigit() and int(raw) > 0:
+                return int(raw)
+
+    pid_file = Path(f"/var/run/ganesha.{svm}.pid")
+    if pid_file.exists():
+        raw = pid_file.read_text(encoding="utf-8").strip()
+        if raw.isdigit() and int(raw) > 0:
+            return int(raw)
+
+    raise RuntimeError(f"Unable to find running NFS-Ganesha process for SVM {svm}")
 
 
 def apply_qos_to_volume(
@@ -77,6 +125,7 @@ def apply_qos_to_volume(
     cgroup_path = _get_cgroup_path(svm, volume)
     if not cgroup_path.exists():
         cgroup_path.mkdir(parents=True, exist_ok=True)
+    _attach_ganesha_process(ctx, svm, cgroup_path)
 
     device_id = _get_device_id(lv_path)
 
