@@ -133,13 +133,14 @@ func snapshotInfoToArcaSnapshot(info *SnapshotInfo) *v1alpha1.ArcaSnapshot {
 			},
 		},
 		Spec: v1alpha1.ArcaSnapshotSpec{
-			SnapshotID:     info.SnapshotID,
-			Name:           info.Name,
-			SourceVolumeID: info.SourceVolumeID,
-			SVMName:        info.SVMName,
-			Path:           info.Path,
-			SizeBytes:      info.SizeBytes,
-			CreatedAt:      metav1.NewTime(info.CreatedAt),
+			SnapshotID:       info.SnapshotID,
+			Name:             info.Name,
+			SourceVolumeID:   info.SourceVolumeID,
+			SourceVolumePath: info.SourceVolumePath,
+			SVMName:          info.SVMName,
+			Path:             info.Path,
+			SizeBytes:        info.SizeBytes,
+			CreatedAt:        metav1.NewTime(info.CreatedAt),
 		},
 		Status: v1alpha1.ArcaSnapshotStatus{
 			ReadyToUse: info.ReadyToUse,
@@ -150,13 +151,14 @@ func snapshotInfoToArcaSnapshot(info *SnapshotInfo) *v1alpha1.ArcaSnapshot {
 // arcaSnapshotToSnapshotInfo converts ArcaSnapshot CRD to SnapshotInfo
 func arcaSnapshotToSnapshotInfo(as *v1alpha1.ArcaSnapshot) *SnapshotInfo {
 	return &SnapshotInfo{
-		SnapshotID:     as.Spec.SnapshotID,
-		Name:           as.Spec.Name,
-		SourceVolumeID: as.Spec.SourceVolumeID,
-		SVMName:        as.Spec.SVMName,
-		Path:           as.Spec.Path,
-		SizeBytes:      as.Spec.SizeBytes,
-		CreatedAt:      as.Spec.CreatedAt.Time,
-		ReadyToUse:     as.Status.ReadyToUse,
+		SnapshotID:       as.Spec.SnapshotID,
+		Name:             as.Spec.Name,
+		SourceVolumeID:   as.Spec.SourceVolumeID,
+		SourceVolumePath: as.Spec.SourceVolumePath,
+		SVMName:          as.Spec.SVMName,
+		Path:             as.Spec.Path,
+		SizeBytes:        as.Spec.SizeBytes,
+		CreatedAt:        as.Spec.CreatedAt.Time,
+		ReadyToUse:       as.Status.ReadyToUse,
 	}
 }

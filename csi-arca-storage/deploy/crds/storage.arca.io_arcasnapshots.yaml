@@ -85,6 +85,9 @@ spec:
                 minLength: 20
                 pattern: ^pvc-[a-f0-9]{16}$
                 type: string
+              sourceVolumePath:
+                maxLength: 4096
+                type: string
               svmName:
                 maxLength: 63
                 minLength: 1

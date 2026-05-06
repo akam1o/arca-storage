@@ -86,12 +86,13 @@ func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 		t.Fatalf("seed source volume: %v", err)
 	}
 	if err := st.CreateSnapshot(&store.SnapshotInfo{
-		SnapshotID:     "snap-a",
-		SourceVolumeID: "source-vol",
-		SVMName:        "svm-a",
-		Path:           "snap-a",
-		SizeBytes:      1 << 30,
-		ReadyToUse:     true,
+		SnapshotID:       "snap-a",
+		SourceVolumeID:   "source-vol",
+		SourceVolumePath: "source-path",
+		SVMName:          "svm-a",
+		Path:             "snap-a",
+		SizeBytes:        1 << 30,
+		ReadyToUse:       true,
 	}); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
 	}
@@ -126,12 +127,13 @@ func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 		t.Fatalf("seed source volume: %v", err)
 	}
 	if err := st.MemoryStore.CreateSnapshot(&store.SnapshotInfo{
-		SnapshotID:     "snap-a",
-		SourceVolumeID: "source-vol",
-		SVMName:        "svm-a",
-		Path:           "snap-a",
-		SizeBytes:      1 << 30,
-		ReadyToUse:     true,
+		SnapshotID:       "snap-a",
+		SourceVolumeID:   "source-vol",
+		SourceVolumePath: "source-path",
+		SVMName:          "svm-a",
+		Path:             "snap-a",
+		SizeBytes:        1 << 30,
+		ReadyToUse:       true,
 	}); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
 	}
@@ -869,6 +871,91 @@ func TestCreateSnapshotCleansUpBackendWhenStatusStoreFails(t *testing.T) {
 	}
 	if _, err := st.GetSnapshot(snapshotID); !store.IsNotFound(err) {
 		t.Fatalf("snapshot metadata was not removed, err=%v", err)
+	}
+}
+
+func TestDeleteSnapshotUsesStoredSourceVolumePathWhenSourceMetadataIsMissing(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateSnapshot(&store.SnapshotInfo{
+		SnapshotID:       "snap-a",
+		Name:             "snap-a",
+		SourceVolumeID:   "source-vol",
+		SourceVolumePath: "source-path",
+		SVMName:          "svm-a",
+		Path:             "snap-a",
+		SizeBytes:        1 << 30,
+		ReadyToUse:       true,
+	}); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	var deletedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/snap-a":
+			deletedQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	_, err = driver.DeleteSnapshot(context.Background(), &csi.DeleteSnapshotRequest{
+		SnapshotId: "snap-a",
+	})
+
+	if err != nil {
+		t.Fatalf("DeleteSnapshot() error = %v", err)
+	}
+	if deletedQuery != "svm=svm-a&volume=source-path" {
+		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
+	}
+	if _, err := st.GetSnapshot("snap-a"); !store.IsNotFound(err) {
+		t.Fatalf("snapshot metadata was not removed, err=%v", err)
+	}
+}
+
+func TestDeleteSnapshotRejectsLegacyMetadataWhenSourcePathIsUnavailable(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateSnapshot(&store.SnapshotInfo{
+		SnapshotID:     "snap-a",
+		Name:           "snap-a",
+		SourceVolumeID: "source-vol",
+		SVMName:        "svm-a",
+		Path:           "snap-a",
+		SizeBytes:      1 << 30,
+		ReadyToUse:     true,
+	}); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	_, err := driver.DeleteSnapshot(context.Background(), &csi.DeleteSnapshotRequest{
+		SnapshotId: "snap-a",
+	})
+
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition error, got %v", err)
+	}
+	if _, err := st.GetSnapshot("snap-a"); err != nil {
+		t.Fatalf("snapshot metadata should remain after rejected delete: %v", err)
 	}
 }
 

@@ -152,6 +152,12 @@ type ArcaSnapshotSpec struct {
 	// +kubebuilder:validation:MaxLength=20
 	SourceVolumeID string `json:"sourceVolumeID"`
 
+	// SourceVolumePath is the backend path of the volume this snapshot was taken from.
+	// It is persisted so snapshots can still be deleted if volume metadata is lost.
+	// +kubebuilder:validation:Optional
+	// +kubebuilder:validation:MaxLength=4096
+	SourceVolumePath string `json:"sourceVolumePath,omitempty"`
+
 	// SVMName is the storage virtual machine name.
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1

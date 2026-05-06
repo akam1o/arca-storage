@@ -26,14 +26,15 @@ type VolumeInfo struct {
 
 // SnapshotInfo represents snapshot metadata
 type SnapshotInfo struct {
-	SnapshotID     string
-	Name           string // Original VolumeSnapshot name
-	SourceVolumeID string
-	SVMName        string
-	Path           string
-	SizeBytes      int64
-	CreatedAt      time.Time
-	ReadyToUse     bool
+	SnapshotID       string
+	Name             string // Original VolumeSnapshot name
+	SourceVolumeID   string
+	SourceVolumePath string
+	SVMName          string
+	Path             string
+	SizeBytes        int64
+	CreatedAt        time.Time
+	ReadyToUse       bool
 }
 
 // MemoryStore provides in-memory storage for volume and snapshot metadata

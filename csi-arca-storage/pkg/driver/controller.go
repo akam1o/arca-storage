@@ -731,14 +731,15 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 
 	// Store snapshot metadata (initially not ready)
 	snapshotInfo := &store.SnapshotInfo{
-		SnapshotID:     snapshotID,
-		Name:           req.GetName(),
-		SourceVolumeID: sourceVolumeID,
-		SVMName:        sourceVolume.SVMName,
-		Path:           snapshotID,
-		SizeBytes:      sourceVolume.CapacityBytes,
-		CreatedAt:      time.Now(),
-		ReadyToUse:     false, // Initially false, will be set via status update
+		SnapshotID:       snapshotID,
+		Name:             req.GetName(),
+		SourceVolumeID:   sourceVolumeID,
+		SourceVolumePath: sourceVolume.Path,
+		SVMName:          sourceVolume.SVMName,
+		Path:             snapshotID,
+		SizeBytes:        sourceVolume.CapacityBytes,
+		CreatedAt:        time.Now(),
+		ReadyToUse:       false, // Initially false, will be set via status update
 	}
 
 	if err := d.store.CreateSnapshot(snapshotInfo); err != nil {
@@ -824,21 +825,26 @@ func (d *Driver) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequ
 		return nil, status.Errorf(codes.Internal, "failed to get snapshot %s: %v", snapshotID, err)
 	}
 
-	sourceVolume, err := d.store.GetVolume(snapshotInfo.SourceVolumeID)
-	if err != nil {
-		if store.IsNotFound(err) {
-			klog.Warningf("Source volume %s for snapshot %s is gone; deleting snapshot metadata", snapshotInfo.SourceVolumeID, snapshotID)
-			if delErr := d.store.DeleteSnapshot(snapshotID); delErr != nil && !store.IsNotFound(delErr) {
-				return nil, status.Errorf(codes.Internal, "failed to delete snapshot metadata: %v", delErr)
+	sourceVolumePath := snapshotInfo.SourceVolumePath
+	if sourceVolumePath == "" {
+		sourceVolume, err := d.store.GetVolume(snapshotInfo.SourceVolumeID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return nil, status.Errorf(
+					codes.FailedPrecondition,
+					"source volume %s for snapshot %s is missing and snapshot metadata has no source volume path",
+					snapshotInfo.SourceVolumeID,
+					snapshotID,
+				)
 			}
-			return &csi.DeleteSnapshotResponse{}, nil
+			return nil, status.Errorf(codes.Internal, "failed to get source volume %s: %v", snapshotInfo.SourceVolumeID, err)
 		}
-		return nil, status.Errorf(codes.Internal, "failed to get source volume %s: %v", snapshotInfo.SourceVolumeID, err)
+		sourceVolumePath = sourceVolume.Path
 	}
 
 	// Delete snapshot from ARCA
 	klog.V(4).Infof("Deleting snapshot: %s on SVM: %s", snapshotInfo.SnapshotID, snapshotInfo.SVMName)
-	err = d.arcaClient.DeleteSnapshot(ctx, snapshotInfo.SnapshotID, snapshotInfo.SVMName, sourceVolume.Path)
+	err = d.arcaClient.DeleteSnapshot(ctx, snapshotInfo.SnapshotID, snapshotInfo.SVMName, sourceVolumePath)
 	if err != nil && !arca.IsNotFoundError(err) {
 		return nil, status.Errorf(codes.Internal, "failed to delete snapshot: %v", err)
 	}

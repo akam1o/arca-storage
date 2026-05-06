@@ -46,3 +46,25 @@ func TestArcaVolumeMissingReadinessAnnotationIsReady(t *testing.T) {
 		t.Fatalf("legacy volume without readiness annotation should be ready")
 	}
 }
+
+func TestArcaSnapshotSourceVolumePathRoundTrip(t *testing.T) {
+	snapshot := snapshotInfoToArcaSnapshot(&SnapshotInfo{
+		SnapshotID:       "0123456789abcdef",
+		Name:             "snap-a",
+		SourceVolumeID:   "pvc-0123456789abcdef",
+		SourceVolumePath: "pvc-0123456789abcdef",
+		SVMName:          "svm-a",
+		Path:             "0123456789abcdef",
+		SizeBytes:        1 << 30,
+		CreatedAt:        time.Now(),
+		ReadyToUse:       true,
+	})
+
+	if got := snapshot.Spec.SourceVolumePath; got != "pvc-0123456789abcdef" {
+		t.Fatalf("source volume path = %q", got)
+	}
+	info := arcaSnapshotToSnapshotInfo(snapshot)
+	if info.SourceVolumePath != "pvc-0123456789abcdef" {
+		t.Fatalf("round-tripped source volume path = %q", info.SourceVolumePath)
+	}
+}
