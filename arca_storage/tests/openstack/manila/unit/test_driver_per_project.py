@@ -67,3 +67,23 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
             root_volume_size_gib=None,
         )
         mock_arca_client.create_volume.assert_called_once()
+
+    def test_create_share_ignores_user_supplied_svm_metadata(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "manila_other-project"
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.10:/exports/manila_test-project-id/share-share-123",
+        }
+
+        driver.create_share(Mock(), mock_manila_share, None)
+
+        assert mock_manila_share["metadata"]["arca_svm_name"] == "manila_test-project-id"
+        mock_arca_client.create_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="manila_test-project-id",
+            size_gib=10,
+            thin=True,
+            fs_type="xfs",
+        )

@@ -223,9 +223,9 @@ class TestSnapshotOperationIdempotency:
         # Should succeed using default SVM
         driver.create_snapshot(Mock(), mock_manila_snapshot, None)
 
-    def test_delete_snapshot_with_snapshot_metadata_fallback(self, driver, mock_arca_client):
-        """Test snapshot deletion uses snapshot metadata when share unavailable."""
-        # Snapshot has its own SVM metadata
+    def test_delete_snapshot_with_shared_strategy_without_share(self, driver, mock_arca_client):
+        """Test snapshot deletion uses shared strategy when share unavailable."""
+        # Snapshot metadata must not steer shared strategy.
         snapshot = {
             "id": "snapshot-123",
             "share_id": "share-123",
@@ -234,7 +234,6 @@ class TestSnapshotOperationIdempotency:
 
         driver.delete_snapshot(Mock(), snapshot, None)
 
-        # Should use SVM from snapshot metadata
         mock_arca_client.delete_snapshot.assert_called_once_with(
             name="snapshot-snapshot-123",
             svm="test-svm",

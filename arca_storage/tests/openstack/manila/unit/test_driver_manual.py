@@ -40,6 +40,27 @@ class TestArcaStorageManilaDriverManualStrategy:
             fs_type="xfs",
         )
 
+    def test_create_share_ignores_user_supplied_svm_metadata(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "other-svm"
+        mock_manila_share["share_type"]["extra_specs"] = {"arca_manila:svm_name": "target-svm"}
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.5:/exports/target-svm/share-share-123",
+        }
+
+        driver.create_share(Mock(), mock_manila_share, None)
+
+        assert mock_manila_share["metadata"]["arca_svm_name"] == "target-svm"
+        mock_arca_client.create_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="target-svm",
+            size_gib=10,
+            thin=True,
+            fs_type="xfs",
+        )
+
     def test_create_share_missing_svm_name_fails(self, driver, mock_manila_share):
         mock_manila_share["share_type"]["extra_specs"] = {}
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):

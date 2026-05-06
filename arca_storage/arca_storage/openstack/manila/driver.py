@@ -690,13 +690,30 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         return pool
 
-    def _get_svm_for_share(self, share, ensure_exists=False):
+    def _warn_if_metadata_svm_ignored(
+        self,
+        metadata_svm: Optional[str],
+        resolved_svm: str,
+        source: str,
+    ) -> None:
+        """Log when caller-provided SVM metadata conflicts with placement."""
+        if metadata_svm and metadata_svm != resolved_svm:
+            LOG.warning(
+                "Ignoring arca_svm_name metadata %r for %s; resolved SVM is %r",
+                metadata_svm,
+                source,
+                resolved_svm,
+            )
+
+    def _get_svm_for_share(self, share, ensure_exists=False, allow_metadata_fallback=True):
         """Determine SVM for a share based on strategy.
 
         Args:
             share: Manila share object
             ensure_exists: If True, create SVM if it doesn't exist (per_project only).
                           If False, only return SVM name without creation.
+            allow_metadata_fallback: If True, use persisted metadata only when the
+                          strategy cannot be evaluated from the provided share.
 
         Returns:
             SVM name string
@@ -706,19 +723,24 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         """
         strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
 
-        # Prefer stored metadata if present (enables snapshot ops without embedded share object).
-        svm_from_metadata = self._get_metadata_value(share, "arca_svm_name")
-        if svm_from_metadata:
-            return svm_from_metadata
+        metadata_svm = self._get_metadata_value(share, "arca_svm_name")
 
         if strategy == "shared":
             # Use default SVM for all shares
-            return self.configuration.arca_storage_default_svm
+            svm_name = self.configuration.arca_storage_default_svm
+            self._warn_if_metadata_svm_ignored(metadata_svm, svm_name, "shared strategy")
+            return svm_name
 
         elif strategy == "manual":
             # Extract SVM from share type extra_specs
-            share_type = share.get("share_type")
+            share_type = share.get("share_type") if hasattr(share, "get") else None
             if not share_type:
+                if allow_metadata_fallback and metadata_svm:
+                    LOG.warning(
+                        "Using arca_svm_name metadata %r because share type is unavailable",
+                        metadata_svm,
+                    )
+                    return metadata_svm
                 raise manila_exception.ManilaException(
                     "Share type required for manual SVM strategy"
                 )
@@ -733,12 +755,19 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     "Share type must specify 'arca_manila:svm_name' for manual SVM strategy"
                 )
 
+            self._warn_if_metadata_svm_ignored(metadata_svm, svm_name, "manual strategy")
             return svm_name
 
         elif strategy == "per_project":
             # Each project gets dedicated SVM
-            project_id = share.get("project_id")
+            project_id = share.get("project_id") if hasattr(share, "get") else None
             if not project_id:
+                if allow_metadata_fallback and metadata_svm:
+                    LOG.warning(
+                        "Using arca_svm_name metadata %r because project_id is unavailable",
+                        metadata_svm,
+                    )
+                    return metadata_svm
                 raise manila_exception.ManilaException(
                     "Cannot determine project_id for per_project SVM strategy. "
                     "This may occur when snapshot operations receive incomplete share info "
@@ -748,11 +777,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
             if ensure_exists:
                 # Create SVM if it doesn't exist (for create operations)
-                return self._allocate_per_project_svm(project_id)
+                svm_name = self._allocate_per_project_svm(project_id)
             else:
                 # Just return SVM name without creating (for other operations)
                 svm_name = f"{self.configuration.arca_storage_svm_prefix}{project_id}"
-                return svm_name
+            self._warn_if_metadata_svm_ignored(metadata_svm, svm_name, "per_project strategy")
+            return svm_name
 
         else:
             raise manila_exception.ManilaException(
@@ -1038,7 +1068,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         try:
             # Determine SVM for this share (create if needed for per_project)
-            svm_name = self._get_svm_for_share(share, ensure_exists=True)
+            svm_name = self._get_svm_for_share(
+                share,
+                ensure_exists=True,
+                allow_metadata_fallback=False,
+            )
             LOG.debug("Using SVM %s for share %s", svm_name, share_id)
 
             # Create volume via ARCA API
@@ -1236,15 +1270,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         LOG.info("Creating snapshot %s for share %s", snapshot_id, share_id)
 
         try:
-            # Prefer metadata-stored SVM name if available.
-            svm_name = self._get_metadata_value(snapshot, "arca_svm_name")
-            share = None
-
             # Get parent share to determine SVM
             # Note: snapshot["share"] may not be available in all Manila API versions
-            if not svm_name:
-                share = snapshot.get("share")
-            if not svm_name and not share:
+            share = snapshot.get("share")
+            if share:
+                svm_name = self._get_svm_for_share(share)
+            else:
                 # Check strategy before attempting fallback
                 strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
 
@@ -1254,18 +1285,23 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                         "snapshot['share'] not available for snapshot %s, "
                         "using shared strategy SVM", snapshot_id
                     )
-                    share = {"id": share_id}
+                    svm_name = self.configuration.arca_storage_default_svm
+                    self._warn_if_metadata_svm_ignored(
+                        self._get_metadata_value(snapshot, "arca_svm_name"),
+                        svm_name,
+                        "snapshot metadata",
+                    )
                 elif strategy in ("manual", "per_project"):
                     # Fail closed: these strategies require full share info
                     raise manila_exception.ManilaException(
                         f"snapshot['share'] not available for snapshot {snapshot_id}. "
                         f"Strategy '{strategy}' requires complete parent share information. "
-                        f"Alternatively, ensure 'arca_svm_name' is persisted in snapshot metadata. "
                         f"Ensure Manila is configured to include parent share details in snapshot objects."
                     )
-
-            if not svm_name:
-                svm_name = self._get_svm_for_share(share)
+                else:
+                    raise manila_exception.ManilaException(
+                        f"Invalid SVM strategy: {strategy}"
+                    )
 
             # Create snapshot via ARCA API (LVM thin snapshot)
             snapshot_info = self.arca_client.create_snapshot(
@@ -1311,15 +1347,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         LOG.info("Deleting snapshot %s", snapshot_id)
 
         try:
-            # Prefer metadata-stored SVM name if available.
-            svm_name = self._get_metadata_value(snapshot, "arca_svm_name")
-            share = None
-
             # Get parent share to determine SVM
             # Note: snapshot["share"] may not be available in all Manila API versions
-            if not svm_name:
-                share = snapshot.get("share")
-            if not svm_name and not share:
+            share = snapshot.get("share")
+            if share:
+                svm_name = self._get_svm_for_share(share)
+            else:
                 # Check strategy before attempting fallback
                 strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
 
@@ -1329,18 +1362,23 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                         "snapshot['share'] not available for snapshot %s, "
                         "using shared strategy SVM", snapshot_id
                     )
-                    share = {"id": share_id}
+                    svm_name = self.configuration.arca_storage_default_svm
+                    self._warn_if_metadata_svm_ignored(
+                        self._get_metadata_value(snapshot, "arca_svm_name"),
+                        svm_name,
+                        "snapshot metadata",
+                    )
                 elif strategy in ("manual", "per_project"):
                     # Fail closed: these strategies require full share info
                     raise manila_exception.ManilaException(
                         f"snapshot['share'] not available for snapshot {snapshot_id}. "
                         f"Strategy '{strategy}' requires complete parent share information. "
-                        f"Alternatively, ensure 'arca_svm_name' is persisted in snapshot metadata. "
                         f"Ensure Manila is configured to include parent share details in snapshot objects."
                     )
-
-            if not svm_name:
-                svm_name = self._get_svm_for_share(share)
+                else:
+                    raise manila_exception.ManilaException(
+                        f"Invalid SVM strategy: {strategy}"
+                    )
 
             # Delete snapshot via ARCA API
             self.arca_client.delete_snapshot(

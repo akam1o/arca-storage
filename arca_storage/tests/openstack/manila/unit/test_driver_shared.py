@@ -53,6 +53,26 @@ class TestArcaStorageManilaDriverSharedStrategy:
             fs_type="xfs",
         )
 
+    def test_create_share_ignores_user_supplied_svm_metadata(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "other-svm"
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.5:/exports/test-svm/share-share-123",
+        }
+
+        driver.create_share(Mock(), mock_manila_share, None)
+
+        assert mock_manila_share["metadata"]["arca_svm_name"] == "test-svm"
+        mock_arca_client.create_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="test-svm",
+            size_gib=10,
+            thin=True,
+            fs_type="xfs",
+        )
+
     def test_delete_share_calls_delete_volume(self, driver, mock_arca_client, mock_manila_share):
         # Share metadata tells driver which SVM to use.
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
@@ -82,7 +102,7 @@ class TestArcaStorageManilaDriverSharedStrategy:
             volume="share-share-123",
         )
 
-    def test_delete_snapshot_uses_snapshot_metadata_when_share_missing(self, driver, mock_arca_client):
+    def test_delete_snapshot_uses_shared_svm_when_share_missing(self, driver, mock_arca_client):
         snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {"arca_svm_name": "test-svm"}}
         driver.delete_snapshot(Mock(), snapshot, None)
         mock_arca_client.delete_snapshot.assert_called_once_with(
