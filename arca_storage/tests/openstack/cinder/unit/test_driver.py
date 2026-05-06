@@ -410,7 +410,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.arca_client.apply_qos.assert_not_called()
 
     def test_apply_qos_to_volume_with_specs(self):
-        """QoS apply sends extracted limits to the API client when available."""
+        """QoS specs are not sent to ARCA API for file-backed Cinder volumes."""
         volume = self._create_mock_volume()
         volume.volume_type = {
             "extra_specs": {
@@ -421,17 +421,10 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         self.driver._apply_qos_to_volume(volume)
 
-        self.driver.arca_client.apply_qos.assert_called_once_with(
-            volume="test-volume",
-            svm="test-svm",
-            read_iops=5000,
-            write_iops=5000,
-            read_bps=None,
-            write_bps=None,
-        )
+        self.driver.arca_client.apply_qos.assert_not_called()
 
-    def test_retype_reapplies_qos_changes(self):
-        """Retype reapplies QoS when type extra specs change."""
+    def test_retype_skips_file_backed_qos_changes(self):
+        """Retype accepts QoS specs but cannot apply them to file-backed volumes."""
         volume = self._create_mock_volume()
         volume.volume_type = {"extra_specs": {"arca_storage:read_iops_sec": "3000"}}
         new_type = {
@@ -447,7 +440,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         assert changed is True
         assert updates == {}
-        self.driver.arca_client.apply_qos.assert_called_once()
+        self.driver.arca_client.apply_qos.assert_not_called()
 
 
 if __name__ == "__main__":

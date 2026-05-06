@@ -1012,21 +1012,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         return qos_specs
 
     def _apply_qos_to_volume(self, volume) -> None:
-        """Apply QoS settings from volume type to a volume.
+        """Handle QoS settings from volume type for a file-backed Cinder volume.
 
         Args:
             volume: Cinder volume object
-
-        Raises:
-            exception.VolumeBackendAPIException: If QoS application fails
         """
         volume_name = volume.name
 
         try:
-            if self.arca_client is None or not hasattr(self.arca_client, "apply_qos"):
-                LOG.debug("QoS API is not available; skipping QoS apply for %s", volume_name)
-                return
-
             # Extract QoS specs from volume type
             qos_specs = self._get_qos_specs(volume)
 
@@ -1034,26 +1027,20 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 LOG.debug("No QoS specs found for volume: %s", volume_name)
                 return
 
-            # Determine SVM for this volume
+            # Cinder volumes are sparse files in the shared SVM export, not
+            # DB-backed ARCA volumes. The ARCA volume QoS API cannot target
+            # these files by Cinder volume.name.
             svm_name = self._get_svm_for_volume(volume)
-
-            # Apply QoS via ARCA Storage API
-            LOG.info("Applying QoS to volume %s: %s", volume_name, qos_specs)
-
-            self.arca_client.apply_qos(
-                volume=volume_name,
-                svm=svm_name,
-                read_iops=qos_specs.get("read_iops"),
-                write_iops=qos_specs.get("write_iops"),
-                read_bps=qos_specs.get("read_bps"),
-                write_bps=qos_specs.get("write_bps"),
+            LOG.warning(
+                "QoS specs for Cinder file-backed volume %s on SVM %s are not applied; "
+                "ARCA volume QoS only supports DB-backed ARCA volumes",
+                volume_name,
+                svm_name,
             )
-
-            LOG.info("Applied QoS to volume: %s", volume_name)
 
         except Exception as e:
             # QoS application is not critical, log warning and continue
-            LOG.warning("Failed to apply QoS to volume %s: %s", volume_name, e)
+            LOG.warning("Failed to inspect QoS for volume %s: %s", volume_name, e)
 
     def retype(
         self,
@@ -1094,7 +1081,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             # Check if QoS specs changed
             if "qos_specs" in diff or "extra_specs" in diff:
-                LOG.info("QoS specs changed for volume %s, reapplying QoS", volume_name)
+                LOG.info("QoS specs changed for volume %s, handling QoS update", volume_name)
 
                 # Extract new QoS specs from new type
                 # We need to temporarily set volume.volume_type to new_type to extract specs
