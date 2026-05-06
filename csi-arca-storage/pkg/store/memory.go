@@ -20,6 +20,7 @@ type VolumeInfo struct {
 	CapacityBytes int64
 	CreatedAt     time.Time
 	ContentSource *csi.VolumeContentSource
+	ReadyToUse    *bool
 }
 
 // SnapshotInfo represents snapshot metadata
@@ -241,6 +242,16 @@ func defaultExportRoot(svmName, exportRoot string) string {
 		return "/exports/" + svmName
 	}
 	return exportRoot
+}
+
+// VolumeReadyState returns a pointer so nil can mean "legacy volume, ready".
+func VolumeReadyState(ready bool) *bool {
+	return &ready
+}
+
+// IsVolumeReady treats missing readiness as ready for backward compatibility.
+func IsVolumeReady(info *VolumeInfo) bool {
+	return info != nil && (info.ReadyToUse == nil || *info.ReadyToUse)
 }
 
 // ToCSISnapshot converts SnapshotInfo to CSI Snapshot

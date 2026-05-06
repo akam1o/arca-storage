@@ -14,7 +14,7 @@ import (
 
 // Manager manages distributed locks using Kubernetes Leases
 type Manager struct {
-	clientset *kubernetes.Clientset
+	clientset kubernetes.Interface
 	namespace string
 	identity  string
 }
@@ -28,7 +28,7 @@ type Lock struct {
 }
 
 // NewManager creates a new lock manager
-func NewManager(clientset *kubernetes.Clientset, namespace, identity string) *Manager {
+func NewManager(clientset kubernetes.Interface, namespace, identity string) *Manager {
 	return &Manager{
 		clientset: clientset,
 		namespace: namespace,
@@ -133,6 +133,9 @@ func (m *Manager) tryAcquireLease(ctx context.Context, leaseName string, ttl tim
 	}
 
 	_, err = leaseClient.Create(ctx, lease, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return false, nil
+	}
 	return err == nil, err
 }
 

@@ -15,9 +15,11 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	k8sfake "k8s.io/client-go/kubernetes/fake"
 
 	"github.com/akam1o/csi-arca-storage/pkg/arca"
 	"github.com/akam1o/csi-arca-storage/pkg/idempotency"
+	"github.com/akam1o/csi-arca-storage/pkg/lock"
 	"github.com/akam1o/csi-arca-storage/pkg/store"
 )
 
@@ -324,6 +326,175 @@ func TestCreateVolumeWaitsForQuotaBeforeIdempotentSuccess(t *testing.T) {
 	}
 	if calls := atomic.LoadInt32(&quotaCalls); calls != 2 {
 		t.Fatalf("quota calls = %d, want 2", calls)
+	}
+}
+
+func TestCreateVolumeUsesDistributedLockBeforeIdempotentSuccess(t *testing.T) {
+	st := store.NewMemoryStore()
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	quotaEntered := make(chan struct{})
+	releaseQuota := make(chan struct{})
+	var quotaCalls int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-ns-a","ip_cidr":"10.0.0.10/24","vip":"10.0.0.10","export_root":"/exports/k8s-ns-a","gateway":"","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/directories":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"directory":{}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			if atomic.AddInt32(&quotaCalls, 1) == 1 {
+				close(quotaEntered)
+				<-releaseQuota
+			}
+			http.Error(w, "quota failed", http.StatusBadRequest)
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	k8sClient := k8sfake.NewSimpleClientset()
+	newDriver := func(identity string) *Driver {
+		return &Driver{
+			mode:          "controller",
+			arcaClient:    client,
+			svmManager:    arca.NewSVMManager(client, nil, nil, 1500),
+			store:         st,
+			volumeIDGen:   volumeIDGen,
+			snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+			lockManager:   lock.NewManager(k8sClient, "kube-system", identity),
+		}
+	}
+	req := &csi.CreateVolumeRequest{
+		Name: "race-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "race-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+	}
+
+	firstDone := make(chan error, 1)
+	go func() {
+		_, err := newDriver("pod-a").CreateVolume(context.Background(), req)
+		firstDone <- err
+	}()
+
+	select {
+	case <-quotaEntered:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for first quota call")
+	}
+
+	secondDone := make(chan error, 1)
+	go func() {
+		_, err := newDriver("pod-b").CreateVolume(context.Background(), req)
+		secondDone <- err
+	}()
+
+	select {
+	case err := <-secondDone:
+		t.Fatalf("second CreateVolume returned before distributed lock was released: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseQuota)
+
+	if err := <-firstDone; status.Code(err) != codes.Internal {
+		t.Fatalf("first CreateVolume code = %v, want Internal", status.Code(err))
+	}
+	select {
+	case err := <-secondDone:
+		if status.Code(err) != codes.Internal {
+			t.Fatalf("second CreateVolume code = %v, want Internal", status.Code(err))
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatalf("timed out waiting for second CreateVolume")
+	}
+	if calls := atomic.LoadInt32(&quotaCalls); calls != 2 {
+		t.Fatalf("quota calls = %d, want 2", calls)
+	}
+}
+
+func TestCreateVolumeResumesPendingMetadata(t *testing.T) {
+	st := store.NewMemoryStore()
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	volumeID := volumeIDGen.GenerateVolumeID("pending-pvc")
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      volumeID,
+		Name:          "pending-pvc",
+		SVMName:       "k8s-ns-a",
+		VIP:           "10.0.0.10",
+		ExportRoot:    "/exports/k8s-ns-a",
+		Path:          volumeID,
+		CapacityBytes: 1 << 30,
+		CreatedAt:     time.Now(),
+		ReadyToUse:    store.VolumeReadyState(false),
+	}); err != nil {
+		t.Fatalf("seed pending volume: %v", err)
+	}
+
+	var quotaCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	resp, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "pending-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "pending-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+	})
+
+	if err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+	if !quotaCalled {
+		t.Fatalf("quota endpoint was not called")
+	}
+	if resp.GetVolume().GetVolumeId() != volumeID {
+		t.Fatalf("volume id = %q, want %q", resp.GetVolume().GetVolumeId(), volumeID)
+	}
+	stored, err := st.GetVolume(volumeID)
+	if err != nil {
+		t.Fatalf("stored volume not found: %v", err)
+	}
+	if !store.IsVolumeReady(stored) {
+		t.Fatalf("stored volume was not marked ready")
 	}
 }
 

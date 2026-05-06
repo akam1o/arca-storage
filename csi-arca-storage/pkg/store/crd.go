@@ -131,7 +131,22 @@ func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 	}
 
 	// Update spec fields
-	existing.Spec = volumeInfoToArcaVolume(info).Spec
+	updated := volumeInfoToArcaVolume(info)
+	existing.Spec = updated.Spec
+	if existing.Labels == nil {
+		existing.Labels = make(map[string]string)
+	}
+	for key, value := range updated.Labels {
+		existing.Labels[key] = value
+	}
+	if updated.Annotations != nil {
+		if existing.Annotations == nil {
+			existing.Annotations = make(map[string]string)
+		}
+		for key, value := range updated.Annotations {
+			existing.Annotations[key] = value
+		}
+	}
 
 	if err := s.client.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update ArcaVolume: %w", err)

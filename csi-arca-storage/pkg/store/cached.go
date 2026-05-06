@@ -69,6 +69,10 @@ func deepCopyVolumeInfo(v *VolumeInfo) *VolumeInfo {
 	}
 	copied := *v
 	copied.ContentSource = cloneVolumeContentSource(v.ContentSource)
+	if v.ReadyToUse != nil {
+		ready := *v.ReadyToUse
+		copied.ReadyToUse = &ready
+	}
 	return &copied
 }
 

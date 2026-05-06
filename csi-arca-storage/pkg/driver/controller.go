@@ -154,7 +154,10 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 	releaseVolumeCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
 	if err != nil {
-		return nil, status.FromContextError(err).Err()
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		return nil, status.Errorf(codes.Aborted, "failed to serialize volume creation: %v", err)
 	}
 	defer releaseVolumeCreateLock()
 
@@ -163,6 +166,22 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	if err == nil {
 		if err := compareVolumeParameters(existingVol, req); err != nil {
 			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists but is incompatible: %v", volumeID, err)
+		}
+		if !store.IsVolumeReady(existingVol) {
+			klog.V(4).Infof("Volume %s metadata exists but is not ready, resuming quota setup", volumeID)
+			if err := d.setVolumeQuota(ctx, existingVol); err != nil {
+				if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
+					klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
+				}
+				d.cleanupProvisionedVolume(ctx, existingVol, "quota failure")
+				return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+			}
+			if err := d.markVolumeReady(existingVol); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to mark volume metadata ready: %v", err)
+			}
+			return &csi.CreateVolumeResponse{
+				Volume: existingVol.ToCSIVolume(),
+			}, nil
 		}
 		klog.V(4).Infof("Volume %s already exists, returning existing volume", volumeID)
 		return &csi.CreateVolumeResponse{
@@ -198,6 +217,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			sourceVol, err := d.store.GetVolume(sourceVolumeID)
 			if err != nil {
 				return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+			}
+			if !store.IsVolumeReady(sourceVol) {
+				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
 			}
 			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(sourceVol.CapacityBytes))
 			if capacityExceedsLimit(req, capacityBytes) {
@@ -278,6 +300,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil {
 				return nil, status.Errorf(codes.NotFound, "snapshot source volume %s not found: %v", snapshot.SourceVolumeID, err)
 			}
+			if !store.IsVolumeReady(sourceVol) {
+				return nil, status.Errorf(codes.Unavailable, "snapshot source volume %s is not ready", snapshot.SourceVolumeID)
+			}
 			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(sourceVol.CapacityBytes))
 			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(snapshot.SizeBytes))
 			if capacityExceedsLimit(req, capacityBytes) {
@@ -352,6 +377,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		CapacityBytes: capacityBytes,
 		CreatedAt:     time.Now(),
 		ContentSource: contentSource,
+		ReadyToUse:    store.VolumeReadyState(false),
 	}
 
 	if err := d.store.CreateVolume(volumeInfo); err != nil {
@@ -361,6 +387,19 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				if err := compareVolumeParameters(existingVol, req); err != nil {
 					return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists but is incompatible: %v", volumeID, err)
 				}
+				if !store.IsVolumeReady(existingVol) {
+					klog.V(4).Infof("Volume %s metadata won the create race but is not ready, resuming quota setup", volumeID)
+					if err := d.setVolumeQuota(ctx, existingVol); err != nil {
+						if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
+							klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
+						}
+						d.cleanupProvisionedVolume(ctx, existingVol, "quota failure")
+						return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+					}
+					if err := d.markVolumeReady(existingVol); err != nil {
+						return nil, status.Errorf(codes.Internal, "failed to mark volume metadata ready: %v", err)
+					}
+				}
 				return &csi.CreateVolumeResponse{Volume: existingVol.ToCSIVolume()}, nil
 			}
 			return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
@@ -369,19 +408,15 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 	}
 
-	// Set quota only after the metadata create wins the idempotency race.
-	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeID, capacityBytes)
-	err = d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
-		SVMName:    svm.Name,
-		Path:       volumePath,
-		QuotaBytes: capacityBytes,
-	})
-	if err != nil {
+	if err := d.setVolumeQuota(ctx, volumeInfo); err != nil {
 		if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
 			klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
 		}
 		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
 		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+	}
+	if err := d.markVolumeReady(volumeInfo); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to mark volume metadata ready: %v", err)
 	}
 
 	klog.Infof("Volume %s created successfully (SVM: %s, Path: %s)", volumeID, svm.Name, volumePath)
@@ -389,6 +424,25 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	return &csi.CreateVolumeResponse{
 		Volume: volumeInfo.ToCSIVolume(),
 	}, nil
+}
+
+func (d *Driver) setVolumeQuota(ctx context.Context, volumeInfo *store.VolumeInfo) error {
+	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeInfo.VolumeID, volumeInfo.CapacityBytes)
+	return d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
+		SVMName:    volumeInfo.SVMName,
+		Path:       volumeInfo.Path,
+		QuotaBytes: volumeInfo.CapacityBytes,
+	})
+}
+
+func (d *Driver) markVolumeReady(volumeInfo *store.VolumeInfo) error {
+	updated := *volumeInfo
+	updated.ReadyToUse = store.VolumeReadyState(true)
+	if err := d.store.UpdateVolume(&updated); err != nil {
+		return err
+	}
+	volumeInfo.ReadyToUse = updated.ReadyToUse
+	return nil
 }
 
 func (d *Driver) cleanupProvisionedVolume(ctx context.Context, volumeInfo *store.VolumeInfo, reason string) {

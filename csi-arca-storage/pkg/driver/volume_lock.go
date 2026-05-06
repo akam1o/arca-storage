@@ -1,6 +1,14 @@
 package driver
 
-import "context"
+import (
+	"context"
+	"fmt"
+	"time"
+
+	"k8s.io/klog/v2"
+)
+
+const volumeCreateLockTTL = 30 * time.Second
 
 type volumeCreateLock struct {
 	token    chan struct{}
@@ -8,6 +16,32 @@ type volumeCreateLock struct {
 }
 
 func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (func(), error) {
+	releaseLocalLock, err := d.acquireLocalVolumeCreateLock(ctx, volumeID)
+	if err != nil {
+		return nil, err
+	}
+
+	if d.lockManager == nil {
+		return releaseLocalLock, nil
+	}
+
+	distributedLock, err := d.lockManager.AcquireLock(ctx, "volume-create-"+volumeID, volumeCreateLockTTL)
+	if err != nil {
+		releaseLocalLock()
+		return nil, fmt.Errorf("failed to acquire distributed volume create lock: %w", err)
+	}
+
+	return func() {
+		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := distributedLock.Release(releaseCtx); err != nil {
+			klog.Warningf("Failed to release distributed volume create lock for %s: %v", volumeID, err)
+		}
+		releaseLocalLock()
+	}, nil
+}
+
+func (d *Driver) acquireLocalVolumeCreateLock(ctx context.Context, volumeID string) (func(), error) {
 	d.volumeCreateLocksMu.Lock()
 	if d.volumeCreateLocks == nil {
 		d.volumeCreateLocks = make(map[string]*volumeCreateLock)
