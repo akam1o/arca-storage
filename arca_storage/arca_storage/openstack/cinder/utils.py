@@ -9,6 +9,8 @@ import subprocess
 import sys
 from typing import Optional
 
+from arca_storage.cli.lib.validators import validate_name
+
 from .exceptions import ArcaStorageException
 
 
@@ -40,14 +42,13 @@ def get_mount_point_for_svm(base_path: str, svm_name: str) -> str:
     Raises:
         ArcaStorageException: If svm_name contains path traversal characters
     """
-    # Sanitize SVM name to prevent path traversal attacks
-    # SVM names should only contain alphanumeric, dots, underscores, and hyphens
-    import re
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", svm_name):
+    try:
+        validate_name(svm_name)
+    except ValueError as e:
         raise ArcaStorageException(
             f"Invalid SVM name '{svm_name}': must start with alphanumeric "
             "and contain only alphanumeric, dots, underscores, or hyphens"
-        )
+        ) from e
 
     # Use literal SVM name for easy identification
     return os.path.join(base_path, f"svm_{svm_name}")

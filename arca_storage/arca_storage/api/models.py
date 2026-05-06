@@ -8,7 +8,16 @@ from typing import List, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
-from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_svm_ip_cidr
+from arca_storage.cli.lib.validators import (
+    normalize_ip_cidr,
+    validate_name as validate_resource_name,
+    validate_svm_ip_cidr,
+)
+
+
+def _validate_resource_name(value: str) -> str:
+    validate_resource_name(value)
+    return value
 
 
 class SVMStatus(str, Enum):
@@ -63,13 +72,7 @@ class SVMCreate(BaseModel):
 
     @field_validator("name")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
     @field_validator("ip_cidr")
     def validate_ip_cidr(cls, v: str) -> str:
@@ -131,13 +134,7 @@ class DirectoryCreate(BaseModel):
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class QuotaSet(BaseModel):
@@ -149,13 +146,7 @@ class QuotaSet(BaseModel):
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class QuotaExpand(BaseModel):
@@ -167,13 +158,7 @@ class QuotaExpand(BaseModel):
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 # Volume Models
@@ -190,13 +175,7 @@ class VolumeCreate(BaseModel):
 
     @field_validator("name", "svm")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
     @field_validator("fs_type")
     def validate_fs_type(cls, v: str) -> str:
@@ -212,6 +191,10 @@ class VolumeResize(BaseModel):
     svm: str = Field(..., description="SVM name")
     new_size_gib: int = Field(..., description="New size in GiB", gt=0)
 
+    @field_validator("svm")
+    def validate_svm(cls, v: str) -> str:
+        return _validate_resource_name(v)
+
 
 class VolumeQoSApply(BaseModel):
     """Request model for applying QoS to a volume."""
@@ -224,13 +207,7 @@ class VolumeQoSApply(BaseModel):
 
     @field_validator("svm")
     def validate_svm(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "SVM name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class VolumeQoS(BaseModel):
@@ -297,13 +274,7 @@ class SnapshotCreate(BaseModel):
 
     @field_validator("name", "svm", "volume")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class VolumeCloneCreate(BaseModel):
@@ -316,13 +287,7 @@ class VolumeCloneCreate(BaseModel):
 
     @field_validator("name", "svm", "snapshot")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class Snapshot(BaseModel):
@@ -364,6 +329,10 @@ class ExportCreate(BaseModel):
     access: str = Field("rw", description="Access type: rw or ro")
     root_squash: bool = Field(True, description="Enable root squash")
     sec: List[str] = Field(default_factory=lambda: ["sys"], description="Security types")
+
+    @field_validator("svm", "volume")
+    def validate_name(cls, v: str) -> str:
+        return _validate_resource_name(v)
 
     @field_validator("access")
     def validate_access(cls, v: str) -> str:

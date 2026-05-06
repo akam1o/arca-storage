@@ -40,6 +40,19 @@ def test_export_body_name_validation_errors_return_invalid_argument():
 
 
 @pytest.mark.integration
+def test_body_name_validation_rejects_trailing_newline():
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/svms",
+        json={"name": "tenant\n", "ip_cidr": "192.168.10.5/24"},
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     ("path", "payload"),
     [

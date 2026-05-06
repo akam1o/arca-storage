@@ -8,6 +8,7 @@ from typing import Tuple
 
 
 LVM_NAME_MAX_LENGTH = 127
+_RESOURCE_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*")
 
 
 def validate_name(name: str) -> None:
@@ -27,7 +28,7 @@ def validate_name(name: str) -> None:
         raise ValueError("Name must be between 1 and 64 characters")
     
     # Allow alphanumeric, dots, underscores, hyphens
-    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', name):
+    if not _RESOURCE_NAME_RE.fullmatch(name):
         raise ValueError("Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens")
 
 

@@ -51,6 +51,10 @@ class TestValidateName:
             validate_name("-tenant")  # starts with hyphen
         with pytest.raises(ValueError):
             validate_name("_tenant")  # starts with underscore
+        with pytest.raises(ValueError):
+            validate_name("tenant\n")  # trailing newline
+        with pytest.raises(ValueError):
+            validate_name("tenant\r")  # trailing carriage return
 
 
 class TestValidateVlan:
