@@ -55,13 +55,16 @@ func validateVolumePath(path string) error {
 
 	// Clean the path and check for traversal attempts
 	cleaned := filepath.Clean(path)
-	if strings.Contains(cleaned, "..") {
-		return fmt.Errorf("volume path contains invalid traversal pattern: %s", path)
+	if cleaned == "." {
+		return fmt.Errorf("volume path must identify a directory below the SVM root: %s", path)
 	}
-
-	// Ensure cleaned path doesn't escape (starts with ..)
-	if strings.HasPrefix(cleaned, "..") {
-		return fmt.Errorf("volume path attempts to escape root: %s", path)
+	if cleaned != path {
+		return fmt.Errorf("volume path must be canonical: %s", path)
+	}
+	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
+		if part == "" || part == "." || part == ".." {
+			return fmt.Errorf("volume path contains invalid path segment %q: %s", part, path)
+		}
 	}
 
 	return nil

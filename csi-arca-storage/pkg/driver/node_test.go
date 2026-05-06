@@ -95,6 +95,20 @@ func TestValidateSVMNameRejectsPathTraversal(t *testing.T) {
 	}
 }
 
+func TestValidateVolumePathRejectsRootAliasesAndTraversal(t *testing.T) {
+	for _, path := range []string{"", ".", "./", "dir/..", "dir/../vol", "dir/.", "dir//vol", "/vol"} {
+		if err := validateVolumePath(path); err == nil {
+			t.Fatalf("expected invalid volume path %q to be rejected", path)
+		}
+	}
+
+	for _, path := range []string{"pvc-1234", "volumes/pvc-1234"} {
+		if err := validateVolumePath(path); err != nil {
+			t.Fatalf("expected valid volume path %q to be accepted: %v", path, err)
+		}
+	}
+}
+
 func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	tmp := t.TempDir()
 	targetPath := filepath.Join(tmp, "target")
