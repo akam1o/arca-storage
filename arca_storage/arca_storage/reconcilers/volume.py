@@ -107,6 +107,8 @@ class VolumeReconciler:
         mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
 
         try:
+            volume.status.phase = Phase.DELETING
+            self._persist(volume, "volume delete reserved")
             self.adapters.xfs.umount(mount_path)
             self.adapters.lvm.delete_lv(vg_name, lv_name)
             self.db.delete_volume(spec.svm, spec.name)

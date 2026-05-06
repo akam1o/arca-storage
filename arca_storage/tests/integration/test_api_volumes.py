@@ -395,6 +395,49 @@ class TestCloneVolume:
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
         assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
 
+    @pytest.mark.integration
+    def test_clone_volume_rejects_unready_snapshot_without_target_record(self, fake_context):
+        from arca_storage.models.snapshot import Snapshot, SnapshotSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        fake_context.db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="tenant_a", volume="vol1")))
+
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1"},
+        )
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["phase"] == "Pending"
+        assert fake_context.db.get_volume("tenant_a", "clone1") is None
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
+
+    @pytest.mark.integration
+    def test_clone_volume_rejects_snapshot_with_missing_source_without_target_record(self, fake_context):
+        from arca_storage.models.base import Phase
+        from arca_storage.models.snapshot import Snapshot, SnapshotSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        snapshot = Snapshot(spec=SnapshotSpec(name="snap1", svm="tenant_a", volume="missing"))
+        snapshot.status.phase = Phase.READY
+        snapshot.status.lv_created = True
+        fake_context.db.insert_snapshot(snapshot)
+
+        response = client.post(
+            "/v1/volumes/missing/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1"},
+        )
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["source_volume"] == "tenant_a/missing"
+        assert fake_context.db.get_volume("tenant_a", "clone1") is None
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
+
 
 class TestSnapshots:
     """Tests for API snapshot behavior."""
@@ -457,6 +500,8 @@ class TestSnapshots:
         client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
 
         def fail_delete(_vg, _lv):
+            record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+            assert record["status"]["phase"] == "Deleting"
             raise RuntimeError("snapshot delete failed")
 
         fake_context.adapters.lvm.delete_lv = fail_delete
@@ -536,6 +581,8 @@ class TestDeleteVolume:
         client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
 
         def fail_delete(_vg, _lv):
+            record = fake_context.db.get_volume("tenant_a", "vol1")
+            assert record["status"]["phase"] == "Deleting"
             raise RuntimeError("delete failed")
 
         fake_context.adapters.lvm.delete_lv = fail_delete

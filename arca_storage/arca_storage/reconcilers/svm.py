@@ -177,6 +177,8 @@ class SVMReconciler:
         spec = svm.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         try:
+            svm.status.phase = Phase.DELETING
+            self._persist(svm, "svm delete reserved")
             self.adapters.pacemaker.delete_group(spec.name)
             self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:

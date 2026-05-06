@@ -80,6 +80,8 @@ class SnapshotReconciler:
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         snap_lv = snapshot.status.lv_name or f"vol_{spec.svm}_{spec.volume}_snap_{spec.name}"
         try:
+            snapshot.status.phase = Phase.DELETING
+            self._persist(snapshot, "snapshot delete reserved")
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
             self.db.delete_snapshot(spec.svm, spec.volume, spec.name)
             self.db.log_operation("Snapshot", snapshot.metadata.id, "delete", "completed")

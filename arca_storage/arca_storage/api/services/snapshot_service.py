@@ -243,8 +243,36 @@ def _clone_source_size_gib(ctx: Any, source_volume: str, clone_data: VolumeClone
     if not snapshots:
         raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
 
+    _require_snapshot_ready_record(snapshots[0], clone_data.svm, source_volume, clone_data.snapshot)
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
-    return int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
+    if not source_record:
+        raise PreconditionFailedError(
+            f"Snapshot '{clone_data.svm}/{source_volume}/{clone_data.snapshot}' source volume is missing",
+            {
+                "resource": "Snapshot",
+                "name": f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}",
+                "source_volume": f"{clone_data.svm}/{source_volume}",
+            },
+        )
+    require_volume_ready_record(source_record, clone_data.svm, source_volume)
+    return int(source_record.get("spec", {}).get("size_gib") or 10)
+
+
+def _require_snapshot_ready_record(record: Dict[str, Any], svm: str, volume: str, name: str) -> None:
+    status = record.get("status", {})
+    phase = str(status.get("phase") or "")
+    lv_created = bool(status.get("lv_created", False))
+    if phase == Phase.READY.value and lv_created:
+        return
+    raise PreconditionFailedError(
+        f"Snapshot '{svm}/{volume}/{name}' is not ready",
+        {
+            "resource": "Snapshot",
+            "name": f"{svm}/{volume}/{name}",
+            "phase": phase,
+            "lv_created": lv_created,
+        },
+    )
 
 
 def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:

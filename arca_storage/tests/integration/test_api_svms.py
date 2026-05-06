@@ -266,6 +266,8 @@ class TestDeleteSVM:
         )
 
         def fail_delete(_name):
+            record = fake_context.db.get_svm("tenant_a")
+            assert record["status"]["phase"] == "Deleting"
             raise RuntimeError("pacemaker delete failed")
 
         fake_context.adapters.pacemaker.delete_group = fail_delete
