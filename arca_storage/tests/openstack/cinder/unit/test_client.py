@@ -62,6 +62,22 @@ class TestArcaStorageClient(unittest.TestCase):
         mock_session.request.assert_called_once()
 
     @patch("arca_storage.openstack.cinder.client.requests")
+    def test_make_request_preserves_base_url_path_prefix(self, mock_requests):
+        """Test API request under a reverse-proxy path prefix."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {"data": {"items": []}}
+
+        mock_session = Mock()
+        mock_session.request.return_value = mock_response
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint="https://storage.example.com/arca")
+        client._make_request("GET", "/v1/volumes")
+
+        assert mock_session.request.call_args.kwargs["url"] == "https://storage.example.com/arca/v1/volumes"
+
+    @patch("arca_storage.openstack.cinder.client.requests")
     def test_make_request_404_error(self, mock_requests):
         """Test API request with 404 error."""
         # Preserve real exceptions

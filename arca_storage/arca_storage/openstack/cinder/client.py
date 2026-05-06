@@ -1,8 +1,6 @@
 """REST API client for ARCA Storage."""
 
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
-
 try:
     import requests
     from requests.adapters import HTTPAdapter
@@ -121,7 +119,10 @@ class ArcaStorageClient:
             ArcaAPITimeout: Request timed out
             ArcaAPIError: API returned error
         """
-        url = urljoin(self.base_url, path)
+        if path.startswith("/"):
+            url = self.base_url + path
+        else:
+            url = f"{self.base_url}/{path}"
 
         try:
             response = self.session.request(
