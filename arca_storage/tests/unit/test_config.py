@@ -29,6 +29,8 @@ def test_load_settings_missing_default_uses_dev_defaults_when_allowed(monkeypatc
     assert cfg.storage.vg_name == "vg_pool_01"
     assert cfg.network.parent_interface == "bond0"
     assert cfg.state.db_path == "/var/lib/arca-storage/state.db"
+    assert cfg.csi.client_cidrs == []
+    assert cfg.csi.root_squash is True
 
 
 @pytest.mark.unit
@@ -79,6 +81,10 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
                 "mountd_port = 20048",
                 "nlm_port = 32768",
                 "",
+                "[csi]",
+                'client_cidrs = ["10.0.0.0/24", "10.0.0.10/24"]',
+                "root_squash = false",
+                "",
             ]
         ),
         encoding="utf-8",
@@ -99,6 +105,28 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
     assert cfg.ganesha.protocols == [3, 4]
     assert cfg.ganesha.mountd_port == 20048
     assert cfg.ganesha.nlm_port == 32768
+    assert cfg.csi.client_cidrs == ["10.0.0.0/24"]
+    assert cfg.csi.root_squash is False
+
+
+@pytest.mark.unit
+def test_load_settings_rejects_world_open_csi_client_cidr(monkeypatch, temp_dir):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[csi]",
+                'client_cidrs = ["0.0.0.0/0"]',
+            ]
+        ),
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match="IPv4 default route"):
+        load_settings()
 
 
 @pytest.mark.unit

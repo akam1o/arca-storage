@@ -47,7 +47,9 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     exports = fake_context.adapters.ganesha.exports[svm_name]
     assert _export_paths(exports) == [f"/exports/{svm_name}", f"/exports/{svm_name}/{volume_path}"]
     assert all(export["owner"] == "csi" for export in exports)
-    assert all(export["client"] == "0.0.0.0/0" for export in exports)
+    assert {(export["client"], export["squash"]) for export in exports} == {
+        ("10.0.0.0/24", "Root_Squash")
+    }
 
     response = client.post(
         "/v1/directories",
@@ -80,6 +82,38 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     assert response.status_code == 200
     assert fake_context.db.get_volume(svm_name, volume_path) is None
     assert fake_context.adapters.ganesha.exports[svm_name] == []
+
+
+def test_csi_directory_requires_configured_client_cidrs(fake_context):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    fake_context.settings.csi.client_cidrs = []
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": "pvc-1234567890abcdef",
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 412
+    assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+    assert response.json()["error"]["details"] == {
+        "resource": "CSIExport",
+        "config": "csi.client_cidrs",
+    }
 
 
 def _export_paths(exports):

@@ -5,6 +5,8 @@ Provides a fake AppContext with in-memory adapters and SQLite DB,
 replacing the old approach of patching individual module-level functions.
 """
 
+from types import SimpleNamespace
+
 import pytest
 
 from arca_storage.adapters.ganesha import FakeGaneshaAdapter
@@ -23,6 +25,9 @@ from arca_storage.reconcilers.volume import VolumeReconciler
 
 class FakeSettings:
     """Minimal settings that provides to_reconciler_config()."""
+
+    def __init__(self):
+        self.csi = SimpleNamespace(client_cidrs=["10.0.0.0/24"], root_squash=True)
 
     def to_reconciler_config(self):
         return {

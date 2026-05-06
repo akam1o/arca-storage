@@ -16,10 +16,9 @@ from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, Volu
 from arca_storage.api.services import export_service, volume_service
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError
+from arca_storage.errors import NotFoundError, PreconditionFailedError
 
 GIB = 1024**3
-CSI_CLIENT_CIDR = "0.0.0.0/0"
 CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
@@ -116,41 +115,63 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str) -> None:
     export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
     root_path = f"{export_dir}/{svm}"
     volume_path = f"{root_path}/{path}"
+    root_squash = _csi_root_squash(ctx)
 
-    export_service.ensure_internal_export(
-        svm,
-        CSI_ROOT_EXPORT_VOLUME,
-        CSI_CLIENT_CIDR,
-        path=root_path,
-        pseudo=root_path,
-        access="rw",
-        root_squash=False,
-        owner="csi",
-    )
-    export_service.ensure_internal_export(
-        svm,
-        path,
-        CSI_CLIENT_CIDR,
-        path=volume_path,
-        pseudo=volume_path,
-        access="rw",
-        root_squash=False,
-        owner="csi",
-    )
+    for client in _csi_client_cidrs(ctx):
+        export_service.ensure_internal_export(
+            svm,
+            CSI_ROOT_EXPORT_VOLUME,
+            client,
+            path=root_path,
+            pseudo=root_path,
+            access="rw",
+            root_squash=root_squash,
+            owner="csi",
+        )
+        export_service.ensure_internal_export(
+            svm,
+            path,
+            client,
+            path=volume_path,
+            pseudo=volume_path,
+            access="rw",
+            root_squash=root_squash,
+            owner="csi",
+        )
 
 
 def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
-    if ctx.db.get_export(svm, path, CSI_CLIENT_CIDR):
-        export_service.remove_internal_export(svm, path, CSI_CLIENT_CIDR)
+    for export in ctx.db.list_exports(svm=svm, volume=path, limit=1_000_000):
+        spec = export.get("spec", {})
+        if spec.get("owner") == "csi":
+            export_service.remove_internal_export(svm, path, spec["client"])
 
     has_other_csi_volume = any(
         e.get("spec", {}).get("owner") == "csi"
-        and e.get("spec", {}).get("client") == CSI_CLIENT_CIDR
         and e.get("spec", {}).get("volume") != CSI_ROOT_EXPORT_VOLUME
         for e in ctx.db.list_exports(svm=svm, limit=1_000_000)
     )
-    if not has_other_csi_volume and ctx.db.get_export(svm, CSI_ROOT_EXPORT_VOLUME, CSI_CLIENT_CIDR):
-        export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, CSI_CLIENT_CIDR)
+    if not has_other_csi_volume:
+        for export in ctx.db.list_exports(svm=svm, volume=CSI_ROOT_EXPORT_VOLUME, limit=1_000_000):
+            spec = export.get("spec", {})
+            if spec.get("owner") == "csi":
+                export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, spec["client"])
+
+
+def _csi_client_cidrs(ctx: Any) -> list[str]:
+    csi = getattr(ctx.settings, "csi", None)
+    client_cidrs = list(getattr(csi, "client_cidrs", []) or [])
+    if not client_cidrs:
+        raise PreconditionFailedError(
+            "CSI NFS client CIDRs are not configured",
+            {"resource": "CSIExport", "config": "csi.client_cidrs"},
+        )
+    return client_cidrs
+
+
+def _csi_root_squash(ctx: Any) -> bool:
+    csi = getattr(ctx.settings, "csi", None)
+    return bool(getattr(csi, "root_squash", True))
 
 
 def _quota_bytes_to_gib(quota_bytes: int | None) -> int:

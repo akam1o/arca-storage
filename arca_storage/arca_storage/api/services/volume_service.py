@@ -25,7 +25,6 @@ from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
 
 _LIST_ALL_LIMIT = 1_000_000
-_CSI_CLIENT_CIDR = "0.0.0.0/0"
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
@@ -314,12 +313,14 @@ def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
 
     has_other_csi_volume = any(
         e.get("spec", {}).get("owner") == "csi"
-        and e.get("spec", {}).get("client") == _CSI_CLIENT_CIDR
         and e.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
         for e in ctx.db.list_exports(svm=svm, limit=_LIST_ALL_LIMIT)
     )
-    if not has_other_csi_volume and ctx.db.get_export(svm, _CSI_ROOT_EXPORT_VOLUME, _CSI_CLIENT_CIDR):
-        export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, _CSI_CLIENT_CIDR)
+    if not has_other_csi_volume:
+        for export in ctx.db.list_exports(svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME, limit=_LIST_ALL_LIMIT):
+            spec = export.get("spec", {})
+            if spec.get("owner") == "csi":
+                export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, spec["client"])
 
 
 def _snapshot_ref(snapshot: Dict[str, Any]) -> str:
