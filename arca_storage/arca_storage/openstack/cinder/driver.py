@@ -81,6 +81,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         """
         super(ArcaStorageNFSDriver, self).do_setup(context)
         self._context = context
+        self._validate_supported_svm_strategy()
 
         try:
             # Initialize ARCA Storage API client if enabled
@@ -137,6 +138,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             exception.VolumeBackendAPIException: If validation fails
         """
         super(ArcaStorageNFSDriver, self).check_for_setup_error()
+        self._validate_supported_svm_strategy()
 
         # Validate export path resolution
         try:
@@ -480,11 +482,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             raise exception.VolumeBackendAPIException(data=msg)
 
         elif strategy == "per_project":
-            # Each project gets dedicated SVM
-            # Note: This requires SVM auto-creation which is not implemented yet
-            project_id = volume.project_id
-            svm_name = f"{self.configuration.arca_storage_svm_prefix}{project_id}"
-
             msg = _(
                 "SVM strategy 'per_project' requires auto-creation which is not "
                 "implemented yet. Please use 'shared' or 'manual' strategy."
@@ -525,20 +522,38 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         return svm_info
 
+    def _validate_supported_svm_strategy(self) -> None:
+        """Reject configured strategies that this Cinder driver cannot serve."""
+        if self.configuration.arca_storage_svm_strategy == "per_project":
+            msg = _(
+                "SVM strategy 'per_project' is not implemented for the Cinder "
+                "driver. Please use 'shared' or 'manual' strategy."
+            )
+            LOG.error(msg)
+            raise exception.VolumeBackendAPIException(data=msg)
+
+    def _configured_svm_export_root(self, svm_name: str) -> str:
+        """Return the configured per-SVM export root for static NFS mode."""
+        base = getattr(self.configuration, "arca_storage_nfs_export_root", None) or "/exports"
+        base = str(base).rstrip("/")
+        return f"{base}/{svm_name}" if base else f"/{svm_name}"
+
     def _get_export_path(self, svm_name: str) -> str:
         """Resolve NFS export path for an SVM.
 
         Preference order:
-          1) Explicit `arca_storage_nfs_server` + default export layout.
-          2) ARCA API (SVM vip) if `arca_storage_use_api=True`.
+          1) Explicit `arca_storage_nfs_server` + configured export root.
+          2) ARCA API (SVM vip + export_root) if `arca_storage_use_api=True`.
         """
         if getattr(self.configuration, "arca_storage_nfs_server", None):
-            return f"{self.configuration.arca_storage_nfs_server}:/exports/{svm_name}"
+            export_root = self._configured_svm_export_root(svm_name)
+            return f"{self.configuration.arca_storage_nfs_server}:{export_root}"
 
         if self.configuration.arca_storage_use_api:
             svm_info = self._get_svm_info(svm_name)
             svm_vip = svm_info["vip"]
-            return f"{svm_vip}:/exports/{svm_name}"
+            export_root = svm_info.get("export_root") or self._configured_svm_export_root(svm_name)
+            return f"{svm_vip}:{export_root}"
 
         raise exception.VolumeBackendAPIException(
             data=_(

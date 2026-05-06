@@ -4,7 +4,7 @@
 
 ## 概要
 
-- SVM 1つ = NFS エクスポート 1つ: `server:/exports/<svm>`
+- SVM 1つ = NFS エクスポート 1つ: `server:<export_root>/<svm>`
 - Cinder ボリューム = ファイル: `volume-<volume_id>`
 - スナップショット/クローン = ファイルコピー: `snapshot-<snapshot_id>`
 - 本ドライバは **基本的に file-only backend** として動作します（ARCA REST API は任意）。
@@ -32,6 +32,7 @@ driver_volume_type = nfs
 # NFS/file-only mode（推奨）
 arca_storage_use_api = false
 arca_storage_nfs_server = 192.168.10.5
+arca_storage_nfs_export_root = /exports
 arca_storage_nfs_mount_point_base = /var/lib/cinder/mnt
 arca_storage_nfs_mount_options = rw,noatime,nodiratime,vers=4.1
 
@@ -90,7 +91,7 @@ QoS は best-effort です:
 ## 運用メモ
 
 - Cinder volume ホストと Nova compute ホストで NFS クライアントが利用可能であること
-- `/exports/<svm>` が到達可能で、必要なクライアント CIDR に RW 許可されていること
+- `<arca_storage_nfs_export_root>/<svm>` が到達可能で、必要なクライアント CIDR に RW 許可されていること
 - sparse file でも書き込みに応じて実容量が消費されるため、エクスポート側の空き容量を監視すること
 
 ## トラブルシュート

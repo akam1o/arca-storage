@@ -33,6 +33,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         config.arca_storage_default_svm = "test-svm"
         config.arca_storage_svm_prefix = "svm-"
         config.arca_storage_nfs_server = "192.168.100.5"
+        config.arca_storage_nfs_export_root = "/exports"
         config.arca_storage_nfs_mount_options = "rw,noatime,vers=4.1"
         config.arca_storage_nfs_mount_point_base = "/var/lib/cinder/mnt"
         config.arca_storage_snapshot_copy_timeout = 600
@@ -58,6 +59,16 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.do_setup(self.driver._context)
 
         assert mock_client.call_args.kwargs["ca_bundle"] == "/etc/ssl/certs/arca-ca.pem"
+        mock_super_setup.assert_called_once_with(self.driver._context)
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    def test_do_setup_rejects_unimplemented_per_project_strategy(self, mock_super_setup):
+        """per_project must fail at backend setup instead of first volume operation."""
+        self.driver.configuration.arca_storage_svm_strategy = "per_project"
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="per_project"):
+            self.driver.do_setup(self.driver._context)
+
         mock_super_setup.assert_called_once_with(self.driver._context)
 
     def _create_mock_volume(self, volume_id="test-vol-id", name="test-volume", size=10):
@@ -222,9 +233,33 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert export_path == "192.168.100.5:/exports/test-svm"
         self.driver.arca_client.get_svm.assert_not_called()
 
+    def test_get_export_path_uses_configured_export_root(self):
+        """Static NFS mode honors a non-default export root."""
+        self.driver.configuration.arca_storage_nfs_export_root = "/srv/arca/exports"
+
+        export_path = self.driver._get_export_path("test-svm")
+
+        assert export_path == "192.168.100.5:/srv/arca/exports/test-svm"
+        self.driver.arca_client.get_svm.assert_not_called()
+
     def test_get_export_path_uses_svm_vip_from_api(self):
-        """API mode resolves the SVM VIP when no static NFS server is configured."""
+        """API mode resolves the SVM VIP and export root when no static server is set."""
         self.driver.configuration.arca_storage_nfs_server = None
+        self.driver.arca_client.get_svm.return_value = {
+            "name": "test-svm",
+            "vip": "192.168.100.9",
+            "export_root": "/srv/arca/exports/test-svm",
+        }
+
+        export_path = self.driver._get_export_path("test-svm")
+
+        assert export_path == "192.168.100.9:/srv/arca/exports/test-svm"
+        self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
+
+    def test_get_export_path_falls_back_to_configured_root_without_api_export_root(self):
+        """Older ARCA API responses still work through the configured root fallback."""
+        self.driver.configuration.arca_storage_nfs_server = None
+        self.driver.configuration.arca_storage_nfs_export_root = "/srv/arca/exports"
         self.driver.arca_client.get_svm.return_value = {
             "name": "test-svm",
             "vip": "192.168.100.9",
@@ -232,7 +267,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         export_path = self.driver._get_export_path("test-svm")
 
-        assert export_path == "192.168.100.9:/exports/test-svm"
+        assert export_path == "192.168.100.9:/srv/arca/exports/test-svm"
         self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
 
     def test_get_export_path_requires_server_or_api(self):

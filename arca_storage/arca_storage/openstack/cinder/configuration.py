@@ -105,8 +105,19 @@ def _get_arca_storage_opts():
             "arca_storage_nfs_server",
             default=None,
             help=(
-                "NFS server (IP/hostname) that exports /exports/<svm>. "
+                "NFS server (IP/hostname) that exports the per-SVM directories "
+                "under arca_storage_nfs_export_root. "
                 "Required when arca_storage_use_api is False."
+            ),
+        ),
+        cfg.StrOpt(
+            "arca_storage_nfs_export_root",
+            default="/exports",
+            help=(
+                "Base NFS export directory containing per-SVM exports. The driver "
+                "mounts <server>:<export_root>/<svm> when arca_storage_nfs_server "
+                "is configured. In API mode, the SVM export_root from ARCA is used "
+                "when available."
             ),
         ),
         cfg.StrOpt(
