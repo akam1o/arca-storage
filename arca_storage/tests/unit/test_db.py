@@ -41,6 +41,12 @@ class TestStateDB:
         assert len(filtered) == 1
         assert filtered[0]["spec"]["name"] == "svm1"
 
+        filtered_after_cursor = db.list_svms(name="svm1", cursor=encode_cursor(["svm0"]))
+        assert len(filtered_after_cursor) == 1
+
+        filtered_at_cursor = db.list_svms(name="svm1", cursor=encode_cursor(["svm1"]))
+        assert filtered_at_cursor == []
+
         page = db.list_svms(limit=2, cursor=encode_cursor(["svm0"]))
         assert [item["spec"]["name"] for item in page] == ["svm1", "svm2"]
 
@@ -94,6 +100,9 @@ class TestStateDB:
     def test_invalid_cursor_is_rejected(self, db):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
             db.list_svms(cursor="not-base64-json")
+
+        with pytest.raises(ValueError, match="Invalid pagination cursor"):
+            db.list_svms(name="svm1", cursor="not-base64-json")
 
     def test_operation_log(self, db):
         db.log_operation("svm", "svm1", "create", "started", "Creating SVM")

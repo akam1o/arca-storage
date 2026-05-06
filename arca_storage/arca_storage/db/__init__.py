@@ -203,17 +203,22 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
+        cursor_values = _decode_cursor(cursor, 1)
         if name:
-            cur = conn.execute("SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?", (name, limit))
-        else:
-            cursor_values = _decode_cursor(cursor, 1)
             if cursor_values:
                 cur = conn.execute(
-                    "SELECT * FROM svms WHERE name > ? ORDER BY name LIMIT ?",
-                    (cursor_values[0], limit),
+                    "SELECT * FROM svms WHERE name = ? AND name > ? ORDER BY name LIMIT ?",
+                    (name, cursor_values[0], limit),
                 )
             else:
-                cur = conn.execute("SELECT * FROM svms ORDER BY name LIMIT ?", (limit,))
+                cur = conn.execute("SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?", (name, limit))
+        elif cursor_values:
+            cur = conn.execute(
+                "SELECT * FROM svms WHERE name > ? ORDER BY name LIMIT ?",
+                (cursor_values[0], limit),
+            )
+        else:
+            cur = conn.execute("SELECT * FROM svms ORDER BY name LIMIT ?", (limit,))
         return [self._row_to_resource(row) for row in cur.fetchall()]
 
     def delete_svm(self, name: str) -> bool:

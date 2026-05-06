@@ -127,6 +127,15 @@ class TestListSVMs:
         assert response.status_code == 200
         mock_list.assert_called_once()
 
+    @pytest.mark.integration
+    def test_list_svms_rejects_invalid_cursor_with_filter(self, fake_context):
+        client = TestClient(app)
+
+        response = client.get("/v1/svms?name=tenant_a&cursor=not-a-cursor")
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+
 
 class TestSVMCapacity:
     """Tests for GET /v1/svms/{name}/capacity."""
