@@ -111,9 +111,24 @@ class TestArcaManilaClientOperations:
             assert vol["name"] == "share-123"
             assert vol["export_path"] == "vip:/path"
 
+    def test_clone_volume_from_snapshot_uses_api_snapshot_field(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.return_value = {"data": {"volume": {"name": "share-new"}}}
+            client.clone_volume_from_snapshot(
+                name="share-new",
+                svm="svm1",
+                source_volume="share-src",
+                snapshot_name="snap1",
+                size_gib=12,
+            )
+            mock_make.assert_called_once_with(
+                "POST",
+                "/v1/volumes/share-src/clone",
+                json_data={"name": "share-new", "svm": "svm1", "snapshot": "snap1", "size_gib": 12},
+            )
+
     def test_list_exports_passes_filters(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.return_value = {"data": {"items": []}}
             client.list_exports(svm="svm1", volume="share-123")
             mock_make.assert_called_once_with("GET", "/v1/exports", params={"svm": "svm1", "volume": "share-123"})
-

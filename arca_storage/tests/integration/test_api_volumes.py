@@ -76,6 +76,7 @@ class TestCreateVolume:
         create_test_svm(client)
         first = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
         assert first.status_code == 201
+        assert first.json()["data"]["volume"]["export_path"] == "192.168.10.5:/exports/tenant_a/vol1"
 
         response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
 
@@ -148,16 +149,36 @@ class TestCloneVolume:
         client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
 
         response = client.post(
-            "/v1/volumes/clone1/clone",
+            "/v1/volumes/vol1/clone",
             json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
         )
 
         assert response.status_code == 201
         volume = response.json()["data"]["volume"]
         assert volume["size_gib"] == 20
+        assert volume["export_path"] == "192.168.10.5:/exports/tenant_a/clone1"
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
         assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20
         assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
+
+    @pytest.mark.integration
+    def test_clone_volume_uses_source_volume_from_route(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/volumes", json={"name": "vol2", "svm": "tenant_a", "size_gib": 30})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol2"})
+
+        response = client.post(
+            "/v1/volumes/vol2/clone",
+            json={"name": "clone2", "svm": "tenant_a", "snapshot": "snap1"},
+        )
+
+        assert response.status_code == 201
+        volume = response.json()["data"]["volume"]
+        assert volume["size_gib"] == 30
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone2"] == 30
 
     @pytest.mark.integration
     def test_clone_volume_cleans_up_new_lv_on_mount_or_grow_failure(self, fake_context):
@@ -172,7 +193,7 @@ class TestCloneVolume:
         fake_context.adapters.xfs.grow = fail_grow
 
         response = client.post(
-            "/v1/volumes/clone1/clone",
+            "/v1/volumes/vol1/clone",
             json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
         )
 

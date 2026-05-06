@@ -15,6 +15,7 @@ from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name
+from arca_storage.api.services.volume_service import build_volume_export_path
 
 
 def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
@@ -84,8 +85,9 @@ def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> No
         )
 
 
-def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
+def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     """Create a new volume from a snapshot (clone)."""
+    validate_name(source_volume)
     validate_name(clone_data.name)
     validate_name(clone_data.svm)
     validate_name(clone_data.snapshot)
@@ -97,13 +99,12 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
     vg_name = cfg["vg_name"]
     export_dir = cfg["export_dir"]
 
-    # Find the snapshot
-    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, name=clone_data.snapshot)
+    # Find the snapshot on the source volume from the route path.
+    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
     if not snapshots:
-        raise NotFoundError("Snapshot", f"{clone_data.svm}/{clone_data.snapshot}")
+        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
 
     snap_record = snapshots[0]
-    source_volume = snap_record["spec"]["volume"]
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
     source_size_gib = int(source_record.get("spec", {}).get("size_gib") or 10) if source_record else 10
     target_size_gib = max(clone_data.size_gib or source_size_gib, source_size_gib)
@@ -156,6 +157,7 @@ def clone_volume_from_snapshot(clone_data: VolumeCloneCreate) -> Dict[str, Any]:
         "status": Phase.READY.value,
         "lv_path": clone_lv_path,
         "mount_path": mount_path,
+        "export_path": build_volume_export_path(ctx, clone_data.svm, mount_path),
         "created_at": volume.metadata.created_at,
     }
 

@@ -652,7 +652,7 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        data = {"name": name, "svm": svm, "snapshot_name": snapshot_name}
+        data = {"name": name, "svm": svm, "snapshot": snapshot_name}
         if size_gib is not None:
             data["size_gib"] = size_gib
 

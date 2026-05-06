@@ -334,7 +334,7 @@ def list_snapshots(
 @app.post("/v1/volumes/{name}/clone", response_model=VolumeResponse, status_code=201)
 def clone_volume_from_snapshot(name: str, clone: VolumeCloneCreate) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
-    result = snapshot_service.clone_volume_from_snapshot(clone)
+    result = snapshot_service.clone_volume_from_snapshot(name, clone)
     return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
 
 

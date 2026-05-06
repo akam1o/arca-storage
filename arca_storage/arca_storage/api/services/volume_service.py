@@ -6,6 +6,7 @@ Delegates to the Volume reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
+from ipaddress import IPv4Interface
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
@@ -48,7 +49,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
 
-    return _volume_to_dict(volume)
+    return _volume_to_dict(volume, ctx)
 
 
 def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
@@ -78,7 +79,7 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
             spec=VolumeSpec.model_validate(record["spec"]),
             status=_parse_status(record),
         )
-        return _volume_to_dict(vol)
+        return _volume_to_dict(vol, ctx)
 
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
@@ -97,7 +98,7 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
     vol.metadata.bump()
     ctx.db.upsert_volume(vol)
-    return _volume_to_dict(vol)
+    return _volume_to_dict(vol, ctx)
 
 
 def delete_volume(name: str, svm: str, force: bool = False) -> None:
@@ -150,11 +151,12 @@ def list_volumes(
 ) -> Dict[str, Any]:
     """List volumes from the database."""
     ctx = get_context()
-    items = ctx.db.list_volumes(svm=svm, name=name, limit=limit)
+    items = [_volume_record_to_dict(record, ctx) for record in ctx.db.list_volumes(svm=svm, name=name, limit=limit)]
     return {"items": items, "next_cursor": None}
 
 
-def _volume_to_dict(vol: Volume) -> Dict[str, Any]:
+def _volume_to_dict(vol: Volume, ctx: Any | None = None) -> Dict[str, Any]:
+    ctx = ctx or get_context()
     return {
         "name": vol.spec.name,
         "svm": vol.spec.svm,
@@ -164,9 +166,49 @@ def _volume_to_dict(vol: Volume) -> Dict[str, Any]:
         "mount_path": vol.status.mount_path,
         "lv_path": vol.status.lv_path,
         "lv_name": vol.status.lv_name,
+        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path),
         "status": vol.status.phase.value,
         "created_at": vol.metadata.created_at,
     }
+
+
+def _volume_record_to_dict(record: Dict[str, Any], ctx: Any | None = None) -> Dict[str, Any]:
+    ctx = ctx or get_context()
+    spec = record.get("spec", {})
+    status = record.get("status", {})
+    mount_path = status.get("mount_path")
+    return {
+        "name": spec.get("name"),
+        "svm": spec.get("svm"),
+        "size_gib": spec.get("size_gib"),
+        "thin": spec.get("thin", True),
+        "fs_type": spec.get("fs_type", "xfs"),
+        "mount_path": mount_path,
+        "lv_path": status.get("lv_path"),
+        "lv_name": status.get("lv_name"),
+        "export_path": build_volume_export_path(ctx, spec.get("svm"), mount_path),
+        "status": status.get("phase"),
+        "created_at": record.get("created_at"),
+    }
+
+
+def build_volume_export_path(ctx: Any, svm: str | None, mount_path: str | None) -> str | None:
+    """Return the NFS export location for a mounted volume."""
+    if not svm or not mount_path:
+        return None
+
+    record = ctx.db.get_svm(svm)
+    if not record:
+        return None
+
+    ip_cidr = str(record.get("spec", {}).get("ip_cidr") or "")
+    try:
+        vip = str(IPv4Interface(ip_cidr).ip)
+    except Exception:
+        vip = ip_cidr.split("/", 1)[0] if ip_cidr else ""
+    if not vip:
+        return None
+    return f"{vip}:{mount_path}"
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:
@@ -212,7 +254,7 @@ def _resume_volume_create(ctx: Any, record: Dict[str, Any]) -> Dict[str, Any]:
     volume = ctx.volume_reconciler.reconcile(volume)
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
-    return _volume_to_dict(volume)
+    return _volume_to_dict(volume, ctx)
 
 
 def _delete_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
