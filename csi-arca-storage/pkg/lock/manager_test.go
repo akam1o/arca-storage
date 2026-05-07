@@ -2,12 +2,18 @@ package lock
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
 
+	coordinationv1 "k8s.io/api/coordination/v1"
+	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/schema"
 	"k8s.io/client-go/kubernetes/fake"
+	k8stesting "k8s.io/client-go/testing"
 )
 
 func TestReleaseSkipsLeaseHeldByAnotherHolder(t *testing.T) {
@@ -85,6 +91,58 @@ func TestAcquireLockRenewalSurvivesAcquireContextCancellation(t *testing.T) {
 	}
 
 	t.Fatalf("lease was not renewed after acquisition context cancellation")
+}
+
+func TestAcquireLockRetriesExpiredLeaseUpdateConflict(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewClientset()
+	manager := NewManager(clientset, "kube-system", "controller-a")
+	leaseName := leaseNameForResource("tenant-a")
+	oldHolder := "controller-b"
+	leaseDuration := int32(1)
+	renewTime := metav1.NewMicroTime(time.Now().Add(-10 * time.Second))
+
+	leaseClient := clientset.CoordinationV1().Leases("kube-system")
+	if _, err := leaseClient.Create(ctx, &coordinationv1.Lease{
+		ObjectMeta: metav1.ObjectMeta{
+			Name:      leaseName,
+			Namespace: "kube-system",
+		},
+		Spec: coordinationv1.LeaseSpec{
+			HolderIdentity:       &oldHolder,
+			LeaseDurationSeconds: &leaseDuration,
+			RenewTime:            &renewTime,
+		},
+	}, metav1.CreateOptions{}); err != nil {
+		t.Fatalf("Create() error = %v", err)
+	}
+
+	updateCount := 0
+	clientset.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		updateCount++
+		if updateCount == 1 {
+			return true, nil, apierrors.NewConflict(
+				schema.GroupResource{Group: "coordination.k8s.io", Resource: "leases"},
+				leaseName,
+				fmt.Errorf("stale resource version"),
+			)
+		}
+		return false, nil, nil
+	})
+
+	lock, err := manager.AcquireLock(ctx, "tenant-a", 3*time.Second)
+	if err != nil {
+		t.Fatalf("AcquireLock() error = %v", err)
+	}
+	defer func() {
+		if err := lock.Release(ctx); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	}()
+
+	if updateCount < 2 {
+		t.Fatalf("update count = %d, want retry after conflict", updateCount)
+	}
 }
 
 func TestAcquireLockBoundsLongLeaseNames(t *testing.T) {

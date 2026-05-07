@@ -103,6 +103,9 @@ func (m *Manager) tryAcquireLease(ctx context.Context, leaseName, holderIdentity
 			// We own it - renew
 			lease.Spec.RenewTime = &now
 			_, err = leaseClient.Update(ctx, lease, metav1.UpdateOptions{})
+			if apierrors.IsConflict(err) {
+				return false, "", nil
+			}
 			return err == nil, lease.UID, err
 		}
 
@@ -116,6 +119,9 @@ func (m *Manager) tryAcquireLease(ctx context.Context, leaseName, holderIdentity
 				lease.Spec.RenewTime = &now
 				lease.Spec.LeaseDurationSeconds = &leaseDuration
 				_, err = leaseClient.Update(ctx, lease, metav1.UpdateOptions{})
+				if apierrors.IsConflict(err) {
+					return false, "", nil
+				}
 				return err == nil, lease.UID, err
 			}
 		}
