@@ -24,8 +24,11 @@
     - name: Authenticate nodes for pcs
       ansible.builtin.command: >-
         pcs host auth {{ pacemaker_nodes | map(attribute='name') | join(' ') }}
-        -u hacluster -p {{ pacemaker_hacluster_password }}
+        -u hacluster
+      args:
+        stdin: "{{ pacemaker_hacluster_password }}"
       register: pacemaker_pcs_host_auth
+      no_log: true
       changed_when: pacemaker_pcs_host_auth.stdout is search("Authorized")
 
     - name: Check existing cluster authkey
