@@ -30,6 +30,8 @@ ENV/
 # IDE
 .vscode/
 .idea/
+.claude/
+.serena/
 *.swp
 *.swo
 *~
@@ -40,6 +42,7 @@ Thumbs.db
 
 # Project specific
 /var/lib/arca/
+/.arca-state/
 *.log
 packaging/wheelhouse/
 csi-arca-storage/deploy/kustomize/overlays/production/secrets.env
