@@ -13,6 +13,7 @@ from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import (
     infer_gateway_from_ip_cidr,
     svm_root_lv_name,
+    validate_gateway_for_ip_cidr,
     validate_ipv4,
     validate_name,
     validate_svm_ip_cidr,
@@ -42,6 +43,8 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     validate_svm_ip_cidr(svm_data.ip_cidr)
     if svm_data.gateway is not None:
         validate_ipv4(svm_data.gateway)
+        if svm_data.vlan_id is not None:
+            validate_gateway_for_ip_cidr(svm_data.ip_cidr, svm_data.gateway)
     elif svm_data.vlan_id is not None:
         try:
             infer_gateway_from_ip_cidr(svm_data.ip_cidr)

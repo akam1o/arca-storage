@@ -1617,6 +1617,14 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     )
 
             svm_name = self._get_svm_for_share(parent_share)
+            if strategy == "manual":
+                target_svm_name = self._get_svm_for_share(share)
+                if target_svm_name != svm_name:
+                    raise manila_exception.ManilaException(
+                        f"Create share from snapshot cannot change SVM in manual strategy: "
+                        f"source_svm={svm_name}, target_svm={target_svm_name}. "
+                        f"Use a share type with the source SVM or create a new share directly."
+                    )
             LOG.debug("Using SVM %s for share %s from snapshot", svm_name, share_id)
 
             # Clone volume from snapshot via ARCA API

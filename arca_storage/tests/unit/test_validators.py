@@ -7,6 +7,7 @@ import pytest
 from arca_storage.cli.lib.validators import (
     snapshot_lv_name,
     svm_root_lv_name,
+    validate_gateway_for_ip_cidr,
     validate_ip_cidr,
     validate_name,
     validate_svm_ip_cidr,
@@ -157,6 +158,28 @@ class TestValidateSvmIpCidr:
         """Test SVM VIP rejects addresses that cannot be bound as service hosts."""
         with pytest.raises(ValueError):
             validate_svm_ip_cidr(cidr)
+
+
+class TestValidateGatewayForIpCidr:
+    """Tests for validate_gateway_for_ip_cidr function."""
+
+    @pytest.mark.unit
+    def test_valid_gateway(self):
+        validate_gateway_for_ip_cidr("192.168.10.5/24", "192.168.10.1")
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "gateway, match",
+        [
+            ("10.0.0.1", "inside SVM network"),
+            ("192.168.10.5", "SVM IP address"),
+            ("192.168.10.0", "network or broadcast"),
+            ("192.168.10.255", "network or broadcast"),
+        ],
+    )
+    def test_rejects_unusable_gateway(self, gateway, match):
+        with pytest.raises(ValueError, match=match):
+            validate_gateway_for_ip_cidr("192.168.10.5/24", gateway)
 
 
 class TestLVMNameBuilders:

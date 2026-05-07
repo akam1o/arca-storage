@@ -172,6 +172,29 @@ def validate_ipv4(ip: str) -> None:
         raise ValueError(f"Invalid IPv4 address: {e}")
 
 
+def validate_gateway_for_ip_cidr(ip_cidr: str, gateway: str) -> None:
+    """
+    Validate that a gateway can be used by the given IPv4 interface CIDR.
+
+    The gateway must be in the same interface network and must not be the VIP
+    itself. For conventional subnets, network and broadcast addresses are not
+    valid gateways.
+    """
+    try:
+        iface = ipaddress.IPv4Interface(ip_cidr)
+        gateway_ip = ipaddress.IPv4Address(gateway)
+    except Exception as e:
+        raise ValueError(f"Invalid gateway or CIDR: {e}")
+
+    network = iface.network
+    if gateway_ip not in network:
+        raise ValueError(f"Gateway {gateway} must be inside SVM network {network}")
+    if gateway_ip == iface.ip:
+        raise ValueError("Gateway must not be the SVM IP address")
+    if network.prefixlen < 31 and gateway_ip in (network.network_address, network.broadcast_address):
+        raise ValueError("Gateway cannot be the network or broadcast address")
+
+
 def infer_gateway_from_ip_cidr(cidr: str) -> str:
     """
     Infer a default gateway from an IPv4 interface CIDR.

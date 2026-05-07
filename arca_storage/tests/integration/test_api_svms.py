@@ -96,6 +96,24 @@ class TestCreateSVM:
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
+    @pytest.mark.parametrize("gateway", ["10.0.0.1", "192.168.10.5", "192.168.10.0", "192.168.10.255"])
+    def test_create_svm_rejects_unusable_gateway(self, client, fake_context, gateway):
+        """Test creating SVM rejects gateways that cannot route from the SVM VIP."""
+        response = client.post(
+            "/v1/svms",
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": gateway,
+            },
+        )
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+        assert fake_context.db.get_svm("tenant_a") is None
+
+    @pytest.mark.integration
     def test_create_svm_without_vlan(self, fake_context):
         """Test creating an SVM without a VLAN ID."""
         client = TestClient(app)
