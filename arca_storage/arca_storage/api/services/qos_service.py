@@ -10,9 +10,11 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
-from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError
 from arca_storage.cli.lib.validators import validate_name
+from arca_storage.context import get_context
+from arca_storage.errors import InvalidArgumentError, NotFoundError
+
+_QOS_LIMIT_FIELDS = ("read_iops", "write_iops", "read_bps", "write_bps")
 
 
 def _get_cgroup_base() -> Path:
@@ -159,6 +161,12 @@ def apply_qos_to_volume(
     if not lv_path:
         raise RuntimeError(f"Volume {volume} has no lv_path")
 
+    if all(value is None for value in (read_iops, write_iops, read_bps, write_bps)):
+        raise InvalidArgumentError(
+            "At least one QoS limit must be specified; use DELETE to remove QoS limits",
+            {"fields": list(_QOS_LIMIT_FIELDS)},
+        )
+
     _ensure_cgroup_hierarchy()
 
     cgroup_path = _get_cgroup_path(svm, volume)
@@ -178,12 +186,8 @@ def apply_qos_to_volume(
     if write_iops is not None:
         limits.append(f"wiops={write_iops}")
 
-    if not limits:
-        io_max_content = f"{device_id} rbps=max wbps=max riops=max wiops=max"
-        _clear_io_max_limit(cgroup_path, device_id)
-    else:
-        io_max_content = f"{device_id} {' '.join(limits)}"
-        _write_io_max_limit(cgroup_path, device_id, io_max_content)
+    io_max_content = f"{device_id} {' '.join(limits)}"
+    _write_io_max_limit(cgroup_path, device_id, io_max_content)
 
     qos_settings: Dict[str, Any] = {
         "svm": svm,

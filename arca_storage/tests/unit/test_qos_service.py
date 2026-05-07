@@ -4,7 +4,10 @@ import os
 import stat
 from types import SimpleNamespace
 
+import pytest
+
 from arca_storage.api.services import qos_service
+from arca_storage.errors import InvalidArgumentError
 
 
 class DummyDB:
@@ -58,6 +61,31 @@ def test_apply_qos_attaches_ganesha_process_and_writes_io_limits(monkeypatch, tm
     assert (cgroup_path / "io.max").read_text(encoding="utf-8") == (
         "8:16 rbps=1048576 wbps=524288 riops=1000 wiops=500"
     )
+
+
+def test_apply_qos_rejects_empty_limits(monkeypatch):
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {"lv_path": "/dev/vg_arca/test-vol"},
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    def fail_hierarchy():
+        raise AssertionError("empty QoS patch should not touch cgroups")
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_ensure_cgroup_hierarchy", fail_hierarchy)
+
+    with pytest.raises(InvalidArgumentError) as exc:
+        qos_service.apply_qos_to_volume("tenant-a", "test-vol")
+
+    assert "At least one QoS limit" in str(exc.value)
 
 
 def test_qos_updates_preserve_other_device_limits(monkeypatch, tmp_path):
