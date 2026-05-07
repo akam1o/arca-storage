@@ -309,7 +309,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 
 			if err := cleanupTemporarySnapshot(); err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to clean up temporary clone snapshot: %v", err)
+				klog.Warningf("Failed to clean up temporary clone snapshot after cloning %s: %v", volumeID, err)
 			}
 
 			contentSource = &csi.VolumeContentSource{

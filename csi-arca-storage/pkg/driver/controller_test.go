@@ -1390,7 +1390,7 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 	}
 }
 
-func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
+func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{
 		VolumeID:      "source-vol",
@@ -1407,7 +1407,8 @@ func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
 	temporarySnapshotName := "clone-" + targetPath
 	var snapshotCreated bool
 	var cloneCreated bool
-	var snapshotCleanupAttempted bool
+	var snapshotCleanupAttempts int
+	var quotaSet bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1420,8 +1421,11 @@ func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"volume":{"name":"cloned"}}}`))
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+temporarySnapshotName:
-			snapshotCleanupAttempted = true
+			snapshotCleanupAttempts++
 			http.Error(w, "snapshot cleanup failed", http.StatusInternalServerError)
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaSet = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -1441,7 +1445,7 @@ func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
 		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
 	}
 
-	_, err = driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	resp, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
 		Name: "clone-pvc",
 		Parameters: map[string]string{
 			paramNamespace: "ns-a",
@@ -1456,8 +1460,8 @@ func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
 		},
 	})
 
-	if status.Code(err) != codes.Internal {
-		t.Fatalf("expected Internal error, got %v", err)
+	if err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
 	}
 	if !snapshotCreated {
 		t.Fatalf("temporary snapshot was not created")
@@ -1465,11 +1469,21 @@ func TestCreateVolumeFailsWhenTemporaryCloneSnapshotCleanupFails(t *testing.T) {
 	if !cloneCreated {
 		t.Fatalf("clone was not created")
 	}
-	if !snapshotCleanupAttempted {
+	if snapshotCleanupAttempts == 0 {
 		t.Fatalf("temporary snapshot cleanup was not attempted")
 	}
-	if _, err := st.GetVolume(targetPath); !store.IsNotFound(err) {
-		t.Fatalf("target volume metadata should not be stored, err=%v", err)
+	if !quotaSet {
+		t.Fatalf("quota was not set")
+	}
+	if resp.GetVolume().GetVolumeId() != targetPath {
+		t.Fatalf("response volume ID = %q, want %q", resp.GetVolume().GetVolumeId(), targetPath)
+	}
+	stored, err := st.GetVolume(targetPath)
+	if err != nil {
+		t.Fatalf("target volume metadata was not stored: %v", err)
+	}
+	if !store.IsVolumeReady(stored) {
+		t.Fatalf("target volume metadata was not marked ready")
 	}
 }
 
