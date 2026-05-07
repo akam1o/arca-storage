@@ -222,9 +222,9 @@ func isNonRetryableError(err error) bool {
 
 	// Don't retry on specific known errors
 	switch {
-	case errors.Is(err, ErrSVMAlreadyExists), errors.Is(err, ErrDirectoryAlreadyExists), errors.Is(err, ErrSnapshotAlreadyExists):
+	case errors.Is(err, ErrSVMAlreadyExists), errors.Is(err, ErrDirectoryAlreadyExists), errors.Is(err, ErrVolumeAlreadyExists), errors.Is(err, ErrSnapshotAlreadyExists), errors.Is(err, ErrExportAlreadyExists):
 		return true
-	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrQuotaNotFound):
+	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrVolumeNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrExportNotFound), errors.Is(err, ErrQuotaNotFound):
 		return true
 	}
 

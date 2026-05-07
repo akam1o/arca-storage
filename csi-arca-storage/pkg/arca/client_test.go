@@ -3,6 +3,7 @@ package arca
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -137,6 +138,52 @@ func TestClientMapsFastAPIResourceErrorDetails(t *testing.T) {
 
 	if err := client.DeleteDirectory(context.Background(), "k8s-default", "pvc-1234"); err != nil {
 		t.Fatalf("DeleteDirectory() error = %v", err)
+	}
+}
+
+func TestMapErrorCodeToErrorUsesStructuredResourceDetails(t *testing.T) {
+	tests := []struct {
+		name       string
+		statusCode int
+		code       string
+		resource   string
+		want       error
+	}{
+		{name: "svm not found", statusCode: http.StatusNotFound, code: "NOT_FOUND", resource: "SVM", want: ErrSVMNotFound},
+		{name: "directory not found", statusCode: http.StatusNotFound, code: "NOT_FOUND", resource: "Directory", want: ErrDirectoryNotFound},
+		{name: "volume not found", statusCode: http.StatusNotFound, code: "NOT_FOUND", resource: "Volume", want: ErrVolumeNotFound},
+		{name: "snapshot not found", statusCode: http.StatusNotFound, code: "NOT_FOUND", resource: "Snapshot", want: ErrSnapshotNotFound},
+		{name: "export not found", statusCode: http.StatusNotFound, code: "NOT_FOUND", resource: "Export", want: ErrExportNotFound},
+		{name: "quota not found", statusCode: http.StatusNotFound, code: "NOT_FOUND", resource: "Quota", want: ErrQuotaNotFound},
+		{name: "svm already exists", statusCode: http.StatusConflict, code: "ALREADY_EXISTS", resource: "SVM", want: ErrSVMAlreadyExists},
+		{name: "directory already exists", statusCode: http.StatusConflict, code: "ALREADY_EXISTS", resource: "Directory", want: ErrDirectoryAlreadyExists},
+		{name: "volume already exists", statusCode: http.StatusConflict, code: "ALREADY_EXISTS", resource: "Volume", want: ErrVolumeAlreadyExists},
+		{name: "snapshot already exists", statusCode: http.StatusConflict, code: "ALREADY_EXISTS", resource: "Snapshot", want: ErrSnapshotAlreadyExists},
+		{name: "export already exists", statusCode: http.StatusConflict, code: "ALREADY_EXISTS", resource: "Export", want: ErrExportAlreadyExists},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := MapErrorCodeToError(tt.statusCode, &ArcaAPIError{
+				Code:    tt.code,
+				Message: tt.name,
+				Details: map[string]interface{}{
+					"resource": tt.resource,
+				},
+			})
+			if !errors.Is(got, tt.want) {
+				t.Fatalf("MapErrorCodeToError() = %v, want %v", got, tt.want)
+			}
+			if tt.code == "NOT_FOUND" && !IsNotFoundError(got) {
+				t.Fatalf("IsNotFoundError(%v) = false", got)
+			}
+			if tt.code == "ALREADY_EXISTS" && !IsAlreadyExistsError(got) {
+				t.Fatalf("IsAlreadyExistsError(%v) = false", got)
+			}
+			if !isNonRetryableError(got) {
+				t.Fatalf("isNonRetryableError(%v) = false", got)
+			}
+		})
 	}
 }
 
