@@ -19,7 +19,7 @@ from arca_storage.create_resume import (
 )
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
-from arca_storage.models.base import Phase
+from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
 from arca_storage.api.services.volume_service import require_volume_ready_record
@@ -203,8 +203,7 @@ def _export_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:
-    from arca_storage.models.base import ResourceMeta
-    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+    return resource_meta_from_record(record)
 
 
 def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec, *, owner: Optional[str] = None) -> bool:

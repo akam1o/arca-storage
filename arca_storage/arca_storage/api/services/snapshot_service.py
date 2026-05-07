@@ -27,7 +27,7 @@ from arca_storage.errors import (
     NotFoundError,
     PreconditionFailedError,
 )
-from arca_storage.models.base import Phase
+from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import snapshot_lv_name, validate_name, volume_lv_name
@@ -229,8 +229,7 @@ def _snapshot_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:
-    from arca_storage.models.base import ResourceMeta
-    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+    return resource_meta_from_record(record)
 
 
 def _parse_status(record: Dict[str, Any]) -> Any:

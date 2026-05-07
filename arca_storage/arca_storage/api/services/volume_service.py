@@ -20,7 +20,7 @@ from arca_storage.create_resume import (
 )
 from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
-from arca_storage.models.base import Phase
+from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name, volume_lv_name
 from arca_storage.api.services.svm_service import require_svm_ready_record
@@ -259,8 +259,7 @@ def require_volume_ready_record(record: Dict[str, Any], svm: str, name: str) -> 
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:
-    from arca_storage.models.base import ResourceMeta
-    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+    return resource_meta_from_record(record)
 
 
 def _parse_status(record: Dict[str, Any]) -> Any:

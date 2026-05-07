@@ -203,6 +203,43 @@ class TestResizeVolume:
         assert data["data"]["volume"]["size_gib"] == 200
 
     @pytest.mark.integration
+    def test_resize_volume_preserves_created_at_in_response(self, fake_context):
+        from arca_storage.models.base import Phase, ResourceMeta
+        from arca_storage.models.volume import Volume, VolumeSpec, VolumeStatus
+
+        client = TestClient(app)
+        create_test_svm(client)
+        created_at = datetime(2025, 12, 20, 12, 0, tzinfo=timezone.utc)
+        fake_context.db.insert_volume(
+            Volume(
+                metadata=ResourceMeta(
+                    id="volume-a",
+                    generation=3,
+                    created_at=created_at,
+                    updated_at=created_at,
+                ),
+                spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=20),
+                status=VolumeStatus(
+                    phase=Phase.READY,
+                    lv_created=True,
+                    lv_path="/dev/vg_pool_01/vol_tenant_a_vol1",
+                    lv_name="vol_tenant_a_vol1",
+                    fs_formatted=True,
+                    mounted=True,
+                    mount_path="/exports/tenant_a/vol1",
+                ),
+            )
+        )
+        fake_context.adapters.lvm.create_thin_lv("vg_pool_01", "pool", "vol_tenant_a_vol1", 20)
+        fake_context.adapters.xfs.mount("/dev/vg_pool_01/vol_tenant_a_vol1", "/exports/tenant_a/vol1")
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+
+        assert response.status_code == 200
+        returned_created_at = response.json()["data"]["volume"]["created_at"].replace("Z", "+00:00")
+        assert datetime.fromisoformat(returned_created_at) == created_at
+
+    @pytest.mark.integration
     def test_resize_volume_requires_existing_record_before_mutation(self, fake_context):
         client = TestClient(app)
         fake_context.adapters.lvm.create_thin_lv("vg_pool_01", "pool", "vol_tenant_a_missing", 10)

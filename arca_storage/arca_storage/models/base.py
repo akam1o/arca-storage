@@ -7,6 +7,7 @@ from __future__ import annotations
 import uuid
 from datetime import datetime, timezone
 from enum import Enum
+from typing import Any, Mapping
 
 from pydantic import BaseModel, Field
 
@@ -32,3 +33,16 @@ class ResourceMeta(BaseModel):
     def bump(self) -> None:
         self.generation += 1
         self.updated_at = datetime.now(timezone.utc)
+
+
+def resource_meta_from_record(record: Mapping[str, Any]) -> ResourceMeta:
+    """Rebuild resource metadata from a database record."""
+    values = {
+        "id": record["id"],
+        "generation": record.get("generation", 1),
+    }
+    for field in ("created_at", "updated_at"):
+        value = record.get(field)
+        if value is not None:
+            values[field] = value
+    return ResourceMeta(**values)

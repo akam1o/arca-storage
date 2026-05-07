@@ -16,7 +16,7 @@ from typing import Optional
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
-from arca_storage.models.base import Phase, ResourceMeta
+from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
 
@@ -364,7 +364,7 @@ def _export_pseudo(spec: ExportSpec, path: str) -> str:
 
 
 def _meta_from_record(record: dict) -> ResourceMeta:
-    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+    return resource_meta_from_record(record)
 
 
 def _all_rows_limit() -> int:
