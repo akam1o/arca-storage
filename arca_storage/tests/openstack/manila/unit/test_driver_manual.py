@@ -95,6 +95,20 @@ class TestArcaStorageManilaDriverManualStrategy:
             force=False,
         )
 
+    def test_delete_share_missing_backend_volume_succeeds_without_share_type(
+        self, driver, mock_arca_client
+    ):
+        share = {
+            "id": "share-123",
+            "size": 10,
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = []
+
+        driver.delete_share(Mock(), share, None)
+
+        mock_arca_client.delete_volume.assert_not_called()
+
     def test_extend_share_uses_backend_svm_over_metadata_and_share_type(
         self, driver, mock_arca_client, mock_manila_share
     ):

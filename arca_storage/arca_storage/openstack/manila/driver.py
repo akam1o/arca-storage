@@ -768,22 +768,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         volume_name: str,
     ) -> Optional[str]:
         """Resolve SVM from ARCA backend state instead of user metadata."""
-        list_volumes = getattr(self.arca_client, "list_volumes", None)
-        if not callable(list_volumes):
+        volumes = self._list_backend_volumes_by_name(volume_name)
+        if volumes is None:
             return None
-
-        try:
-            volumes = list_volumes(name=volume_name) or []
-        except Exception as e:
-            raise manila_exception.ManilaException(
-                f"Failed to look up ARCA volume {volume_name}: {e}"
-            )
 
         resolved_svms = set()
         for volume in volumes:
-            if not isinstance(volume, dict) or volume.get("name") != volume_name:
-                continue
-
             svm_name = volume.get("svm") or volume.get("svm_name")
             if not svm_name:
                 svm_name = self._svm_from_export_path(
@@ -798,6 +788,33 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 f"Multiple ARCA volumes named {volume_name} found across SVMs"
             )
         return next(iter(resolved_svms)) if resolved_svms else None
+
+    def _list_backend_volumes_by_name(
+        self,
+        volume_name: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Return backend volume records with an exact name match if list is supported."""
+        list_volumes = getattr(self.arca_client, "list_volumes", None)
+        if not callable(list_volumes):
+            return None
+
+        try:
+            volumes = list_volumes(name=volume_name) or []
+        except Exception as e:
+            raise manila_exception.ManilaException(
+                f"Failed to look up ARCA volume {volume_name}: {e}"
+            )
+
+        return [
+            volume
+            for volume in volumes
+            if isinstance(volume, dict) and volume.get("name") == volume_name
+        ]
+
+    def _backend_volume_missing(self, volume_name: str) -> bool:
+        """Return True when ARCA backend confirms the share volume is absent."""
+        volumes = self._list_backend_volumes_by_name(volume_name)
+        return volumes == []
 
     def _get_authoritative_svm_for_existing_share(
         self,
@@ -1281,7 +1298,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         try:
             # Determine SVM for this share
-            svm_name = self._get_svm_for_share(share)
+            try:
+                svm_name = self._get_svm_for_share(share)
+            except Exception:
+                if self._backend_volume_missing(volume_name):
+                    LOG.warning(
+                        "Share %s not found in ARCA backend, already deleted",
+                        share_id,
+                    )
+                    return
+                raise
 
             # Delete volume via ARCA API
             self.arca_client.delete_volume(

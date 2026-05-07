@@ -107,3 +107,17 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
             svm="manila_test-project-id",
             new_size_gib=20,
         )
+
+    def test_delete_share_missing_backend_volume_succeeds_without_project_id(
+        self, driver, mock_arca_client
+    ):
+        share = {
+            "id": "share-123",
+            "size": 10,
+            "metadata": {"arca_svm_name": "manila_user_supplied"},
+        }
+        mock_arca_client.list_volumes.return_value = []
+
+        driver.delete_share(Mock(), share, None)
+
+        mock_arca_client.delete_volume.assert_not_called()
