@@ -582,6 +582,48 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert updates == {}
         self.driver.arca_client.apply_qos.assert_not_called()
 
+    def test_retype_rejects_manual_missing_svm_specs(self):
+        """Manual retype fails closed when SVM placement cannot be compared."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        volume = self._create_mock_volume()
+        volume.volume_type = None
+        new_type = {
+            "name": "gold",
+            "extra_specs": {"arca_storage:read_iops_sec": "5000"},
+        }
+        diff = {"extra_specs": {"arca_storage:read_iops_sec": (None, "5000")}}
+
+        changed, updates = self.driver.retype(None, volume, new_type, diff, None)
+
+        assert changed is False
+        assert updates == {}
+        self.driver.arca_client.apply_qos.assert_not_called()
+
+    def test_retype_allows_manual_qos_change_when_svm_preserved(self):
+        """Manual retype can update non-placement specs when SVM stays stable."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        volume = self._create_mock_volume()
+        volume.volume_type = {
+            "extra_specs": {
+                "arca_storage:svm_name": "source-svm",
+                "arca_storage:read_iops_sec": "3000",
+            }
+        }
+        new_type = {
+            "name": "gold",
+            "extra_specs": {
+                "arca_storage:svm_name": "source-svm",
+                "arca_storage:read_iops_sec": "5000",
+            },
+        }
+        diff = {"extra_specs": {"arca_storage:read_iops_sec": ("3000", "5000")}}
+
+        changed, updates = self.driver.retype(None, volume, new_type, diff, None)
+
+        assert changed is True
+        assert updates == {}
+        self.driver.arca_client.apply_qos.assert_not_called()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

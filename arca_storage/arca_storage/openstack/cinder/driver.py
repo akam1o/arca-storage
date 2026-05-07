@@ -612,6 +612,16 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             getattr(volume, "volume_type", None)
         )
         requested_svm = self._svm_name_from_volume_type(new_type)
+        if not current_svm or not requested_svm:
+            LOG.error(
+                "Retype requires ARCA SVM extra specs for volume %s: "
+                "current=%s requested=%s",
+                getattr(volume, "name", "<unknown>"),
+                current_svm,
+                requested_svm,
+            )
+            return False
+
         if current_svm == requested_svm:
             return True
 
