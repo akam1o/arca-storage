@@ -10,9 +10,10 @@ import subprocess
 from pathlib import Path
 from typing import Any, Dict, Optional
 
+from arca_storage.api.services.volume_service import require_volume_ready_record
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
-from arca_storage.errors import InvalidArgumentError, NotFoundError
+from arca_storage.errors import InvalidArgumentError, NotFoundError, PreconditionFailedError
 
 _QOS_LIMIT_FIELDS = ("read_iops", "write_iops", "read_bps", "write_bps")
 
@@ -108,6 +109,26 @@ def _clear_io_max_limit(cgroup_path: Path, device_id: str) -> None:
     io_max_file.write_text("\n".join(lines), encoding="utf-8")
 
 
+def _require_qos_volume_lv_path(ctx: Any, svm: str, volume: str) -> str:
+    volumes = ctx.db.list_volumes(svm=svm, name=volume)
+    if not volumes:
+        raise NotFoundError("Volume", f"{svm}/{volume}")
+
+    volume_info = volumes[0]
+    require_volume_ready_record(volume_info, svm, volume)
+    lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get("status", {}).get("lv_path")
+    if not lv_path:
+        raise PreconditionFailedError(
+            f"Volume '{svm}/{volume}' has no device path",
+            {
+                "resource": "Volume",
+                "name": f"{svm}/{volume}",
+                "phase": volume_info.get("status", {}).get("phase"),
+            },
+        )
+    return str(lv_path)
+
+
 def _attach_ganesha_process(ctx: Any, svm: str, cgroup_path: Path) -> None:
     pid = _get_ganesha_pid(ctx, svm)
     _write_cgroup_file(cgroup_path, "cgroup.procs", str(pid))
@@ -152,14 +173,7 @@ def apply_qos_to_volume(
     validate_name(volume)
 
     ctx = get_context()
-    volumes = ctx.db.list_volumes(svm=svm, name=volume)
-    if not volumes:
-        raise NotFoundError("Volume", f"{svm}/{volume}")
-
-    volume_info = volumes[0]
-    lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get("status", {}).get("lv_path")
-    if not lv_path:
-        raise RuntimeError(f"Volume {volume} has no lv_path")
+    lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
 
     if all(value is None for value in (read_iops, write_iops, read_bps, write_bps)):
         raise InvalidArgumentError(
@@ -213,15 +227,7 @@ def remove_qos_from_volume(svm: str, volume: str) -> None:
     validate_name(volume)
 
     ctx = get_context()
-    volumes = ctx.db.list_volumes(svm=svm, name=volume)
-    if not volumes:
-        raise NotFoundError("Volume", f"{svm}/{volume}")
-
-    volume_info = volumes[0]
-    lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get("status", {}).get("lv_path")
-    if not lv_path:
-        raise RuntimeError(f"Volume {volume} has no lv_path")
-
+    lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
     cgroup_path = _get_cgroup_path(svm, volume)
     if not cgroup_path.exists():
         return
@@ -236,15 +242,7 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     validate_name(volume)
 
     ctx = get_context()
-    volumes = ctx.db.list_volumes(svm=svm, name=volume)
-    if not volumes:
-        raise NotFoundError("Volume", f"{svm}/{volume}")
-
-    volume_info = volumes[0]
-    lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get("status", {}).get("lv_path")
-    if not lv_path:
-        raise RuntimeError(f"Volume {volume} has no lv_path")
-
+    lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
     cgroup_path = _get_cgroup_path(svm, volume)
     if not cgroup_path.exists():
         return {"svm": svm, "volume": volume, "qos_enabled": False}

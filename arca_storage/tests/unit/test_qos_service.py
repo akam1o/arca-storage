@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from arca_storage.api.services import qos_service
-from arca_storage.errors import InvalidArgumentError
+from arca_storage.errors import InvalidArgumentError, PreconditionFailedError
 
 
 class DummyDB:
@@ -29,7 +29,7 @@ def test_apply_qos_attaches_ganesha_process_and_writes_io_limits(monkeypatch, tm
             volumes=[
                 {
                     "spec": {},
-                    "status": {"lv_path": "/dev/vg_arca/test-vol"},
+                    "status": {"phase": "Ready", "lv_path": "/dev/vg_arca/test-vol"},
                 }
             ],
             svm={"spec": {"vlan_id": 100}},
@@ -69,7 +69,7 @@ def test_apply_qos_rejects_empty_limits(monkeypatch):
             volumes=[
                 {
                     "spec": {},
-                    "status": {"lv_path": "/dev/vg_arca/test-vol"},
+                    "status": {"phase": "Ready", "lv_path": "/dev/vg_arca/test-vol"},
                 }
             ],
             svm={"spec": {"vlan_id": 100}},
@@ -98,7 +98,7 @@ def test_qos_updates_preserve_other_device_limits(monkeypatch, tmp_path):
             volumes=[
                 {
                     "spec": {},
-                    "status": {"lv_path": "/dev/vg_arca/test-vol"},
+                    "status": {"phase": "Ready", "lv_path": "/dev/vg_arca/test-vol"},
                 }
             ],
             svm={"spec": {"vlan_id": 100}},
@@ -122,6 +122,61 @@ def test_qos_updates_preserve_other_device_limits(monkeypatch, tmp_path):
 
     assert (cgroup_path / "io.max").read_text(encoding="utf-8").splitlines() == ["8:1 rbps=1024"]
     assert qos_service.get_qos_settings("tenant-a", "test-vol")["qos_enabled"] is False
+
+
+@pytest.mark.parametrize(
+    ("operation", "kwargs"),
+    [
+        ("apply", {"read_iops": 1000}),
+        ("remove", {}),
+        ("get", {}),
+    ],
+)
+def test_qos_rejects_unready_volume(monkeypatch, operation, kwargs):
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {"phase": "Creating"},
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    def fail_hierarchy():
+        raise AssertionError("unready volume should not touch cgroups")
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_ensure_cgroup_hierarchy", fail_hierarchy)
+
+    with pytest.raises(PreconditionFailedError):
+        if operation == "apply":
+            qos_service.apply_qos_to_volume("tenant-a", "test-vol", **kwargs)
+        elif operation == "remove":
+            qos_service.remove_qos_from_volume("tenant-a", "test-vol")
+        else:
+            qos_service.get_qos_settings("tenant-a", "test-vol")
+
+
+def test_qos_rejects_ready_volume_without_lv_path(monkeypatch):
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {"phase": "Ready"},
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+
+    with pytest.raises(PreconditionFailedError):
+        qos_service.apply_qos_to_volume("tenant-a", "test-vol", read_iops=1000)
 
 
 def test_get_device_id_uses_target_block_device_rdev(monkeypatch):
