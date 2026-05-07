@@ -104,7 +104,7 @@ class VolumeReconciler:
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         export_dir = self._cfg.get("export_dir", "/exports")
         lv_name = volume.status.lv_name or f"vol_{spec.svm}_{spec.name}"
-        mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        mount_path = volume.status.mount_path or f"{export_dir}/{spec.svm}/{spec.name}"
 
         try:
             volume.status.phase = Phase.DELETING

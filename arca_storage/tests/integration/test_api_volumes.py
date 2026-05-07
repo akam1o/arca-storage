@@ -26,6 +26,14 @@ def create_test_svm(client: TestClient) -> None:
     )
 
 
+def switch_export_dir(fake_context, export_dir: str) -> None:
+    from arca_storage.reconcilers.volume import VolumeReconciler
+
+    cfg = {**fake_context.settings.to_reconciler_config(), "export_dir": export_dir}
+    fake_context.settings.to_reconciler_config = lambda: cfg
+    fake_context.volume_reconciler = VolumeReconciler(fake_context.db, fake_context.adapters, config=cfg)
+
+
 class TestCreateVolume:
     """Tests for POST /v1/volumes."""
 
@@ -312,6 +320,19 @@ class TestResizeVolume:
         assert response.json()["data"]["volume"]["size_gib"] == 40
         assert grow_calls["count"] == 2
 
+    @pytest.mark.integration
+    def test_resize_volume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        switch_export_dir(fake_context, "/newexports")
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+
+        assert response.status_code == 200
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+
 
 class TestCloneVolume:
     """Tests for POST /v1/volumes/{name}/clone."""
@@ -357,6 +378,75 @@ class TestCloneVolume:
         volume = response.json()["data"]["volume"]
         assert volume["size_gib"] == 30
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone2"] == 30
+
+    @pytest.mark.integration
+    def test_clone_volume_uses_snapshot_size_after_source_expansion(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1"},
+        )
+
+        assert response.status_code == 201
+        volume = response.json()["data"]["volume"]
+        assert volume["size_gib"] == 10
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 10
+        assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 10
+
+    @pytest.mark.integration
+    def test_clone_volume_resume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
+        from arca_storage.models.volume import Volume, VolumeSpec
+
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        clone = Volume(spec=VolumeSpec(name="clone1", svm="tenant_a", size_gib=10, thin=True))
+        assign_create_lease(clone.status, "dead-owner")
+        clone.status.lv_created = True
+        clone.status.lv_path = "/dev/vg_pool_01/vol_tenant_a_clone1"
+        clone.status.lv_name = "vol_tenant_a_clone1"
+        clone.status.fs_formatted = True
+        clone.status.mounted = True
+        clone.status.mount_path = "/exports/tenant_a/clone1"
+        fake_context.db.insert_volume(clone)
+        expired_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        record = fake_context.db.get_volume("tenant_a", "clone1")
+        status = record["status"]
+        status["create_lease_expires_at"] = expired_at
+        conn = fake_context.db._conn()
+        conn.execute(
+            "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+            (json.dumps(status), "tenant_a", "clone1"),
+        )
+        conn.commit()
+        fake_context.adapters.lvm.create_snapshot(
+            "vg_pool_01",
+            "vol_tenant_a_vol1_snap_snap1",
+            "vol_tenant_a_clone1",
+        )
+        fake_context.adapters.xfs.mount(
+            "/dev/vg_pool_01/vol_tenant_a_clone1",
+            "/exports/tenant_a/clone1",
+            extra_options=["nouuid"],
+        )
+        switch_export_dir(fake_context, "/newexports")
+
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1"},
+        )
+
+        assert response.status_code == 201
+        volume = response.json()["data"]["volume"]
+        assert volume["mount_path"] == "/exports/tenant_a/clone1"
+        assert "/newexports/tenant_a/clone1" not in fake_context.adapters.xfs.mounts
 
     @pytest.mark.integration
     def test_clone_volume_cleans_up_new_lv_on_mount_or_grow_failure(self, fake_context):
@@ -613,6 +703,20 @@ class TestDeleteVolume:
         assert response.status_code == 200
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
+
+    @pytest.mark.integration
+    def test_delete_volume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        switch_export_dir(fake_context, "/newexports")
+
+        response = client.delete("/v1/volumes/vol1?svm=tenant_a")
+
+        assert response.status_code == 200
+        assert "/exports/tenant_a/vol1" not in fake_context.adapters.xfs.mounts
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
 
     @pytest.mark.integration
     def test_create_volume_does_not_resume_failed_delete(self, fake_context):

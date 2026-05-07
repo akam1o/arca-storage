@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
+from math import ceil
 from typing import Optional
 
 from arca_storage.cli.lib.validators import snapshot_lv_name, volume_lv_name
@@ -55,6 +56,7 @@ class SnapshotReconciler:
                 snapshot.status.lv_created = True
                 snapshot.status.lv_path = snap_path
                 snapshot.status.lv_name = snap_lv
+                snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
                 self._persist(snapshot, "snapshot LV created", expected_create_owner=create_owner)
             except CreateLeaseLostError:
                 raise
@@ -66,6 +68,9 @@ class SnapshotReconciler:
                 self._persist(snapshot, snapshot.status.message, expected_create_owner=expected_owner)
                 logger.error("Snapshot %s/%s/%s create failed: %s", spec.svm, spec.volume, spec.name, e)
                 return snapshot
+
+        if snapshot.status.size_gib is None:
+            snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
 
         snapshot.status.phase = Phase.READY
         expected_owner = create_owner
@@ -101,3 +106,10 @@ class SnapshotReconciler:
     @staticmethod
     def _is_failed_delete(snapshot: Snapshot) -> bool:
         return snapshot.status.message.startswith("Delete failed:")
+
+    def _snapshot_lv_size_gib(self, vg_name: str, snap_lv: str) -> Optional[int]:
+        try:
+            return int(ceil(float(self.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
+        except Exception as e:
+            logger.warning("Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e)
+            return None

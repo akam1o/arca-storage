@@ -6,6 +6,7 @@ Delegates to the Snapshot reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
+from math import ceil
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
@@ -62,6 +63,7 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
         volume=snapshot_data.volume,
     )
     snapshot = Snapshot(spec=requested_spec)
+    snapshot.status.size_gib = int(source_record.get("spec", {}).get("size_gib") or 10)
     owner = new_create_owner()
     assign_create_lease(snapshot.status, owner)
     try:
@@ -131,8 +133,8 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
     snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
 
     ctx = get_context()
-    source_size_gib = _clone_source_size_gib(ctx, source_volume, clone_data)
-    target_size_gib = max(clone_data.size_gib or source_size_gib, source_size_gib)
+    snapshot_size_gib = _clone_snapshot_size_gib(ctx, source_volume, clone_data)
+    target_size_gib = max(clone_data.size_gib or snapshot_size_gib, snapshot_size_gib)
     requested_spec = VolumeSpec(
         name=clone_data.name,
         svm=clone_data.svm,
@@ -163,7 +165,7 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
                 owner,
                 source_volume,
                 clone_data.snapshot,
-                source_size_gib,
+                snapshot_size_gib,
             )
         raise AlreadyExistsError("Volume", f"{clone_data.svm}/{clone_data.name}")
 
@@ -173,7 +175,7 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
         owner,
         source_volume,
         clone_data.snapshot,
-        source_size_gib,
+        snapshot_size_gib,
     )
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -237,12 +239,13 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return SnapshotStatus.model_validate(record["status"])
 
 
-def _clone_source_size_gib(ctx: Any, source_volume: str, clone_data: VolumeCloneCreate) -> int:
+def _clone_snapshot_size_gib(ctx: Any, source_volume: str, clone_data: VolumeCloneCreate) -> int:
     snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
     if not snapshots:
         raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
 
-    _require_snapshot_ready_record(snapshots[0], clone_data.svm, source_volume, clone_data.snapshot)
+    snapshot_record = snapshots[0]
+    _require_snapshot_ready_record(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
     if not source_record:
         raise PreconditionFailedError(
@@ -254,7 +257,21 @@ def _clone_source_size_gib(ctx: Any, source_volume: str, clone_data: VolumeClone
             },
         )
     require_volume_ready_record(source_record, clone_data.svm, source_volume)
-    return int(source_record.get("spec", {}).get("size_gib") or 10)
+    size_gib = snapshot_record.get("status", {}).get("size_gib")
+    if size_gib:
+        return int(size_gib)
+
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg["vg_name"]
+    snap_lv = snapshot_record.get("status", {}).get("lv_name") or snapshot_lv_name(
+        clone_data.svm,
+        source_volume,
+        clone_data.snapshot,
+    )
+    try:
+        return int(ceil(float(ctx.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
+    except Exception:
+        return int(source_record.get("spec", {}).get("size_gib") or 10)
 
 
 def _require_snapshot_ready_record(record: Dict[str, Any], svm: str, volume: str, name: str) -> None:
@@ -318,7 +335,7 @@ def _resume_clone_volume_from_snapshot(
     owner: str,
     source_volume: str,
     snapshot_name: str,
-    source_size_gib: int,
+    snapshot_size_gib: int,
 ) -> Dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
@@ -333,7 +350,7 @@ def _resume_clone_volume_from_snapshot(
         owner,
         source_volume,
         snapshot_name,
-        source_size_gib,
+        snapshot_size_gib,
     )
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -351,7 +368,7 @@ def _reconcile_clone_volume_from_snapshot(
     owner: str,
     source_volume: str,
     snapshot_name: str,
-    source_size_gib: int,
+    snapshot_size_gib: int,
 ) -> Volume:
     def refresh() -> bool:
         if not ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner):
@@ -359,7 +376,7 @@ def _reconcile_clone_volume_from_snapshot(
         return extend_create_lease(volume.status, owner)
 
     with create_lease_heartbeat(refresh):
-        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, source_size_gib)
+        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, snapshot_size_gib)
 
 
 def _run_clone_volume_steps(
@@ -367,7 +384,7 @@ def _run_clone_volume_steps(
     volume: Volume,
     source_volume: str,
     snapshot_name: str,
-    source_size_gib: int,
+    snapshot_size_gib: int,
 ) -> Volume:
     create_owner = volume.status.create_owner
     spec = volume.spec
@@ -377,7 +394,7 @@ def _run_clone_volume_steps(
     snap_lv = snapshot_lv_name(spec.svm, source_volume, snapshot_name)
     new_lv = volume_lv_name(spec.svm, spec.name)
     clone_lv_path = f"/dev/{vg_name}/{new_lv}"
-    mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+    mount_path = volume.status.mount_path or f"{export_dir}/{spec.svm}/{spec.name}"
 
     if volume.status.lv_created and not ctx.adapters.lvm.lv_exists(vg_name, new_lv):
         volume.status.lv_created = False
@@ -411,7 +428,7 @@ def _run_clone_volume_steps(
             volume.status.fs_formatted = True
             _persist_clone_volume(ctx, volume, "Clone LV mounted", expected_create_owner=create_owner)
 
-        if spec.size_gib > source_size_gib:
+        if spec.size_gib > snapshot_size_gib:
             ctx.adapters.lvm.resize_lv(vg_name, new_lv, spec.size_gib)
             ctx.adapters.xfs.grow(mount_path)
 

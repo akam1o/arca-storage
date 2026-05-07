@@ -24,6 +24,7 @@ class SnapshotStatus(BaseModel):
     """System-managed actual state for a snapshot."""
 
     phase: Phase = Phase.PENDING
+    size_gib: Optional[int] = None
     lv_created: bool = False
     lv_path: Optional[str] = None
     lv_name: Optional[str] = None

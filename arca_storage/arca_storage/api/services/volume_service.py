@@ -104,20 +104,20 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
         )
         return _volume_to_dict(vol, ctx)
 
-    cfg = ctx.settings.to_reconciler_config()
-    vg_name = cfg["vg_name"]
-    export_dir = cfg["export_dir"]
-    lv_name = volume_lv_name(svm, name)
-    mount_path = f"{export_dir}/{svm}/{name}"
-
-    ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
-    ctx.adapters.xfs.grow(mount_path)
-
     vol = Volume(
         metadata=_meta_from_record(record),
         spec=VolumeSpec.model_validate(record["spec"]),
         status=_parse_status(record),
     )
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg["vg_name"]
+    export_dir = cfg["export_dir"]
+    lv_name = vol.status.lv_name or volume_lv_name(svm, name)
+    mount_path = vol.status.mount_path or f"{export_dir}/{svm}/{name}"
+
+    ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
+    ctx.adapters.xfs.grow(mount_path)
+
     vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
     vol.metadata.bump()
     ctx.db.upsert_volume(vol)
