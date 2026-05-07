@@ -75,7 +75,7 @@ class TestAPIWorkflow:
             "mtu": 1500,
             "namespace": "tenant_a",
             "vip": "192.168.10.5",
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
         mock_create_vol.return_value = {
@@ -86,7 +86,7 @@ class TestAPIWorkflow:
             "fs_type": "xfs",
             "mount_path": "/exports/tenant_a/vol1",
             "lv_path": "/dev/vg_pool_01/vol1",
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
         mock_add_export.return_value = {
@@ -98,7 +98,7 @@ class TestAPIWorkflow:
             "sec": ["sys"],
             "pseudo": "/exports/tenant_a/vol1",
             "export_id": 101,
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
         mock_delete_vol.return_value = None

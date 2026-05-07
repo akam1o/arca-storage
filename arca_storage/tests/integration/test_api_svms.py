@@ -34,7 +34,7 @@ class TestCreateSVM:
             "mtu": 1500,
             "namespace": "tenant_a",
             "vip": "192.168.10.5",
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
 

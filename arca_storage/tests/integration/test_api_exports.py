@@ -33,7 +33,7 @@ class TestAddExport:
             "sec": ["sys"],
             "pseudo": "/exports/tenant_a/vol1",
             "export_id": 101,
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
 

@@ -42,7 +42,7 @@ class TestCreateVolume:
             "fs_type": "xfs",
             "mount_path": "/exports/tenant_a/vol1",
             "lv_path": "/dev/vg_pool_01/vol1",
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
 
@@ -191,7 +191,7 @@ class TestResizeVolume:
             "fs_type": "xfs",
             "mount_path": "/exports/tenant_a/vol1",
             "lv_path": "/dev/vg_pool_01/vol1",
-            "status": "available",
+            "status": "Ready",
             "created_at": "2025-12-20T12:00:00Z",
         }
 
@@ -331,6 +331,9 @@ class TestCloneVolume:
         assert response.status_code == 201
         volume = response.json()["data"]["volume"]
         assert volume["size_gib"] == 20
+        assert volume["thin"] is True
+        assert volume["fs_type"] == "xfs"
+        assert volume["lv_name"] == "vol_tenant_a_clone1"
         assert volume["export_path"] == "192.168.10.5:/exports/tenant_a/clone1"
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
         assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20

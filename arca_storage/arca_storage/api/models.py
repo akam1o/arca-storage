@@ -4,7 +4,7 @@ Pydantic models for API requests and responses.
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -23,36 +23,41 @@ def _validate_resource_name(value: str) -> str:
 class SVMStatus(str, Enum):
     """SVM status values."""
 
-    CREATING = "creating"
-    AVAILABLE = "available"
-    DELETING = "deleting"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 class VolumeStatus(str, Enum):
     """Volume status values."""
 
-    CREATING = "creating"
-    AVAILABLE = "available"
-    RESIZING = "resizing"
-    DELETING = "deleting"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 class SnapshotStatus(str, Enum):
     """Snapshot status values."""
 
-    CREATING = "creating"
-    AVAILABLE = "available"
-    DELETING = "deleting"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 class ExportStatus(str, Enum):
     """Export status values."""
 
-    AVAILABLE = "available"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 # SVM Models
@@ -96,14 +101,22 @@ class SVM(BaseModel):
     """SVM response model."""
 
     name: str
-    vlan_id: Optional[int]
+    vlan_id: Optional[int] = None
     ip_cidr: str
-    gateway: Optional[str]
+    gateway: Optional[str] = None
     mtu: int
     namespace: str
     vip: str
+    export_root: Optional[str] = None
     status: SVMStatus
+    state: Optional[SVMStatus] = None
     created_at: datetime
+
+
+class SVMData(BaseModel):
+    """Nested SVM data envelope."""
+
+    svm: SVM
 
 
 class SVMResponse(BaseModel):
@@ -111,7 +124,14 @@ class SVMResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: Union[SVMData, SVM]
+
+
+class SVMListData(BaseModel):
+    """SVM list data envelope."""
+
+    items: List[SVM]
+    next_cursor: Optional[str] = None
 
 
 class SVMListResponse(BaseModel):
@@ -119,7 +139,7 @@ class SVMListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: SVMListData
 
 
 # CSI compatibility models
@@ -240,10 +260,18 @@ class Volume(BaseModel):
     size_gib: int
     thin: bool
     fs_type: str
-    mount_path: str
-    lv_path: str
+    mount_path: Optional[str] = None
+    lv_path: Optional[str] = None
+    lv_name: Optional[str] = None
+    export_path: Optional[str] = None
     status: VolumeStatus
     created_at: datetime
+
+
+class VolumeData(BaseModel):
+    """Nested volume data envelope."""
+
+    volume: Volume
 
 
 class VolumeResponse(BaseModel):
@@ -251,7 +279,14 @@ class VolumeResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: VolumeData
+
+
+class VolumeListData(BaseModel):
+    """Volume list data envelope."""
+
+    items: List[Volume]
+    next_cursor: Optional[str] = None
 
 
 class VolumeListResponse(BaseModel):
@@ -259,7 +294,7 @@ class VolumeListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: VolumeListData
 
 
 # Snapshot Models
@@ -296,9 +331,16 @@ class Snapshot(BaseModel):
     name: str
     svm: str
     volume: str
-    lv_path: str
+    lv_path: Optional[str] = None
+    lv_name: Optional[str] = None
     status: SnapshotStatus
     created_at: datetime
+
+
+class SnapshotData(BaseModel):
+    """Nested snapshot data envelope."""
+
+    snapshot: Snapshot
 
 
 class SnapshotResponse(BaseModel):
@@ -306,7 +348,14 @@ class SnapshotResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: SnapshotData
+
+
+class SnapshotListData(BaseModel):
+    """Snapshot list data envelope."""
+
+    items: List[Snapshot]
+    next_cursor: Optional[str] = None
 
 
 class SnapshotListResponse(BaseModel):
@@ -314,7 +363,7 @@ class SnapshotListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: SnapshotListData
 
 
 # Export Models
@@ -365,10 +414,16 @@ class Export(BaseModel):
     access: str
     root_squash: bool
     sec: List[str]
-    pseudo: str
-    export_id: int
+    pseudo: Optional[str] = None
+    export_id: Optional[int] = None
     status: ExportStatus
     created_at: datetime
+
+
+class ExportData(BaseModel):
+    """Nested export data envelope."""
+
+    export: Export
 
 
 class ExportResponse(BaseModel):
@@ -376,7 +431,14 @@ class ExportResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: ExportData
+
+
+class ExportListData(BaseModel):
+    """Export list data envelope."""
+
+    items: List[Export]
+    next_cursor: Optional[str] = None
 
 
 class ExportListResponse(BaseModel):
@@ -384,7 +446,7 @@ class ExportListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: ExportListData
 
 
 # Common Models
