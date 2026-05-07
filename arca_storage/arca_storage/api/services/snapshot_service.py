@@ -270,8 +270,15 @@ def _clone_snapshot_size_gib(ctx: Any, source_volume: str, clone_data: VolumeClo
     )
     try:
         return int(ceil(float(ctx.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
-    except Exception:
-        return int(source_record.get("spec", {}).get("size_gib") or 10)
+    except Exception as e:
+        raise PreconditionFailedError(
+            f"Snapshot '{clone_data.svm}/{source_volume}/{clone_data.snapshot}' size is unavailable",
+            {
+                "resource": "Snapshot",
+                "name": f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}",
+                "lv_name": snap_lv,
+            },
+        ) from e
 
 
 def _require_snapshot_ready_record(record: Dict[str, Any], svm: str, volume: str, name: str) -> None:

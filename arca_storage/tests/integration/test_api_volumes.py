@@ -399,6 +399,38 @@ class TestCloneVolume:
         assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 10
 
     @pytest.mark.integration
+    def test_clone_volume_rejects_legacy_snapshot_with_unreadable_size(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        snapshot = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        status = snapshot["status"]
+        status.pop("size_gib", None)
+        conn = fake_context.db._conn()
+        conn.execute(
+            "UPDATE snapshots SET status = ? WHERE svm = ? AND volume = ? AND name = ?",
+            (json.dumps(status), "tenant_a", "vol1", "snap1"),
+        )
+        conn.commit()
+        client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+
+        def fail_get_lv_size(_vg, _lv):
+            raise RuntimeError("lvs failed")
+
+        fake_context.adapters.lvm.get_lv_size_gib = fail_get_lv_size
+
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1"},
+        )
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert fake_context.db.get_volume("tenant_a", "clone1") is None
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
+
+    @pytest.mark.integration
     def test_clone_volume_resume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
         from arca_storage.models.volume import Volume, VolumeSpec
 
