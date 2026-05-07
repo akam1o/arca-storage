@@ -199,7 +199,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
 					klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
 				}
-				d.cleanupProvisionedVolume(ctx, existingVol, "quota failure")
+				d.cleanupProvisionedVolume(existingVol, "quota failure")
 				return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
 			}
 			if err := d.markVolumeReady(existingVol); err != nil {
@@ -425,7 +425,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 						if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
 							klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
 						}
-						d.cleanupProvisionedVolume(ctx, existingVol, "quota failure")
+						d.cleanupProvisionedVolume(existingVol, "quota failure")
 						return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
 					}
 					if err := d.markVolumeReady(existingVol); err != nil {
@@ -436,7 +436,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 			return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 		}
-		d.cleanupProvisionedVolume(ctx, volumeInfo, "metadata store failure")
+		d.cleanupProvisionedVolume(volumeInfo, "metadata store failure")
 		return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 	}
 
@@ -444,7 +444,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
 			klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
 		}
-		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
+		d.cleanupProvisionedVolume(volumeInfo, "quota failure")
 		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
 	}
 	if err := d.markVolumeReady(volumeInfo); err != nil {
@@ -477,13 +477,15 @@ func (d *Driver) markVolumeReady(volumeInfo *store.VolumeInfo) error {
 	return nil
 }
 
-func (d *Driver) cleanupProvisionedVolume(ctx context.Context, volumeInfo *store.VolumeInfo, reason string) {
+func (d *Driver) cleanupProvisionedVolume(volumeInfo *store.VolumeInfo, reason string) {
 	if volumeInfo == nil || d.arcaClient == nil {
 		return
 	}
 
 	klog.Warningf("Cleaning up provisioned volume %s after %s", volumeInfo.VolumeID, reason)
-	if err := d.arcaClient.DeleteDirectory(ctx, volumeInfo.SVMName, volumeInfo.Path); err != nil && !arca.IsNotFoundError(err) {
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := d.arcaClient.DeleteDirectory(cleanupCtx, volumeInfo.SVMName, volumeInfo.Path); err != nil && !arca.IsNotFoundError(err) {
 		klog.Warningf("Failed to clean up backend volume %s on SVM %s: %v", volumeInfo.Path, volumeInfo.SVMName, err)
 	}
 }

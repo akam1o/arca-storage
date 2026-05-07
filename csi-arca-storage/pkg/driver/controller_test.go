@@ -29,9 +29,13 @@ type failingCreateStore struct {
 	failUpdate               bool
 	failCreateSnapshot       bool
 	failUpdateSnapshotStatus bool
+	onCreateVolume           func()
 }
 
 func (s *failingCreateStore) CreateVolume(info *store.VolumeInfo) error {
+	if s.onCreateVolume != nil {
+		s.onCreateVolume()
+	}
 	if s.failCreate {
 		return errors.New("store create failed")
 	}
@@ -197,6 +201,9 @@ func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 		t.Fatalf("seed snapshot: %v", err)
 	}
 	st.failCreate = true
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.onCreateVolume = cancel
 
 	var cloneBody map[string]interface{}
 	var cleanupPath string
@@ -238,7 +245,7 @@ func TestCreateVolumeCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 	}
 	targetPath := volumeIDGen.GenerateVolumeID("restore-pvc")
 
-	_, err = driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+	_, err = driver.CreateVolume(ctx, &csi.CreateVolumeRequest{
 		Name: "restore-pvc",
 		Parameters: map[string]string{
 			paramNamespace: "ns-a",
