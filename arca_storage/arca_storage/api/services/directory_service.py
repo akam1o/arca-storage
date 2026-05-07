@@ -48,8 +48,7 @@ def delete_directory(svm_name: str, path: str) -> None:
     if not record:
         raise NotFoundError("Directory", f"{svm_name}/{path}")
 
-    _remove_csi_exports(ctx, svm_name, path)
-    volume_service.delete_volume(path, svm_name, force=True)
+    volume_service.delete_volume(path, svm_name, force=False)
 
 
 def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
