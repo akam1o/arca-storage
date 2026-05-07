@@ -917,6 +917,65 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 f"Invalid SVM strategy: {strategy}"
             )
 
+    def _get_svm_for_snapshot(self, snapshot, volume_name: str) -> str:
+        """Determine SVM for a snapshot without trusting caller metadata."""
+        strategy = (
+            self._svm_strategy_effective
+            or self.configuration.arca_storage_svm_strategy
+        )
+        metadata_svm = self._get_metadata_value(snapshot, "arca_svm_name")
+        share = snapshot.get("share") if hasattr(snapshot, "get") else None
+        if share:
+            try:
+                return self._get_svm_for_share(share)
+            except Exception:
+                if strategy not in ("manual", "per_project"):
+                    raise
+                svm_name = self._get_svm_from_backend_volume(volume_name)
+                if not svm_name:
+                    raise
+                self._warn_if_metadata_svm_ignored(
+                    metadata_svm,
+                    svm_name,
+                    "backend volume mapping",
+                )
+                return svm_name
+
+        if strategy == "shared":
+            LOG.debug(
+                "snapshot['share'] not available for snapshot %s, "
+                "using shared strategy SVM",
+                snapshot.get("id") if hasattr(snapshot, "get") else "<unknown>",
+            )
+            svm_name = self.configuration.arca_storage_default_svm
+            self._warn_if_metadata_svm_ignored(
+                metadata_svm,
+                svm_name,
+                "snapshot metadata",
+            )
+            return svm_name
+
+        if strategy in ("manual", "per_project"):
+            svm_name = self._get_svm_from_backend_volume(volume_name)
+            if svm_name:
+                self._warn_if_metadata_svm_ignored(
+                    metadata_svm,
+                    svm_name,
+                    "backend volume mapping",
+                )
+                return svm_name
+
+            raise manila_exception.ManilaException(
+                f"snapshot['share'] not available for snapshot "
+                f"{snapshot.get('id') if hasattr(snapshot, 'get') else '<unknown>'}. "
+                f"Strategy '{strategy}' requires either complete parent share "
+                f"information or an existing ARCA backend volume named {volume_name}."
+            )
+
+        raise manila_exception.ManilaException(
+            f"Invalid SVM strategy: {strategy}"
+        )
+
     def _get_svm_info(self, svm_name):
         """Get SVM information with caching.
 
@@ -1408,36 +1467,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         try:
             # Get parent share to determine SVM
             # Note: snapshot["share"] may not be available in all Manila API versions
-            share = snapshot.get("share")
-            if share:
-                svm_name = self._get_svm_for_share(share)
-            else:
-                # Check strategy before attempting fallback
-                strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
-
-                if strategy == "shared":
-                    # Shared strategy: can proceed with minimal share info
-                    LOG.debug(
-                        "snapshot['share'] not available for snapshot %s, "
-                        "using shared strategy SVM", snapshot_id
-                    )
-                    svm_name = self.configuration.arca_storage_default_svm
-                    self._warn_if_metadata_svm_ignored(
-                        self._get_metadata_value(snapshot, "arca_svm_name"),
-                        svm_name,
-                        "snapshot metadata",
-                    )
-                elif strategy in ("manual", "per_project"):
-                    # Fail closed: these strategies require full share info
-                    raise manila_exception.ManilaException(
-                        f"snapshot['share'] not available for snapshot {snapshot_id}. "
-                        f"Strategy '{strategy}' requires complete parent share information. "
-                        f"Ensure Manila is configured to include parent share details in snapshot objects."
-                    )
-                else:
-                    raise manila_exception.ManilaException(
-                        f"Invalid SVM strategy: {strategy}"
-                    )
+            svm_name = self._get_svm_for_snapshot(snapshot, volume_name)
 
             # Create snapshot via ARCA API (LVM thin snapshot)
             snapshot_info = self.arca_client.create_snapshot(
@@ -1485,36 +1515,18 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         try:
             # Get parent share to determine SVM
             # Note: snapshot["share"] may not be available in all Manila API versions
-            share = snapshot.get("share")
-            if share:
-                svm_name = self._get_svm_for_share(share)
-            else:
-                # Check strategy before attempting fallback
-                strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
-
-                if strategy == "shared":
-                    # Shared strategy: can proceed with minimal share info
-                    LOG.debug(
-                        "snapshot['share'] not available for snapshot %s, "
-                        "using shared strategy SVM", snapshot_id
+            try:
+                svm_name = self._get_svm_for_snapshot(snapshot, volume_name)
+            except Exception:
+                if self._backend_volume_missing(volume_name):
+                    LOG.warning(
+                        "Parent share %s not found in ARCA backend, "
+                        "snapshot %s already deleted",
+                        share_id,
+                        snapshot_id,
                     )
-                    svm_name = self.configuration.arca_storage_default_svm
-                    self._warn_if_metadata_svm_ignored(
-                        self._get_metadata_value(snapshot, "arca_svm_name"),
-                        svm_name,
-                        "snapshot metadata",
-                    )
-                elif strategy in ("manual", "per_project"):
-                    # Fail closed: these strategies require full share info
-                    raise manila_exception.ManilaException(
-                        f"snapshot['share'] not available for snapshot {snapshot_id}. "
-                        f"Strategy '{strategy}' requires complete parent share information. "
-                        f"Ensure Manila is configured to include parent share details in snapshot objects."
-                    )
-                else:
-                    raise manila_exception.ManilaException(
-                        f"Invalid SVM strategy: {strategy}"
-                    )
+                    return
+                raise
 
             # Delete snapshot via ARCA API
             self.arca_client.delete_snapshot(

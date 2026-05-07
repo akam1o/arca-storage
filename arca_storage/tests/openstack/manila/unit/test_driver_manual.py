@@ -109,6 +109,40 @@ class TestArcaStorageManilaDriverManualStrategy:
 
         mock_arca_client.delete_volume.assert_not_called()
 
+    def test_create_snapshot_without_share_uses_backend_svm(
+        self, driver, mock_arca_client
+    ):
+        snapshot = {
+            "id": "snapshot-123",
+            "share_id": "share-123",
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "target-svm"}
+        ]
+
+        driver.create_snapshot(Mock(), snapshot, None)
+
+        mock_arca_client.create_snapshot.assert_called_once_with(
+            name="snapshot-snapshot-123",
+            svm="target-svm",
+            volume="share-share-123",
+        )
+
+    def test_delete_snapshot_missing_backend_volume_succeeds_without_share(
+        self, driver, mock_arca_client
+    ):
+        snapshot = {
+            "id": "snapshot-123",
+            "share_id": "share-123",
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = []
+
+        driver.delete_snapshot(Mock(), snapshot, None)
+
+        mock_arca_client.delete_snapshot.assert_not_called()
+
     def test_extend_share_uses_backend_svm_over_metadata_and_share_type(
         self, driver, mock_arca_client, mock_manila_share
     ):
