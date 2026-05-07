@@ -122,6 +122,26 @@ class TestSVMReconciler:
         assert adapters.pacemaker.resources["ip_novlan"]["type"] == "IPaddr2"
         assert adapters.pacemaker.resources["ganesha_novlan"]["type"] == "nfs-ganesha-host"
 
+    def test_delete_host_network_svm_preserves_unmanaged_namespace(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="sharedns",
+                ip_cidr="10.0.9.6/32",
+            ),
+        )
+
+        created = rec.reconcile(svm)
+        assert created.status.phase == Phase.READY
+        assert created.status.namespace_created is False
+
+        adapters.netns.create_namespace("sharedns")
+        created.status.phase = Phase.DELETING
+        rec.reconcile(created)
+
+        assert adapters.netns.namespace_exists("sharedns") is True
+        assert len(db.list_svms(name="sharedns")) == 0
+
     def test_create_svm_idempotent(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
         svm = SVM(

@@ -180,7 +180,8 @@ class SVMReconciler:
             svm.status.phase = Phase.DELETING
             self._persist(svm, "svm delete reserved")
             self.adapters.pacemaker.delete_group(spec.name)
-            self.adapters.netns.delete_namespace(spec.name)
+            if spec.vlan_id is not None or svm.status.namespace_created:
+                self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:
                 self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
             self.db.delete_svm(spec.name)
