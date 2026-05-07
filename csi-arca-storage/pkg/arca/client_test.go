@@ -222,6 +222,7 @@ func TestGetSVMCapacityDecodesFastAPIShape(t *testing.T) {
 func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	var createBody map[string]interface{}
 	var cloneBody map[string]interface{}
+	var listQuery string
 	var deleteQuery string
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -234,6 +235,9 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 			}
 			w.WriteHeader(http.StatusCreated)
 			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{"name":"abcd","svm":"k8s-default","volume":"pvc-1234"}}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots":
+			listQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"abcd","svm":"k8s-default","volume":"pvc-1234","status":"Ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":null}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/pvc-1234/clone":
 			body, _ := io.ReadAll(r.Body)
 			if err := json.Unmarshal(body, &cloneBody); err != nil {
@@ -259,6 +263,10 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	if err := client.CreateSnapshot(ctx, &CreateSnapshotRequest{Name: "abcd", SVM: "k8s-default", Volume: "pvc-1234"}); err != nil {
 		t.Fatalf("CreateSnapshot() error = %v", err)
 	}
+	snapshots, err := client.ListSnapshots(ctx, "k8s-default", "pvc-1234", "abcd")
+	if err != nil {
+		t.Fatalf("ListSnapshots() error = %v", err)
+	}
 	if err := client.CloneVolumeFromSnapshot(ctx, &CloneVolumeFromSnapshotRequest{Name: "pvc-5678", SVM: "k8s-default", SourceVolume: "pvc-1234", Snapshot: "abcd", SizeGiB: 2}); err != nil {
 		t.Fatalf("CloneVolumeFromSnapshot() error = %v", err)
 	}
@@ -268,6 +276,12 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 
 	if createBody["name"] != "abcd" || createBody["svm"] != "k8s-default" || createBody["volume"] != "pvc-1234" {
 		t.Fatalf("CreateSnapshot body = %#v", createBody)
+	}
+	if listQuery != "name=abcd&svm=k8s-default&volume=pvc-1234" {
+		t.Fatalf("ListSnapshots query = %s", listQuery)
+	}
+	if len(snapshots) != 1 || snapshots[0].Name != "abcd" || snapshots[0].Status != "Ready" {
+		t.Fatalf("ListSnapshots response = %#v", snapshots)
 	}
 	if cloneBody["name"] != "pvc-5678" || cloneBody["svm"] != "k8s-default" || cloneBody["snapshot"] != "abcd" || cloneBody["size_gib"].(float64) != 2 {
 		t.Fatalf("CloneVolumeFromSnapshot body = %#v", cloneBody)

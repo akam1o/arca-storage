@@ -38,6 +38,17 @@ type CreateSnapshotRequest struct {
 	Volume string `json:"volume"`
 }
 
+// Snapshot represents an ARCA snapshot response.
+type Snapshot struct {
+	Name      string    `json:"name"`
+	SVM       string    `json:"svm"`
+	Volume    string    `json:"volume"`
+	LVPath    string    `json:"lv_path,omitempty"`
+	LVName    string    `json:"lv_name,omitempty"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
 // CloneVolumeFromSnapshotRequest represents a request to create a volume from a snapshot
 type CloneVolumeFromSnapshotRequest struct {
 	Name         string `json:"name"`

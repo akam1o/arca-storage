@@ -29,6 +29,8 @@ const (
 	// Default capacity if not specified
 	gibBytes             = int64(1024 * 1024 * 1024)
 	defaultCapacityBytes = gibBytes // 1 GiB
+
+	arcaSnapshotReadyStatus = "Ready"
 )
 
 var errSnapshotBackendAlreadyExists = errors.New("snapshot backend already exists")
@@ -810,11 +812,31 @@ func (d *Driver) ensureSnapshotBackend(ctx context.Context, snapshotInfo *store.
 	})
 	if err != nil {
 		if arca.IsAlreadyExistsError(err) {
+			ready, verifyErr := d.backendSnapshotReady(ctx, snapshotInfo, sourceVolume)
+			if verifyErr != nil {
+				return false, verifyErr
+			}
+			if ready {
+				return false, nil
+			}
 			return false, fmt.Errorf("%w: %v", errSnapshotBackendAlreadyExists, err)
 		}
 		return false, err
 	}
 	return true, nil
+}
+
+func (d *Driver) backendSnapshotReady(ctx context.Context, snapshotInfo *store.SnapshotInfo, sourceVolume *store.VolumeInfo) (bool, error) {
+	snapshots, err := d.arcaClient.ListSnapshots(ctx, sourceVolume.SVMName, sourceVolume.Path, snapshotInfo.SnapshotID)
+	if err != nil {
+		return false, fmt.Errorf("failed to verify existing backend snapshot %s: %w", snapshotInfo.SnapshotID, err)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Name == snapshotInfo.SnapshotID && snapshot.SVM == sourceVolume.SVMName && snapshot.Volume == sourceVolume.Path {
+			return snapshot.Status == arcaSnapshotReadyStatus, nil
+		}
+	}
+	return false, nil
 }
 
 func (d *Driver) markSnapshotReady(snapshotInfo *store.SnapshotInfo) error {
