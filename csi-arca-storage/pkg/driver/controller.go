@@ -297,7 +297,14 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				Snapshot:     temporarySnapshotName,
 				SizeGiB:      bytesToGiB(capacityBytes),
 			})
-			if err != nil && !arca.IsAlreadyExistsError(err) {
+			if err != nil {
+				if arca.IsAlreadyExistsError(err) {
+					return nil, status.Errorf(
+						codes.AlreadyExists,
+						"backend volume %s already exists but is not tracked by CSI metadata",
+						volumePath,
+					)
+				}
 				return nil, status.Errorf(codes.Internal, "failed to clone volume: %v", err)
 			}
 
@@ -358,7 +365,14 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				Snapshot:     snapshot.SnapshotID,
 				SizeGiB:      bytesToGiB(capacityBytes),
 			})
-			if err != nil && !arca.IsAlreadyExistsError(err) {
+			if err != nil {
+				if arca.IsAlreadyExistsError(err) {
+					return nil, status.Errorf(
+						codes.AlreadyExists,
+						"backend volume %s already exists but is not tracked by CSI metadata",
+						volumePath,
+					)
+				}
 				return nil, status.Errorf(codes.Internal, "failed to restore from snapshot: %v", err)
 			}
 

@@ -294,6 +294,35 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	}
 }
 
+func TestCloneVolumeFromSnapshotReturnsAlreadyExistsConflict(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodPost || r.URL.Path != "/v1/volumes/pvc-source/clone" {
+			http.NotFound(w, r)
+			return
+		}
+		w.WriteHeader(http.StatusConflict)
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"ALREADY_EXISTS","message":"volume already exists","details":{"resource":"Volume"}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	err = client.CloneVolumeFromSnapshot(context.Background(), &CloneVolumeFromSnapshotRequest{
+		Name:         "pvc-target",
+		SVM:          "k8s-default",
+		SourceVolume: "pvc-source",
+		Snapshot:     "snap-a",
+	})
+
+	if !errors.Is(err, ErrVolumeAlreadyExists) {
+		t.Fatalf("CloneVolumeFromSnapshot() error = %v, want ErrVolumeAlreadyExists", err)
+	}
+}
+
 func TestRestoreSnapshotUsesSourceVolumeInClonePath(t *testing.T) {
 	var cloneBody map[string]interface{}
 

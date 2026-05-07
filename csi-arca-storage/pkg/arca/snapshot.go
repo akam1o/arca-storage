@@ -68,13 +68,7 @@ func (c *Client) CloneVolumeFromSnapshot(ctx context.Context, req *CloneVolumeFr
 	}
 
 	_, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/volumes/%s/clone", url.PathEscape(sourceVolume)), req)
-	if err != nil {
-		if IsAlreadyExistsError(err) {
-			return nil
-		}
-		return err
-	}
-	return nil
+	return err
 }
 
 // RestoreSnapshot restores a volume from snapshot (reflink clone)
