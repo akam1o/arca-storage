@@ -33,6 +33,7 @@ type mountSourceValidationCall struct {
 
 type recordingMountSourceValidator struct {
 	err   error
+	errs  []error
 	calls []mountSourceValidationCall
 }
 
@@ -41,6 +42,9 @@ func (v *recordingMountSourceValidator) ValidateMountSource(targetPath, expected
 		targetPath:     targetPath,
 		expectedSource: expectedSource,
 	})
+	if len(v.errs) >= len(v.calls) {
+		return v.errs[len(v.calls)-1]
+	}
 	return v.err
 }
 
@@ -533,10 +537,86 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 	}
 }
 
+func TestNodePublishRejectsExistingMountWithWrongStagingSource(t *testing.T) {
+	tmp := t.TempDir()
+	targetPath := filepath.Join(tmp, "target")
+	stagingPath := filepath.Join(tmp, "staging")
+	svmMountPath := filepath.Join(tmp, "svm")
+	volumePath := "volumes/vol-a"
+	staleSource := filepath.Join(tmp, "stale-volume")
+	if err := os.MkdirAll(targetPath, 0750); err != nil {
+		t.Fatalf("failed to create target path: %v", err)
+	}
+	if err := os.MkdirAll(stagingPath, 0750); err != nil {
+		t.Fatalf("failed to create staging path: %v", err)
+	}
+	mountedTargetPath, err := filepath.EvalSymlinks(targetPath)
+	if err != nil {
+		t.Fatalf("failed to resolve target path: %v", err)
+	}
+	mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+	if err != nil {
+		t.Fatalf("failed to resolve staging path: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "", volumePath, stagingPath, nil); err != nil {
+		t.Fatalf("failed to record staging: %v", err)
+	}
+	if err := nodeState.RecordVolumePublish("vol-a", targetPath, false); err != nil {
+		t.Fatalf("failed to record publish: %v", err)
+	}
+
+	expectedSource := filepath.Join(svmMountPath, volumePath)
+	validator := &recordingMountSourceValidator{
+		errs: []error{
+			nil,
+			fmt.Errorf("mount source mismatch: active=%s requested=%s", staleSource, expectedSource),
+		},
+	}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    nodeState,
+		mountManager: &fakeNodeMountManager{mountPath: svmMountPath},
+		nodeMounter: mountutils.NewFakeMounter([]mountutils.MountPoint{
+			{Device: mountedStagingPath, Path: mountedTargetPath, Type: "", Opts: []string{"bind"}},
+			{Device: staleSource, Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+		}),
+		mountSourceValidator: validator,
+	}
+
+	_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetPath,
+		VolumeCapability:  testMountCapability(),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "does not match recorded source") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+
+	wantCalls := []mountSourceValidationCall{
+		{targetPath: targetPath, expectedSource: stagingPath},
+		{targetPath: stagingPath, expectedSource: expectedSource},
+	}
+	if !reflect.DeepEqual(validator.calls, wantCalls) {
+		t.Fatalf("unexpected source validation calls: got %#v want %#v", validator.calls, wantCalls)
+	}
+}
+
 func TestNodePublishRejectsExistingMountWithReadonlyMismatch(t *testing.T) {
 	tmp := t.TempDir()
 	targetPath := filepath.Join(tmp, "target")
 	stagingPath := filepath.Join(tmp, "staging")
+	svmMountPath := filepath.Join(tmp, "svm")
+	sourcePath := filepath.Join(svmMountPath, "volumes/vol-a")
 	if err := os.MkdirAll(targetPath, 0750); err != nil {
 		t.Fatalf("failed to create target path: %v", err)
 	}
@@ -579,12 +659,13 @@ func TestNodePublishRejectsExistingMountWithReadonlyMismatch(t *testing.T) {
 	}
 	fakeMounter := mountutils.NewFakeMounter([]mountutils.MountPoint{
 		{Device: mountedStagingPath, Path: mountedTargetPath, Type: "", Opts: []string{"bind"}},
+		{Device: sourcePath, Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
 	})
 	driver := &Driver{
 		mode:                 "node",
 		nodeID:               "node-a",
 		nodeState:            nodeState,
-		mountManager:         new(arcamount.MountManager),
+		mountManager:         &fakeNodeMountManager{mountPath: svmMountPath},
 		nodeMounter:          fakeMounter,
 		mountSourceValidator: fakeMountSourceValidator{},
 	}

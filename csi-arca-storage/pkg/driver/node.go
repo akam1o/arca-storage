@@ -494,8 +494,8 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		if err := d.nodeState.ValidateVolumePublish(volumeID, targetPath, readonly); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
 		}
-		if err := d.nodeState.ValidateVolumeStagingPath(volumeID, stagingTargetPath); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but requested staging path cannot be reused: %v", targetPath, err)
+		if err := d.validateStagedMountForPublish(volumeID, stagingTargetPath, mounter); err != nil {
+			return nil, err
 		}
 		if err := validateExistingPublishReadOnly(mounter, targetPath, readonly); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
