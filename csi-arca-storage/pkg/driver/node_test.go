@@ -8,7 +8,9 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -49,8 +51,11 @@ func (v *recordingMountSourceValidator) ValidateMountSource(targetPath, expected
 }
 
 type fakeNodeMountManager struct {
+	mu            sync.Mutex
 	mountPath     string
 	mountPathErr  error
+	ensureStarted chan struct{}
+	ensureRelease chan struct{}
 	shouldUnmount bool
 	ensureCalls   int
 	getCalls      []string
@@ -59,14 +64,33 @@ type fakeNodeMountManager struct {
 }
 
 func (m *fakeNodeMountManager) EnsureSVMMount(ctx context.Context, svmName, vip, exportRoot string, nfsMountOptions []string) (string, error) {
+	m.mu.Lock()
 	m.ensureCalls++
-	if m.mountPath == "" {
+	ensureStarted := m.ensureStarted
+	if ensureStarted != nil {
+		m.ensureStarted = nil
+	}
+	ensureRelease := m.ensureRelease
+	mountPath := m.mountPath
+	m.mu.Unlock()
+
+	if ensureStarted != nil {
+		close(ensureStarted)
+	}
+	if ensureRelease != nil {
+		<-ensureRelease
+	}
+
+	if mountPath == "" {
 		return filepath.Join(os.TempDir(), svmName), nil
 	}
-	return m.mountPath, nil
+	return mountPath, nil
 }
 
 func (m *fakeNodeMountManager) GetMountPath(svmName string) (string, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.getCalls = append(m.getCalls, svmName)
 	if m.mountPathErr != nil {
 		return "", m.mountPathErr
@@ -78,11 +102,17 @@ func (m *fakeNodeMountManager) GetMountPath(svmName string) (string, error) {
 }
 
 func (m *fakeNodeMountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.shouldCalls = append(m.shouldCalls, svmName)
 	return m.shouldUnmount, nil
 }
 
 func (m *fakeNodeMountManager) UnmountSVM(ctx context.Context, svmName string) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+
 	m.unmountCalls = append(m.unmountCalls, svmName)
 	return nil
 }
@@ -228,6 +258,98 @@ func TestNodeGetVolumeStatsReturnsFilesystemUsage(t *testing.T) {
 	}
 	if inodesUsage.GetAvailable() < 0 || inodesUsage.GetAvailable() > inodesUsage.GetTotal() {
 		t.Fatalf("inodes available = %d, total = %d", inodesUsage.GetAvailable(), inodesUsage.GetTotal())
+	}
+}
+
+func TestNodeStageSerializesSVMMountLifecycle(t *testing.T) {
+	tmp := t.TempDir()
+	ensureStarted := make(chan struct{})
+	ensureRelease := make(chan struct{})
+	released := false
+	defer func() {
+		if !released {
+			close(ensureRelease)
+		}
+	}()
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	mountManager := &fakeNodeMountManager{
+		mountPath:     filepath.Join(tmp, "svm-mount"),
+		ensureStarted: ensureStarted,
+		ensureRelease: ensureRelease,
+	}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    nodeState,
+		mountManager: mountManager,
+		nodeMounter:  mountutils.NewFakeMounter(nil),
+	}
+
+	stage := func(volumeID, stagingTargetPath string) error {
+		_, err := driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          volumeID,
+			StagingTargetPath: stagingTargetPath,
+			VolumeCapability:  testMountCapability(),
+			VolumeContext: map[string]string{
+				volumeContextSVM:        "svm-a",
+				volumeContextVIP:        "10.0.0.1",
+				volumeContextVolumePath: filepath.Join("volumes", volumeID),
+			},
+		})
+		return err
+	}
+
+	errCh := make(chan error, 2)
+	go func() {
+		errCh <- stage("vol-a", filepath.Join(tmp, "stage-a"))
+	}()
+
+	select {
+	case <-ensureStarted:
+	case <-time.After(2 * time.Second):
+		t.Fatal("first stage did not reach EnsureSVMMount")
+	}
+
+	secondStarted := make(chan struct{})
+	go func() {
+		close(secondStarted)
+		errCh <- stage("vol-b", filepath.Join(tmp, "stage-b"))
+	}()
+	<-secondStarted
+
+	time.Sleep(50 * time.Millisecond)
+	mountManager.mu.Lock()
+	ensureCalls := mountManager.ensureCalls
+	mountManager.mu.Unlock()
+	if ensureCalls != 1 {
+		t.Fatalf("second stage reached EnsureSVMMount before first stage finished: calls=%d", ensureCalls)
+	}
+
+	close(ensureRelease)
+	released = true
+
+	for i := 0; i < 2; i++ {
+		select {
+		case err := <-errCh:
+			if err != nil {
+				t.Fatalf("NodeStageVolume failed: %v", err)
+			}
+		case <-time.After(2 * time.Second):
+			t.Fatal("NodeStageVolume did not finish")
+		}
+	}
+	mountManager.mu.Lock()
+	ensureCalls = mountManager.ensureCalls
+	mountManager.mu.Unlock()
+	if ensureCalls != 2 {
+		t.Fatalf("EnsureSVMMount calls = %d, want 2", ensureCalls)
+	}
+	if got := nodeState.CountStagedVolumesForSVM("svm-a"); got != 2 {
+		t.Fatalf("staged volumes for svm-a = %d, want 2", got)
 	}
 }
 

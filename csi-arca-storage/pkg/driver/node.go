@@ -182,6 +182,37 @@ func (d *Driver) sourceValidator() arcamount.MountSourceValidator {
 	return arcamount.ProcMountInfoSourceValidator{}
 }
 
+func (d *Driver) lockNodeSVM(svmName string) func() {
+	if svmName == "" {
+		return func() {}
+	}
+
+	d.nodeSVMLocksMu.Lock()
+	if d.nodeSVMLocks == nil {
+		d.nodeSVMLocks = make(map[string]*nodeSVMLock)
+	}
+	lock := d.nodeSVMLocks[svmName]
+	if lock == nil {
+		lock = &nodeSVMLock{}
+		d.nodeSVMLocks[svmName] = lock
+	}
+	lock.refs++
+	d.nodeSVMLocksMu.Unlock()
+
+	lock.mu.Lock()
+
+	return func() {
+		lock.mu.Unlock()
+
+		d.nodeSVMLocksMu.Lock()
+		defer d.nodeSVMLocksMu.Unlock()
+		lock.refs--
+		if lock.refs == 0 {
+			delete(d.nodeSVMLocks, svmName)
+		}
+	}
+}
+
 func (d *Driver) cleanupUnusedSVMMount(ctx context.Context, svmName string) {
 	if svmName == "" || d.mountManager == nil {
 		return
@@ -300,6 +331,9 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 		return nil, status.Errorf(codes.InvalidArgument, "invalid volume path: %v", err)
 	}
 
+	unlockSVM := d.lockNodeSVM(svmName)
+	defer unlockSVM()
+
 	klog.V(4).Infof("Staging volume %s (SVM: %s, VIP: %s, Path: %s) to %s", volumeID, svmName, vip, volumePath, stagingTargetPath)
 
 	// Ensure per-SVM shared mount exists
@@ -403,6 +437,8 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 		// Continue with unmount attempt
 		svmName = ""
 	}
+	unlockSVM := d.lockNodeSVM(svmName)
+	defer unlockSVM()
 
 	// Unmount the staging path
 	mounter := d.mounter()

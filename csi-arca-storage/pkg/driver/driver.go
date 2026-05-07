@@ -60,6 +60,8 @@ type Driver struct {
 
 	volumeCreateLocksMu sync.Mutex
 	volumeCreateLocks   map[string]*volumeCreateLock
+	nodeSVMLocksMu      sync.Mutex
+	nodeSVMLocks        map[string]*nodeSVMLock
 
 	// CSI capabilities
 	csi.UnimplementedIdentityServer
@@ -72,6 +74,11 @@ type nodeMountManager interface {
 	ShouldUnmountSVM(context.Context, string) (bool, error)
 	UnmountSVM(context.Context, string) error
 	GetMountPath(string) (string, error)
+}
+
+type nodeSVMLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // DriverConfig holds configuration for the driver
