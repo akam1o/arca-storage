@@ -464,6 +464,29 @@ class TestExportReconciler:
         assert record["spec"]["access"] == "rw"
         assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
 
+    def test_update_export_keeps_ready_record_on_reload_failure(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        created = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw"))
+        )
+        assert created.status.phase == Phase.READY
+
+        def fail_reload(_svm, *, host_network=False):
+            raise RuntimeError("reload failed")
+
+        adapters.ganesha.reload = fail_reload
+
+        result = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="ro")),
+            allow_update=True,
+        )
+
+        assert result.status.phase == Phase.FAILED
+        record = db.get_export("svm1", "vol1", "10.0.0.0/24")
+        assert record["status"]["phase"] == Phase.READY.value
+        assert record["spec"]["access"] == "rw"
+        assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
+
     def test_create_export_resumes_only_matching_live_lease_owner(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)
         spec = ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw")

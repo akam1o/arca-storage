@@ -49,15 +49,19 @@ class ExportReconciler:
         create_owner = export.status.create_owner
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
+        previous_ready_export: Optional[Export] = None
 
         with self.db.transaction(immediate=True) as conn:
             existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
             if existing:
                 if not allow_update and not _can_resume_create_record(existing, export):
                     raise AlreadyExistsError("Export", f"{spec.svm}/{spec.volume}/{spec.client}")
-                export.metadata = _meta_from_record(existing)
+                previous_export = _export_from_record(existing)
+                export.metadata = previous_export.metadata
                 previous_status = ExportStatus.model_validate(existing["status"])
                 export.status.export_id = previous_status.export_id
+                if allow_update and previous_status.phase == Phase.READY:
+                    previous_ready_export = previous_export
 
             if export.status.export_id is None:
                 records = self.db._list_exports_conn(conn, svm=spec.svm, limit=_all_rows_limit())
@@ -88,13 +92,14 @@ class ExportReconciler:
             except CreateLeaseLostError:
                 raise
             except Exception as e:
-                self._rollback_svm_config(spec.svm, export_dir, host_network=host_network)
-                export.status.phase = Phase.FAILED
-                expected_owner = create_owner
-                clear_create_lease(export.status)
-                export.status.message = f"Config failed: {e}"
-                self._persist(export, export.status.message, expected_create_owner=expected_owner)
-                return export
+                return self._fail_create(
+                    export,
+                    f"Config failed: {e}",
+                    export_dir,
+                    host_network=host_network,
+                    create_owner=create_owner,
+                    previous_ready_export=previous_ready_export,
+                )
 
             try:
                 self.adapters.ganesha.reload(spec.svm, host_network=host_network)
@@ -103,13 +108,14 @@ class ExportReconciler:
             except CreateLeaseLostError:
                 raise
             except Exception as e:
-                self._rollback_svm_config(spec.svm, export_dir, host_network=host_network)
-                export.status.phase = Phase.FAILED
-                expected_owner = create_owner
-                clear_create_lease(export.status)
-                export.status.message = f"Reload failed: {e}"
-                self._persist(export, export.status.message, expected_create_owner=expected_owner)
-                return export
+                return self._fail_create(
+                    export,
+                    f"Reload failed: {e}",
+                    export_dir,
+                    host_network=host_network,
+                    create_owner=create_owner,
+                    previous_ready_export=previous_ready_export,
+                )
 
             export.status.phase = Phase.READY
             expected_owner = create_owner
@@ -117,6 +123,32 @@ class ExportReconciler:
             export.status.message = ""
             export.status.last_reconciled = datetime.now(timezone.utc)
             self._persist(export, "Export ready", expected_create_owner=expected_owner)
+        return export
+
+    def _fail_create(
+        self,
+        export: Export,
+        message: str,
+        export_dir: str,
+        *,
+        host_network: bool,
+        create_owner: Optional[str],
+        previous_ready_export: Optional[Export] = None,
+    ) -> Export:
+        export.status.phase = Phase.FAILED
+        clear_create_lease(export.status)
+        export.status.message = message
+
+        if previous_ready_export is not None:
+            self._persist(
+                previous_ready_export,
+                f"{message}; kept previous ready export",
+                expected_create_owner=create_owner,
+            )
+        else:
+            self._persist(export, message, expected_create_owner=create_owner)
+
+        self._rollback_svm_config(export.spec.svm, export_dir, host_network=host_network)
         return export
 
     def _reconcile_delete(self, export: Export) -> Export:
@@ -365,6 +397,14 @@ def _export_pseudo(spec: ExportSpec, path: str) -> str:
 
 def _meta_from_record(record: dict) -> ResourceMeta:
     return resource_meta_from_record(record)
+
+
+def _export_from_record(record: dict) -> Export:
+    return Export(
+        metadata=_meta_from_record(record),
+        spec=ExportSpec.model_validate(record["spec"]),
+        status=ExportStatus.model_validate(record["status"]),
+    )
 
 
 def _all_rows_limit() -> int:
