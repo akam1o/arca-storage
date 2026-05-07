@@ -21,6 +21,40 @@ def _constraints_text() -> str:
     return (result.stdout or "") + "\n" + (result.stderr or "")
 
 
+def _parse_group_members(group_name: str, text: str) -> set[str]:
+    members: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("resource group:"):
+            continue
+        if line.startswith(f"{group_name}:"):
+            members.update(part.strip().rstrip(":") for part in line.split(":", 1)[1].split())
+            continue
+        token = line.split()[0].rstrip(":")
+        if token != group_name:
+            members.add(token)
+    return members
+
+
+def _group_members(group_name: str) -> set[str]:
+    result = _run(["pcs", "resource", "config", group_name])
+    if result.returncode != 0:
+        result = _run(["pcs", "resource", "show", group_name])
+    return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+
+
+def _ensure_group_members(group_name: str, resources: list[str]) -> None:
+    members = _group_members(group_name)
+    for resource in resources:
+        if resource in members:
+            continue
+        result = _run(["pcs", "resource", "group", "add", group_name, resource])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to add {resource} to resource group {group_name}: {result.stderr.strip()}")
+
+
 def ensure_drbd_master(drbd_resource_name: str = "r0") -> str:
     """
     Ensure DRBD resource and master/clone are created in Pacemaker.
@@ -139,7 +173,7 @@ def create_group(
 
     # Create Filesystem resource (optional)
     fs_resource = f"fs_{svm_name}"
-    if create_filesystem and not group_exists and not _resource_exists(fs_resource):
+    if create_filesystem and not _resource_exists(fs_resource):
         device = f"/dev/{vg_name}/vol_{svm_name}"
         result = _run(
             [
@@ -163,7 +197,7 @@ def create_group(
 
     if vlan_id is None:
         ip_resource = f"ip_{svm_name}"
-        if not group_exists and not _resource_exists(ip_resource):
+        if not _resource_exists(ip_resource):
             result = _run(
                 [
                     "pcs",
@@ -186,7 +220,7 @@ def create_group(
     else:
         # Create NetnsVlan resource
         netns_resource = f"netns_{svm_name}"
-        if not group_exists and not _resource_exists(netns_resource):
+        if not _resource_exists(netns_resource):
             resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
             cmd = [
                 "pcs",
@@ -212,7 +246,7 @@ def create_group(
 
     # Create nfs-ganesha resource
     ganesha_resource = f"ganesha_{svm_name}"
-    if not group_exists and not _resource_exists(ganesha_resource):
+    if not _resource_exists(ganesha_resource):
         result = _run(
             [
                 "pcs",
@@ -233,6 +267,8 @@ def create_group(
         result = _run(["pcs", "resource", "group", "add", group_name, *resources])
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create resource group: {result.stderr.strip()}")
+    else:
+        _ensure_group_members(group_name, resources)
 
     # Constraints (DRBD -> group/fs ordering, group colocation with DRBD master)
     if master_name:

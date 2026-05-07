@@ -73,7 +73,7 @@ class SubprocessPacemakerAdapter:
 
         # Filesystem resource
         fs_resource = f"fs_{svm_name}"
-        if create_filesystem and not group_exists and not self.resource_exists(fs_resource):
+        if create_filesystem and not self.resource_exists(fs_resource):
             device = f"/dev/{vg_name}/vol_{svm_name}"
             run_cmd(
                 [
@@ -89,7 +89,7 @@ class SubprocessPacemakerAdapter:
 
         if vlan_id is None:
             ip_resource = f"ip_{svm_name}"
-            if not group_exists and not self.resource_exists(ip_resource):
+            if not self.resource_exists(ip_resource):
                 run_cmd(
                     [
                         "pcs", "resource", "create", ip_resource,
@@ -104,7 +104,7 @@ class SubprocessPacemakerAdapter:
         else:
             # NetnsVlan resource
             netns_resource = f"netns_{svm_name}"
-            if not group_exists and not self.resource_exists(netns_resource):
+            if not self.resource_exists(netns_resource):
                 resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
                 run_cmd(
                     [
@@ -122,7 +122,7 @@ class SubprocessPacemakerAdapter:
 
         # Ganesha resource
         ganesha_resource = f"ganesha_{svm_name}"
-        if not group_exists and not self.resource_exists(ganesha_resource):
+        if not self.resource_exists(ganesha_resource):
             run_cmd(
                 [
                     "pcs", "resource", "create", ganesha_resource,
@@ -138,6 +138,8 @@ class SubprocessPacemakerAdapter:
                 ["pcs", "resource", "group", "add", group_name, *resources],
                 timeout=self._timeout,
             )
+        else:
+            self._ensure_group_members(group_name, resources)
 
         # Constraints
         if master_name:
@@ -179,6 +181,19 @@ class SubprocessPacemakerAdapter:
     def _constraints_text(self) -> str:
         result = run_cmd(["pcs", "constraint", "show", "--full"], timeout=self._timeout, check=False)
         return (result.stdout or "") + "\n" + (result.stderr or "")
+
+    def _group_members(self, group_name: str) -> set[str]:
+        result = run_cmd(["pcs", "resource", "config", group_name], timeout=self._timeout, check=False)
+        if result.returncode != 0:
+            result = run_cmd(["pcs", "resource", "show", group_name], timeout=self._timeout, check=False)
+        return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+
+    def _ensure_group_members(self, group_name: str, resources: list[str]) -> None:
+        members = self._group_members(group_name)
+        for resource in resources:
+            if resource in members:
+                continue
+            run_cmd(["pcs", "resource", "group", "add", group_name, resource], timeout=self._timeout)
 
     def _ensure_order(self, master_name: str, target: str) -> None:
         needle = f"order {master_name}:promote {target}:start"
@@ -227,28 +242,48 @@ class FakePacemakerAdapter:
         enforce_drbd_constraints: bool = True,
     ) -> None:
         group_name = f"g_svm_{svm_name}"
-        if group_name in self.groups:
-            return
+        group_exists = group_name in self.groups
         resources = []
         if create_filesystem:
             fs = f"fs_{svm_name}"
-            self.resources[fs] = {"type": "Filesystem"}
+            self.resources.setdefault(fs, {"type": "Filesystem"})
             resources.append(fs)
         if vlan_id is None:
             ip_res = f"ip_{svm_name}"
-            self.resources[ip_res] = {"type": "IPaddr2", "ip": ip, "prefix": prefix}
+            self.resources.setdefault(ip_res, {"type": "IPaddr2", "ip": ip, "prefix": prefix})
             resources.append(ip_res)
         else:
             netns = f"netns_{svm_name}"
-            self.resources[netns] = {"type": "NetnsVlan"}
+            self.resources.setdefault(netns, {"type": "NetnsVlan"})
             resources.append(netns)
         ganesha = f"ganesha_{svm_name}"
-        self.resources[ganesha] = {"type": "nfs-ganesha-host" if vlan_id is None else "nfs-ganesha"}
+        self.resources.setdefault(ganesha, {"type": "nfs-ganesha-host" if vlan_id is None else "nfs-ganesha"})
         resources.append(ganesha)
-        self.groups[group_name] = resources
+        if not group_exists:
+            self.groups[group_name] = []
+        for resource in resources:
+            if resource not in self.groups[group_name]:
+                self.groups[group_name].append(resource)
 
     def delete_group(self, svm_name: str) -> None:
         group_name = f"g_svm_{svm_name}"
         members = self.groups.pop(group_name, [])
         for m in members:
             self.resources.pop(m, None)
+
+
+def _parse_group_members(group_name: str, text: str) -> set[str]:
+    members: set[str] = set()
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.lower().startswith("resource group:"):
+            continue
+        if line.startswith(f"{group_name}:"):
+            members.update(part.strip().rstrip(":") for part in line.split(":", 1)[1].split())
+            continue
+        token = line.split()[0].rstrip(":")
+        if token != group_name:
+            members.add(token)
+    return members
