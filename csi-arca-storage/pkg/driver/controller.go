@@ -336,7 +336,6 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if !store.IsVolumeReady(sourceVol) {
 				return nil, status.Errorf(codes.Unavailable, "snapshot source volume %s is not ready", snapshot.SourceVolumeID)
 			}
-			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(sourceVol.CapacityBytes))
 			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(snapshot.SizeBytes))
 			if capacityExceedsLimit(req, capacityBytes) {
 				return nil, status.Errorf(codes.OutOfRange, "requested restore capacity exceeds limit")

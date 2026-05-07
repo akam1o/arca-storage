@@ -1676,9 +1676,12 @@ func TestCreateVolumeFromVolumeRecordsEffectiveSourceCapacity(t *testing.T) {
 	}
 }
 
-func TestCreateVolumeFromSnapshotRecordsEffectiveSourceCapacity(t *testing.T) {
+func TestCreateVolumeFromSnapshotRecordsSnapshotCapacity(t *testing.T) {
 	st := store.NewMemoryStore()
-	const sourceCapacity = int64(4 << 30)
+	const (
+		sourceCapacity   = int64(8 << 30)
+		snapshotCapacity = int64(4 << 30)
+	)
 	if err := st.CreateVolume(&store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
@@ -1694,7 +1697,7 @@ func TestCreateVolumeFromSnapshotRecordsEffectiveSourceCapacity(t *testing.T) {
 		SourceVolumeID: "source-vol",
 		SVMName:        "svm-a",
 		Path:           "snap-a",
-		SizeBytes:      sourceCapacity,
+		SizeBytes:      snapshotCapacity,
 		ReadyToUse:     true,
 	}); err != nil {
 		t.Fatalf("seed snapshot: %v", err)
@@ -1775,18 +1778,18 @@ func TestCreateVolumeFromSnapshotRecordsEffectiveSourceCapacity(t *testing.T) {
 	if cloneBody.SizeGiB != 4 {
 		t.Fatalf("clone size_gib = %d, want 4", cloneBody.SizeGiB)
 	}
-	if quotaBody.SVMName != "svm-a" || quotaBody.Path != targetPath || quotaBody.QuotaBytes != sourceCapacity {
+	if quotaBody.SVMName != "svm-a" || quotaBody.Path != targetPath || quotaBody.QuotaBytes != snapshotCapacity {
 		t.Fatalf("SetQuota body = %#v", quotaBody)
 	}
-	if resp.GetVolume().GetCapacityBytes() != sourceCapacity {
-		t.Fatalf("response capacity = %d, want %d", resp.GetVolume().GetCapacityBytes(), sourceCapacity)
+	if resp.GetVolume().GetCapacityBytes() != snapshotCapacity {
+		t.Fatalf("response capacity = %d, want %d", resp.GetVolume().GetCapacityBytes(), snapshotCapacity)
 	}
 	stored, err := st.GetVolume(resp.GetVolume().GetVolumeId())
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
-	if stored.CapacityBytes != sourceCapacity {
-		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, sourceCapacity)
+	if stored.CapacityBytes != snapshotCapacity {
+		t.Fatalf("stored capacity = %d, want %d", stored.CapacityBytes, snapshotCapacity)
 	}
 }
 
