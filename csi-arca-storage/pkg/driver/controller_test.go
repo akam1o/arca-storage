@@ -59,6 +59,26 @@ func (s *failingCreateStore) UpdateSnapshotStatus(snapshotID string, readyToUse 
 	return s.MemoryStore.UpdateSnapshotStatus(snapshotID, readyToUse)
 }
 
+type failingGetStore struct {
+	*store.MemoryStore
+	getVolumeErr   error
+	getSnapshotErr error
+}
+
+func (s *failingGetStore) GetVolume(volumeID string) (*store.VolumeInfo, error) {
+	if s.getVolumeErr != nil {
+		return nil, s.getVolumeErr
+	}
+	return s.MemoryStore.GetVolume(volumeID)
+}
+
+func (s *failingGetStore) GetSnapshot(snapshotID string) (*store.SnapshotInfo, error) {
+	if s.getSnapshotErr != nil {
+		return nil, s.getSnapshotErr
+	}
+	return s.MemoryStore.GetSnapshot(snapshotID)
+}
+
 type racingCreateStore struct {
 	*store.MemoryStore
 	existing *store.VolumeInfo
@@ -72,6 +92,45 @@ func (s *racingCreateStore) CreateVolume(info *store.VolumeInfo) error {
 		return fmt.Errorf("%w: volume %s", store.ErrAlreadyExists, info.VolumeID)
 	}
 	return s.MemoryStore.CreateVolume(info)
+}
+
+func TestControllerExpandVolumeReturnsInternalOnStoreGetFailure(t *testing.T) {
+	st := &failingGetStore{
+		MemoryStore:  store.NewMemoryStore(),
+		getVolumeErr: errors.New("metadata store unavailable"),
+	}
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	_, err := driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+		VolumeId:      "vol-a",
+		CapacityRange: &csi.CapacityRange{RequiredBytes: 2 << 30},
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+}
+
+func TestListSnapshotsReturnsInternalOnStoreGetFailure(t *testing.T) {
+	st := &failingGetStore{
+		MemoryStore:    store.NewMemoryStore(),
+		getSnapshotErr: errors.New("metadata store unavailable"),
+	}
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	_, err := driver.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{
+		SnapshotId: "snap-a",
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
 }
 
 func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {

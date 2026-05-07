@@ -60,6 +60,20 @@ func capacityExceedsLimit(req *csi.CreateVolumeRequest, capacityBytes int64) boo
 	return req.GetCapacityRange().GetLimitBytes() > 0 && capacityBytes > req.GetCapacityRange().GetLimitBytes()
 }
 
+func volumeStoreGetError(label, volumeID string, err error) error {
+	if store.IsNotFound(err) {
+		return status.Errorf(codes.NotFound, "%s %s not found", label, volumeID)
+	}
+	return status.Errorf(codes.Internal, "failed to get %s %s: %v", label, volumeID, err)
+}
+
+func snapshotStoreGetError(label, snapshotID string, err error) error {
+	if store.IsNotFound(err) {
+		return status.Errorf(codes.NotFound, "%s %s not found", label, snapshotID)
+	}
+	return status.Errorf(codes.Internal, "failed to get %s %s: %v", label, snapshotID, err)
+}
+
 // compareVolumeParameters checks if requested matches existing
 func compareVolumeParameters(existing *store.VolumeInfo, req *csi.CreateVolumeRequest) error {
 	// Compare capacity
@@ -216,7 +230,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 			sourceVol, err := d.store.GetVolume(sourceVolumeID)
 			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+				return nil, volumeStoreGetError("source volume", sourceVolumeID, err)
 			}
 			if !store.IsVolumeReady(sourceVol) {
 				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
@@ -296,7 +310,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 			snapshot, err := d.store.GetSnapshot(snapshotID)
 			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "snapshot %s not found: %v", snapshotID, err)
+				return nil, snapshotStoreGetError("snapshot", snapshotID, err)
 			}
 
 			if !snapshot.ReadyToUse {
@@ -305,7 +319,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 			sourceVol, err := d.store.GetVolume(snapshot.SourceVolumeID)
 			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "snapshot source volume %s not found: %v", snapshot.SourceVolumeID, err)
+				return nil, volumeStoreGetError("snapshot source volume", snapshot.SourceVolumeID, err)
 			}
 			if !store.IsVolumeReady(sourceVol) {
 				return nil, status.Errorf(codes.Unavailable, "snapshot source volume %s is not ready", snapshot.SourceVolumeID)
@@ -551,7 +565,7 @@ func (d *Driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 	// Check if volume exists
 	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+		return nil, volumeStoreGetError("volume", volumeID, err)
 	}
 	if !store.IsVolumeReady(volumeInfo) {
 		return nil, status.Errorf(codes.Unavailable, "volume %s is not ready", volumeID)
@@ -678,7 +692,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		if !existingSnap.ReadyToUse {
 			sourceVolume, err := d.store.GetVolume(sourceVolumeID)
 			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+				return nil, volumeStoreGetError("source volume", sourceVolumeID, err)
 			}
 			if !store.IsVolumeReady(sourceVolume) {
 				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
@@ -706,7 +720,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	// Get source volume info
 	sourceVolume, err := d.store.GetVolume(sourceVolumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+		return nil, volumeStoreGetError("source volume", sourceVolumeID, err)
 	}
 	if !store.IsVolumeReady(sourceVolume) {
 		return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
@@ -880,7 +894,7 @@ func (d *Driver) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsReques
 	if snapshotID != "" {
 		snapshot, err := d.store.GetSnapshot(snapshotID)
 		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapshotID)
+			return nil, snapshotStoreGetError("snapshot", snapshotID, err)
 		}
 
 		return &csi.ListSnapshotsResponse{
@@ -940,7 +954,7 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 	// Get volume info
 	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+		return nil, volumeStoreGetError("volume", volumeID, err)
 	}
 	if !store.IsVolumeReady(volumeInfo) {
 		return nil, status.Errorf(codes.Unavailable, "volume %s is not ready", volumeID)
