@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
@@ -573,15 +574,39 @@ func (d *Driver) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeS
 		return nil, status.Errorf(codes.Internal, "failed to stat volume path: %v", err)
 	}
 
-	// For now, return minimal stats
-	// In production, implement proper filesystem stats using statfs syscall
+	var fs syscall.Statfs_t
+	if err := syscall.Statfs(volumePath, &fs); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to statfs volume path: %v", err)
+	}
+
+	blockSize := int64(fs.Bsize)
+	usedBlocks := uint64(0)
+	if fs.Blocks > fs.Bfree {
+		usedBlocks = fs.Blocks - fs.Bfree
+	}
+	totalBytes := int64(fs.Blocks) * blockSize
+	availableBytes := int64(fs.Bavail) * blockSize
+	usedBytes := int64(usedBlocks) * blockSize
+	totalInodes := int64(fs.Files)
+	availableInodes := int64(fs.Ffree)
+	usedInodes := totalInodes - availableInodes
+	if usedInodes < 0 {
+		usedInodes = 0
+	}
+
 	return &csi.NodeGetVolumeStatsResponse{
 		Usage: []*csi.VolumeUsage{
 			{
-				Unit: csi.VolumeUsage_BYTES,
+				Available: availableBytes,
+				Total:     totalBytes,
+				Used:      usedBytes,
+				Unit:      csi.VolumeUsage_BYTES,
 			},
 			{
-				Unit: csi.VolumeUsage_INODES,
+				Available: availableInodes,
+				Total:     totalInodes,
+				Used:      usedInodes,
+				Unit:      csi.VolumeUsage_INODES,
 			},
 		},
 	}, nil

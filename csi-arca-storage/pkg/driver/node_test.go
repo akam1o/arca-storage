@@ -109,6 +109,60 @@ func TestValidateVolumePathRejectsRootAliasesAndTraversal(t *testing.T) {
 	}
 }
 
+func TestNodeGetVolumeStatsReturnsFilesystemUsage(t *testing.T) {
+	tmp := t.TempDir()
+	volumePath := filepath.Join(tmp, "volume")
+	if err := os.MkdirAll(volumePath, 0750); err != nil {
+		t.Fatalf("failed to create volume path: %v", err)
+	}
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    nodeState,
+		mountManager: new(arcamount.MountManager),
+	}
+
+	resp, err := driver.NodeGetVolumeStats(context.Background(), &csi.NodeGetVolumeStatsRequest{
+		VolumeId:   "vol-a",
+		VolumePath: volumePath,
+	})
+	if err != nil {
+		t.Fatalf("NodeGetVolumeStats() error = %v", err)
+	}
+
+	var bytesUsage, inodesUsage *csi.VolumeUsage
+	for _, usage := range resp.GetUsage() {
+		switch usage.GetUnit() {
+		case csi.VolumeUsage_BYTES:
+			bytesUsage = usage
+		case csi.VolumeUsage_INODES:
+			inodesUsage = usage
+		}
+	}
+	if bytesUsage == nil {
+		t.Fatal("bytes usage entry not returned")
+	}
+	if bytesUsage.GetTotal() <= 0 {
+		t.Fatalf("bytes total = %d, want > 0", bytesUsage.GetTotal())
+	}
+	if bytesUsage.GetAvailable() < 0 || bytesUsage.GetAvailable() > bytesUsage.GetTotal() {
+		t.Fatalf("bytes available = %d, total = %d", bytesUsage.GetAvailable(), bytesUsage.GetTotal())
+	}
+	if inodesUsage == nil {
+		t.Fatal("inodes usage entry not returned")
+	}
+	if inodesUsage.GetTotal() <= 0 {
+		t.Fatalf("inodes total = %d, want > 0", inodesUsage.GetTotal())
+	}
+	if inodesUsage.GetAvailable() < 0 || inodesUsage.GetAvailable() > inodesUsage.GetTotal() {
+		t.Fatalf("inodes available = %d, total = %d", inodesUsage.GetAvailable(), inodesUsage.GetTotal())
+	}
+}
+
 func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	tmp := t.TempDir()
 	targetPath := filepath.Join(tmp, "target")
