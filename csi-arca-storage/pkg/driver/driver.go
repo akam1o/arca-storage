@@ -40,7 +40,7 @@ type Driver struct {
 	allocator  *arca.StandaloneAllocator
 
 	// Mount management (for node service)
-	mountManager         *mount.MountManager
+	mountManager         nodeMountManager
 	nodeState            *mount.NodeState
 	nodeMounter          mountutils.Interface
 	mountSourceValidator mount.MountSourceValidator
@@ -65,6 +65,12 @@ type Driver struct {
 	csi.UnimplementedIdentityServer
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
+}
+
+type nodeMountManager interface {
+	EnsureSVMMount(context.Context, string, string, string, []string) (string, error)
+	ShouldUnmountSVM(context.Context, string) (bool, error)
+	UnmountSVM(context.Context, string) error
 }
 
 // DriverConfig holds configuration for the driver

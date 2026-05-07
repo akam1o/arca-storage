@@ -150,6 +150,21 @@ func (ns *NodeState) ValidateVolumeStaging(
 	return nil
 }
 
+// ValidateVolumeStagingPath verifies that volumeID is staged at stagingPath.
+func (ns *NodeState) ValidateVolumeStagingPath(volumeID, stagingPath string) error {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+
+	staging, exists := ns.data.Volumes[volumeID]
+	if !exists {
+		return fmt.Errorf("volume %s is not staged in node state", volumeID)
+	}
+	if staging.StagingPath != stagingPath {
+		return fmt.Errorf("volume %s staging path mismatch: recorded=%s requested=%s", volumeID, staging.StagingPath, stagingPath)
+	}
+	return nil
+}
+
 // RemoveVolumeStaging removes a volume from staging records (atomic, with fsync)
 func (ns *NodeState) RemoveVolumeStaging(volumeID string) error {
 	ns.mu.Lock()

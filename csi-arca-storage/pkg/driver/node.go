@@ -182,6 +182,45 @@ func (d *Driver) sourceValidator() arcamount.MountSourceValidator {
 	return arcamount.ProcMountInfoSourceValidator{}
 }
 
+func (d *Driver) cleanupUnusedSVMMount(ctx context.Context, svmName string) {
+	if svmName == "" || d.mountManager == nil {
+		return
+	}
+
+	shouldUnmount, err := d.mountManager.ShouldUnmountSVM(ctx, svmName)
+	if err != nil {
+		klog.Warningf("Failed to check if SVM %s should be unmounted: %v", svmName, err)
+		return
+	}
+	if !shouldUnmount {
+		return
+	}
+
+	klog.V(4).Infof("Unmounting SVM %s (no more staged volumes)", svmName)
+	if err := d.mountManager.UnmountSVM(ctx, svmName); err != nil {
+		klog.Warningf("Failed to unmount SVM %s: %v", svmName, err)
+	}
+}
+
+func (d *Driver) validateStagedMountForPublish(volumeID, stagingTargetPath string, mounter mountutils.Interface) error {
+	if err := d.nodeState.ValidateVolumeStagingPath(volumeID, stagingTargetPath); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "staging path %s cannot be used for volume %s: %v", stagingTargetPath, volumeID, err)
+	}
+
+	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return status.Errorf(codes.FailedPrecondition, "staging path %s is not mounted", stagingTargetPath)
+		}
+		return status.Errorf(codes.Internal, "failed to check staging mount point: %v", err)
+	}
+	if notMnt {
+		return status.Errorf(codes.FailedPrecondition, "staging path %s is not mounted", stagingTargetPath)
+	}
+
+	return nil
+}
+
 // NodeStageVolume mounts the volume to a staging path
 func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRequest) (*csi.NodeStageVolumeResponse, error) {
 	klog.V(4).Infof("NodeStageVolume called with volumeID: %s", req.GetVolumeId())
@@ -245,6 +284,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 
 	// Create staging target directory
 	if err := os.MkdirAll(stagingTargetPath, 0750); err != nil {
+		d.cleanupUnusedSVMMount(ctx, svmName)
 		return nil, status.Errorf(codes.Internal, "failed to create staging target directory: %v", err)
 	}
 
@@ -256,6 +296,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if !os.IsNotExist(err) {
+			d.cleanupUnusedSVMMount(ctx, svmName)
 			return nil, status.Errorf(codes.Internal, "failed to check mount point: %v", err)
 		}
 		notMnt = true
@@ -263,9 +304,11 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 
 	if !notMnt {
 		if err := d.sourceValidator().ValidateMountSource(stagingTargetPath, sourcePath); err != nil {
+			d.cleanupUnusedSVMMount(ctx, svmName)
 			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested source: %v", stagingTargetPath, err)
 		}
 		if err := d.nodeState.ValidateVolumeStaging(volumeID, svmName, vip, exportRoot, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
+			d.cleanupUnusedSVMMount(ctx, svmName)
 			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested volume: %v", stagingTargetPath, err)
 		}
 		klog.V(4).Infof("Volume %s already staged at %s", volumeID, stagingTargetPath)
@@ -276,6 +319,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	klog.V(4).Infof("Creating bind mount from %s to %s", sourcePath, stagingTargetPath)
 
 	if err := mounter.Mount(sourcePath, stagingTargetPath, "", bindMountOptions()); err != nil {
+		d.cleanupUnusedSVMMount(ctx, svmName)
 		return nil, status.Errorf(codes.Internal, "failed to bind mount: %v", err)
 	}
 
@@ -296,6 +340,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 			klog.Warningf("Failed to remove staging target directory %s during rollback: %v", stagingTargetPath, rmDirErr)
 		}
 
+		d.cleanupUnusedSVMMount(ctx, svmName)
 		return nil, status.Errorf(codes.Internal, "failed to persist node state for volume staging: %v", err)
 	}
 
@@ -366,15 +411,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 
 	// Check if SVM mount should be unmounted (derived refcount check)
 	if svmName != "" {
-		shouldUnmount, err := d.mountManager.ShouldUnmountSVM(ctx, svmName)
-		if err != nil {
-			klog.Warningf("Failed to check if SVM %s should be unmounted: %v", svmName, err)
-		} else if shouldUnmount {
-			klog.V(4).Infof("Unmounting SVM %s (no more staged volumes)", svmName)
-			if err := d.mountManager.UnmountSVM(ctx, svmName); err != nil {
-				klog.Warningf("Failed to unmount SVM %s: %v", svmName, err)
-			}
-		}
+		d.cleanupUnusedSVMMount(ctx, svmName)
 	}
 
 	klog.Infof("Volume %s unstaged successfully from %s", volumeID, stagingTargetPath)
@@ -413,11 +450,6 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	klog.V(4).Infof("Publishing volume %s from %s to %s", volumeID, stagingTargetPath, targetPath)
 	readonly := req.GetReadonly()
 
-	// Create target directory
-	if err := os.MkdirAll(targetPath, 0750); err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create target directory: %v", err)
-	}
-
 	// Check if already mounted
 	mounter := d.mounter()
 	notMnt, err := mounter.IsLikelyNotMountPoint(targetPath)
@@ -435,11 +467,23 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		if err := d.nodeState.ValidateVolumePublish(volumeID, targetPath, readonly); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
 		}
+		if err := d.nodeState.ValidateVolumeStagingPath(volumeID, stagingTargetPath); err != nil {
+			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but requested staging path cannot be reused: %v", targetPath, err)
+		}
 		if err := validateExistingPublishReadOnly(mounter, targetPath, readonly); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
 		}
 		klog.V(4).Infof("Volume %s already published at %s", volumeID, targetPath)
 		return &csi.NodePublishVolumeResponse{}, nil
+	}
+
+	if err := d.validateStagedMountForPublish(volumeID, stagingTargetPath, mounter); err != nil {
+		return nil, err
+	}
+
+	// Create target directory
+	if err := os.MkdirAll(targetPath, 0750); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to create target directory: %v", err)
 	}
 
 	// Step 1: Create initial bind mount

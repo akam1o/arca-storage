@@ -26,6 +26,39 @@ func (v fakeMountSourceValidator) ValidateMountSource(targetPath, expectedSource
 	return v.err
 }
 
+type fakeNodeMountManager struct {
+	mountPath     string
+	shouldUnmount bool
+	ensureCalls   int
+	shouldCalls   []string
+	unmountCalls  []string
+}
+
+func (m *fakeNodeMountManager) EnsureSVMMount(ctx context.Context, svmName, vip, exportRoot string, nfsMountOptions []string) (string, error) {
+	m.ensureCalls++
+	if m.mountPath == "" {
+		return filepath.Join(os.TempDir(), svmName), nil
+	}
+	return m.mountPath, nil
+}
+
+func (m *fakeNodeMountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bool, error) {
+	m.shouldCalls = append(m.shouldCalls, svmName)
+	return m.shouldUnmount, nil
+}
+
+func (m *fakeNodeMountManager) UnmountSVM(ctx context.Context, svmName string) error {
+	m.unmountCalls = append(m.unmountCalls, svmName)
+	return nil
+}
+
+func testMountCapability() *csi.VolumeCapability {
+	return &csi.VolumeCapability{
+		AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
+		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+	}
+}
+
 func TestNFSMountOptionsFromCapabilityUsesMountFlags(t *testing.T) {
 	capability := &csi.VolumeCapability{
 		AccessType: &csi.VolumeCapability_Mount{
@@ -163,6 +196,53 @@ func TestNodeGetVolumeStatsReturnsFilesystemUsage(t *testing.T) {
 	}
 }
 
+func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T) {
+	tmp := t.TempDir()
+	blockingFile := filepath.Join(tmp, "not-a-directory")
+	if err := os.WriteFile(blockingFile, []byte("blocked"), 0600); err != nil {
+		t.Fatalf("failed to create blocking file: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	mountManager := &fakeNodeMountManager{
+		mountPath:     filepath.Join(tmp, "svm-mount"),
+		shouldUnmount: true,
+	}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    nodeState,
+		mountManager: mountManager,
+		nodeMounter:  mountutils.NewFakeMounter(nil),
+	}
+
+	_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: filepath.Join(blockingFile, "stage"),
+		VolumeCapability:  testMountCapability(),
+		VolumeContext: map[string]string{
+			volumeContextSVM:        "svm-a",
+			volumeContextVIP:        "10.0.0.1",
+			volumeContextVolumePath: "volumes/vol-a",
+		},
+	})
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal, got %v", err)
+	}
+	if mountManager.ensureCalls != 1 {
+		t.Fatalf("EnsureSVMMount calls = %d, want 1", mountManager.ensureCalls)
+	}
+	if !reflect.DeepEqual(mountManager.shouldCalls, []string{"svm-a"}) {
+		t.Fatalf("ShouldUnmountSVM calls = %#v", mountManager.shouldCalls)
+	}
+	if !reflect.DeepEqual(mountManager.unmountCalls, []string{"svm-a"}) {
+		t.Fatalf("UnmountSVM calls = %#v", mountManager.unmountCalls)
+	}
+}
+
 func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	tmp := t.TempDir()
 	targetPath := filepath.Join(tmp, "target")
@@ -212,6 +292,101 @@ func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "not recorded for volume") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+}
+
+func TestNodePublishRejectsFirstPublishWithMismatchedStagingPath(t *testing.T) {
+	tmp := t.TempDir()
+	targetPath := filepath.Join(tmp, "target")
+	recordedStagingPath := filepath.Join(tmp, "recorded-staging")
+	requestedStagingPath := filepath.Join(tmp, "requested-staging")
+	if err := os.MkdirAll(recordedStagingPath, 0750); err != nil {
+		t.Fatalf("failed to create recorded staging path: %v", err)
+	}
+	if err := os.MkdirAll(requestedStagingPath, 0750); err != nil {
+		t.Fatalf("failed to create requested staging path: %v", err)
+	}
+	mountedRequestedStagingPath, err := filepath.EvalSymlinks(requestedStagingPath)
+	if err != nil {
+		t.Fatalf("failed to resolve requested staging path: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "", "volumes/vol-a", recordedStagingPath, nil); err != nil {
+		t.Fatalf("failed to record staging: %v", err)
+	}
+
+	fakeMounter := mountutils.NewFakeMounter([]mountutils.MountPoint{
+		{Device: "/svm/volumes/vol-a", Path: mountedRequestedStagingPath, Type: "", Opts: []string{"bind"}},
+	})
+	driver := &Driver{
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         new(arcamount.MountManager),
+		nodeMounter:          fakeMounter,
+		mountSourceValidator: fakeMountSourceValidator{},
+	}
+
+	_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: requestedStagingPath,
+		TargetPath:        targetPath,
+		VolumeCapability:  testMountCapability(),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "staging path mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if nodeState.HasVolumePublish("vol-a", targetPath) {
+		t.Fatal("target should not be recorded after rejected publish")
+	}
+}
+
+func TestNodePublishRejectsFirstPublishWhenStagingPathIsNotMounted(t *testing.T) {
+	tmp := t.TempDir()
+	targetPath := filepath.Join(tmp, "target")
+	stagingPath := filepath.Join(tmp, "staging")
+	if err := os.MkdirAll(stagingPath, 0750); err != nil {
+		t.Fatalf("failed to create staging path: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "", "volumes/vol-a", stagingPath, nil); err != nil {
+		t.Fatalf("failed to record staging: %v", err)
+	}
+
+	driver := &Driver{
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         new(arcamount.MountManager),
+		nodeMounter:          mountutils.NewFakeMounter(nil),
+		mountSourceValidator: fakeMountSourceValidator{},
+	}
+
+	_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: stagingPath,
+		TargetPath:        targetPath,
+		VolumeCapability:  testMountCapability(),
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "is not mounted") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	if nodeState.HasVolumePublish("vol-a", targetPath) {
+		t.Fatal("target should not be recorded after rejected publish")
 	}
 }
 
