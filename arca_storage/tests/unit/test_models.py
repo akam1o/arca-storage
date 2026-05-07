@@ -1,8 +1,8 @@
 """Tests for resource models."""
 
-import pytest
+from datetime import datetime, timezone
 
-from arca_storage.models.base import Phase, ResourceMeta
+from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec, SnapshotStatus
 from arca_storage.models.svm import SVM, SVMSpec, SVMStatus
@@ -26,6 +26,21 @@ class TestResourceMeta:
         original = meta.updated_at
         meta.bump()
         assert meta.updated_at >= original
+
+    def test_from_record_preserves_timestamps(self):
+        meta = resource_meta_from_record(
+            {
+                "id": "resource-a",
+                "generation": 3,
+                "created_at": "2025-12-20T12:00:00Z",
+                "updated_at": "2025-12-21T12:00:00Z",
+            }
+        )
+
+        assert meta.id == "resource-a"
+        assert meta.generation == 3
+        assert meta.created_at == datetime(2025, 12, 20, 12, 0, tzinfo=timezone.utc)
+        assert meta.updated_at == datetime(2025, 12, 21, 12, 0, tzinfo=timezone.utc)
 
 
 class TestSVMModel:

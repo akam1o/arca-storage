@@ -7,6 +7,10 @@ import re
 from typing import Tuple
 
 
+LVM_NAME_MAX_LENGTH = 127
+_RESOURCE_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*")
+
+
 def validate_name(name: str) -> None:
     """
     Validate a name (SVM, volume, etc.).
@@ -24,8 +28,35 @@ def validate_name(name: str) -> None:
         raise ValueError("Name must be between 1 and 64 characters")
     
     # Allow alphanumeric, dots, underscores, hyphens
-    if not re.match(r'^[a-zA-Z0-9][a-zA-Z0-9._-]*$', name):
+    if not _RESOURCE_NAME_RE.fullmatch(name):
         raise ValueError("Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens")
+
+
+def validate_lvm_name(name: str, *, resource: str = "Logical volume") -> None:
+    """Validate an LVM object name derived from API resource names."""
+    if len(name) > LVM_NAME_MAX_LENGTH:
+        raise ValueError(
+            f"{resource} name '{name}' is too long for LVM "
+            f"({len(name)} > {LVM_NAME_MAX_LENGTH} characters)"
+        )
+
+
+def svm_root_lv_name(svm: str) -> str:
+    name = f"vol_{svm}"
+    validate_lvm_name(name, resource="SVM root logical volume")
+    return name
+
+
+def volume_lv_name(svm: str, volume: str) -> str:
+    name = f"vol_{svm}_{volume}"
+    validate_lvm_name(name, resource="Volume logical volume")
+    return name
+
+
+def snapshot_lv_name(svm: str, volume: str, snapshot: str) -> str:
+    name = f"vol_{svm}_{volume}_snap_{snapshot}"
+    validate_lvm_name(name, resource="Snapshot logical volume")
+    return name
 
 
 def validate_vlan(vlan_id: int) -> None:
@@ -78,6 +109,53 @@ def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
         raise ValueError(f"Invalid IP address: {e}")
 
 
+def validate_svm_ip_cidr(cidr: str) -> Tuple[str, int]:
+    """
+    Validate an SVM VIP with CIDR notation.
+
+    Unlike generic client CIDRs, an SVM VIP must be a usable unicast host
+    address so it can be bound by Ganesha, netns, and Pacemaker resources.
+    """
+    try:
+        iface = ipaddress.IPv4Interface(cidr)
+    except Exception as e:
+        raise ValueError(f"Invalid CIDR format: {e}")
+
+    ip_addr = iface.ip
+    network = iface.network
+
+    if network.prefixlen == 0:
+        raise ValueError("SVM IP address prefix must not be /0")
+    if ip_addr.is_unspecified:
+        raise ValueError("SVM IP address must not be unspecified")
+    if ip_addr.is_multicast:
+        raise ValueError("SVM IP address must not be multicast")
+    if ip_addr.is_loopback:
+        raise ValueError("SVM IP address must not be loopback")
+    if ip_addr.is_reserved:
+        raise ValueError("SVM IP address must not be reserved")
+    if network.prefixlen < 31 and ip_addr in (network.network_address, network.broadcast_address):
+        raise ValueError("SVM IP address must be a usable host address")
+
+    return str(ip_addr), network.prefixlen
+
+
+def normalize_ip_cidr(cidr: str) -> str:
+    """
+    Validate and canonicalize an IPv4 network CIDR.
+
+    Host bits are accepted for compatibility with existing API callers and
+    normalized to the containing network.
+    """
+    try:
+        parts = cidr.split("/")
+        if len(parts) != 2:
+            raise ValueError("CIDR must be in format IP/PREFIX (e.g., 192.168.10.0/24)")
+        return str(ipaddress.IPv4Network(cidr, strict=False))
+    except Exception as e:
+        raise ValueError(f"Invalid CIDR format: {e}")
+
+
 def validate_ipv4(ip: str) -> None:
     """
     Validate an IPv4 address string.
@@ -92,6 +170,29 @@ def validate_ipv4(ip: str) -> None:
         ipaddress.IPv4Address(ip)
     except Exception as e:
         raise ValueError(f"Invalid IPv4 address: {e}")
+
+
+def validate_gateway_for_ip_cidr(ip_cidr: str, gateway: str) -> None:
+    """
+    Validate that a gateway can be used by the given IPv4 interface CIDR.
+
+    The gateway must be in the same interface network and must not be the VIP
+    itself. For conventional subnets, network and broadcast addresses are not
+    valid gateways.
+    """
+    try:
+        iface = ipaddress.IPv4Interface(ip_cidr)
+        gateway_ip = ipaddress.IPv4Address(gateway)
+    except Exception as e:
+        raise ValueError(f"Invalid gateway or CIDR: {e}")
+
+    network = iface.network
+    if gateway_ip not in network:
+        raise ValueError(f"Gateway {gateway} must be inside SVM network {network}")
+    if gateway_ip == iface.ip:
+        raise ValueError("Gateway must not be the SVM IP address")
+    if network.prefixlen < 31 and gateway_ip in (network.network_address, network.broadcast_address):
+        raise ValueError("Gateway cannot be the network or broadcast address")
 
 
 def infer_gateway_from_ip_cidr(cidr: str) -> str:

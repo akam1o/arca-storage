@@ -4,14 +4,15 @@ import "time"
 
 // SVM represents an ARCA Storage Virtual Machine
 type SVM struct {
-	Name      string    `json:"name"`
-	VLANID    int       `json:"vlan_id"`
-	IPCIDR    string    `json:"ip_cidr"`
-	VIP       string    `json:"vip"`
-	Gateway   string    `json:"gateway"`
-	MTU       int       `json:"mtu"`
-	State     string    `json:"state"`
-	CreatedAt time.Time `json:"created_at"`
+	Name       string    `json:"name"`
+	VLANID     int       `json:"vlan_id"`
+	IPCIDR     string    `json:"ip_cidr"`
+	VIP        string    `json:"vip"`
+	Gateway    string    `json:"gateway"`
+	MTU        int       `json:"mtu"`
+	ExportRoot string    `json:"export_root"`
+	State      string    `json:"state"`
+	CreatedAt  time.Time `json:"created_at"`
 }
 
 // CreateSVMRequest represents a request to create an SVM
@@ -32,14 +33,35 @@ type CreateDirectoryRequest struct {
 
 // CreateSnapshotRequest represents a request to create a snapshot
 type CreateSnapshotRequest struct {
-	SVMName      string `json:"svm_name"`
-	SourcePath   string `json:"source_path"`
-	SnapshotPath string `json:"snapshot_path"`
+	Name   string `json:"name"`
+	SVM    string `json:"svm"`
+	Volume string `json:"volume"`
+}
+
+// Snapshot represents an ARCA snapshot response.
+type Snapshot struct {
+	Name      string    `json:"name"`
+	SVM       string    `json:"svm"`
+	Volume    string    `json:"volume"`
+	LVPath    string    `json:"lv_path,omitempty"`
+	LVName    string    `json:"lv_name,omitempty"`
+	Status    string    `json:"status"`
+	CreatedAt time.Time `json:"created_at"`
+}
+
+// CloneVolumeFromSnapshotRequest represents a request to create a volume from a snapshot
+type CloneVolumeFromSnapshotRequest struct {
+	Name         string `json:"name"`
+	SVM          string `json:"svm"`
+	SourceVolume string `json:"-"`
+	Snapshot     string `json:"snapshot"`
+	SizeGiB      int    `json:"size_gib,omitempty"`
 }
 
 // RestoreSnapshotRequest represents a request to restore from snapshot
 type RestoreSnapshotRequest struct {
 	SVMName      string `json:"svm_name"`
+	SourceVolume string `json:"source_volume"`
 	SnapshotPath string `json:"snapshot_path"`
 	TargetPath   string `json:"target_path"`
 }

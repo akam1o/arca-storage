@@ -7,15 +7,18 @@ and proper locking. No external daemon required — SQLite ships with Python.
 
 from __future__ import annotations
 
+import base64
 import json
 import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timezone
+from ipaddress import IPv4Interface
 from pathlib import Path
-from typing import Any, Generator, Optional
+from typing import Any, Generator, Optional, Union
 
-from arca_storage.errors import AlreadyExistsError, NotFoundError
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
+from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError
 from arca_storage.models.base import Phase
 
 
@@ -90,13 +93,55 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _svm_network_key(spec: dict[str, Any]) -> Optional[tuple[Optional[int], str]]:
+    ip_cidr = str(spec.get("ip_cidr") or "")
+    if not ip_cidr:
+        return None
+    try:
+        vip = str(IPv4Interface(ip_cidr).ip)
+    except Exception:
+        vip = ip_cidr.split("/", 1)[0]
+    if not vip:
+        return None
+    raw_vlan = spec.get("vlan_id")
+    vlan_id = int(raw_vlan) if raw_vlan is not None else None
+    return vlan_id, vip
+
+
+def encode_cursor(values: list[str]) -> str:
+    payload = json.dumps(values, separators=(",", ":")).encode("utf-8")
+    return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+
+def _decode_cursor(cursor: Optional[str], expected_parts: int) -> Optional[list[str]]:
+    if not cursor:
+        return None
+
+    try:
+        padded = cursor + "=" * (-len(cursor) % 4)
+        raw = base64.urlsafe_b64decode(padded.encode("ascii"))
+        values = json.loads(raw.decode("utf-8"))
+    except Exception as e:
+        raise ValueError("Invalid pagination cursor") from e
+
+    if (
+        not isinstance(values, list)
+        or len(values) != expected_parts
+        or not all(isinstance(value, str) for value in values)
+    ):
+        raise ValueError("Invalid pagination cursor")
+    return values
+
+
 class StateDB:
     """Thread-safe SQLite state store with WAL journaling."""
 
-    def __init__(self, db_path: Path | str) -> None:
+    def __init__(self, db_path: Union[Path, str]) -> None:
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
+        self._connections: dict[int, sqlite3.Connection] = {}
+        self._connections_lock = threading.Lock()
         # Initialise schema on first connection
         with self.transaction() as conn:
             conn.executescript(_SCHEMA_SQL)
@@ -107,13 +152,19 @@ class StateDB:
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
-        if conn is None:
-            conn = sqlite3.connect(self._db_path, check_same_thread=False)
-            conn.execute("PRAGMA journal_mode=WAL")
-            conn.execute("PRAGMA foreign_keys=ON")
-            conn.execute("PRAGMA busy_timeout=5000")
-            conn.row_factory = sqlite3.Row
-            self._local.conn = conn
+        if conn is not None:
+            with self._connections_lock:
+                if id(conn) in self._connections:
+                    return conn
+
+        conn = sqlite3.connect(self._db_path, check_same_thread=False)
+        conn.execute("PRAGMA journal_mode=WAL")
+        conn.execute("PRAGMA foreign_keys=ON")
+        conn.execute("PRAGMA busy_timeout=5000")
+        conn.row_factory = sqlite3.Row
+        self._local.conn = conn
+        with self._connections_lock:
+            self._connections[id(conn)] = conn
         return conn
 
     @contextmanager
@@ -130,31 +181,70 @@ class StateDB:
 
     # ---- SVM operations ----
 
-    def upsert_svm(self, svm: Any) -> None:
+    def insert_svm(self, svm: Any) -> None:
+        """Insert a new SVM record without overwriting an existing one."""
+        now = _now_iso()
+        try:
+            with self.transaction(immediate=True) as conn:
+                self._raise_svm_network_conflict_conn(
+                    conn,
+                    svm.spec.model_dump(mode="json"),
+                    exclude_name=svm.spec.name,
+                )
+                conn.execute(
+                    """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        svm.metadata.id,
+                        svm.spec.name,
+                        svm.spec.model_dump_json(),
+                        svm.status.model_dump_json(),
+                        svm.metadata.generation,
+                        svm.metadata.created_at.isoformat(),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError("SVM", svm.spec.name) from e
+
+    def upsert_svm(self, svm: Any, *, expected_create_owner: Optional[str] = None) -> bool:
         """Insert or update an SVM record."""
         now = _now_iso()
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(name) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    svm.metadata.id,
-                    svm.spec.name,
-                    svm.spec.model_dump_json(),
-                    svm.status.model_dump_json(),
-                    svm.metadata.generation,
-                    svm.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+        with self.transaction(immediate=True) as conn:
+            if not self._create_owner_matches_conn(conn, "svms", {"name": svm.spec.name}, expected_create_owner):
+                return False
+            self._upsert_svm_conn(conn, svm, now=now)
+            return True
 
-    def get_svm(self, name: str) -> dict[str, Any] | None:
+    def _upsert_svm_conn(self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        self._raise_svm_network_conflict_conn(
+            conn,
+            svm.spec.model_dump(mode="json"),
+            exclude_name=svm.spec.name,
+        )
+        conn.execute(
+            """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(name) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                svm.metadata.id,
+                svm.spec.name,
+                svm.spec.model_dump_json(),
+                svm.status.model_dump_json(),
+                svm.metadata.generation,
+                svm.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
+
+    def get_svm(self, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         cur = conn.execute("SELECT * FROM svms WHERE name = ?", (name,))
         row = cur.fetchone()
@@ -162,10 +252,46 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
-    def list_svms(self, name: Optional[str] = None, limit: int = 100) -> list[dict[str, Any]]:
+    def acquire_svm_create_lease(
+        self,
+        name: str,
+        owner: str,
+        *,
+        expected_spec: Optional[dict[str, Any]] = None,
+        allow_failed: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        return self._acquire_create_lease(
+            "svms",
+            {"name": name},
+            owner,
+            expected_spec=expected_spec,
+            allow_failed=allow_failed,
+        )
+
+    def refresh_svm_create_lease(self, name: str, owner: str) -> bool:
+        return self._refresh_create_lease("svms", {"name": name}, owner)
+
+    def list_svms(
+        self,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         conn = self._conn()
+        cursor_values = _decode_cursor(cursor, 1)
         if name:
-            cur = conn.execute("SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?", (name, limit))
+            if cursor_values:
+                cur = conn.execute(
+                    "SELECT * FROM svms WHERE name = ? AND name > ? ORDER BY name LIMIT ?",
+                    (name, cursor_values[0], limit),
+                )
+            else:
+                cur = conn.execute("SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?", (name, limit))
+        elif cursor_values:
+            cur = conn.execute(
+                "SELECT * FROM svms WHERE name > ? ORDER BY name LIMIT ?",
+                (cursor_values[0], limit),
+            )
         else:
             cur = conn.execute("SELECT * FROM svms ORDER BY name LIMIT ?", (limit,))
         return [self._row_to_resource(row) for row in cur.fetchall()]
@@ -177,31 +303,62 @@ class StateDB:
 
     # ---- Volume operations ----
 
-    def upsert_volume(self, volume: Any) -> None:
+    def insert_volume(self, volume: Any) -> None:
+        """Insert a new volume record without overwriting an existing one."""
         now = _now_iso()
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(svm, name) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    volume.metadata.id,
-                    volume.spec.name,
-                    volume.spec.svm,
-                    volume.spec.model_dump_json(),
-                    volume.status.model_dump_json(),
-                    volume.metadata.generation,
-                    volume.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+        try:
+            with self.transaction(immediate=True) as conn:
+                conn.execute(
+                    """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        volume.metadata.id,
+                        volume.spec.name,
+                        volume.spec.svm,
+                        volume.spec.model_dump_json(),
+                        volume.status.model_dump_json(),
+                        volume.metadata.generation,
+                        volume.metadata.created_at.isoformat(),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError("Volume", f"{volume.spec.svm}/{volume.spec.name}") from e
 
-    def get_volume(self, svm: str, name: str) -> dict[str, Any] | None:
+    def upsert_volume(self, volume: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+        now = _now_iso()
+        key = {"svm": volume.spec.svm, "name": volume.spec.name}
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            if not self._create_owner_matches_conn(conn, "volumes", key, expected_create_owner):
+                return False
+            self._upsert_volume_conn(conn, volume, now=now)
+            return True
+
+    def _upsert_volume_conn(self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        conn.execute(
+            """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(svm, name) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                volume.metadata.id,
+                volume.spec.name,
+                volume.spec.svm,
+                volume.spec.model_dump_json(),
+                volume.status.model_dump_json(),
+                volume.metadata.generation,
+                volume.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
+
+    def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
         row = cur.fetchone()
@@ -209,8 +366,32 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
+    def acquire_volume_create_lease(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        *,
+        expected_spec: Optional[dict[str, Any]] = None,
+        allow_failed: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        return self._acquire_create_lease(
+            "volumes",
+            {"svm": svm, "name": name},
+            owner,
+            expected_spec=expected_spec,
+            allow_failed=allow_failed,
+        )
+
+    def refresh_volume_create_lease(self, svm: str, name: str, owner: str) -> bool:
+        return self._refresh_create_lease("volumes", {"svm": svm, "name": name}, owner)
+
     def list_volumes(
-        self, svm: Optional[str] = None, name: Optional[str] = None, limit: int = 100
+        self,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         sql = "SELECT * FROM volumes WHERE 1=1"
@@ -221,6 +402,11 @@ class StateDB:
         if name:
             sql += " AND name = ?"
             params.append(name)
+        cursor_values = _decode_cursor(cursor, 2)
+        if cursor_values:
+            cursor_svm, cursor_name = cursor_values
+            sql += " AND (svm > ? OR (svm = ? AND name > ?))"
+            params.extend([cursor_svm, cursor_svm, cursor_name])
         sql += " ORDER BY svm, name LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
@@ -233,30 +419,86 @@ class StateDB:
 
     # ---- Snapshot operations ----
 
-    def upsert_snapshot(self, snapshot: Any) -> None:
+    def insert_snapshot(self, snapshot: Any) -> None:
+        """Insert a new snapshot record without overwriting an existing one."""
         now = _now_iso()
-        with self.transaction() as conn:
-            conn.execute(
-                """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                   ON CONFLICT(svm, volume, name) DO UPDATE SET
-                       spec=excluded.spec,
-                       status=excluded.status,
-                       generation=excluded.generation,
-                       updated_at=excluded.updated_at
-                """,
-                (
-                    snapshot.metadata.id,
-                    snapshot.spec.name,
-                    snapshot.spec.svm,
-                    snapshot.spec.volume,
-                    snapshot.spec.model_dump_json(),
-                    snapshot.status.model_dump_json(),
-                    snapshot.metadata.generation,
-                    snapshot.metadata.created_at.isoformat(),
-                    now,
-                ),
-            )
+        try:
+            with self.transaction(immediate=True) as conn:
+                conn.execute(
+                    """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        snapshot.metadata.id,
+                        snapshot.spec.name,
+                        snapshot.spec.svm,
+                        snapshot.spec.volume,
+                        snapshot.spec.model_dump_json(),
+                        snapshot.status.model_dump_json(),
+                        snapshot.metadata.generation,
+                        snapshot.metadata.created_at.isoformat(),
+                        now,
+                    ),
+                )
+        except sqlite3.IntegrityError as e:
+            raise AlreadyExistsError(
+                "Snapshot",
+                f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+            ) from e
+
+    def upsert_snapshot(self, snapshot: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+        now = _now_iso()
+        key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            if not self._create_owner_matches_conn(conn, "snapshots", key, expected_create_owner):
+                return False
+            self._upsert_snapshot_conn(conn, snapshot, now=now)
+            return True
+
+    def _upsert_snapshot_conn(self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None) -> None:
+        now = now or _now_iso()
+        conn.execute(
+            """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+               ON CONFLICT(svm, volume, name) DO UPDATE SET
+                   spec=excluded.spec,
+                   status=excluded.status,
+                   generation=excluded.generation,
+                   updated_at=excluded.updated_at
+            """,
+            (
+                snapshot.metadata.id,
+                snapshot.spec.name,
+                snapshot.spec.svm,
+                snapshot.spec.volume,
+                snapshot.spec.model_dump_json(),
+                snapshot.status.model_dump_json(),
+                snapshot.metadata.generation,
+                snapshot.metadata.created_at.isoformat(),
+                now,
+            ),
+        )
+
+    def acquire_snapshot_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        owner: str,
+        *,
+        expected_spec: Optional[dict[str, Any]] = None,
+        allow_failed: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        return self._acquire_create_lease(
+            "snapshots",
+            {"svm": svm, "volume": volume, "name": name},
+            owner,
+            expected_spec=expected_spec,
+            allow_failed=allow_failed,
+        )
+
+    def refresh_snapshot_create_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
+        return self._refresh_create_lease("snapshots", {"svm": svm, "volume": volume, "name": name}, owner)
 
     def list_snapshots(
         self,
@@ -264,6 +506,7 @@ class StateDB:
         volume: Optional[str] = None,
         name: Optional[str] = None,
         limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         sql = "SELECT * FROM snapshots WHERE 1=1"
@@ -277,6 +520,14 @@ class StateDB:
         if name:
             sql += " AND name = ?"
             params.append(name)
+        cursor_values = _decode_cursor(cursor, 3)
+        if cursor_values:
+            cursor_svm, cursor_volume, cursor_name = cursor_values
+            sql += (
+                " AND (svm > ? OR (svm = ? AND volume > ?) "
+                "OR (svm = ? AND volume = ? AND name > ?))"
+            )
+            params.extend([cursor_svm, cursor_svm, cursor_volume, cursor_svm, cursor_volume, cursor_name])
         sql += " ORDER BY svm, volume, name LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
@@ -292,13 +543,23 @@ class StateDB:
 
     # ---- Export operations ----
 
-    def upsert_export(self, export: Any) -> None:
+    def upsert_export(self, export: Any, *, expected_create_owner: Optional[str] = None) -> bool:
         now = _now_iso()
-        with self.transaction() as conn:
-            self._upsert_export_conn(conn, export, now=now)
+        with self.transaction(immediate=expected_create_owner is not None) as conn:
+            return self._upsert_export_conn(conn, export, now=now, expected_create_owner=expected_create_owner)
 
-    def _upsert_export_conn(self, conn: sqlite3.Connection, export: Any, *, now: Optional[str] = None) -> None:
+    def _upsert_export_conn(
+        self,
+        conn: sqlite3.Connection,
+        export: Any,
+        *,
+        now: Optional[str] = None,
+        expected_create_owner: Optional[str] = None,
+    ) -> bool:
         now = now or _now_iso()
+        key = {"svm": export.spec.svm, "volume": export.spec.volume, "client": export.spec.client}
+        if not self._create_owner_matches_conn(conn, "exports", key, expected_create_owner, allow_missing=True):
+            return False
         conn.execute(
             """INSERT INTO exports (id, svm, volume, client, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -320,6 +581,7 @@ class StateDB:
                 now,
             ),
         )
+        return True
 
     def list_exports(
         self,
@@ -327,13 +589,35 @@ class StateDB:
         volume: Optional[str] = None,
         client: Optional[str] = None,
         limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
-        return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit)
+        return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit, cursor=cursor)
 
-    def get_export(self, svm: str, volume: str, client: str) -> dict[str, Any] | None:
+    def get_export(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         return self._get_export_conn(conn, svm, volume, client)
+
+    def acquire_export_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        client: str,
+        owner: str,
+        *,
+        expected_spec: Optional[dict[str, Any]] = None,
+        allow_failed: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        return self._acquire_create_lease(
+            "exports",
+            {"svm": svm, "volume": volume, "client": client},
+            owner,
+            expected_spec=expected_spec,
+            allow_failed=allow_failed,
+        )
+
+    def refresh_export_create_lease(self, svm: str, volume: str, client: str, owner: str) -> bool:
+        return self._refresh_create_lease("exports", {"svm": svm, "volume": volume, "client": client}, owner)
 
     def _get_export_conn(
         self,
@@ -341,7 +625,7 @@ class StateDB:
         svm: str,
         volume: str,
         client: str,
-    ) -> dict[str, Any] | None:
+    ) -> Optional[dict[str, Any]]:
         cur = conn.execute(
             "SELECT * FROM exports WHERE svm = ? AND volume = ? AND client = ?",
             (svm, volume, client),
@@ -358,6 +642,7 @@ class StateDB:
         volume: Optional[str] = None,
         client: Optional[str] = None,
         limit: int = 100,
+        cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM exports WHERE 1=1"
         params: list[Any] = []
@@ -370,6 +655,14 @@ class StateDB:
         if client:
             sql += " AND client = ?"
             params.append(client)
+        cursor_values = _decode_cursor(cursor, 3)
+        if cursor_values:
+            cursor_svm, cursor_volume, cursor_client = cursor_values
+            sql += (
+                " AND (svm > ? OR (svm = ? AND volume > ?) "
+                "OR (svm = ? AND volume = ? AND client > ?))"
+            )
+            params.extend([cursor_svm, cursor_svm, cursor_volume, cursor_svm, cursor_volume, cursor_client])
         sql += " ORDER BY svm, volume, client LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
@@ -416,6 +709,119 @@ class StateDB:
 
     # ---- helpers ----
 
+    def _acquire_create_lease(
+        self,
+        table: str,
+        key: dict[str, str],
+        owner: str,
+        *,
+        expected_spec: Optional[dict[str, Any]] = None,
+        allow_failed: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, table, key)
+            if record is None:
+                return None
+            if expected_spec is not None and record.get("spec") != expected_spec:
+                return None
+            status = record["status"]
+            phase = status.get("phase")
+            if phase in ACTIVE_CREATE_PHASES:
+                if not create_lease_expired(record):
+                    return None
+            elif phase != Phase.FAILED.value or not allow_failed:
+                return None
+            status["phase"] = Phase.CREATING.value
+            status["create_owner"] = owner
+            status["create_lease_expires_at"] = lease_expiration().isoformat()
+            self._update_status_by_key_conn(conn, table, key, status)
+            record["status"] = status
+            return record
+
+    def _create_owner_matches_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        key: dict[str, str],
+        expected_owner: Optional[str],
+        *,
+        allow_missing: bool = False,
+    ) -> bool:
+        if expected_owner is None:
+            return True
+        record = self._get_resource_by_key_conn(conn, table, key)
+        if record is None:
+            return allow_missing
+        return record["status"].get("create_owner") == expected_owner
+
+    def _refresh_create_lease(self, table: str, key: dict[str, str], owner: str) -> bool:
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, table, key)
+            if record is None:
+                return False
+            status = record["status"]
+            if status.get("phase") not in ACTIVE_CREATE_PHASES or status.get("create_owner") != owner:
+                return False
+            status["create_lease_expires_at"] = lease_expiration().isoformat()
+            self._update_status_by_key_conn(conn, table, key, status)
+            return True
+
+    def _get_resource_by_key_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        key: dict[str, str],
+    ) -> Optional[dict[str, Any]]:
+        where = " AND ".join(f"{column} = ?" for column in key)
+        cur = conn.execute(f"SELECT * FROM {table} WHERE {where}", tuple(key.values()))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_resource(row)
+
+    def _update_status_by_key_conn(
+        self,
+        conn: sqlite3.Connection,
+        table: str,
+        key: dict[str, str],
+        status: dict[str, Any],
+    ) -> None:
+        where = " AND ".join(f"{column} = ?" for column in key)
+        conn.execute(
+            f"UPDATE {table} SET status = ?, updated_at = ? WHERE {where}",
+            (json.dumps(status), _now_iso(), *key.values()),
+        )
+
+    def _raise_svm_network_conflict_conn(
+        self,
+        conn: sqlite3.Connection,
+        spec: dict[str, Any],
+        *,
+        exclude_name: str,
+    ) -> None:
+        key = _svm_network_key(spec)
+        if key is None:
+            return
+        vlan_id, vip = key
+        cur = conn.execute("SELECT name, spec FROM svms")
+        for row in cur.fetchall():
+            existing_name = row["name"]
+            if existing_name == exclude_name:
+                continue
+            existing_spec = json.loads(row["spec"])
+            if _svm_network_key(existing_spec) == key:
+                vlan_label = "host network" if vlan_id is None else f"VLAN {vlan_id}"
+                raise ConflictError(
+                    f"IP address {vip} is already in use on {vlan_label} by SVM '{existing_name}'",
+                    {
+                        "resource": "SVM",
+                        "name": exclude_name,
+                        "ip": vip,
+                        "vlan_id": vlan_id,
+                        "conflicting_svm": existing_name,
+                    },
+                )
+
     @staticmethod
     def _row_to_resource(row: sqlite3.Row) -> dict[str, Any]:
         d = dict(row)
@@ -424,7 +830,9 @@ class StateDB:
         return d
 
     def close(self) -> None:
-        conn = getattr(self._local, "conn", None)
-        if conn is not None:
+        with self._connections_lock:
+            connections = list(self._connections.values())
+            self._connections.clear()
+        for conn in connections:
             conn.close()
-            self._local.conn = None
+        self._local.conn = None

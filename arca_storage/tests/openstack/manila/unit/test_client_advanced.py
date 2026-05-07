@@ -212,36 +212,14 @@ class TestResourceIDExtraction:
 class TestAuthenticationEdgeCases:
     """Test authentication and TLS configuration edge cases."""
 
-    def test_basic_auth_missing_password(self):
-        """Test that basic auth without password raises ValueError."""
-        with pytest.raises(ValueError, match="username and password"):
+    def test_basic_auth_rejected(self):
+        """Test that unsupported basic auth raises ValueError."""
+        with pytest.raises(ValueError, match="Must be 'token' or 'none'"):
             manila_client.ArcaManilaClient(
                 api_endpoint="http://192.168.10.5:8080",
                 auth_type="basic",
-                username="admin",
                 verify_ssl=False,
             )
-
-    def test_basic_auth_missing_username(self):
-        """Test that basic auth without username raises ValueError."""
-        with pytest.raises(ValueError, match="username and password"):
-            manila_client.ArcaManilaClient(
-                api_endpoint="http://192.168.10.5:8080",
-                auth_type="basic",
-                password="secret",
-                verify_ssl=False,
-            )
-
-    def test_basic_auth_success(self):
-        """Test successful basic auth initialization."""
-        client = manila_client.ArcaManilaClient(
-            api_endpoint="http://192.168.10.5:8080",
-            auth_type="basic",
-            username="admin",
-            password="secret",
-            verify_ssl=False,
-        )
-        assert client.session.auth == ("admin", "secret")
 
     def test_ca_bundle_overrides_verify_ssl(self):
         """Test that CA bundle path overrides boolean verify_ssl."""

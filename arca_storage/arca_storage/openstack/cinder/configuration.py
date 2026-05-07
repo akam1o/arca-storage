@@ -63,6 +63,21 @@ def _get_arca_storage_opts():
             default=True,
             help="Verify SSL certificates for API requests",
         ),
+        cfg.StrOpt(
+            "arca_storage_api_auth_type",
+            default="none",
+            choices=["token", "none"],
+            help=(
+                "Authentication type for ARCA Storage API: "
+                "'token' (Bearer token), 'none' (no auth)"
+            ),
+        ),
+        cfg.StrOpt(
+            "arca_storage_api_token",
+            default=None,
+            secret=True,
+            help="API authentication token (for auth_type=token)",
+        ),
         # Multi-tenancy Configuration
         cfg.StrOpt(
             "arca_storage_svm_strategy",
@@ -90,8 +105,19 @@ def _get_arca_storage_opts():
             "arca_storage_nfs_server",
             default=None,
             help=(
-                "NFS server (IP/hostname) that exports /exports/<svm>. "
+                "NFS server (IP/hostname) that exports the per-SVM directories "
+                "under arca_storage_nfs_export_root. "
                 "Required when arca_storage_use_api is False."
+            ),
+        ),
+        cfg.StrOpt(
+            "arca_storage_nfs_export_root",
+            default="/exports",
+            help=(
+                "Base NFS export directory containing per-SVM exports. The driver "
+                "mounts <server>:<export_root>/<svm> when arca_storage_nfs_server "
+                "is configured. In API mode, the SVM export_root from ARCA is used "
+                "when available."
             ),
         ),
         cfg.StrOpt(
@@ -143,7 +169,7 @@ def _get_arca_storage_opts():
         cfg.StrOpt(
             "arca_storage_driver_ssl_cert_path",
             default=None,
-            help="Path to SSL certificate file for API authentication (optional)",
+            help="Path to CA bundle/certificate file for API TLS verification (optional)",
         ),
         cfg.StrOpt(
             "arca_storage_volume_backend_name",

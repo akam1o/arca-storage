@@ -4,8 +4,16 @@ Unit tests for validators.
 
 import pytest
 
-from arca_storage.cli.lib.validators import (validate_ip_cidr, validate_name,
-                                   validate_vlan)
+from arca_storage.cli.lib.validators import (
+    snapshot_lv_name,
+    svm_root_lv_name,
+    validate_gateway_for_ip_cidr,
+    validate_ip_cidr,
+    validate_name,
+    validate_svm_ip_cidr,
+    validate_vlan,
+    volume_lv_name,
+)
 
 
 class TestValidateName:
@@ -44,6 +52,10 @@ class TestValidateName:
             validate_name("-tenant")  # starts with hyphen
         with pytest.raises(ValueError):
             validate_name("_tenant")  # starts with underscore
+        with pytest.raises(ValueError):
+            validate_name("tenant\n")  # trailing newline
+        with pytest.raises(ValueError):
+            validate_name("tenant\r")  # trailing carriage return
 
 
 class TestValidateVlan:
@@ -113,3 +125,82 @@ class TestValidateIpCidr:
 
         with pytest.raises(ValueError, match="Prefix length must be between"):
             validate_ip_cidr("192.168.10.5/-1")
+
+
+class TestValidateSvmIpCidr:
+    """Tests for validate_svm_ip_cidr function."""
+
+    @pytest.mark.unit
+    def test_valid_host_cidr(self):
+        """Test valid SVM VIP CIDRs."""
+        ip, prefix = validate_svm_ip_cidr("192.168.10.5/24")
+        assert ip == "192.168.10.5"
+        assert prefix == 24
+
+        ip, prefix = validate_svm_ip_cidr("192.168.10.5/32")
+        assert ip == "192.168.10.5"
+        assert prefix == 32
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cidr",
+        [
+            "0.0.0.0/0",
+            "10.0.0.1/0",
+            "192.168.10.0/24",
+            "192.168.10.255/24",
+            "224.0.0.1/24",
+            "127.0.0.1/8",
+            "240.0.0.1/24",
+        ],
+    )
+    def test_rejects_non_unicast_host_addresses(self, cidr):
+        """Test SVM VIP rejects addresses that cannot be bound as service hosts."""
+        with pytest.raises(ValueError):
+            validate_svm_ip_cidr(cidr)
+
+
+class TestValidateGatewayForIpCidr:
+    """Tests for validate_gateway_for_ip_cidr function."""
+
+    @pytest.mark.unit
+    def test_valid_gateway(self):
+        validate_gateway_for_ip_cidr("192.168.10.5/24", "192.168.10.1")
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "gateway, match",
+        [
+            ("10.0.0.1", "inside SVM network"),
+            ("192.168.10.5", "SVM IP address"),
+            ("192.168.10.0", "network or broadcast"),
+            ("192.168.10.255", "network or broadcast"),
+        ],
+    )
+    def test_rejects_unusable_gateway(self, gateway, match):
+        with pytest.raises(ValueError, match=match):
+            validate_gateway_for_ip_cidr("192.168.10.5/24", gateway)
+
+
+class TestLVMNameBuilders:
+    """Tests for generated LVM object name length validation."""
+
+    @pytest.mark.unit
+    def test_volume_lv_name_allows_lvm_limit_boundary(self):
+        name = volume_lv_name("s" * 64, "v" * 58)
+
+        assert len(name) == 127
+
+    @pytest.mark.unit
+    def test_volume_lv_name_rejects_lvm_limit_overflow(self):
+        with pytest.raises(ValueError, match="too long for LVM"):
+            volume_lv_name("s" * 64, "v" * 59)
+
+    @pytest.mark.unit
+    def test_snapshot_lv_name_rejects_lvm_limit_overflow(self):
+        with pytest.raises(ValueError, match="too long for LVM"):
+            snapshot_lv_name("s" * 64, "v" * 64, "p" * 64)
+
+    @pytest.mark.unit
+    def test_svm_root_lv_name_uses_generated_name(self):
+        assert svm_root_lv_name("tenant") == "vol_tenant"

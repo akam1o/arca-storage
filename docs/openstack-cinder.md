@@ -4,7 +4,7 @@ This repository includes a Cinder NFS driver that uses an ARCA SVM export as a s
 
 ## Overview
 
-- One SVM corresponds to one NFS export: `server:/exports/<svm>`
+- One SVM corresponds to one NFS export: `server:<export_root>/<svm>`
 - Each Cinder volume becomes a file: `volume-<volume_id>`
 - Snapshots/clones are file copies: `snapshot-<snapshot_id>`
 - This driver is designed to work as a file-only backend. ARCA REST API usage is optional.
@@ -32,6 +32,7 @@ driver_volume_type = nfs
 # NFS/file-only mode (recommended)
 arca_storage_use_api = false
 arca_storage_nfs_server = 192.168.10.5
+arca_storage_nfs_export_root = /exports
 arca_storage_nfs_mount_point_base = /var/lib/cinder/mnt
 arca_storage_nfs_mount_options = rw,noatime,nodiratime,vers=4.1
 
@@ -90,7 +91,7 @@ QoS application is best-effort:
 ## Operational notes
 
 - Ensure NFS client utilities are present on Cinder volume hosts and Nova compute hosts.
-- Ensure the NFS export `/exports/<svm>` is reachable and permits the required client CIDRs.
+- Ensure the NFS export `<arca_storage_nfs_export_root>/<svm>` is reachable and permits the required client CIDRs.
 - Monitor disk usage on the underlying export (volumes are sparse but still consume space as written).
 
 ## Troubleshooting

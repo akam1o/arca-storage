@@ -32,10 +32,13 @@ func (g *VolumeIDGenerator) ValidateVolumeID(volumeID string) bool {
 	}
 	// Check if remaining chars are valid hex
 	for i := 4; i < 20; i++ {
-		c := volumeID[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if !isLowerHex(volumeID[i]) {
 			return false
 		}
 	}
 	return true
+}
+
+func isLowerHex(c byte) bool {
+	return (c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')
 }

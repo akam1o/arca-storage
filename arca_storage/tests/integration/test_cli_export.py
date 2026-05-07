@@ -6,6 +6,17 @@ import pytest
 from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
+from .helpers import cli_output
+
+
+def create_test_volume(runner: CliRunner) -> None:
+    svm = runner.invoke(
+        app,
+        ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24", "--gateway", "192.168.10.1"],
+    )
+    assert svm.exit_code == 0
+    volume = runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "10"])
+    assert volume.exit_code == 0
 
 
 class TestExportAdd:
@@ -15,6 +26,7 @@ class TestExportAdd:
     def test_add_export_success(self, fake_context):
         """Test successful export addition."""
         runner = CliRunner()
+        create_test_volume(runner)
         result = runner.invoke(
             app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "10.0.0.0/24", "--access", "rw"]
         )
@@ -31,7 +43,7 @@ class TestExportAdd:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.stdout
+        assert "Error" in cli_output(result)
 
 
 class TestExportRemove:
@@ -41,7 +53,7 @@ class TestExportRemove:
     def test_remove_export_success(self, fake_context):
         """Test successful export removal."""
         runner = CliRunner()
-        # First add an export
+        create_test_volume(runner)
         runner.invoke(
             app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "10.0.0.0/24"]
         )

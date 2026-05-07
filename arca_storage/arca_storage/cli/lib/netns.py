@@ -12,6 +12,10 @@ from typing import Optional
 CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 
 
+def _parse_netns_names(output: str) -> set[str]:
+    return {line.split()[0] for line in output.splitlines() if line.split()}
+
+
 def _hash2_base62_sha256(data: bytes) -> str:
     """
     Return 2 base62 characters derived from sha256(data) as:
@@ -100,7 +104,7 @@ def create_namespace(name: str) -> None:
         check=False
     )
     
-    if name in result.stdout:
+    if name in _parse_netns_names(result.stdout or ""):
         # Namespace already exists, skip
         return
     
@@ -255,7 +259,7 @@ def delete_namespace(name: str) -> None:
         check=False
     )
     
-    if name not in result.stdout:
+    if name not in _parse_netns_names(result.stdout or ""):
         # Namespace doesn't exist, skip
         return
     

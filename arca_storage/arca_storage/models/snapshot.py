@@ -24,11 +24,14 @@ class SnapshotStatus(BaseModel):
     """System-managed actual state for a snapshot."""
 
     phase: Phase = Phase.PENDING
+    size_gib: Optional[int] = None
     lv_created: bool = False
     lv_path: Optional[str] = None
     lv_name: Optional[str] = None
     message: str = ""
     last_reconciled: Optional[datetime] = None
+    create_owner: Optional[str] = None
+    create_lease_expires_at: Optional[datetime] = None
 
 
 class Snapshot(BaseModel):

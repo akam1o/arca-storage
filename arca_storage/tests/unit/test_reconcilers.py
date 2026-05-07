@@ -9,7 +9,9 @@ implementations.
 from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
+import json
 import tempfile
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import pytest
@@ -20,7 +22,9 @@ from arca_storage.adapters.netns import FakeNetNSAdapter
 from arca_storage.adapters.pacemaker import FakePacemakerAdapter
 from arca_storage.adapters.systemd import FakeSystemdAdapter
 from arca_storage.adapters.xfs import FakeXFSAdapter
+from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB
+from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -36,7 +40,9 @@ from arca_storage.reconcilers.volume import VolumeReconciler
 @pytest.fixture
 def db(tmp_path):
     """Create SQLite DB in a temp directory."""
-    return StateDB(str(tmp_path / "state.db"))
+    state = StateDB(str(tmp_path / "state.db"))
+    yield state
+    state.close()
 
 
 @pytest.fixture
@@ -116,6 +122,26 @@ class TestSVMReconciler:
         assert adapters.pacemaker.resources["ip_novlan"]["type"] == "IPaddr2"
         assert adapters.pacemaker.resources["ganesha_novlan"]["type"] == "nfs-ganesha-host"
 
+    def test_delete_host_network_svm_preserves_unmanaged_namespace(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="sharedns",
+                ip_cidr="10.0.9.6/32",
+            ),
+        )
+
+        created = rec.reconcile(svm)
+        assert created.status.phase == Phase.READY
+        assert created.status.namespace_created is False
+
+        adapters.netns.create_namespace("sharedns")
+        created.status.phase = Phase.DELETING
+        rec.reconcile(created)
+
+        assert adapters.netns.namespace_exists("sharedns") is True
+        assert len(db.list_svms(name="sharedns")) == 0
+
     def test_create_svm_idempotent(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
         svm = SVM(
@@ -128,6 +154,26 @@ class TestSVMReconciler:
         # Reconcile again (same SVM)
         result2 = rec.reconcile(result1)
         assert result2.status.phase == Phase.READY
+
+    def test_create_svm_root_lv_accepts_matching_existing_lv(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="root-resume",
+                ip_cidr="10.0.8.5/32",
+                root_volume_size_gib=10,
+            ),
+        )
+        assign_create_lease(svm.status, "owner-1")
+        db.insert_svm(svm)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_root-resume", 10)
+
+        result = rec.reconcile(svm)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.fs_formatted is True
+        assert db.get_svm("root-resume")["status"]["phase"] == Phase.READY.value
 
     def test_delete_svm(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
@@ -145,6 +191,28 @@ class TestSVMReconciler:
         # Verify cleaned up
         assert not adapters.netns.namespace_exists("del-svm")
         assert len(db.list_svms(name="del-svm")) == 0
+
+    def test_delete_svm_removes_root_lv(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="rooted",
+                vlan_id=300,
+                ip_cidr="10.0.2.5/24",
+                gateway="10.0.2.1",
+                root_volume_size_gib=10,
+            ),
+        )
+
+        created = rec.reconcile(svm)
+        assert created.status.phase == Phase.READY
+        assert adapters.lvm.lv_exists("vg_arca", "vol_rooted")
+
+        created.status.phase = Phase.DELETING
+        rec.reconcile(created)
+
+        assert not adapters.lvm.lv_exists("vg_arca", "vol_rooted")
+        assert len(db.list_svms(name="rooted")) == 0
 
 
 # ── Volume Reconciler ─────────────────────────────────────────────
@@ -180,6 +248,68 @@ class TestVolumeReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
 
+    def test_create_volume_accepts_matching_existing_lv(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_vol1", 10)
+
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.fs_formatted is True
+        assert result.status.mounted is True
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.READY.value
+
+    def test_create_volume_rejects_existing_lv_with_wrong_type(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+        adapters.lvm.create_regular_lv("vg_arca", "vol_svm1_vol1", 10)
+
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.FAILED
+        assert "not thin-provisioned" in result.status.message
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.FAILED.value
+
+    def test_create_volume_lost_lease_does_not_persist_stale_status(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+        original_create = adapters.lvm.create_thin_lv
+
+        def steal_lease_then_create(vg: str, thinpool: str, name: str, size_gib: int):
+            record = db.get_volume("svm1", "vol1")
+            status = record["status"]
+            status["create_lease_expires_at"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+            conn = db._conn()
+            conn.execute(
+                "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+                (json.dumps(status), "svm1", "vol1"),
+            )
+            conn.commit()
+            assert db.acquire_volume_create_lease(
+                "svm1",
+                "vol1",
+                "owner-2",
+                expected_spec=vol.spec.model_dump(mode="json"),
+            ) is not None
+            return original_create(vg, thinpool, name, size_gib)
+
+        adapters.lvm.create_thin_lv = steal_lease_then_create
+
+        with pytest.raises(CreateLeaseLostError):
+            rec.reconcile(vol)
+
+        record = db.get_volume("svm1", "vol1")
+        assert record["status"]["create_owner"] == "owner-2"
+        assert record["status"]["lv_created"] is False
+
     def test_delete_volume(self, db, adapters, config):
         rec = VolumeReconciler(db, adapters, config=config)
         vol = Volume(
@@ -194,6 +324,19 @@ class TestVolumeReconciler:
 
         assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_to-delete")
         assert len(db.list_volumes(svm="svm1", name="to-delete")) == 0
+
+    def test_delete_volume_removes_oversized_legacy_record(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(
+            spec=VolumeSpec(name="v" * 59, svm="s" * 64, size_gib=5),
+        )
+        db.insert_volume(vol)
+
+        vol.status.phase = Phase.DELETING
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.DELETING
+        assert db.get_volume("s" * 64, "v" * 59) is None
 
 
 # ── Snapshot Reconciler ───────────────────────────────────────────
@@ -215,6 +358,24 @@ class TestSnapshotReconciler:
         assert result.status.lv_created is True
         assert result.status.lv_path is not None
 
+    def test_create_snapshot_accepts_matching_existing_lv(self, db, adapters, config):
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        adapters.lvm.create_snapshot("vg_arca", "vol_svm1_data", "vol_svm1_data_snap_snap1")
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        snap = Snapshot(
+            spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"),
+        )
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap)
+
+        result = rec.reconcile(snap)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.lv_name == "vol_svm1_data_snap_snap1"
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["phase"] == Phase.READY.value
+
     def test_delete_snapshot(self, db, adapters, config):
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
 
@@ -230,6 +391,19 @@ class TestSnapshotReconciler:
         rec.reconcile(created)
 
         assert len(db.list_snapshots(svm="svm1", name="snap-del")) == 0
+
+    def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
+        rec = SnapshotReconciler(db, adapters, config=config)
+        snap = Snapshot(
+            spec=SnapshotSpec(name="p" * 64, svm="s" * 64, volume="v" * 64),
+        )
+        db.insert_snapshot(snap)
+
+        snap.status.phase = Phase.DELETING
+        result = rec.reconcile(snap)
+
+        assert result.status.phase == Phase.DELETING
+        assert db.list_snapshots(svm="s" * 64, volume="v" * 64, name="p" * 64) == []
 
 
 # ── Export Reconciler ─────────────────────────────────────────────
@@ -255,6 +429,84 @@ class TestExportReconciler:
         assert result.status.export_id == 1
         assert adapters.ganesha.exports["svm1"][0]["path"] == "/export/svm1/vol1"
 
+    def test_create_export_commits_reservation_before_render(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        original_render = adapters.ganesha.render_config
+
+        def assert_reservation_visible(svm_name, exports, *, bind_addr=None, host_network=False):
+            observer = StateDB(db._db_path)
+            try:
+                record = observer.get_export("svm1", "vol1", "10.0.0.0/24")
+            finally:
+                observer.close()
+            assert record is not None
+            assert record["status"]["phase"] == Phase.CREATING.value
+            assert record["status"]["export_id"] == 1
+            return original_render(svm_name, exports, bind_addr=bind_addr, host_network=host_network)
+
+        adapters.ganesha.render_config = assert_reservation_visible
+
+        result = rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")))
+
+        assert result.status.phase == Phase.READY
+
+    def test_create_export_rejects_existing_key_without_overwrite(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        created = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw"))
+        )
+        assert created.status.phase == Phase.READY
+
+        with pytest.raises(AlreadyExistsError):
+            rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="ro")))
+
+        record = db.get_export("svm1", "vol1", "10.0.0.0/24")
+        assert record["spec"]["access"] == "rw"
+        assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
+
+    def test_update_export_keeps_ready_record_on_reload_failure(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        created = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw"))
+        )
+        assert created.status.phase == Phase.READY
+
+        def fail_reload(_svm, *, host_network=False):
+            raise RuntimeError("reload failed")
+
+        adapters.ganesha.reload = fail_reload
+
+        result = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="ro")),
+            allow_update=True,
+        )
+
+        assert result.status.phase == Phase.FAILED
+        record = db.get_export("svm1", "vol1", "10.0.0.0/24")
+        assert record["status"]["phase"] == Phase.READY.value
+        assert record["spec"]["access"] == "rw"
+        assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
+
+    def test_create_export_resumes_only_matching_live_lease_owner(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        spec = ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw")
+        reserved = Export(spec=spec)
+        assign_create_lease(reserved.status, "owner-1")
+        db.upsert_export(reserved)
+
+        rejected = Export(spec=spec)
+        assign_create_lease(rejected.status, "owner-2")
+        with pytest.raises(AlreadyExistsError):
+            rec.reconcile(rejected)
+
+        resumed = Export(spec=spec)
+        assign_create_lease(resumed.status, "owner-1")
+        result = rec.reconcile(resumed)
+
+        assert result.status.phase == Phase.READY
+        record = db.get_export("svm1", "vol1", "10.0.0.0/24")
+        assert record["status"]["create_owner"] is None
+
     def test_delete_export(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)
         export = Export(
@@ -269,6 +521,29 @@ class TestExportReconciler:
 
         assert len(db.list_exports(svm="svm1")) == 0
         assert adapters.ganesha.exports["svm1"] == []
+
+    def test_delete_export_commits_deleting_before_render(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        created = rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")))
+        assert created.status.phase == Phase.READY
+        original_render = adapters.ganesha.render_config
+
+        def assert_delete_visible(svm_name, exports, *, bind_addr=None, host_network=False):
+            observer = StateDB(db._db_path)
+            try:
+                record = observer.get_export("svm1", "vol1", "10.0.0.0/24")
+            finally:
+                observer.close()
+            assert record is not None
+            assert record["status"]["phase"] == Phase.DELETING.value
+            return original_render(svm_name, exports, bind_addr=bind_addr, host_network=host_network)
+
+        adapters.ganesha.render_config = assert_delete_visible
+        created.status.phase = Phase.DELETING
+
+        rec.reconcile(created)
+
+        assert len(db.list_exports(svm="svm1")) == 0
 
     def test_concurrent_export_creates_allocate_unique_ids(self, db, adapters, config):
         rec = ExportReconciler(db, adapters, config=config)
@@ -306,6 +581,24 @@ class TestExportReconciler:
         assert adapters.ganesha.bind_addrs["host-svm"] == "10.0.8.5"
         assert adapters.ganesha.host_network["host-svm"] is True
 
+    def test_sync_skips_failed_exports(self, db, adapters, config):
+        rec = ExportReconciler(db, adapters, config=config)
+        ready = rec.reconcile(
+            Export(spec=ExportSpec(svm="svm1", volume="ready", client="10.0.0.0/24"))
+        )
+        assert ready.status.phase == Phase.READY
+
+        failed = Export(spec=ExportSpec(svm="svm1", volume="failed", client="10.0.1.0/24"))
+        failed.status.phase = Phase.FAILED
+        failed.status.export_id = 99
+        failed.status.path = "/export/svm1/failed"
+        failed.status.pseudo = "/export/svm1/failed"
+        db.upsert_export(failed)
+
+        rec.sync_svm_config("svm1")
+
+        assert [entry["path"] for entry in adapters.ganesha.exports["svm1"]] == ["/export/svm1/ready"]
+
 
 # ── Error Handling ────────────────────────────────────────────────
 
@@ -325,3 +618,24 @@ class TestReconcilerErrors:
         result = rec.reconcile(svm)
         assert result.status.phase == Phase.FAILED
         assert result.status.message is not None
+
+    def test_failed_svm_create_can_resume_from_persisted_steps(self, db, adapters, config):
+        adapters.pacemaker = FakePacemakerAdapter()
+        adapters.pacemaker.groups = None
+
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(name="retry-svm", vlan_id=401, ip_cidr="10.0.4.5/24", gateway="10.0.4.1"),
+        )
+
+        failed = rec.reconcile(svm)
+        assert failed.status.phase == Phase.FAILED
+        assert failed.status.namespace_created is True
+        assert failed.status.pacemaker_group_created is False
+
+        adapters.pacemaker.groups = {}
+        resumed = rec.reconcile(failed)
+
+        assert resumed.status.phase == Phase.READY
+        assert resumed.status.pacemaker_group_created is True
+        assert db.get_svm("retry-svm")["status"]["phase"] == Phase.READY.value

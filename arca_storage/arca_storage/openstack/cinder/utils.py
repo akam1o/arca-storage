@@ -1,9 +1,15 @@
 """Utility functions for ARCA Storage Cinder Driver."""
 
+import ctypes
+import errno
 import hashlib
 import os
+import platform
 import subprocess
+import sys
 from typing import Optional
+
+from arca_storage.cli.lib.validators import validate_name
 
 from .exceptions import ArcaStorageException
 
@@ -36,14 +42,13 @@ def get_mount_point_for_svm(base_path: str, svm_name: str) -> str:
     Raises:
         ArcaStorageException: If svm_name contains path traversal characters
     """
-    # Sanitize SVM name to prevent path traversal attacks
-    # SVM names should only contain alphanumeric, dots, underscores, and hyphens
-    import re
-    if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", svm_name):
+    try:
+        validate_name(svm_name)
+    except ValueError as e:
         raise ArcaStorageException(
             f"Invalid SVM name '{svm_name}': must start with alphanumeric "
             "and contain only alphanumeric, dots, underscores, or hyphens"
-        )
+        ) from e
 
     # Use literal SVM name for easy identification
     return os.path.join(base_path, f"svm_{svm_name}")
@@ -378,11 +383,10 @@ def delete_volume_file(mount_point: str, volume_name: str) -> None:
     try:
         if os.path.exists(volume_file):
             os.remove(volume_file)
+    except FileNotFoundError:
+        return
     except OSError as e:
-        # Log warning but don't fail
-        import logging
-        LOG = logging.getLogger(__name__)
-        LOG.warning("Failed to delete volume file %s: %s", volume_file, e)
+        raise ArcaStorageException(f"Failed to delete volume file {volume_file}: {e}")
 
 
 def get_volume_file_path(mount_point: str, volume_name: str) -> str:
@@ -434,13 +438,80 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
         raise ArcaStorageException(f"Failed to extend volume file: {error_msg}")
 
 
+def _rename_noreplace(source_path: str, dest_path: str) -> None:
+    """Atomically rename source_path to dest_path without replacing dest_path."""
+    if not sys.platform.startswith("linux"):
+        raise OSError(
+            errno.ENOSYS,
+            "renameat2(RENAME_NOREPLACE) is only available on Linux",
+            dest_path,
+        )
+
+    at_fdcwd = -100
+    rename_noreplace = 1
+    source_bytes = os.fsencode(source_path)
+    dest_bytes = os.fsencode(dest_path)
+    libc = ctypes.CDLL(None, use_errno=True)
+
+    try:
+        renameat2 = libc.renameat2
+    except AttributeError:
+        syscall_numbers = {
+            "x86_64": 316,
+            "amd64": 316,
+            "aarch64": 276,
+            "arm64": 276,
+        }
+        syscall_number = syscall_numbers.get(platform.machine().lower())
+        if syscall_number is None:
+            raise OSError(
+                errno.ENOSYS,
+                f"renameat2 syscall number is unknown for {platform.machine()}",
+                dest_path,
+            )
+
+        syscall = libc.syscall
+        syscall.restype = ctypes.c_long
+        rc = syscall(
+            ctypes.c_long(syscall_number),
+            ctypes.c_int(at_fdcwd),
+            ctypes.c_char_p(source_bytes),
+            ctypes.c_int(at_fdcwd),
+            ctypes.c_char_p(dest_bytes),
+            ctypes.c_uint(rename_noreplace),
+        )
+    else:
+        renameat2.argtypes = [
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_int,
+            ctypes.c_char_p,
+            ctypes.c_uint,
+        ]
+        renameat2.restype = ctypes.c_int
+        rc = renameat2(
+            at_fdcwd,
+            ctypes.c_char_p(source_bytes),
+            at_fdcwd,
+            ctypes.c_char_p(dest_bytes),
+            rename_noreplace,
+        )
+
+    if rc != 0:
+        error_number = ctypes.get_errno()
+        if error_number == errno.EEXIST:
+            raise FileExistsError(error_number, os.strerror(error_number), dest_path)
+        raise OSError(error_number, os.strerror(error_number), dest_path)
+
+
 def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> None:
     """Copy a file preserving sparseness using atomic operations.
 
     Uses cp --sparse=always to copy files while preserving sparse regions.
-    The copy is performed atomically by copying to a temporary file first,
-    then renaming to the final destination. Uses secure random temp names
-    to prevent symlink attacks. Includes fsync for durability.
+    The copy is installed atomically by copying to a temporary file first,
+    then linking or no-replace renaming it to the final destination. Uses
+    secure random temp names to prevent symlink attacks. Includes fsync for
+    durability.
 
     Args:
         source_path: Path to source file
@@ -499,15 +570,20 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             raise ArcaStorageException(
                 f"Destination file was created by another worker: {dest_path}"
             )
-        except OSError as e:
+        except OSError as link_error:
             # If link() failed for reasons other than file exists (e.g., cross-device)
-            # Fall back to rename() but re-check destination doesn't exist
-            if os.path.exists(dest_path):
+            # install the completed temp file with a no-overwrite atomic rename.
+            try:
+                _rename_noreplace(temp_path, dest_path)
+            except FileExistsError:
                 raise ArcaStorageException(
-                    f"Destination file already exists (race detected): {dest_path}"
+                    f"Destination file was created by another worker: {dest_path}"
                 )
-            # Rename is safe here since we just checked
-            os.rename(temp_path, dest_path)
+            except OSError as rename_error:
+                raise ArcaStorageException(
+                    "Failed to atomically install copied file without overwriting "
+                    f"destination after hard link failed ({link_error}): {rename_error}"
+                )
 
         # Sync parent directory to ensure rename/link is durable
         dir_fd = os.open(dest_dir, os.O_RDONLY)
@@ -516,6 +592,13 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
         finally:
             os.close(dir_fd)
 
+    except ArcaStorageException:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+        raise
     except subprocess.TimeoutExpired:
         # Clean up temp file on timeout
         try:
@@ -543,4 +626,3 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
         except OSError:
             pass
         raise ArcaStorageException(f"Failed during file copy operation: {e}")
-

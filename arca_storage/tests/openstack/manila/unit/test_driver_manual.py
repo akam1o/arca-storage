@@ -40,6 +40,27 @@ class TestArcaStorageManilaDriverManualStrategy:
             fs_type="xfs",
         )
 
+    def test_create_share_ignores_user_supplied_svm_metadata(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "other-svm"
+        mock_manila_share["share_type"]["extra_specs"] = {"arca_manila:svm_name": "target-svm"}
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.5:/exports/target-svm/share-share-123",
+        }
+
+        driver.create_share(Mock(), mock_manila_share, None)
+
+        assert mock_manila_share["metadata"]["arca_svm_name"] == "target-svm"
+        mock_arca_client.create_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="target-svm",
+            size_gib=10,
+            thin=True,
+            fs_type="xfs",
+        )
+
     def test_create_share_missing_svm_name_fails(self, driver, mock_manila_share):
         mock_manila_share["share_type"]["extra_specs"] = {}
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
@@ -55,3 +76,110 @@ class TestArcaStorageManilaDriverManualStrategy:
         mock_arca_client.create_volume.side_effect = arca_exceptions.ArcaSVMNotFound(svm_name="nonexistent-svm")
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
             driver.create_share(Mock(), mock_manila_share, None)
+
+    def test_create_share_from_snapshot_rejects_svm_change(
+        self, driver, mock_arca_client, mock_manila_snapshot
+    ):
+        mock_manila_snapshot["share"]["share_type"]["extra_specs"] = {
+            "arca_manila:svm_name": "source-svm"
+        }
+        new_share = {
+            "id": "share-456",
+            "size": 10,
+            "project_id": "test-project-id",
+            "share_type": {"extra_specs": {"arca_manila:svm_name": "target-svm"}},
+            "metadata": {},
+        }
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="cannot change SVM",
+        ):
+            driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+
+        mock_arca_client.clone_volume_from_snapshot.assert_not_called()
+
+    def test_delete_share_uses_backend_svm_without_share_type(self, driver, mock_arca_client):
+        share = {
+            "id": "share-123",
+            "size": 10,
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "target-svm"}
+        ]
+
+        driver.delete_share(Mock(), share, None)
+
+        mock_arca_client.delete_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="target-svm",
+            force=False,
+        )
+
+    def test_delete_share_missing_backend_volume_succeeds_without_share_type(
+        self, driver, mock_arca_client
+    ):
+        share = {
+            "id": "share-123",
+            "size": 10,
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = []
+
+        driver.delete_share(Mock(), share, None)
+
+        mock_arca_client.delete_volume.assert_not_called()
+
+    def test_create_snapshot_without_share_uses_backend_svm(
+        self, driver, mock_arca_client
+    ):
+        snapshot = {
+            "id": "snapshot-123",
+            "share_id": "share-123",
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "target-svm"}
+        ]
+
+        driver.create_snapshot(Mock(), snapshot, None)
+
+        mock_arca_client.create_snapshot.assert_called_once_with(
+            name="snapshot-snapshot-123",
+            svm="target-svm",
+            volume="share-share-123",
+        )
+
+    def test_delete_snapshot_missing_backend_volume_succeeds_without_share(
+        self, driver, mock_arca_client
+    ):
+        snapshot = {
+            "id": "snapshot-123",
+            "share_id": "share-123",
+            "metadata": {"arca_svm_name": "user-supplied-svm"},
+        }
+        mock_arca_client.list_volumes.return_value = []
+
+        driver.delete_snapshot(Mock(), snapshot, None)
+
+        mock_arca_client.delete_snapshot.assert_not_called()
+
+    def test_extend_share_uses_backend_svm_over_metadata_and_share_type(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "user-supplied-svm"
+        mock_manila_share["share_type"]["extra_specs"] = {
+            "arca_manila:svm_name": "new-svm"
+        }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "original-svm"}
+        ]
+
+        driver.extend_share(mock_manila_share, 20, None)
+
+        mock_arca_client.resize_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="original-svm",
+            new_size_gib=20,
+        )

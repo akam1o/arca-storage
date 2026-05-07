@@ -77,7 +77,6 @@ def _stable_config_version(
 
 
 def _write_if_changed(path: Path, content: str) -> None:
-    # Keep this using built-in open() so unit tests can easily mock writes.
     if path.exists():
         try:
             with open(path, "r", encoding="utf-8") as f:
@@ -87,8 +86,31 @@ def _write_if_changed(path: Path, content: str) -> None:
             # If we can't read, fall back to writing.
             pass
 
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(content)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
+    try:
+        with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.replace(tmp_path, path)
+        _fsync_parent_dir(path.parent)
+    finally:
+        try:
+            os.unlink(tmp_path)
+        except FileNotFoundError:
+            pass
+
+
+def _fsync_parent_dir(path: Path) -> None:
+    try:
+        fd = os.open(path, os.O_RDONLY)
+    except OSError:
+        return
+    try:
+        os.fsync(fd)
+    finally:
+        os.close(fd)
 
 
 def _write_json_if_changed(path: Path, data: object) -> None:

@@ -1,8 +1,6 @@
 """REST API client for ARCA Storage."""
 
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
-
 try:
     import requests
     from requests.adapters import HTTPAdapter
@@ -39,6 +37,9 @@ class ArcaStorageClient:
         timeout: int = 30,
         retry_count: int = 3,
         verify_ssl: bool = True,
+        auth_type: Optional[str] = None,
+        api_token: Optional[str] = None,
+        ca_bundle: Optional[str] = None,
     ):
         """Initialize ARCA Storage API client.
 
@@ -47,9 +48,13 @@ class ArcaStorageClient:
             timeout: HTTP request timeout in seconds
             retry_count: Number of retries for failed requests
             verify_ssl: Whether to verify SSL certificates
+            auth_type: Authentication type ('token', 'none', or None)
+            api_token: Bearer token for token authentication
+            ca_bundle: Path to CA bundle file for SSL verification
 
         Raises:
             ImportError: If requests library is not installed
+            ValueError: If authentication configuration is invalid
         """
         if requests is None:
             raise ImportError(
@@ -60,10 +65,17 @@ class ArcaStorageClient:
         self.base_url = api_endpoint.rstrip("/")
         self.timeout = timeout
         self.retry_count = retry_count
-        self.verify_ssl = verify_ssl
+        self.verify_ssl = ca_bundle or verify_ssl
 
         # Create session with connection pooling
         self.session = requests.Session()
+
+        if auth_type == "token":
+            if not api_token:
+                raise ValueError("api_token is required when auth_type='token'")
+            self.session.headers.update({"Authorization": f"Bearer {api_token}"})
+        elif auth_type and auth_type != "none":
+            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
 
         # Configure retry strategy
         # Note: Only retry safe methods (GET) to avoid duplicate operations
@@ -101,7 +113,10 @@ class ArcaStorageClient:
             ArcaAPITimeout: Request timed out
             ArcaAPIError: API returned error
         """
-        url = urljoin(self.base_url, path)
+        if path.startswith("/"):
+            url = self.base_url + path
+        else:
+            url = f"{self.base_url}/{path}"
 
         try:
             response = self.session.request(
@@ -144,6 +159,30 @@ class ArcaStorageClient:
             raise ArcaAPIConnectionError(f"Failed to connect to ARCA Storage API: {e}")
         except requests.exceptions.RequestException as e:
             raise ArcaAPIError(f"API request failed: {e}")
+
+    def _list_paginated(
+        self,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """Return all list items by following ARCA cursor pagination."""
+        items: List[Dict[str, Any]] = []
+        next_cursor = cursor
+
+        while True:
+            page_params = dict(params or {})
+            page_params["limit"] = limit
+            if next_cursor:
+                page_params["cursor"] = next_cursor
+
+            response = self._make_request("GET", path, params=page_params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            next_cursor = data.get("next_cursor")
+            if not next_cursor:
+                return items
 
     # Volume operations
 
@@ -258,17 +297,12 @@ class ArcaStorageClient:
         Returns:
             List of volume information dictionaries
         """
-        params = {"limit": limit}
+        params: Dict[str, Any] = {}
         if svm:
             params["svm"] = svm
         if name:
             params["name"] = name
-        if cursor:
-            params["cursor"] = cursor
-
-        response = self._make_request("GET", "/v1/volumes", params=params)
-        data = response.get("data", {})
-        return data.get("items", [])
+        return self._list_paginated("/v1/volumes", params=params, limit=limit, cursor=cursor)
 
     def get_volume(self, name: str, svm: str) -> Dict[str, Any]:
         """Get volume information.
@@ -373,19 +407,14 @@ class ArcaStorageClient:
         Returns:
             List of export information dictionaries
         """
-        params = {"limit": limit}
+        params: Dict[str, Any] = {}
         if svm:
             params["svm"] = svm
         if volume:
             params["volume"] = volume
         if client:
             params["client"] = client
-        if cursor:
-            params["cursor"] = cursor
-
-        response = self._make_request("GET", "/v1/exports", params=params)
-        data = response.get("data", {})
-        return data.get("items", [])
+        return self._list_paginated("/v1/exports", params=params, limit=limit, cursor=cursor)
 
     # SVM operations (informational)
 
@@ -397,11 +426,18 @@ class ArcaStorageClient:
 
     # SVM operations (informational)
 
-    def list_svms(self, name: Optional[str] = None) -> List[Dict[str, Any]]:
+    def list_svms(
+        self,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
         """List SVMs.
 
         Args:
             name: Filter by SVM name
+            limit: Maximum results per request (default: 100)
+            cursor: Pagination cursor
 
         Returns:
             List of SVM information dictionaries
@@ -409,10 +445,7 @@ class ArcaStorageClient:
         params = {}
         if name:
             params["name"] = name
-
-        response = self._make_request("GET", "/v1/svms", params=params)
-        data = response.get("data", {})
-        return data.get("items", [])
+        return self._list_paginated("/v1/svms", params=params, limit=limit, cursor=cursor)
 
     def get_svm(self, name: str) -> Dict[str, Any]:
         """Get SVM information.

@@ -16,6 +16,7 @@ type IPPool struct {
 	Network   *net.IPNet
 	VLANID    int
 	Gateway   string
+	GatewayIP net.IP
 	FirstHost net.IP
 	LastHost  net.IP
 	NumHosts  int
@@ -68,11 +69,25 @@ func parsePoolConfig(cfg *PoolConfig) (*IPPool, error) {
 	if err != nil {
 		return nil, fmt.Errorf("invalid CIDR %s: %w", cfg.CIDR, err)
 	}
+	network.IP = network.IP.To4()
+	if network.IP == nil {
+		return nil, fmt.Errorf("invalid CIDR %s: only IPv4 pools are supported", cfg.CIDR)
+	}
+	if cfg.VLANID != 0 && (cfg.VLANID < 1 || cfg.VLANID > 4094) {
+		return nil, fmt.Errorf("invalid VLAN ID %d: must be 0 or between 1 and 4094", cfg.VLANID)
+	}
+
+	broadcast := broadcastIPInNetwork(network)
+	gatewayIP, err := parseOptionalGateway(cfg.Gateway, network, broadcast)
+	if err != nil {
+		return nil, err
+	}
 
 	pool := &IPPool{
-		Network: network,
-		VLANID:  cfg.VLANID,
-		Gateway: cfg.Gateway,
+		Network:   network,
+		VLANID:    cfg.VLANID,
+		Gateway:   cfg.Gateway,
+		GatewayIP: gatewayIP,
 	}
 
 	// Parse range if provided
@@ -81,21 +96,48 @@ func parsePoolConfig(cfg *PoolConfig) (*IPPool, error) {
 		if err != nil {
 			return nil, fmt.Errorf("invalid range %s: %w", cfg.Range, err)
 		}
+		if !network.Contains(firstIP) || !network.Contains(lastIP) {
+			return nil, fmt.Errorf("invalid range %s: range must be inside CIDR %s", cfg.Range, cfg.CIDR)
+		}
+		if firstIP.Equal(network.IP) || firstIP.Equal(broadcast) || lastIP.Equal(network.IP) || lastIP.Equal(broadcast) {
+			return nil, fmt.Errorf("invalid range %s: range cannot include network or broadcast address", cfg.Range)
+		}
+		if compareIP(firstIP, lastIP) > 0 {
+			return nil, fmt.Errorf("invalid range: first IP must be <= last IP")
+		}
 		pool.FirstHost = firstIP
 		pool.LastHost = lastIP
 	} else {
 		// Use entire network range (excluding network and broadcast)
 		pool.FirstHost = incrementIP(network.IP, 1)
-		pool.LastHost = lastIPInNetwork(network)
+		pool.LastHost = incrementIP(broadcast, -1)
 	}
 
 	// Calculate number of hosts
 	pool.NumHosts = ipDiff(pool.LastHost, pool.FirstHost) + 1
-	if pool.NumHosts <= 0 {
+	if pool.NumHosts <= 0 || compareIP(pool.FirstHost, pool.LastHost) > 0 {
 		return nil, fmt.Errorf("invalid range: first IP must be <= last IP")
 	}
 
 	return pool, nil
+}
+
+func parseOptionalGateway(gateway string, network *net.IPNet, broadcast net.IP) (net.IP, error) {
+	if gateway == "" {
+		return nil, nil
+	}
+	gatewayIP := net.ParseIP(gateway)
+	if gatewayIP == nil || gatewayIP.To4() == nil {
+		return nil, fmt.Errorf("invalid gateway %s: must be an IPv4 address", gateway)
+	}
+	gatewayIP = gatewayIP.To4()
+	if !network.Contains(gatewayIP) {
+		return nil, fmt.Errorf("invalid gateway %s: gateway must be inside CIDR %s", gateway, network.String())
+	}
+	if gatewayIP.Equal(network.IP) || gatewayIP.Equal(broadcast) {
+		return nil, fmt.Errorf("invalid gateway %s: gateway cannot be network or broadcast address", gateway)
+	}
+	return gatewayIP, nil
 }
 
 // parseIPRange parses an IP range string like "192.168.100.10-192.168.100.200"
@@ -114,16 +156,18 @@ func parseIPRange(rangeStr string) (net.IP, net.IP, error) {
 	}
 
 	firstIP := net.ParseIP(firstStr)
-	if firstIP == nil {
+	if firstIP == nil || firstIP.To4() == nil {
 		return nil, nil, fmt.Errorf("invalid first IP: %s", firstStr)
 	}
+	firstIP = firstIP.To4()
 
 	lastIP := net.ParseIP(lastStr)
-	if lastIP == nil {
+	if lastIP == nil || lastIP.To4() == nil {
 		return nil, nil, fmt.Errorf("invalid last IP: %s", lastStr)
 	}
+	lastIP = lastIP.To4()
 
-	return firstIP.To4(), lastIP.To4(), nil
+	return firstIP, lastIP, nil
 }
 
 // Allocate allocates an IP address from pools (round-robin with collision detection)
@@ -156,6 +200,9 @@ func (a *StandaloneAllocator) Allocate(ctx context.Context, namespace string, at
 
 		for j := 0; j < pool.NumHosts; j++ {
 			ip := incrementIP(pool.FirstHost, (offset+j)%pool.NumHosts)
+			if pool.GatewayIP != nil && ip.Equal(pool.GatewayIP) {
+				continue
+			}
 			if !usedIPs[ip.String()] {
 				// Found free IP
 				ones, _ := pool.Network.Mask.Size()
@@ -209,10 +256,27 @@ func incrementIP(ip net.IP, n int) net.IP {
 	return result
 }
 
+func ipToUint32(ip net.IP) uint32 {
+	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+}
+
+func compareIP(ip1, ip2 net.IP) int {
+	ipUint1 := ipToUint32(ip1)
+	ipUint2 := ipToUint32(ip2)
+	switch {
+	case ipUint1 < ipUint2:
+		return -1
+	case ipUint1 > ipUint2:
+		return 1
+	default:
+		return 0
+	}
+}
+
 // ipDiff calculates the difference between two IPs
 func ipDiff(ip1, ip2 net.IP) int {
-	ipUint1 := uint32(ip1[0])<<24 | uint32(ip1[1])<<16 | uint32(ip1[2])<<8 | uint32(ip1[3])
-	ipUint2 := uint32(ip2[0])<<24 | uint32(ip2[1])<<16 | uint32(ip2[2])<<8 | uint32(ip2[3])
+	ipUint1 := ipToUint32(ip1)
+	ipUint2 := ipToUint32(ip2)
 
 	if ipUint1 > ipUint2 {
 		return int(ipUint1 - ipUint2)
@@ -220,13 +284,12 @@ func ipDiff(ip1, ip2 net.IP) int {
 	return int(ipUint2 - ipUint1)
 }
 
-// lastIPInNetwork returns the last usable IP in a network (excluding broadcast)
-func lastIPInNetwork(network *net.IPNet) net.IP {
+// broadcastIPInNetwork returns the broadcast IP in a network.
+func broadcastIPInNetwork(network *net.IPNet) net.IP {
 	// Get broadcast address
 	broadcast := make(net.IP, len(network.IP))
 	for i := range network.IP {
 		broadcast[i] = network.IP[i] | ^network.Mask[i]
 	}
-	// Return broadcast - 1 (last usable host)
-	return incrementIP(broadcast, -1)
+	return broadcast
 }

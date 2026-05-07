@@ -10,16 +10,15 @@ from __future__ import annotations
 
 import math
 import zlib
-from typing import Any, Dict
+from typing import Any, Dict, Optional
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
-from arca_storage.api.services import export_service, volume_service
-from arca_storage.cli.lib.validators import validate_name
+from arca_storage.api.services import export_service, svm_service, volume_service
+from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
 from arca_storage.context import get_context
-from arca_storage.errors import NotFoundError
+from arca_storage.errors import NotFoundError, PreconditionFailedError
 
 GIB = 1024**3
-CSI_CLIENT_CIDR = "0.0.0.0/0"
 CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
@@ -30,12 +29,13 @@ def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
     _validate_directory(svm, path)
 
     ctx = get_context()
-    _require_svm(ctx, svm)
+    _require_svm(ctx, svm, ready=True)
+    client_cidrs = _csi_client_cidrs(ctx)
 
     size_gib = _quota_bytes_to_gib(directory_data.quota_bytes)
     volume = _ensure_volume(svm, path, size_gib)
-    _ensure_csi_exports(ctx, svm, path)
-    return _directory_response(svm, path, volume, directory_data.quota_bytes)
+    _ensure_csi_exports(ctx, svm, path, client_cidrs)
+    return _directory_response(svm, path, volume)
 
 
 def delete_directory(svm_name: str, path: str) -> None:
@@ -48,8 +48,7 @@ def delete_directory(svm_name: str, path: str) -> None:
     if not record:
         raise NotFoundError("Directory", f"{svm_name}/{path}")
 
-    _remove_csi_exports(ctx, svm_name, path)
-    volume_service.delete_volume(path, svm_name, force=True)
+    volume_service.delete_volume(path, svm_name, force=False)
 
 
 def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
@@ -59,10 +58,11 @@ def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
     _validate_directory(svm, path)
 
     ctx = get_context()
-    _require_svm(ctx, svm)
+    _require_svm(ctx, svm, ready=True)
+    client_cidrs = _csi_client_cidrs(ctx)
     size_gib = _quota_bytes_to_gib(quota_data.quota_bytes)
     _ensure_volume(svm, path, size_gib)
-    _ensure_csi_exports(ctx, svm, path)
+    _ensure_csi_exports(ctx, svm, path, client_cidrs)
     return get_quota(svm, path)
 
 
@@ -105,55 +105,89 @@ def _ensure_volume(svm: str, path: str, size_gib: int) -> Dict[str, Any]:
             VolumeCreate(name=path, svm=svm, size_gib=size_gib, thin=True, fs_type="xfs")
         )
 
+    volume_service.require_volume_ready_record(record, svm, path)
     current_size = int(record.get("spec", {}).get("size_gib") or 0)
     if current_size < size_gib:
         return volume_service.resize_volume(path, svm, size_gib)
     return _volume_record_to_dict(record)
 
 
-def _ensure_csi_exports(ctx: Any, svm: str, path: str) -> None:
+def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) -> None:
     cfg = ctx.settings.to_reconciler_config()
     export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
     root_path = f"{export_dir}/{svm}"
     volume_path = f"{root_path}/{path}"
+    root_squash = _csi_root_squash(ctx)
 
-    export_service.ensure_internal_export(
-        svm,
-        CSI_ROOT_EXPORT_VOLUME,
-        CSI_CLIENT_CIDR,
-        path=root_path,
-        pseudo=root_path,
-        access="rw",
-        root_squash=False,
-        owner="csi",
-    )
-    export_service.ensure_internal_export(
-        svm,
-        path,
-        CSI_CLIENT_CIDR,
-        path=volume_path,
-        pseudo=volume_path,
-        access="rw",
-        root_squash=False,
-        owner="csi",
-    )
+    _remove_stale_csi_exports(ctx, svm, set(client_cidrs))
+
+    for client in client_cidrs:
+        export_service.ensure_internal_export(
+            svm,
+            CSI_ROOT_EXPORT_VOLUME,
+            client,
+            path=root_path,
+            pseudo=root_path,
+            access="rw",
+            root_squash=root_squash,
+            owner="csi",
+        )
+        export_service.ensure_internal_export(
+            svm,
+            path,
+            client,
+            path=volume_path,
+            pseudo=volume_path,
+            access="rw",
+            root_squash=root_squash,
+            owner="csi",
+        )
+
+
+def _remove_stale_csi_exports(ctx: Any, svm: str, desired_clients: set[str]) -> None:
+    for export in ctx.db.list_exports(svm=svm, limit=1_000_000):
+        spec = export.get("spec", {})
+        volume = spec.get("volume")
+        client = spec.get("client")
+        if volume and client and spec.get("owner") == "csi" and client not in desired_clients:
+            export_service.remove_internal_export(svm, volume, client)
 
 
 def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
-    if ctx.db.get_export(svm, path, CSI_CLIENT_CIDR):
-        export_service.remove_internal_export(svm, path, CSI_CLIENT_CIDR)
+    for export in ctx.db.list_exports(svm=svm, volume=path, limit=1_000_000):
+        spec = export.get("spec", {})
+        if spec.get("owner") == "csi":
+            export_service.remove_internal_export(svm, path, spec["client"])
 
     has_other_csi_volume = any(
         e.get("spec", {}).get("owner") == "csi"
-        and e.get("spec", {}).get("client") == CSI_CLIENT_CIDR
         and e.get("spec", {}).get("volume") != CSI_ROOT_EXPORT_VOLUME
         for e in ctx.db.list_exports(svm=svm, limit=1_000_000)
     )
-    if not has_other_csi_volume and ctx.db.get_export(svm, CSI_ROOT_EXPORT_VOLUME, CSI_CLIENT_CIDR):
-        export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, CSI_CLIENT_CIDR)
+    if not has_other_csi_volume:
+        for export in ctx.db.list_exports(svm=svm, volume=CSI_ROOT_EXPORT_VOLUME, limit=1_000_000):
+            spec = export.get("spec", {})
+            if spec.get("owner") == "csi":
+                export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, spec["client"])
 
 
-def _quota_bytes_to_gib(quota_bytes: int | None) -> int:
+def _csi_client_cidrs(ctx: Any) -> list[str]:
+    csi = getattr(ctx.settings, "csi", None)
+    client_cidrs = list(getattr(csi, "client_cidrs", []) or [])
+    if not client_cidrs:
+        raise PreconditionFailedError(
+            "CSI NFS client CIDRs are not configured",
+            {"resource": "CSIExport", "config": "csi.client_cidrs"},
+        )
+    return [normalize_ip_cidr(cidr) for cidr in client_cidrs]
+
+
+def _csi_root_squash(ctx: Any) -> bool:
+    csi = getattr(ctx.settings, "csi", None)
+    return bool(getattr(csi, "root_squash", True))
+
+
+def _quota_bytes_to_gib(quota_bytes: Optional[int]) -> int:
     if quota_bytes is None:
         return 1
     return max(1, int(math.ceil(quota_bytes / GIB)))
@@ -164,9 +198,12 @@ def _validate_directory(svm: str, path: str) -> None:
     validate_name(path)
 
 
-def _require_svm(ctx: Any, svm: str) -> None:
-    if not ctx.db.get_svm(svm):
+def _require_svm(ctx: Any, svm: str, *, ready: bool = False) -> None:
+    record = ctx.db.get_svm(svm)
+    if not record:
         raise NotFoundError("SVM", svm)
+    if ready:
+        svm_service.require_svm_ready_record(record, svm)
 
 
 def _volume_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
@@ -190,12 +227,11 @@ def _directory_response(
     svm: str,
     path: str,
     volume: Dict[str, Any],
-    requested_quota_bytes: int | None,
 ) -> Dict[str, Any]:
     size_gib = int(volume.get("size_gib") or 0)
     return {
         "svm_name": svm,
         "path": path,
-        "quota_bytes": requested_quota_bytes or size_gib * GIB,
+        "quota_bytes": size_gib * GIB,
         "volume": volume,
     }

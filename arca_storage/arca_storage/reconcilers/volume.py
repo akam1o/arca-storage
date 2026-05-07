@@ -8,10 +8,14 @@ import logging
 from datetime import datetime, timezone
 from typing import Optional
 
+from arca_storage.create_resume import clear_create_lease
+from arca_storage.cli.lib.validators import volume_lv_name
 from arca_storage.db import StateDB
+from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import Volume
 from arca_storage.reconcilers.adapters import Adapters
+from arca_storage.reconcilers.lvm_resume import create_volume_lv_or_accept_existing
 
 logger = logging.getLogger(__name__)
 
@@ -28,28 +32,37 @@ class VolumeReconciler:
             return self._reconcile_create(volume)
         elif phase == Phase.DELETING:
             return self._reconcile_delete(volume)
-        elif phase in (Phase.READY, Phase.FAILED):
+        elif phase == Phase.FAILED:
+            if not self._is_failed_delete(volume) and self._has_pending_create_step(volume):
+                volume.status.phase = Phase.CREATING
+                return self._reconcile_create(volume)
+            return volume
+        elif phase == Phase.READY:
             return volume
         return volume
 
     def _reconcile_create(self, volume: Volume) -> Volume:
         volume.status.phase = Phase.CREATING
+        create_owner = volume.status.create_owner
         spec = volume.spec
 
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         thinpool = self._cfg.get("thinpool_name", "pool")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = f"vol_{spec.svm}_{spec.name}"
+        lv_name = volume_lv_name(spec.svm, spec.name)
         lv_path = f"/dev/{vg_name}/{lv_name}"
         mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
 
         steps = [
             (
                 "lv_created",
-                lambda: (
-                    self.adapters.lvm.create_thin_lv(vg_name, thinpool, lv_name, spec.size_gib)
-                    if spec.thin
-                    else self.adapters.lvm.create_regular_lv(vg_name, lv_name, spec.size_gib)
+                lambda: create_volume_lv_or_accept_existing(
+                    self.adapters.lvm,
+                    vg_name,
+                    thinpool,
+                    lv_name,
+                    spec.size_gib,
+                    thin=spec.thin,
                 ),
             ),
             ("fs_formatted", lambda: self.adapters.xfs.format_xfs(lv_path)),
@@ -66,28 +79,36 @@ class VolumeReconciler:
                 volume.status.lv_path = lv_path
                 volume.status.lv_name = lv_name
                 volume.status.mount_path = mount_path
-                self._persist(volume, f"step '{field}' completed")
+                self._persist(volume, f"step '{field}' completed", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
                 volume.status.phase = Phase.FAILED
+                expected_owner = create_owner
+                clear_create_lease(volume.status)
                 volume.status.message = f"Step '{field}' failed: {e}"
-                self._persist(volume, volume.status.message)
+                self._persist(volume, volume.status.message, expected_create_owner=expected_owner)
                 logger.error("Volume %s/%s reconcile failed at %s: %s", spec.svm, spec.name, field, e)
                 return volume
 
         volume.status.phase = Phase.READY
+        expected_owner = create_owner
+        clear_create_lease(volume.status)
         volume.status.message = ""
         volume.status.last_reconciled = datetime.now(timezone.utc)
-        self._persist(volume, "Volume ready")
+        self._persist(volume, "Volume ready", expected_create_owner=expected_owner)
         return volume
 
     def _reconcile_delete(self, volume: Volume) -> Volume:
         spec = volume.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = f"vol_{spec.svm}_{spec.name}"
-        mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        lv_name = volume.status.lv_name or f"vol_{spec.svm}_{spec.name}"
+        mount_path = volume.status.mount_path or f"{export_dir}/{spec.svm}/{spec.name}"
 
         try:
+            volume.status.phase = Phase.DELETING
+            self._persist(volume, "volume delete reserved")
             self.adapters.xfs.umount(mount_path)
             self.adapters.lvm.delete_lv(vg_name, lv_name)
             self.db.delete_volume(spec.svm, spec.name)
@@ -99,6 +120,18 @@ class VolumeReconciler:
             logger.error("Volume %s/%s delete failed: %s", spec.svm, spec.name, e)
         return volume
 
-    def _persist(self, volume: Volume, detail: str) -> None:
-        self.db.upsert_volume(volume)
+    def _persist(self, volume: Volume, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
+        if not self.db.upsert_volume(volume, expected_create_owner=expected_create_owner):
+            raise CreateLeaseLostError("Volume", f"{volume.spec.svm}/{volume.spec.name}")
         self.db.log_operation("Volume", volume.metadata.id, "reconcile", volume.status.phase.value, detail)
+
+    @staticmethod
+    def _has_pending_create_step(volume: Volume) -> bool:
+        return any(
+            not getattr(volume.status, field, False)
+            for field in ("lv_created", "fs_formatted", "mounted")
+        )
+
+    @staticmethod
+    def _is_failed_delete(volume: Volume) -> bool:
+        return volume.status.message.startswith("Delete failed:")

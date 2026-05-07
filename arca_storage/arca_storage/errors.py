@@ -10,13 +10,14 @@ instead of parsing error text.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any
+from typing import Any, Optional
 
 
 class ErrorCode(str, Enum):
     """Machine-readable error codes shared with CSI driver via JSON API."""
 
     ALREADY_EXISTS = "ALREADY_EXISTS"
+    UNAUTHORIZED = "UNAUTHORIZED"
     NOT_FOUND = "NOT_FOUND"
     CONFLICT = "CONFLICT"
     PRECONDITION_FAILED = "PRECONDITION_FAILED"
@@ -29,6 +30,7 @@ class ErrorCode(str, Enum):
 
 _HTTP_STATUS_MAP: dict[ErrorCode, int] = {
     ErrorCode.ALREADY_EXISTS: 409,
+    ErrorCode.UNAUTHORIZED: 401,
     ErrorCode.NOT_FOUND: 404,
     ErrorCode.CONFLICT: 409,
     ErrorCode.PRECONDITION_FAILED: 412,
@@ -53,7 +55,7 @@ class ArcaError(Exception):
         self,
         code: ErrorCode,
         message: str,
-        details: dict[str, Any] | None = None,
+        details: Optional[dict[str, Any]] = None,
     ) -> None:
         self.code = code
         self.message = message
@@ -83,6 +85,11 @@ class AlreadyExistsError(ArcaError):
         )
 
 
+class UnauthorizedError(ArcaError):
+    def __init__(self, message: str = "Unauthorized") -> None:
+        super().__init__(ErrorCode.UNAUTHORIZED, message)
+
+
 class NotFoundError(ArcaError):
     def __init__(self, resource: str, name: str) -> None:
         super().__init__(
@@ -93,18 +100,31 @@ class NotFoundError(ArcaError):
 
 
 class ConflictError(ArcaError):
-    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
         super().__init__(ErrorCode.CONFLICT, message, details)
 
 
+class CreateLeaseLostError(ConflictError):
+    def __init__(self, resource: str, name: str) -> None:
+        super().__init__(
+            f"{resource} '{name}' create lease was lost",
+            {"resource": resource, "name": name},
+        )
+
+
 class PreconditionFailedError(ArcaError):
-    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
         super().__init__(ErrorCode.PRECONDITION_FAILED, message, details)
 
 
 class InvalidArgumentError(ArcaError):
-    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
         super().__init__(ErrorCode.INVALID_ARGUMENT, message, details)
+
+
+class InternalError(ArcaError):
+    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+        super().__init__(ErrorCode.INTERNAL, message, details)
 
 
 class TimeoutError(ArcaError):

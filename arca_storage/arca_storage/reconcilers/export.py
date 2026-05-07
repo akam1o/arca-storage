@@ -4,14 +4,19 @@ Export Reconciler — drives NFS export resources from desired to actual state.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import logging
+from contextlib import contextmanager
 from datetime import datetime, timezone
 from ipaddress import IPv4Interface
+from pathlib import Path
 from typing import Optional
 
+from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
 from arca_storage.db import StateDB
-from arca_storage.models.base import Phase, ResourceMeta
+from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
+from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
 
@@ -24,27 +29,39 @@ class ExportReconciler:
         self.adapters = adapters
         self._cfg = config or {}
 
-    def reconcile(self, export: Export) -> Export:
+    def reconcile(self, export: Export, *, allow_update: bool = False) -> Export:
         phase = export.status.phase
         if phase in (Phase.PENDING, Phase.CREATING):
-            return self._reconcile_create(export)
+            return self._reconcile_create(export, allow_update=allow_update)
         elif phase == Phase.DELETING:
             return self._reconcile_delete(export)
-        elif phase in (Phase.READY, Phase.FAILED):
+        elif phase == Phase.FAILED:
+            if not self._is_failed_delete(export) and self._has_pending_create_step(export):
+                export.status.phase = Phase.CREATING
+                return self._reconcile_create(export, allow_update=allow_update)
+            return export
+        elif phase == Phase.READY:
             return export
         return export
 
-    def _reconcile_create(self, export: Export) -> Export:
+    def _reconcile_create(self, export: Export, *, allow_update: bool = False) -> Export:
         export.status.phase = Phase.CREATING
+        create_owner = export.status.create_owner
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
+        previous_ready_export: Optional[Export] = None
 
         with self.db.transaction(immediate=True) as conn:
             existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
             if existing:
-                export.metadata = _meta_from_record(existing)
+                if not allow_update and not _can_resume_create_record(existing, export):
+                    raise AlreadyExistsError("Export", f"{spec.svm}/{spec.volume}/{spec.client}")
+                previous_export = _export_from_record(existing)
+                export.metadata = previous_export.metadata
                 previous_status = ExportStatus.model_validate(existing["status"])
                 export.status.export_id = previous_status.export_id
+                if allow_update and previous_status.phase == Phase.READY:
+                    previous_ready_export = previous_export
 
             if export.status.export_id is None:
                 records = self.db._list_exports_conn(conn, svm=spec.svm, limit=_all_rows_limit())
@@ -55,10 +72,14 @@ class ExportReconciler:
             export.status.ganesha_configured = False
             export.status.service_reloaded = False
             export.status.message = ""
-            self._persist_conn(conn, export, "export state reserved")
+            self._persist_conn(conn, export, "export state reserved", expected_create_owner=create_owner)
 
-            config_entries = self._config_entries_for_svm(conn, spec.svm, export_dir)
-            bind_addr, host_network = self._ganesha_network_for_svm(conn, spec.svm)
+        with self._svm_config_lock(spec.svm):
+            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(
+                spec.svm,
+                export_dir,
+                include_transient_key=(spec.svm, spec.volume, spec.client),
+            )
             try:
                 self.adapters.ganesha.render_config(
                     spec.svm,
@@ -67,27 +88,67 @@ class ExportReconciler:
                     host_network=host_network,
                 )
                 export.status.ganesha_configured = True
-                self._persist_conn(conn, export, "ganesha config rendered")
+                self._persist(export, "ganesha config rendered", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
-                export.status.phase = Phase.FAILED
-                export.status.message = f"Config failed: {e}"
-                self._persist_conn(conn, export, export.status.message)
-                return export
+                return self._fail_create(
+                    export,
+                    f"Config failed: {e}",
+                    export_dir,
+                    host_network=host_network,
+                    create_owner=create_owner,
+                    previous_ready_export=previous_ready_export,
+                )
 
             try:
                 self.adapters.ganesha.reload(spec.svm, host_network=host_network)
                 export.status.service_reloaded = True
-                self._persist_conn(conn, export, "ganesha reloaded")
+                self._persist(export, "ganesha reloaded", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
-                export.status.phase = Phase.FAILED
-                export.status.message = f"Reload failed: {e}"
-                self._persist_conn(conn, export, export.status.message)
-                return export
+                return self._fail_create(
+                    export,
+                    f"Reload failed: {e}",
+                    export_dir,
+                    host_network=host_network,
+                    create_owner=create_owner,
+                    previous_ready_export=previous_ready_export,
+                )
 
             export.status.phase = Phase.READY
+            expected_owner = create_owner
+            clear_create_lease(export.status)
             export.status.message = ""
             export.status.last_reconciled = datetime.now(timezone.utc)
-            self._persist_conn(conn, export, "Export ready")
+            self._persist(export, "Export ready", expected_create_owner=expected_owner)
+        return export
+
+    def _fail_create(
+        self,
+        export: Export,
+        message: str,
+        export_dir: str,
+        *,
+        host_network: bool,
+        create_owner: Optional[str],
+        previous_ready_export: Optional[Export] = None,
+    ) -> Export:
+        export.status.phase = Phase.FAILED
+        clear_create_lease(export.status)
+        export.status.message = message
+
+        if previous_ready_export is not None:
+            self._persist(
+                previous_ready_export,
+                f"{message}; kept previous ready export",
+                expected_create_owner=create_owner,
+            )
+        else:
+            self._persist(export, message, expected_create_owner=create_owner)
+
+        self._rollback_svm_config(export.spec.svm, export_dir, host_network=host_network)
         return export
 
     def _reconcile_delete(self, export: Export) -> Export:
@@ -106,18 +167,10 @@ class ExportReconciler:
                 status=ExportStatus.model_validate(existing["status"]),
             )
             export.status.phase = Phase.DELETING
+            self._persist_conn(conn, export, "export delete reserved")
 
-            remaining_records = [
-                r
-                for r in self.db._list_exports_conn(conn, svm=spec.svm, limit=_all_rows_limit())
-                if not (
-                    r.get("spec", {}).get("svm") == spec.svm
-                    and r.get("spec", {}).get("volume") == spec.volume
-                    and r.get("spec", {}).get("client") == spec.client
-                )
-            ]
-            config_entries = _records_to_config_entries(remaining_records, export_dir)
-            bind_addr, host_network = self._ganesha_network_for_svm(conn, spec.svm)
+        with self._svm_config_lock(spec.svm):
+            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(spec.svm, export_dir)
             try:
                 self.adapters.ganesha.render_config(
                     spec.svm,
@@ -126,30 +179,61 @@ class ExportReconciler:
                     host_network=host_network,
                 )
                 self.adapters.ganesha.reload(spec.svm, host_network=host_network)
-                self.db._delete_export_conn(conn, spec.svm, spec.volume, spec.client)
-                self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "completed")
+                with self.db.transaction(immediate=True) as conn:
+                    self.db._delete_export_conn(conn, spec.svm, spec.volume, spec.client)
+                    self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "completed")
             except Exception as e:
+                self._rollback_svm_config(
+                    spec.svm,
+                    export_dir,
+                    host_network=host_network,
+                    include_transient_key=(spec.svm, spec.volume, spec.client),
+                )
                 export.status.phase = Phase.FAILED
                 export.status.message = f"Delete failed: {e}"
-                self._persist_conn(conn, export, export.status.message)
+                self._persist(export, export.status.message)
         return export
 
-    def _persist_conn(self, conn, export: Export, detail: str) -> None:
-        self.db._upsert_export_conn(conn, export)
+    def _persist(
+        self,
+        export: Export,
+        detail: str,
+        *,
+        expected_create_owner: Optional[str] = None,
+    ) -> None:
+        with self.db.transaction(immediate=True) as conn:
+            self._persist_conn(conn, export, detail, expected_create_owner=expected_create_owner)
+
+    def _persist_conn(
+        self,
+        conn,
+        export: Export,
+        detail: str,
+        *,
+        expected_create_owner: Optional[str] = None,
+    ) -> None:
+        if not self.db._upsert_export_conn(conn, export, expected_create_owner=expected_create_owner):
+            raise CreateLeaseLostError("Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}")
         self.db._log_operation_conn(
             conn, "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
         )
 
-    def _config_entries_for_svm(self, conn, svm_name: str, export_dir: str) -> list[dict]:
+    def _config_entries_for_svm(
+        self,
+        conn,
+        svm_name: str,
+        export_dir: str,
+        *,
+        include_transient_key: Optional[tuple[str, str, str]] = None,
+    ) -> list[dict]:
         records = self.db._list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
-        return _records_to_config_entries(records, export_dir)
+        return _records_to_config_entries(records, export_dir, include_transient_key=include_transient_key)
 
     def sync_svm_config(self, svm_name: str) -> str:
         """Render and reload one SVM config from DB-backed exports."""
         export_dir = self._cfg.get("export_dir", "/exports")
-        with self.db.transaction(immediate=True) as conn:
-            config_entries = self._config_entries_for_svm(conn, svm_name, export_dir)
-            bind_addr, host_network = self._ganesha_network_for_svm(conn, svm_name)
+        with self._svm_config_lock(svm_name):
+            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(svm_name, export_dir)
             path = self.adapters.ganesha.render_config(
                 svm_name,
                 config_entries,
@@ -158,6 +242,47 @@ class ExportReconciler:
             )
             self.adapters.ganesha.reload(svm_name, host_network=host_network)
             return path
+
+    def _config_snapshot_for_svm(
+        self,
+        svm_name: str,
+        export_dir: str,
+        *,
+        include_transient_key: Optional[tuple[str, str, str]] = None,
+    ) -> tuple[list[dict], Optional[str], bool]:
+        with self.db.transaction() as conn:
+            config_entries = self._config_entries_for_svm(
+                conn,
+                svm_name,
+                export_dir,
+                include_transient_key=include_transient_key,
+            )
+            bind_addr, host_network = self._ganesha_network_for_svm(conn, svm_name)
+        return config_entries, bind_addr, host_network
+
+    def _rollback_svm_config(
+        self,
+        svm_name: str,
+        export_dir: str,
+        *,
+        host_network: bool,
+        include_transient_key: Optional[tuple[str, str, str]] = None,
+    ) -> None:
+        """Best-effort restore of the active config to DB-ready exports."""
+        try:
+            config_entries, bind_addr, _ = self._config_snapshot_for_svm(
+                svm_name,
+                export_dir,
+                include_transient_key=include_transient_key,
+            )
+            self.adapters.ganesha.render_config(
+                svm_name,
+                config_entries,
+                bind_addr=bind_addr,
+                host_network=host_network,
+            )
+        except Exception as rollback_error:
+            logger.warning("Failed to roll back Ganesha config for SVM %s: %s", svm_name, rollback_error)
 
     def _ganesha_network_for_svm(self, conn, svm_name: str) -> tuple[Optional[str], bool]:
         record = conn.execute("SELECT spec FROM svms WHERE name = ?", (svm_name,)).fetchone()
@@ -172,8 +297,35 @@ class ExportReconciler:
             bind_addr = ip_cidr.split("/", 1)[0] if ip_cidr else None
         return bind_addr, spec.get("vlan_id") is None
 
+    @contextmanager
+    def _svm_config_lock(self, svm_name: str):
+        """Serialize Ganesha config writes for one SVM without holding SQLite locks."""
+        db_path = Path(str(getattr(self.db, "_db_path", "/var/lib/arca-storage/state.db")))
+        lock_dir = db_path.parent / "locks"
+        lock_dir.mkdir(parents=True, exist_ok=True)
+        lock_path = lock_dir / f"ganesha-{svm_name}.lock"
+        with lock_path.open("a", encoding="utf-8") as lock_file:
+            fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
+            try:
+                yield
+            finally:
+                fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
 
-def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dict]:
+    @staticmethod
+    def _has_pending_create_step(export: Export) -> bool:
+        return not export.status.ganesha_configured or not export.status.service_reloaded
+
+    @staticmethod
+    def _is_failed_delete(export: Export) -> bool:
+        return export.status.message.startswith("Delete failed:")
+
+
+def _records_to_config_entries(
+    records: list[dict],
+    export_dir: str,
+    *,
+    include_transient_key: Optional[tuple[str, str, str]] = None,
+) -> list[dict]:
     entries = []
     for record in records:
         spec = record.get("spec", {})
@@ -182,7 +334,12 @@ def _records_to_config_entries(records: list[dict], export_dir: str) -> list[dic
         if export_id is None:
             continue
         phase = status.get("phase")
-        if phase == Phase.DELETING.value:
+        key = (spec.get("svm"), spec.get("volume"), spec.get("client"))
+        is_current_transient = (
+            key == include_transient_key
+            and phase in {Phase.CREATING.value, Phase.DELETING.value}
+        )
+        if phase != Phase.READY.value and not is_current_transient:
             continue
 
         path = status.get("path") or spec.get("path") or _export_path(ExportSpec.model_validate(spec), export_dir)
@@ -211,6 +368,23 @@ def _next_export_id(records: list[dict]) -> int:
     return max(export_ids, default=0) + 1
 
 
+def _can_resume_create_record(record: dict, requested_export: Export) -> bool:
+    status = record.get("status", {})
+    phase = status.get("phase")
+    if ExportSpec.model_validate(record["spec"]) != requested_export.spec:
+        return False
+    if phase in ACTIVE_CREATE_PHASES:
+        requested_owner = requested_export.status.create_owner
+        if not requested_owner:
+            return False
+        return status.get("create_owner") == requested_owner
+    if phase != Phase.FAILED.value:
+        return False
+    if str(status.get("message") or "").startswith("Delete failed:"):
+        return False
+    return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
+
+
 def _export_path(spec: ExportSpec, export_dir: str) -> str:
     if spec.path:
         return spec.path
@@ -222,7 +396,15 @@ def _export_pseudo(spec: ExportSpec, path: str) -> str:
 
 
 def _meta_from_record(record: dict) -> ResourceMeta:
-    return ResourceMeta(id=record["id"], generation=record.get("generation", 1))
+    return resource_meta_from_record(record)
+
+
+def _export_from_record(record: dict) -> Export:
+    return Export(
+        metadata=_meta_from_record(record),
+        spec=ExportSpec.model_validate(record["spec"]),
+        status=ExportStatus.model_validate(record["status"]),
+    )
 
 
 def _all_rows_limit() -> int:

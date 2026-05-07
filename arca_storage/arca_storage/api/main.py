@@ -3,10 +3,14 @@ FastAPI main application.
 """
 
 import logging
+import os
+import secrets
 import uuid
 from typing import Any, Dict, Optional
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, Query, Request
+from fastapi.encoders import jsonable_encoder
+from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from arca_storage.api.models import (
@@ -32,10 +36,40 @@ from arca_storage.api.models import (
     VolumeResponse,
 )
 from arca_storage.api.services import directory_service, export_service, qos_service, snapshot_service, svm_service, volume_service
-from arca_storage.errors import ArcaError
+from arca_storage.errors import ArcaError, InvalidArgumentError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
+
+_AUTH_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
+
+
+def _configured_api_token() -> str:
+    return os.environ.get("ARCA_API_TOKEN", "") or os.environ.get("ARCA_AUTH_TOKEN", "")
+
+
+@app.middleware("http")
+async def require_bearer_token(request: Request, call_next):
+    """Require a bearer token when ARCA_API_TOKEN/ARCA_AUTH_TOKEN is configured."""
+    token = _configured_api_token()
+    if not token or request.url.path in _AUTH_EXEMPT_PATHS:
+        return await call_next(request)
+
+    auth_header = request.headers.get("authorization", "")
+    scheme, _, supplied = auth_header.partition(" ")
+    if scheme.lower() != "bearer" or not secrets.compare_digest(supplied, token):
+        request_id = str(uuid.uuid4())
+        return JSONResponse(
+            status_code=401,
+            content={
+                "request_id": request_id,
+                "status": "error",
+                "error": {"code": "UNAUTHORIZED", "message": "Unauthorized", "details": {}},
+            },
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    return await call_next(request)
 
 
 @app.exception_handler(ArcaError)
@@ -56,6 +90,24 @@ async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
             "status": "error",
             "error": exc.to_dict(),
         },
+    )
+
+
+@app.exception_handler(ValueError)
+async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
+    """Return client errors for validation failures raised below FastAPI."""
+    return await arca_error_handler(request, InvalidArgumentError(str(exc)))
+
+
+@app.exception_handler(RequestValidationError)
+async def request_validation_error_handler(request: Request, exc: RequestValidationError) -> JSONResponse:
+    """Return structured client errors for request parsing and model validation failures."""
+    return await arca_error_handler(
+        request,
+        InvalidArgumentError(
+            "Request validation failed",
+            {"errors": jsonable_encoder(exc.errors())},
+        ),
     )
 
 
@@ -107,6 +159,13 @@ def get_svm(name: str) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     result = svm_service.get_svm(name)
     return {"request_id": request_id, "status": "ok", "data": result}
+
+
+@app.get("/v1/svms/{name}/capacity", response_model=SuccessResponse)
+def get_svm_capacity(name: str) -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    result = svm_service.get_svm_capacity(name)
+    return {"request_id": request_id, "status": "ok", "data": {"capacity": result}}
 
 
 @app.delete("/v1/svms/{name}", response_model=SuccessResponse)
@@ -295,7 +354,7 @@ def list_snapshots(
 @app.post("/v1/volumes/{name}/clone", response_model=VolumeResponse, status_code=201)
 def clone_volume_from_snapshot(name: str, clone: VolumeCloneCreate) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
-    result = snapshot_service.clone_volume_from_snapshot(clone)
+    result = snapshot_service.clone_volume_from_snapshot(name, clone)
     return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
 
 

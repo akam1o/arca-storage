@@ -35,7 +35,7 @@ class SubprocessNetNSAdapter:
 
     def namespace_exists(self, name: str) -> bool:
         result = run_cmd(["ip", "netns", "list"], timeout=self._timeout, check=False)
-        return name in (result.stdout or "")
+        return name in _parse_netns_names(result.stdout or "")
 
     def create_namespace(self, name: str) -> None:
         if self.namespace_exists(name):
@@ -167,3 +167,7 @@ class FakeNetNSAdapter:
             {"ifname": resolved, "vlan_id": vlan_id, "ip_cidr": ip_cidr, "gateway": gateway}
         )
         return resolved
+
+
+def _parse_netns_names(output: str) -> set[str]:
+    return {line.split()[0] for line in output.splitlines() if line.split()}

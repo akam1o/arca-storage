@@ -186,8 +186,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 verify_ssl=self.configuration.arca_storage_verify_ssl,
                 auth_type=self.configuration.arca_storage_api_auth_type,
                 api_token=self.configuration.arca_storage_api_token,
-                username=self.configuration.arca_storage_api_username,
-                password=self.configuration.arca_storage_api_password,
                 ca_bundle=self.configuration.arca_storage_api_ca_bundle,
                 client_cert=self.configuration.arca_storage_api_client_cert,
                 client_key=self.configuration.arca_storage_api_client_key,
@@ -516,6 +514,41 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             "free_capacity_gb": "unknown",
         }
 
+    def _aggregate_svm_capacity(self, svms):
+        """Aggregate SVM capacities without double-counting shared backends."""
+        total_capacity = 0.0
+        free_capacity = 0.0
+        provisioned_capacity = 0.0
+        seen_backends = set()
+        capacity_count = 0
+
+        for svm in svms:
+            svm_name = svm["name"]
+            try:
+                capacity = self.arca_client.get_svm_capacity(svm_name)
+            except Exception as e:
+                LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+                continue
+
+            capacity_count += 1
+            provisioned_capacity += float(capacity.get("provisioned_gb", 0))
+            backend_key = capacity.get("vg") or svm_name
+            if backend_key in seen_backends:
+                continue
+
+            seen_backends.add(backend_key)
+            total_capacity += float(capacity.get("total_gb", 0))
+            free_capacity += float(capacity.get("free_gb", 0))
+
+        if capacity_count == 0:
+            return None
+
+        return {
+            "total_capacity_gb": total_capacity,
+            "free_capacity_gb": free_capacity,
+            "provisioned_capacity_gb": provisioned_capacity,
+        }
+
     def _get_per_project_aggregate_pool_stats(self):
         """Get aggregated pool statistics for per_project strategy.
 
@@ -562,26 +595,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             per_project_svms = [svm for svm in svms if svm["name"].startswith(prefix)]
 
             if per_project_svms:
-                # Aggregate capacity from existing SVMs
-                total_capacity = 0.0
-                free_capacity = 0.0
-                provisioned_capacity = 0.0
-
-                for svm in per_project_svms:
-                    try:
-                        capacity = self.arca_client.get_svm_capacity(svm["name"])
-                        total_capacity += float(capacity.get("total_gb", 0))
-                        free_capacity += float(capacity.get("free_gb", 0))
-                        provisioned_capacity += float(capacity.get("provisioned_gb", 0))
-                    except Exception as e:
-                        LOG.warning(
-                            "Failed to get capacity for SVM %s: %s", svm["name"], e
-                        )
-                        continue
-
-                pool["total_capacity_gb"] = total_capacity
-                pool["free_capacity_gb"] = free_capacity
-                pool["provisioned_capacity_gb"] = provisioned_capacity
+                capacity = self._aggregate_svm_capacity(per_project_svms)
+                if capacity:
+                    pool.update(capacity)
+                else:
+                    pool["total_capacity_gb"] = "unknown"
+                    pool["free_capacity_gb"] = "unknown"
             else:
                 # No existing SVMs, report unknown capacity
                 # Manila scheduler will still allow placement (infinite capacity)
@@ -646,26 +665,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             svms = self.arca_client.list_svms()
 
             if svms:
-                # Aggregate capacity from all SVMs
-                total_capacity = 0.0
-                free_capacity = 0.0
-                provisioned_capacity = 0.0
-
-                for svm in svms:
-                    try:
-                        capacity = self.arca_client.get_svm_capacity(svm["name"])
-                        total_capacity += float(capacity.get("total_gb", 0))
-                        free_capacity += float(capacity.get("free_gb", 0))
-                        provisioned_capacity += float(capacity.get("provisioned_gb", 0))
-                    except Exception as e:
-                        LOG.warning(
-                            "Failed to get capacity for SVM %s: %s", svm["name"], e
-                        )
-                        continue
-
-                pool["total_capacity_gb"] = total_capacity
-                pool["free_capacity_gb"] = free_capacity
-                pool["provisioned_capacity_gb"] = provisioned_capacity
+                capacity = self._aggregate_svm_capacity(svms)
+                if capacity:
+                    pool.update(capacity)
+                else:
+                    pool["total_capacity_gb"] = "unknown"
+                    pool["free_capacity_gb"] = "unknown"
             else:
                 # No existing SVMs, report unknown capacity
                 pool["total_capacity_gb"] = "unknown"
@@ -683,6 +688,149 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         return pool
 
+    def _warn_if_metadata_svm_ignored(
+        self,
+        metadata_svm: Optional[str],
+        resolved_svm: str,
+        source: str,
+    ) -> None:
+        """Log when caller-provided SVM metadata conflicts with placement."""
+        if metadata_svm and metadata_svm != resolved_svm:
+            LOG.warning(
+                "Ignoring arca_svm_name metadata %r for %s; resolved SVM is %r",
+                metadata_svm,
+                source,
+                resolved_svm,
+            )
+
+    def _share_volume_name(self, share: Any) -> Optional[str]:
+        """Return the ARCA volume name for a Manila share object."""
+        share_id = share.get("id") if hasattr(share, "get") else None
+        return f"share-{share_id}" if share_id else None
+
+    def _svm_from_export_path(
+        self,
+        export_path: Optional[str],
+        volume_name: str,
+    ) -> Optional[str]:
+        """Extract SVM from driver-owned export path format."""
+        if not isinstance(export_path, str) or not export_path.strip():
+            return None
+
+        path = export_path.strip()
+        if ":" in path:
+            path = path.split(":", 1)[1]
+
+        segments = [segment for segment in path.split("/") if segment]
+        if len(segments) >= 2 and segments[-1] == volume_name:
+            return segments[-2]
+        return None
+
+    def _get_export_paths(self, share: Any) -> List[str]:
+        """Return export/provider paths carried by a Manila share object."""
+        if not share or not hasattr(share, "get"):
+            return []
+
+        paths: List[str] = []
+        for key in ("export_location", "provider_location", "export_path"):
+            value = share.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.append(value.strip())
+
+        export_locations = share.get("export_locations")
+        if isinstance(export_locations, list):
+            for location in export_locations:
+                if isinstance(location, str) and location.strip():
+                    paths.append(location.strip())
+                elif hasattr(location, "get"):
+                    for key in ("path", "export_location", "provider_location"):
+                        value = location.get(key)
+                        if isinstance(value, str) and value.strip():
+                            paths.append(value.strip())
+                            break
+
+        return paths
+
+    def _get_svm_from_share_export_locations(
+        self,
+        share: Any,
+        volume_name: str,
+    ) -> Optional[str]:
+        """Resolve SVM from Manila's driver-returned export locations."""
+        for export_path in self._get_export_paths(share):
+            svm_name = self._svm_from_export_path(export_path, volume_name)
+            if svm_name:
+                return svm_name
+        return None
+
+    def _get_svm_from_backend_volume(
+        self,
+        volume_name: str,
+    ) -> Optional[str]:
+        """Resolve SVM from ARCA backend state instead of user metadata."""
+        volumes = self._list_backend_volumes_by_name(volume_name)
+        if volumes is None:
+            return None
+
+        resolved_svms = set()
+        for volume in volumes:
+            svm_name = volume.get("svm") or volume.get("svm_name")
+            if not svm_name:
+                svm_name = self._svm_from_export_path(
+                    volume.get("export_path"),
+                    volume_name,
+                )
+            if isinstance(svm_name, str) and svm_name.strip():
+                resolved_svms.add(svm_name.strip())
+
+        if len(resolved_svms) > 1:
+            raise manila_exception.ManilaException(
+                f"Multiple ARCA volumes named {volume_name} found across SVMs"
+            )
+        return next(iter(resolved_svms)) if resolved_svms else None
+
+    def _list_backend_volumes_by_name(
+        self,
+        volume_name: str,
+    ) -> Optional[List[Dict[str, Any]]]:
+        """Return backend volume records with an exact name match if list is supported."""
+        list_volumes = getattr(self.arca_client, "list_volumes", None)
+        if not callable(list_volumes):
+            return None
+
+        try:
+            volumes = list_volumes(name=volume_name) or []
+        except Exception as e:
+            raise manila_exception.ManilaException(
+                f"Failed to look up ARCA volume {volume_name}: {e}"
+            )
+
+        return [
+            volume
+            for volume in volumes
+            if isinstance(volume, dict) and volume.get("name") == volume_name
+        ]
+
+    def _backend_volume_missing(self, volume_name: str) -> bool:
+        """Return True when ARCA backend confirms the share volume is absent."""
+        volumes = self._list_backend_volumes_by_name(volume_name)
+        return volumes == []
+
+    def _get_authoritative_svm_for_existing_share(
+        self,
+        share: Any,
+    ) -> Optional[str]:
+        """Resolve create-time SVM from driver-owned state for existing shares."""
+        volume_name = self._share_volume_name(share)
+        if not volume_name:
+            return None
+
+        svm_name = self._get_svm_from_share_export_locations(share, volume_name)
+        if svm_name:
+            return svm_name
+
+        return self._get_svm_from_backend_volume(volume_name)
+
     def _get_svm_for_share(self, share, ensure_exists=False):
         """Determine SVM for a share based on strategy.
 
@@ -699,18 +847,33 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         """
         strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
 
-        # Prefer stored metadata if present (enables snapshot ops without embedded share object).
-        svm_from_metadata = self._get_metadata_value(share, "arca_svm_name")
-        if svm_from_metadata:
-            return svm_from_metadata
+        metadata_svm = self._get_metadata_value(share, "arca_svm_name")
+        authoritative_svm = (
+            None
+            if ensure_exists
+            else self._get_authoritative_svm_for_existing_share(share)
+        )
+        if authoritative_svm:
+            LOG.debug(
+                "Using driver-owned SVM mapping %r for existing share",
+                authoritative_svm,
+            )
+            self._warn_if_metadata_svm_ignored(
+                metadata_svm,
+                authoritative_svm,
+                "driver-owned share mapping",
+            )
+            return authoritative_svm
 
         if strategy == "shared":
             # Use default SVM for all shares
-            return self.configuration.arca_storage_default_svm
+            svm_name = self.configuration.arca_storage_default_svm
+            self._warn_if_metadata_svm_ignored(metadata_svm, svm_name, "shared strategy")
+            return svm_name
 
         elif strategy == "manual":
             # Extract SVM from share type extra_specs
-            share_type = share.get("share_type")
+            share_type = share.get("share_type") if hasattr(share, "get") else None
             if not share_type:
                 raise manila_exception.ManilaException(
                     "Share type required for manual SVM strategy"
@@ -726,11 +889,12 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     "Share type must specify 'arca_manila:svm_name' for manual SVM strategy"
                 )
 
+            self._warn_if_metadata_svm_ignored(metadata_svm, svm_name, "manual strategy")
             return svm_name
 
         elif strategy == "per_project":
             # Each project gets dedicated SVM
-            project_id = share.get("project_id")
+            project_id = share.get("project_id") if hasattr(share, "get") else None
             if not project_id:
                 raise manila_exception.ManilaException(
                     "Cannot determine project_id for per_project SVM strategy. "
@@ -741,16 +905,76 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
             if ensure_exists:
                 # Create SVM if it doesn't exist (for create operations)
-                return self._allocate_per_project_svm(project_id)
+                svm_name = self._allocate_per_project_svm(project_id)
             else:
                 # Just return SVM name without creating (for other operations)
                 svm_name = f"{self.configuration.arca_storage_svm_prefix}{project_id}"
-                return svm_name
+            self._warn_if_metadata_svm_ignored(metadata_svm, svm_name, "per_project strategy")
+            return svm_name
 
         else:
             raise manila_exception.ManilaException(
                 f"Invalid SVM strategy: {strategy}"
             )
+
+    def _get_svm_for_snapshot(self, snapshot, volume_name: str) -> str:
+        """Determine SVM for a snapshot without trusting caller metadata."""
+        strategy = (
+            self._svm_strategy_effective
+            or self.configuration.arca_storage_svm_strategy
+        )
+        metadata_svm = self._get_metadata_value(snapshot, "arca_svm_name")
+        share = snapshot.get("share") if hasattr(snapshot, "get") else None
+        if share:
+            try:
+                return self._get_svm_for_share(share)
+            except Exception:
+                if strategy not in ("manual", "per_project"):
+                    raise
+                svm_name = self._get_svm_from_backend_volume(volume_name)
+                if not svm_name:
+                    raise
+                self._warn_if_metadata_svm_ignored(
+                    metadata_svm,
+                    svm_name,
+                    "backend volume mapping",
+                )
+                return svm_name
+
+        if strategy == "shared":
+            LOG.debug(
+                "snapshot['share'] not available for snapshot %s, "
+                "using shared strategy SVM",
+                snapshot.get("id") if hasattr(snapshot, "get") else "<unknown>",
+            )
+            svm_name = self.configuration.arca_storage_default_svm
+            self._warn_if_metadata_svm_ignored(
+                metadata_svm,
+                svm_name,
+                "snapshot metadata",
+            )
+            return svm_name
+
+        if strategy in ("manual", "per_project"):
+            svm_name = self._get_svm_from_backend_volume(volume_name)
+            if svm_name:
+                self._warn_if_metadata_svm_ignored(
+                    metadata_svm,
+                    svm_name,
+                    "backend volume mapping",
+                )
+                return svm_name
+
+            raise manila_exception.ManilaException(
+                f"snapshot['share'] not available for snapshot "
+                f"{snapshot.get('id') if hasattr(snapshot, 'get') else '<unknown>'}. "
+                f"Strategy '{strategy}' requires either complete parent share "
+                f"information or an existing ARCA backend volume named {volume_name}."
+            )
+
+        raise manila_exception.ManilaException(
+            f"Invalid SVM strategy: {strategy}"
+        )
 
     def _get_svm_info(self, svm_name):
         """Get SVM information with caching.
@@ -1031,7 +1255,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         try:
             # Determine SVM for this share (create if needed for per_project)
-            svm_name = self._get_svm_for_share(share, ensure_exists=True)
+            svm_name = self._get_svm_for_share(
+                share,
+                ensure_exists=True,
+            )
             LOG.debug("Using SVM %s for share %s", svm_name, share_id)
 
             # Create volume via ARCA API
@@ -1130,7 +1357,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         try:
             # Determine SVM for this share
-            svm_name = self._get_svm_for_share(share)
+            try:
+                svm_name = self._get_svm_for_share(share)
+            except Exception:
+                if self._backend_volume_missing(volume_name):
+                    LOG.warning(
+                        "Share %s not found in ARCA backend, already deleted",
+                        share_id,
+                    )
+                    return
+                raise
 
             # Delete volume via ARCA API
             self.arca_client.delete_volume(
@@ -1229,36 +1465,9 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         LOG.info("Creating snapshot %s for share %s", snapshot_id, share_id)
 
         try:
-            # Prefer metadata-stored SVM name if available.
-            svm_name = self._get_metadata_value(snapshot, "arca_svm_name")
-            share = None
-
             # Get parent share to determine SVM
             # Note: snapshot["share"] may not be available in all Manila API versions
-            if not svm_name:
-                share = snapshot.get("share")
-            if not svm_name and not share:
-                # Check strategy before attempting fallback
-                strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
-
-                if strategy == "shared":
-                    # Shared strategy: can proceed with minimal share info
-                    LOG.debug(
-                        "snapshot['share'] not available for snapshot %s, "
-                        "using shared strategy SVM", snapshot_id
-                    )
-                    share = {"id": share_id}
-                elif strategy in ("manual", "per_project"):
-                    # Fail closed: these strategies require full share info
-                    raise manila_exception.ManilaException(
-                        f"snapshot['share'] not available for snapshot {snapshot_id}. "
-                        f"Strategy '{strategy}' requires complete parent share information. "
-                        f"Alternatively, ensure 'arca_svm_name' is persisted in snapshot metadata. "
-                        f"Ensure Manila is configured to include parent share details in snapshot objects."
-                    )
-
-            if not svm_name:
-                svm_name = self._get_svm_for_share(share)
+            svm_name = self._get_svm_for_snapshot(snapshot, volume_name)
 
             # Create snapshot via ARCA API (LVM thin snapshot)
             snapshot_info = self.arca_client.create_snapshot(
@@ -1304,36 +1513,20 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         LOG.info("Deleting snapshot %s", snapshot_id)
 
         try:
-            # Prefer metadata-stored SVM name if available.
-            svm_name = self._get_metadata_value(snapshot, "arca_svm_name")
-            share = None
-
             # Get parent share to determine SVM
             # Note: snapshot["share"] may not be available in all Manila API versions
-            if not svm_name:
-                share = snapshot.get("share")
-            if not svm_name and not share:
-                # Check strategy before attempting fallback
-                strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
-
-                if strategy == "shared":
-                    # Shared strategy: can proceed with minimal share info
-                    LOG.debug(
-                        "snapshot['share'] not available for snapshot %s, "
-                        "using shared strategy SVM", snapshot_id
+            try:
+                svm_name = self._get_svm_for_snapshot(snapshot, volume_name)
+            except Exception:
+                if self._backend_volume_missing(volume_name):
+                    LOG.warning(
+                        "Parent share %s not found in ARCA backend, "
+                        "snapshot %s already deleted",
+                        share_id,
+                        snapshot_id,
                     )
-                    share = {"id": share_id}
-                elif strategy in ("manual", "per_project"):
-                    # Fail closed: these strategies require full share info
-                    raise manila_exception.ManilaException(
-                        f"snapshot['share'] not available for snapshot {snapshot_id}. "
-                        f"Strategy '{strategy}' requires complete parent share information. "
-                        f"Alternatively, ensure 'arca_svm_name' is persisted in snapshot metadata. "
-                        f"Ensure Manila is configured to include parent share details in snapshot objects."
-                    )
-
-            if not svm_name:
-                svm_name = self._get_svm_for_share(share)
+                    return
+                raise
 
             # Delete snapshot via ARCA API
             self.arca_client.delete_snapshot(
@@ -1424,6 +1617,14 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     )
 
             svm_name = self._get_svm_for_share(parent_share)
+            if strategy == "manual":
+                target_svm_name = self._get_svm_for_share(share)
+                if target_svm_name != svm_name:
+                    raise manila_exception.ManilaException(
+                        f"Create share from snapshot cannot change SVM in manual strategy: "
+                        f"source_svm={svm_name}, target_svm={target_svm_name}. "
+                        f"Use a share type with the source SVM or create a new share directly."
+                    )
             LOG.debug("Using SVM %s for share %s from snapshot", svm_name, share_id)
 
             # Clone volume from snapshot via ARCA API
@@ -1514,10 +1715,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         try:
             # Determine SVM for this share
             svm_name = self._get_svm_for_share(share)
+            rule_failures = []
 
             # If Manila didn't provide incremental changes, reconcile from full desired list.
             # This prevents drift when add_rules/delete_rules are omitted or empty.
-            if access_rules and not add_rules and not delete_rules:
+            if access_rules is not None and not add_rules and not delete_rules:
                 self._reconcile_access_rules(svm_name, volume_name, access_rules)
                 LOG.info("Access rules reconciled for share %s", share_id)
                 return None
@@ -1527,6 +1729,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 for rule in delete_rules:
                     try:
                         self._delete_access_rule(svm_name, volume_name, rule)
+                    except manila_exception.InvalidShareAccess:
+                        raise
                     except Exception as e:
                         # Log warning but continue with other rules
                         LOG.warning(
@@ -1535,12 +1739,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             share_id,
                             e,
                         )
+                        rule_failures.append(("delete", rule, e))
 
             # Add new rules
             if add_rules:
                 for rule in add_rules:
                     try:
                         self._add_access_rule(svm_name, volume_name, rule)
+                    except manila_exception.InvalidShareAccess:
+                        raise
                     except Exception as e:
                         # Log warning but continue with other rules
                         LOG.warning(
@@ -1549,6 +1756,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             share_id,
                             e,
                         )
+                        rule_failures.append(("add", rule, e))
+
+            if rule_failures:
+                details = ", ".join(
+                    f"{operation}:{self._access_rule_label(rule)} ({error})"
+                    for operation, rule, error in rule_failures
+                )
+                raise manila_exception.ShareBackendException(
+                    f"Failed to update {len(rule_failures)} access rule(s): {details}"
+                )
 
             LOG.info("Access rules updated for share %s", share_id)
 
@@ -1556,12 +1773,20 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Keep Manila's semantic exception when rule type is invalid.
             if isinstance(e, manila_exception.InvalidShareAccess):
                 raise
+            if isinstance(e, manila_exception.ShareBackendException):
+                raise
             # Systemic failure (e.g., can't determine SVM)
             LOG.exception("Failed to update access rules for share %s", share_id)
             raise manila_exception.ShareBackendException(
                 f"Failed to update access rules: {str(e)}"
             )
         return None
+
+    @staticmethod
+    def _access_rule_label(rule: Any) -> str:
+        if not isinstance(rule, dict):
+            return str(rule)
+        return str(rule.get("id") or rule.get("access_to") or "<unknown>")
 
     def _normalize_access_to(self, access_to: str) -> str:
         """Normalize an IP/CIDR string for stable comparisons."""
@@ -1574,7 +1799,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         """Reconcile backend exports against desired Manila access rules.
 
         This is a safety-net for cases where Manila doesn't provide incremental
-        diffs (add_rules/delete_rules). Best-effort: individual failures are logged.
+        diffs (add_rules/delete_rules). Individual failures are collected so
+        Manila can retry instead of marking the desired ACL state as applied.
 
         Uses backend-returned raw client strings for delete operations to avoid
         format mismatches, while normalizing for comparison.
@@ -1637,6 +1863,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         # Apply deletions first to allow access-level changes via delete+add
         # Use raw backend strings for delete operations
+        rule_failures = []
         for client_norm in to_delete + to_update:
             client_raw = current[client_norm][0]
             try:
@@ -1650,6 +1877,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     volume_name,
                     e,
                 )
+                rule_failures.append(("delete", client_raw, e))
 
         # Apply additions (including updates)
         # Use normalized strings for create operations (backend will normalize)
@@ -1670,6 +1898,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     volume_name,
                     e,
                 )
+                rule_failures.append(("add", client_norm, e))
+
+        if rule_failures:
+            details = ", ".join(
+                f"{operation}:{self._access_rule_label(rule)} ({error})"
+                for operation, rule, error in rule_failures
+            )
+            raise manila_exception.ShareBackendException(
+                f"Failed to reconcile {len(rule_failures)} access rule(s): {details}"
+            )
 
     def _add_access_rule(self, svm_name, volume_name, rule):
         """Add access rule to share.
@@ -1693,12 +1931,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 reason=f"Access type '{access_type}' not supported (only 'ip' allowed)"
             )
 
-        # Validate CIDR format
+        # Validate and normalize CIDR format
         try:
-            import ipaddress
-
-            ipaddress.ip_network(access_to, strict=False)
-        except ValueError as e:
+            access_to = self._normalize_access_to(access_to)
+        except ValueError:
             raise manila_exception.InvalidShareAccess(
                 reason=f"Invalid IP address or CIDR: {access_to}"
             )
@@ -1754,6 +1990,13 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         if access_type != "ip":
             LOG.warning("Skipping non-IP access rule deletion: %s", access_type)
             return
+
+        try:
+            access_to = self._normalize_access_to(access_to)
+        except ValueError:
+            raise manila_exception.InvalidShareAccess(
+                reason=f"Invalid IP address or CIDR: {access_to}"
+            )
 
         LOG.debug(
             "Deleting access rule: %s %s from volume %s on SVM %s",
@@ -1825,7 +2068,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
     # SVM Lifecycle Management
     # NOTE: SVM garbage collection for per_project strategy is planned but not yet implemented.
     # Future implementation will require:
-    # 1. Adding list_volumes(svm) method to ArcaManilaClient
-    # 2. Adding delete_svm(name, force) method to ArcaManilaClient
-    # 3. Proper timezone-aware datetime handling
+    # 1. Adding delete_svm(name, force) method to ArcaManilaClient
+    # 2. Proper timezone-aware datetime handling
     # For now, SVM cleanup must be performed manually via ARCA API or CLI.

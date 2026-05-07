@@ -44,11 +44,12 @@ fi
 WORK="$(mktemp -d)"
 trap 'rm -rf "$WORK"' EXIT
 
-rsync -a --delete \
-  --exclude '.git' \
-  --exclude 'venv' \
-  --exclude 'arca_storage/.arca-state' \
-  "$ROOT/" "$WORK/src/"
+mkdir -p "$WORK/src"
+git -c "safe.directory=$ROOT" -C "$ROOT" archive --format=tar HEAD | tar -C "$WORK/src" -xf -
+
+mkdir -p "$WORK/src/packaging"
+rm -rf "$WORK/src/packaging/wheelhouse"
+cp -R "$ROOT/packaging/wheelhouse" "$WORK/src/packaging/"
 
 # For "3.0 (quilt)" builds, dpkg-source expects an upstream orig tarball at
 # ../<source>_<upstream>.orig.tar.gz. Create it before adding debian/ metadata.
@@ -63,8 +64,6 @@ if sed --version >/dev/null 2>&1; then
 else
   sed -i '' "1s/^arca-storage ([^)]*)/arca-storage (${DEB_VERSION})/" "$WORK/src/debian/changelog"
 fi
-mkdir -p "$WORK/src/packaging"
-cp -R "$ROOT/packaging/wheelhouse" "$WORK/src/packaging/"
 
 pushd "$WORK/src" >/dev/null
 dpkg-buildpackage -us -uc

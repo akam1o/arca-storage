@@ -4,44 +4,60 @@ Pydantic models for API requests and responses.
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional
+from typing import List, Optional, Union
 
 from pydantic import BaseModel, Field, field_validator
+
+from arca_storage.cli.lib.validators import (
+    normalize_ip_cidr,
+    validate_name as validate_resource_name,
+    validate_svm_ip_cidr,
+)
+
+
+def _validate_resource_name(value: str) -> str:
+    validate_resource_name(value)
+    return value
 
 
 class SVMStatus(str, Enum):
     """SVM status values."""
 
-    CREATING = "creating"
-    AVAILABLE = "available"
-    DELETING = "deleting"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 class VolumeStatus(str, Enum):
     """Volume status values."""
 
-    CREATING = "creating"
-    AVAILABLE = "available"
-    RESIZING = "resizing"
-    DELETING = "deleting"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 class SnapshotStatus(str, Enum):
     """Snapshot status values."""
 
-    CREATING = "creating"
-    AVAILABLE = "available"
-    DELETING = "deleting"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 class ExportStatus(str, Enum):
     """Export status values."""
 
-    AVAILABLE = "available"
-    ERROR = "error"
+    PENDING = "Pending"
+    CREATING = "Creating"
+    READY = "Ready"
+    DELETING = "Deleting"
+    FAILED = "Failed"
 
 
 # SVM Models
@@ -61,28 +77,11 @@ class SVMCreate(BaseModel):
 
     @field_validator("name")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
     @field_validator("ip_cidr")
     def validate_ip_cidr(cls, v: str) -> str:
-        import ipaddress
-
-        try:
-            parts = v.split("/")
-            if len(parts) != 2:
-                raise ValueError("CIDR must be in format IP/PREFIX")
-            ipaddress.IPv4Address(parts[0])
-            prefix = int(parts[1])
-            if prefix < 0 or prefix > 32:
-                raise ValueError("Prefix must be between 0 and 32")
-        except Exception as e:
-            raise ValueError(f"Invalid CIDR format: {e}")
+        validate_svm_ip_cidr(v)
         return v
 
     @field_validator("gateway")
@@ -102,14 +101,22 @@ class SVM(BaseModel):
     """SVM response model."""
 
     name: str
-    vlan_id: Optional[int]
+    vlan_id: Optional[int] = None
     ip_cidr: str
-    gateway: Optional[str]
+    gateway: Optional[str] = None
     mtu: int
     namespace: str
     vip: str
+    export_root: Optional[str] = None
     status: SVMStatus
+    state: Optional[SVMStatus] = None
     created_at: datetime
+
+
+class SVMData(BaseModel):
+    """Nested SVM data envelope."""
+
+    svm: SVM
 
 
 class SVMResponse(BaseModel):
@@ -117,7 +124,14 @@ class SVMResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: Union[SVMData, SVM]
+
+
+class SVMListData(BaseModel):
+    """SVM list data envelope."""
+
+    items: List[SVM]
+    next_cursor: Optional[str] = None
 
 
 class SVMListResponse(BaseModel):
@@ -125,7 +139,7 @@ class SVMListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: SVMListData
 
 
 # CSI compatibility models
@@ -140,13 +154,7 @@ class DirectoryCreate(BaseModel):
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class QuotaSet(BaseModel):
@@ -158,13 +166,7 @@ class QuotaSet(BaseModel):
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class QuotaExpand(BaseModel):
@@ -176,13 +178,7 @@ class QuotaExpand(BaseModel):
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Value must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 # Volume Models
@@ -199,13 +195,14 @@ class VolumeCreate(BaseModel):
 
     @field_validator("name", "svm")
     def validate_name(cls, v: str) -> str:
-        import re
+        return _validate_resource_name(v)
 
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+    @field_validator("fs_type")
+    def validate_fs_type(cls, v: str) -> str:
+        normalized = v.strip().lower()
+        if normalized != "xfs":
+            raise ValueError("fs_type must be 'xfs'")
+        return normalized
 
 
 class VolumeResize(BaseModel):
@@ -213,6 +210,10 @@ class VolumeResize(BaseModel):
 
     svm: str = Field(..., description="SVM name")
     new_size_gib: int = Field(..., description="New size in GiB", gt=0)
+
+    @field_validator("svm")
+    def validate_svm(cls, v: str) -> str:
+        return _validate_resource_name(v)
 
 
 class VolumeQoSApply(BaseModel):
@@ -226,13 +227,7 @@ class VolumeQoSApply(BaseModel):
 
     @field_validator("svm")
     def validate_svm(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "SVM name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class VolumeQoS(BaseModel):
@@ -265,10 +260,18 @@ class Volume(BaseModel):
     size_gib: int
     thin: bool
     fs_type: str
-    mount_path: str
-    lv_path: str
+    mount_path: Optional[str] = None
+    lv_path: Optional[str] = None
+    lv_name: Optional[str] = None
+    export_path: Optional[str] = None
     status: VolumeStatus
     created_at: datetime
+
+
+class VolumeData(BaseModel):
+    """Nested volume data envelope."""
+
+    volume: Volume
 
 
 class VolumeResponse(BaseModel):
@@ -276,7 +279,14 @@ class VolumeResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: VolumeData
+
+
+class VolumeListData(BaseModel):
+    """Volume list data envelope."""
+
+    items: List[Volume]
+    next_cursor: Optional[str] = None
 
 
 class VolumeListResponse(BaseModel):
@@ -284,7 +294,7 @@ class VolumeListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: VolumeListData
 
 
 # Snapshot Models
@@ -299,13 +309,7 @@ class SnapshotCreate(BaseModel):
 
     @field_validator("name", "svm", "volume")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class VolumeCloneCreate(BaseModel):
@@ -318,13 +322,7 @@ class VolumeCloneCreate(BaseModel):
 
     @field_validator("name", "svm", "snapshot")
     def validate_name(cls, v: str) -> str:
-        import re
-
-        if not re.match(r"^[a-zA-Z0-9][a-zA-Z0-9._-]*$", v):
-            raise ValueError(
-                "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
-            )
-        return v
+        return _validate_resource_name(v)
 
 
 class Snapshot(BaseModel):
@@ -333,9 +331,16 @@ class Snapshot(BaseModel):
     name: str
     svm: str
     volume: str
-    lv_path: str
+    lv_path: Optional[str] = None
+    lv_name: Optional[str] = None
     status: SnapshotStatus
     created_at: datetime
+
+
+class SnapshotData(BaseModel):
+    """Nested snapshot data envelope."""
+
+    snapshot: Snapshot
 
 
 class SnapshotResponse(BaseModel):
@@ -343,7 +348,14 @@ class SnapshotResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: SnapshotData
+
+
+class SnapshotListData(BaseModel):
+    """Snapshot list data envelope."""
+
+    items: List[Snapshot]
+    next_cursor: Optional[str] = None
 
 
 class SnapshotListResponse(BaseModel):
@@ -351,7 +363,7 @@ class SnapshotListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: SnapshotListData
 
 
 # Export Models
@@ -365,7 +377,11 @@ class ExportCreate(BaseModel):
     client: str = Field(..., description="Client CIDR (e.g., 10.0.0.0/24)")
     access: str = Field("rw", description="Access type: rw or ro")
     root_squash: bool = Field(True, description="Enable root squash")
-    sec: List[str] = Field(["sys"], description="Security types")
+    sec: List[str] = Field(default_factory=lambda: ["sys"], description="Security types")
+
+    @field_validator("svm", "volume")
+    def validate_name(cls, v: str) -> str:
+        return _validate_resource_name(v)
 
     @field_validator("access")
     def validate_access(cls, v: str) -> str:
@@ -375,16 +391,18 @@ class ExportCreate(BaseModel):
 
     @field_validator("client")
     def validate_client(cls, v: str) -> str:
-        import ipaddress
+        return normalize_ip_cidr(v)
 
-        try:
-            parts = v.split("/")
-            if len(parts) != 2:
-                raise ValueError("CIDR must be in format IP/PREFIX")
-            ipaddress.IPv4Network(v, strict=False)
-        except Exception as e:
-            raise ValueError(f"Invalid CIDR format: {e}")
-        return v
+    @field_validator("sec")
+    def validate_sec(cls, v: List[str]) -> List[str]:
+        allowed = {"sys", "krb5", "krb5i", "krb5p"}
+        values = [item.strip().lower() for item in v if item.strip()]
+        if not values:
+            raise ValueError("sec must contain at least one security type")
+        unsupported = [item for item in values if item not in allowed]
+        if unsupported:
+            raise ValueError(f"Unsupported security types: {unsupported}")
+        return values
 
 
 class Export(BaseModel):
@@ -396,10 +414,16 @@ class Export(BaseModel):
     access: str
     root_squash: bool
     sec: List[str]
-    pseudo: str
-    export_id: int
+    pseudo: Optional[str] = None
+    export_id: Optional[int] = None
     status: ExportStatus
     created_at: datetime
+
+
+class ExportData(BaseModel):
+    """Nested export data envelope."""
+
+    export: Export
 
 
 class ExportResponse(BaseModel):
@@ -407,7 +431,14 @@ class ExportResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: ExportData
+
+
+class ExportListData(BaseModel):
+    """Export list data envelope."""
+
+    items: List[Export]
+    next_cursor: Optional[str] = None
 
 
 class ExportListResponse(BaseModel):
@@ -415,7 +446,7 @@ class ExportListResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: ExportListData
 
 
 # Common Models

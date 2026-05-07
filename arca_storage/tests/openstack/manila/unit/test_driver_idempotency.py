@@ -193,8 +193,8 @@ class TestDeleteOperationIdempotency:
             "Internal server error"
         )
 
-        # Non-404 errors should be raised
-        with pytest.raises(arca_exceptions.ArcaManilaAPIError):
+        # Non-404 errors are wrapped as Manila backend errors.
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Internal server error"):
             driver.delete_share(Mock(), mock_manila_share, None)
 
 
@@ -223,9 +223,9 @@ class TestSnapshotOperationIdempotency:
         # Should succeed using default SVM
         driver.create_snapshot(Mock(), mock_manila_snapshot, None)
 
-    def test_delete_snapshot_with_snapshot_metadata_fallback(self, driver, mock_arca_client):
-        """Test snapshot deletion uses snapshot metadata when share unavailable."""
-        # Snapshot has its own SVM metadata
+    def test_delete_snapshot_with_shared_strategy_without_share(self, driver, mock_arca_client):
+        """Test snapshot deletion uses shared strategy when share unavailable."""
+        # Snapshot metadata must not steer shared strategy.
         snapshot = {
             "id": "snapshot-123",
             "share_id": "share-123",
@@ -234,7 +234,6 @@ class TestSnapshotOperationIdempotency:
 
         driver.delete_snapshot(Mock(), snapshot, None)
 
-        # Should use SVM from snapshot metadata
         mock_arca_client.delete_snapshot.assert_called_once_with(
             name="snapshot-snapshot-123",
             svm="test-svm",
@@ -296,11 +295,13 @@ class TestMetadataPersistence:
         # New share should have same SVM as source
         assert new_share["metadata"]["arca_svm_name"] == "test-svm"
 
-    def test_operations_use_persisted_metadata(self, driver, mock_arca_client, mock_manila_share):
-        """Test that subsequent operations use persisted metadata."""
-        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+    def test_operations_use_driver_owned_svm_mapping(self, driver, mock_arca_client, mock_manila_share):
+        """Test that subsequent operations ignore caller-supplied metadata."""
+        mock_manila_share["metadata"]["arca_svm_name"] = "user-supplied-svm"
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "test-svm"}
+        ]
 
-        # All these operations should use the persisted SVM name
         driver.extend_share(mock_manila_share, 20, None)
         assert mock_arca_client.resize_volume.call_args[1]["svm"] == "test-svm"
 

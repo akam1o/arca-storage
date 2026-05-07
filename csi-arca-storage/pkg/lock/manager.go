@@ -2,33 +2,46 @@ package lock
 
 import (
 	"context"
+	"crypto/rand"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
+	"strings"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
 	apierrors "k8s.io/apimachinery/pkg/api/errors"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/types"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
 )
 
+const (
+	leaseNamePrefix    = "arca-csi-svm-"
+	maxLeaseNameLength = 63
+	leaseNameHashBytes = 6
+)
+
 // Manager manages distributed locks using Kubernetes Leases
 type Manager struct {
-	clientset *kubernetes.Clientset
+	clientset kubernetes.Interface
 	namespace string
 	identity  string
 }
 
 // Lock represents an acquired lock
 type Lock struct {
-	manager   *Manager
-	leaseName string
-	ctx       context.Context
-	cancel    context.CancelFunc
+	manager        *Manager
+	leaseName      string
+	holderIdentity string
+	leaseUID       types.UID
+	ctx            context.Context
+	cancel         context.CancelFunc
 }
 
 // NewManager creates a new lock manager
-func NewManager(clientset *kubernetes.Clientset, namespace, identity string) *Manager {
+func NewManager(clientset kubernetes.Interface, namespace, identity string) *Manager {
 	return &Manager{
 		clientset: clientset,
 		namespace: namespace,
@@ -38,26 +51,26 @@ func NewManager(clientset *kubernetes.Clientset, namespace, identity string) *Ma
 
 // AcquireLock acquires a distributed lock for the given resource
 func (m *Manager) AcquireLock(ctx context.Context, resourceName string, ttl time.Duration) (*Lock, error) {
-	leaseName := fmt.Sprintf("arca-csi-svm-%s", resourceName)
+	leaseName := leaseNameForResource(resourceName)
+	holderIdentity := newLockHolderIdentity(m.identity)
 
-	lockCtx, cancel := context.WithCancel(ctx)
 	lock := &Lock{
-		manager:   m,
-		leaseName: leaseName,
-		ctx:       lockCtx,
-		cancel:    cancel,
+		manager:        m,
+		leaseName:      leaseName,
+		holderIdentity: holderIdentity,
 	}
 
 	// Try to acquire the lease
 	deadline := time.Now().Add(ttl)
 	for time.Now().Before(deadline) {
-		acquired, err := m.tryAcquireLease(ctx, leaseName, ttl)
+		acquired, leaseUID, err := m.tryAcquireLease(ctx, leaseName, holderIdentity, ttl)
 		if err != nil {
-			cancel()
 			return nil, fmt.Errorf("failed to acquire lease: %w", err)
 		}
 
 		if acquired {
+			lock.leaseUID = leaseUID
+			lock.ctx, lock.cancel = context.WithCancel(context.Background())
 			// Start renewing the lease in background
 			go lock.renewLoop(ttl)
 			klog.V(4).Infof("Acquired lock for resource %s (lease: %s)", resourceName, leaseName)
@@ -68,17 +81,15 @@ func (m *Manager) AcquireLock(ctx context.Context, resourceName string, ttl time
 		select {
 		case <-time.After(time.Second):
 		case <-ctx.Done():
-			cancel()
 			return nil, ctx.Err()
 		}
 	}
 
-	cancel()
 	return nil, fmt.Errorf("failed to acquire lock for %s within %v", resourceName, ttl)
 }
 
 // tryAcquireLease attempts to acquire or update a lease
-func (m *Manager) tryAcquireLease(ctx context.Context, leaseName string, ttl time.Duration) (bool, error) {
+func (m *Manager) tryAcquireLease(ctx context.Context, leaseName, holderIdentity string, ttl time.Duration) (bool, types.UID, error) {
 	leaseDuration := int32(ttl.Seconds())
 	now := metav1.NewMicroTime(time.Now())
 
@@ -88,11 +99,14 @@ func (m *Manager) tryAcquireLease(ctx context.Context, leaseName string, ttl tim
 	lease, err := leaseClient.Get(ctx, leaseName, metav1.GetOptions{})
 	if err == nil {
 		// Lease exists - check if we own it or it's expired
-		if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == m.identity {
+		if lease.Spec.HolderIdentity != nil && *lease.Spec.HolderIdentity == holderIdentity {
 			// We own it - renew
 			lease.Spec.RenewTime = &now
 			_, err = leaseClient.Update(ctx, lease, metav1.UpdateOptions{})
-			return err == nil, err
+			if apierrors.IsConflict(err) {
+				return false, "", nil
+			}
+			return err == nil, lease.UID, err
 		}
 
 		// Check if expired
@@ -101,22 +115,25 @@ func (m *Manager) tryAcquireLease(ctx context.Context, leaseName string, ttl tim
 			expiryTime := renewTime.Add(time.Duration(*lease.Spec.LeaseDurationSeconds) * time.Second)
 			if time.Now().After(expiryTime) {
 				// Expired - take over
-				lease.Spec.HolderIdentity = &m.identity
+				lease.Spec.HolderIdentity = &holderIdentity
 				lease.Spec.RenewTime = &now
 				lease.Spec.LeaseDurationSeconds = &leaseDuration
 				_, err = leaseClient.Update(ctx, lease, metav1.UpdateOptions{})
-				return err == nil, err
+				if apierrors.IsConflict(err) {
+					return false, "", nil
+				}
+				return err == nil, lease.UID, err
 			}
 		}
 
 		// Someone else owns it and it's not expired
-		return false, nil
+		return false, "", nil
 	}
 
 	// Check if error is NotFound (expected) vs other errors
 	if !apierrors.IsNotFound(err) {
 		// Real error (RBAC, network) - don't mask it
-		return false, fmt.Errorf("failed to get lease: %w", err)
+		return false, "", fmt.Errorf("failed to get lease: %w", err)
 	}
 
 	// Lease doesn't exist - create it
@@ -126,14 +143,20 @@ func (m *Manager) tryAcquireLease(ctx context.Context, leaseName string, ttl tim
 			Namespace: m.namespace,
 		},
 		Spec: coordinationv1.LeaseSpec{
-			HolderIdentity:       &m.identity,
+			HolderIdentity:       &holderIdentity,
 			LeaseDurationSeconds: &leaseDuration,
 			RenewTime:            &now,
 		},
 	}
 
-	_, err = leaseClient.Create(ctx, lease, metav1.CreateOptions{})
-	return err == nil, err
+	created, err := leaseClient.Create(ctx, lease, metav1.CreateOptions{})
+	if apierrors.IsAlreadyExists(err) {
+		return false, "", nil
+	}
+	if err != nil {
+		return false, "", err
+	}
+	return true, created.UID, nil
 }
 
 // renewLoop renews the lease periodically
@@ -144,7 +167,7 @@ func (l *Lock) renewLoop(ttl time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			_, err := l.manager.tryAcquireLease(l.ctx, l.leaseName, ttl)
+			_, _, err := l.manager.tryAcquireLease(l.ctx, l.leaseName, l.holderIdentity, ttl)
 			if err != nil {
 				klog.Warningf("Failed to renew lease %s: %v", l.leaseName, err)
 			}
@@ -156,11 +179,35 @@ func (l *Lock) renewLoop(ttl time.Duration) {
 
 // Release releases the lock
 func (l *Lock) Release(ctx context.Context) error {
-	l.cancel() // Stop renewal
+	if l.cancel != nil {
+		l.cancel() // Stop renewal
+	}
 
 	// Delete the lease
 	leaseClient := l.manager.clientset.CoordinationV1().Leases(l.manager.namespace)
-	err := leaseClient.Delete(ctx, l.leaseName, metav1.DeleteOptions{})
+	lease, err := leaseClient.Get(ctx, l.leaseName, metav1.GetOptions{})
+	if apierrors.IsNotFound(err) {
+		klog.V(4).Infof("Lease %s already gone", l.leaseName)
+		return nil
+	}
+	if err != nil {
+		klog.Warningf("Failed to get lease %s before release: %v", l.leaseName, err)
+		return err
+	}
+	if lease.Spec.HolderIdentity == nil || *lease.Spec.HolderIdentity != l.holderIdentity {
+		klog.V(4).Infof("Lease %s is no longer held by this lock, skipping release", l.leaseName)
+		return nil
+	}
+
+	deleteOptions := metav1.DeleteOptions{}
+	if l.leaseUID != "" {
+		deleteOptions.Preconditions = &metav1.Preconditions{UID: &l.leaseUID}
+	}
+	err = leaseClient.Delete(ctx, l.leaseName, deleteOptions)
+	if apierrors.IsNotFound(err) {
+		klog.V(4).Infof("Lease %s already gone", l.leaseName)
+		return nil
+	}
 	if err != nil {
 		klog.Warningf("Failed to delete lease %s: %v", l.leaseName, err)
 		return err
@@ -168,4 +215,57 @@ func (l *Lock) Release(ctx context.Context) error {
 
 	klog.V(4).Infof("Released lock (lease: %s)", l.leaseName)
 	return nil
+}
+
+func newLockHolderIdentity(identity string) string {
+	random := make([]byte, 8)
+	if _, err := rand.Read(random); err == nil {
+		return fmt.Sprintf("%s-%s", identity, hex.EncodeToString(random))
+	}
+	return fmt.Sprintf("%s-%d", identity, time.Now().UnixNano())
+}
+
+func leaseNameForResource(resourceName string) string {
+	namePart := sanitizeLeaseNamePart(resourceName)
+	candidate := leaseNamePrefix + namePart
+	if len(candidate) <= maxLeaseNameLength {
+		return candidate
+	}
+
+	sum := sha256.Sum256([]byte(resourceName))
+	suffix := "-" + hex.EncodeToString(sum[:leaseNameHashBytes])
+	headLen := maxLeaseNameLength - len(leaseNamePrefix) - len(suffix)
+	if headLen < 1 {
+		return leaseNamePrefix + "resource" + suffix
+	}
+	if headLen > len(namePart) {
+		headLen = len(namePart)
+	}
+	head := strings.TrimRight(namePart[:headLen], "-")
+	if head == "" {
+		head = "resource"
+	}
+	return leaseNamePrefix + head + suffix
+}
+
+func sanitizeLeaseNamePart(raw string) string {
+	var builder strings.Builder
+	for _, r := range strings.ToLower(raw) {
+		switch {
+		case r >= 'a' && r <= 'z':
+			builder.WriteRune(r)
+		case r >= '0' && r <= '9':
+			builder.WriteRune(r)
+		case r == '-':
+			builder.WriteRune(r)
+		default:
+			builder.WriteRune('-')
+		}
+	}
+
+	name := strings.Trim(builder.String(), "-")
+	if name == "" {
+		return "resource"
+	}
+	return name
 }

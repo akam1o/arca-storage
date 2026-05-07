@@ -7,7 +7,7 @@ from __future__ import annotations
 from datetime import datetime
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 from arca_storage.models.base import Phase, ResourceMeta
 
@@ -25,6 +25,18 @@ class ExportSpec(BaseModel):
     pseudo: Optional[str] = None
     owner: str = "api"
 
+    @field_validator("sec")
+    @classmethod
+    def validate_sec(cls, value: list[str]) -> list[str]:
+        allowed = {"sys", "krb5", "krb5i", "krb5p"}
+        values = [item.strip().lower() for item in value if item.strip()]
+        if not values:
+            raise ValueError("sec must contain at least one security type")
+        unsupported = [item for item in values if item not in allowed]
+        if unsupported:
+            raise ValueError(f"Unsupported security types: {unsupported}")
+        return values
+
 
 class ExportStatus(BaseModel):
     """System-managed actual state for an export."""
@@ -37,6 +49,8 @@ class ExportStatus(BaseModel):
     service_reloaded: bool = False
     message: str = ""
     last_reconciled: Optional[datetime] = None
+    create_owner: Optional[str] = None
+    create_lease_expires_at: Optional[datetime] = None
 
 
 class Export(BaseModel):

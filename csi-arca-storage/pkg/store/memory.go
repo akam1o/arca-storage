@@ -2,6 +2,7 @@ package store
 
 import (
 	"fmt"
+	"sort"
 	"sync"
 	"time"
 
@@ -15,22 +16,25 @@ type VolumeInfo struct {
 	Name          string // Original PVC name
 	SVMName       string
 	VIP           string
+	ExportRoot    string
 	Path          string
 	CapacityBytes int64
 	CreatedAt     time.Time
 	ContentSource *csi.VolumeContentSource
+	ReadyToUse    *bool
 }
 
 // SnapshotInfo represents snapshot metadata
 type SnapshotInfo struct {
-	SnapshotID     string
-	Name           string // Original VolumeSnapshot name
-	SourceVolumeID string
-	SVMName        string
-	Path           string
-	SizeBytes      int64
-	CreatedAt      time.Time
-	ReadyToUse     bool
+	SnapshotID       string
+	Name             string // Original VolumeSnapshot name
+	SourceVolumeID   string
+	SourceVolumePath string
+	SVMName          string
+	Path             string
+	SizeBytes        int64
+	CreatedAt        time.Time
+	ReadyToUse       bool
 }
 
 // MemoryStore provides in-memory storage for volume and snapshot metadata
@@ -61,7 +65,7 @@ func (s *MemoryStore) CreateVolume(info *VolumeInfo) error {
 	if info.CreatedAt.IsZero() {
 		info.CreatedAt = time.Now()
 	}
-	s.volumes[info.VolumeID] = info
+	s.volumes[info.VolumeID] = deepCopyVolumeInfo(info)
 	return nil
 }
 
@@ -70,11 +74,16 @@ func (s *MemoryStore) UpdateVolume(info *VolumeInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.volumes[info.VolumeID]; !exists {
+	existing, exists := s.volumes[info.VolumeID]
+	if !exists {
 		return fmt.Errorf("%w: volume %s", ErrNotFound, info.VolumeID)
 	}
 
-	s.volumes[info.VolumeID] = info
+	updated := deepCopyVolumeInfo(info)
+	if updated.CapacityBytes < existing.CapacityBytes {
+		updated.CapacityBytes = existing.CapacityBytes
+	}
+	s.volumes[info.VolumeID] = updated
 	return nil
 }
 
@@ -88,7 +97,7 @@ func (s *MemoryStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 		return nil, fmt.Errorf("%w: volume %s", ErrNotFound, volumeID)
 	}
 
-	return info, nil
+	return deepCopyVolumeInfo(info), nil
 }
 
 // DeleteVolume removes volume metadata
@@ -108,25 +117,29 @@ func (s *MemoryStore) ListVolumes(startingToken string, maxEntries int) ([]*Volu
 	var result []*VolumeInfo
 	var nextToken string
 
-	started := startingToken == ""
-	count := 0
+	volumeIDs := make([]string, 0, len(s.volumes))
+	for volumeID := range s.volumes {
+		volumeIDs = append(volumeIDs, volumeID)
+	}
+	sort.Strings(volumeIDs)
 
-	for volumeID, info := range s.volumes {
-		if !started {
-			if volumeID == startingToken {
-				started = true
-			}
-			continue
+	start := 0
+	if startingToken != "" {
+		idx := sort.SearchStrings(volumeIDs, startingToken)
+		if idx == len(volumeIDs) || volumeIDs[idx] != startingToken {
+			return nil, "", fmt.Errorf("%w: volume pagination token %s", ErrNotFound, startingToken)
 		}
+		start = idx + 1
+	}
 
-		result = append(result, info)
-		count++
+	end := len(volumeIDs)
+	if maxEntries > 0 && start+maxEntries < end {
+		end = start + maxEntries
+		nextToken = volumeIDs[end-1]
+	}
 
-		if maxEntries > 0 && count >= maxEntries {
-			// Set next token to the next volume ID (simplified pagination)
-			nextToken = volumeID
-			break
-		}
+	for _, volumeID := range volumeIDs[start:end] {
+		result = append(result, s.volumes[volumeID])
 	}
 
 	return result, nextToken, nil
@@ -192,29 +205,32 @@ func (s *MemoryStore) ListSnapshots(sourceVolumeID, startingToken string, maxEnt
 	var result []*SnapshotInfo
 	var nextToken string
 
-	started := startingToken == ""
-	count := 0
-
+	snapshotIDs := make([]string, 0, len(s.snapshots))
 	for snapshotID, info := range s.snapshots {
-		// Filter by source volume if specified
 		if sourceVolumeID != "" && info.SourceVolumeID != sourceVolumeID {
 			continue
 		}
+		snapshotIDs = append(snapshotIDs, snapshotID)
+	}
+	sort.Strings(snapshotIDs)
 
-		if !started {
-			if snapshotID == startingToken {
-				started = true
-			}
-			continue
+	start := 0
+	if startingToken != "" {
+		idx := sort.SearchStrings(snapshotIDs, startingToken)
+		if idx == len(snapshotIDs) || snapshotIDs[idx] != startingToken {
+			return nil, "", fmt.Errorf("%w: snapshot pagination token %s", ErrNotFound, startingToken)
 		}
+		start = idx + 1
+	}
 
-		result = append(result, info)
-		count++
+	end := len(snapshotIDs)
+	if maxEntries > 0 && start+maxEntries < end {
+		end = start + maxEntries
+		nextToken = snapshotIDs[end-1]
+	}
 
-		if maxEntries > 0 && count >= maxEntries {
-			nextToken = snapshotID
-			break
-		}
+	for _, snapshotID := range snapshotIDs[start:end] {
+		result = append(result, s.snapshots[snapshotID])
 	}
 
 	return result, nextToken, nil
@@ -228,10 +244,28 @@ func (v *VolumeInfo) ToCSIVolume() *csi.Volume {
 		VolumeContext: map[string]string{
 			"svm":        v.SVMName,
 			"vip":        v.VIP,
+			"exportRoot": defaultExportRoot(v.SVMName, v.ExportRoot),
 			"volumePath": v.Path,
 		},
 		ContentSource: v.ContentSource,
 	}
+}
+
+func defaultExportRoot(svmName, exportRoot string) string {
+	if exportRoot == "" {
+		return "/exports/" + svmName
+	}
+	return exportRoot
+}
+
+// VolumeReadyState returns a pointer so nil can mean "legacy volume, ready".
+func VolumeReadyState(ready bool) *bool {
+	return &ready
+}
+
+// IsVolumeReady treats missing readiness as ready for backward compatibility.
+func IsVolumeReady(info *VolumeInfo) bool {
+	return info != nil && (info.ReadyToUse == nil || *info.ReadyToUse)
 }
 
 // ToCSISnapshot converts SnapshotInfo to CSI Snapshot

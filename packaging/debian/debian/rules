@@ -26,13 +26,14 @@ override_dh_auto_install:
 	# Configs
 	install -d $(CURDIR)/debian/arca-storage/etc/arca-storage
 	install -m 0644 arca_storage/arca_storage/resources/config/config.toml $(CURDIR)/debian/arca-storage/etc/arca-storage/config.toml
-	install -m 0644 arca_storage/arca_storage/resources/config/api.env $(CURDIR)/debian/arca-storage/etc/arca-storage/api.env
+	install -m 0600 arca_storage/arca_storage/resources/config/api.env $(CURDIR)/debian/arca-storage/etc/arca-storage/api.env
 	install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage.env $(CURDIR)/debian/arca-storage/etc/arca-storage/arca-storage.env
 
 	# systemd units
 	install -d $(CURDIR)/debian/arca-storage/lib/systemd/system
 	install -m 0644 arca_storage/arca_storage/resources/systemd/arca-storage-api.service $(CURDIR)/debian/arca-storage/lib/systemd/system/arca-storage-api.service
 	install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha@.service $(CURDIR)/debian/arca-storage/lib/systemd/system/nfs-ganesha@.service
+	install -m 0644 arca_storage/arca_storage/resources/systemd/nfs-ganesha-host@.service $(CURDIR)/debian/arca-storage/lib/systemd/system/nfs-ganesha-host@.service
 
 	# Pacemaker RA
 	install -d $(CURDIR)/debian/arca-storage/usr/lib/ocf/resource.d/local
@@ -40,3 +41,7 @@ override_dh_auto_install:
 
 override_dh_installsystemd:
 	dh_installsystemd --no-enable
+
+override_dh_fixperms:
+	dh_fixperms
+	chmod 0600 $(CURDIR)/debian/arca-storage/etc/arca-storage/api.env

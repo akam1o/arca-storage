@@ -29,8 +29,7 @@ func (g *SnapshotIDGenerator) ValidateSnapshotID(snapshotID string) bool {
 	}
 	// Check if all chars are valid hex
 	for i := 0; i < 16; i++ {
-		c := snapshotID[i]
-		if !((c >= '0' && c <= '9') || (c >= 'a' && c <= 'f')) {
+		if !isLowerHex(snapshotID[i]) {
 			return false
 		}
 	}

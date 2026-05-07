@@ -6,6 +6,10 @@ import subprocess
 from typing import Optional
 
 
+def _parse_lvm_float(value: str) -> float:
+    return float(value.strip().lstrip("<>"))
+
+
 def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True, *, thinpool_name: str = "pool") -> str:
     """
     Create a logical volume.
@@ -90,6 +94,36 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     
     if result.returncode != 0:
         raise RuntimeError(f"Logical volume {lv_path} does not exist")
+
+    result = subprocess.run(
+        [
+            "lvs",
+            "--noheadings",
+            "--units",
+            "g",
+            "--nosuffix",
+            "-o",
+            "LV_SIZE",
+            lv_path,
+        ],
+        capture_output=True,
+        text=True,
+        check=False
+    )
+
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to inspect logical volume size: {result.stderr}")
+    if not result.stdout.strip():
+        raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
+    current_size_gib = _parse_lvm_float(result.stdout.strip().split()[0])
+    requested_size_gib = float(new_size_gib)
+    if current_size_gib == requested_size_gib:
+        return
+    if current_size_gib > requested_size_gib:
+        raise RuntimeError(
+            f"Logical volume {lv_path} is already larger than requested size "
+            f"({current_size_gib:g}GiB > {new_size_gib}GiB)"
+        )
     
     # Resize LV
     result = subprocess.run(

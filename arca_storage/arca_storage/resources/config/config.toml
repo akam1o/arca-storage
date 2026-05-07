@@ -39,3 +39,9 @@ export_dir = "/exports"
 protocols = [4]
 mountd_port = 20048
 nlm_port = 32768
+
+[csi]
+# Required for CSI directory-backed volumes. Set to the Kubernetes node CIDRs
+# allowed to mount the SVM exports, for example ["10.0.0.0/24"].
+client_cidrs = []
+root_squash = true

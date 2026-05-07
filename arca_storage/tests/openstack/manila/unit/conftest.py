@@ -6,6 +6,20 @@ import pytest
 
 
 @pytest.fixture
+def _configure_oslo_lock_path(tmp_path):
+    try:
+        from oslo_concurrency import lockutils
+    except ImportError:
+        return
+    lockutils.set_defaults(str(tmp_path))
+
+
+@pytest.fixture(autouse=True)
+def configure_oslo_lock_path(_configure_oslo_lock_path):
+    pass
+
+
+@pytest.fixture
 def mock_manila_driver_config():
     """Create a mock oslo.config-like configuration object for the driver."""
     config = Mock()
@@ -23,8 +37,6 @@ def mock_manila_driver_config():
     # API auth (optional)
     config.arca_storage_api_auth_type = "none"
     config.arca_storage_api_token = None
-    config.arca_storage_api_username = None
-    config.arca_storage_api_password = None
     config.arca_storage_api_ca_bundle = None
     config.arca_storage_api_client_cert = None
     config.arca_storage_api_client_key = None
@@ -35,6 +47,7 @@ def mock_manila_driver_config():
     config.arca_storage_svm_prefix = "manila_"
 
     # per_project network allocation
+    config.arca_storage_network_plugin_mode = "standalone"
     config.arca_storage_per_project_ip_pools = []
     config.arca_storage_per_project_mtu = 1500
     config.arca_storage_per_project_root_volume_size_gib = None
@@ -82,6 +95,7 @@ def mock_arca_client():
     # Volume (share) operations
     client.create_volume.return_value = {"name": "share-share-123", "export_path": "192.168.100.5:/exports/test-svm/share-share-123"}
     client.get_volume.return_value = {"name": "share-share-123", "export_path": "192.168.100.5:/exports/test-svm/share-share-123"}
+    client.list_volumes.return_value = []
     client.delete_volume.return_value = None
     client.resize_volume.return_value = {"name": "share-share-123"}
     client.clone_volume_from_snapshot.return_value = {

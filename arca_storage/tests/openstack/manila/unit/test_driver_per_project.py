@@ -28,8 +28,8 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
 
     def test_do_setup_parses_pools(self, driver):
         assert driver._svm_strategy_effective == "per_project"
-        assert len(driver._ip_vlan_pools) == 1
-        pool = driver._ip_vlan_pools[0]
+        assert len(driver._network_allocator._ip_vlan_pools) == 1
+        pool = driver._network_allocator._ip_vlan_pools[0]
         assert str(pool["ip_network"]) == "192.168.100.0/24"
         assert pool["vlan_id"] == 100
 
@@ -68,3 +68,76 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
         )
         mock_arca_client.create_volume.assert_called_once()
 
+    def test_create_share_ignores_user_supplied_svm_metadata(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "manila_other-project"
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.10:/exports/manila_test-project-id/share-share-123",
+        }
+
+        driver.create_share(Mock(), mock_manila_share, None)
+
+        assert mock_manila_share["metadata"]["arca_svm_name"] == "manila_test-project-id"
+        mock_arca_client.create_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="manila_test-project-id",
+            size_gib=10,
+            thin=True,
+            fs_type="xfs",
+        )
+
+    def test_extend_share_uses_backend_svm_without_project_id(
+        self, driver, mock_arca_client
+    ):
+        share = {
+            "id": "share-123",
+            "size": 10,
+            "metadata": {"arca_svm_name": "manila_user_supplied"},
+        }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "manila_test-project-id"}
+        ]
+
+        driver.extend_share(share, 20, None)
+
+        mock_arca_client.resize_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="manila_test-project-id",
+            new_size_gib=20,
+        )
+
+    def test_delete_share_missing_backend_volume_succeeds_without_project_id(
+        self, driver, mock_arca_client
+    ):
+        share = {
+            "id": "share-123",
+            "size": 10,
+            "metadata": {"arca_svm_name": "manila_user_supplied"},
+        }
+        mock_arca_client.list_volumes.return_value = []
+
+        driver.delete_share(Mock(), share, None)
+
+        mock_arca_client.delete_volume.assert_not_called()
+
+    def test_delete_snapshot_without_share_uses_backend_svm(
+        self, driver, mock_arca_client
+    ):
+        snapshot = {
+            "id": "snapshot-123",
+            "share_id": "share-123",
+            "metadata": {"arca_svm_name": "manila_user_supplied"},
+        }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "manila_test-project-id"}
+        ]
+
+        driver.delete_snapshot(Mock(), snapshot, None)
+
+        mock_arca_client.delete_snapshot.assert_called_once_with(
+            name="snapshot-snapshot-123",
+            svm="manila_test-project-id",
+            volume="share-share-123",
+        )

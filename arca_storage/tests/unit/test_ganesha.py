@@ -3,17 +3,22 @@ Unit tests for ganesha module.
 """
 
 from pathlib import Path
-from unittest.mock import MagicMock, mock_open, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arca_storage.cli.lib import ganesha
 from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config, sync
 
 
 @pytest.fixture(autouse=True)
 def arca_config(monkeypatch, tmp_path):
     config_path = tmp_path / "config.toml"
-    config_path.write_text(f"[state]\nruntime_dir = \"{tmp_path}\"\n", encoding="utf-8")
+    config_path.write_text(
+        f"[state]\nruntime_dir = \"{tmp_path}\"\n"
+        f"[ganesha]\nconfig_dir = \"{tmp_path / 'ganesha'}\"\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
 
 
@@ -21,20 +26,15 @@ class TestRenderConfig:
     """Tests for render_config function."""
 
     @pytest.mark.unit
-    @patch("pathlib.Path.mkdir")
-    @patch("builtins.open", new_callable=mock_open)
-    def test_render_config_empty_exports(self, mock_file, mock_mkdir):
+    def test_render_config_empty_exports(self, tmp_path):
         """Test rendering config with no exports."""
         result = render_config("tenant_a", [])
 
-        assert result == "/etc/ganesha/ganesha.tenant_a.conf"
-        assert mock_mkdir.called
-        assert mock_file.call_count >= 1
+        assert result == str(tmp_path / "ganesha" / "ganesha.tenant_a.conf")
+        assert Path(result).exists()
 
     @pytest.mark.unit
-    @patch("pathlib.Path.mkdir")
-    @patch("builtins.open", new_callable=mock_open)
-    def test_render_config_with_exports(self, mock_file, mock_mkdir):
+    def test_render_config_with_exports(self):
         """Test rendering config with exports."""
         exports = [
             {
@@ -50,9 +50,26 @@ class TestRenderConfig:
 
         result = render_config("tenant_a", exports)
 
-        assert result == "/etc/ganesha/ganesha.tenant_a.conf"
-        # Verify file was written
-        assert mock_file().write.call_count >= 1
+        content = Path(result).read_text(encoding="utf-8")
+        assert "Export_Id = 101;" in content
+        assert 'Clients = "10.0.0.0/24";' in content
+
+    @pytest.mark.unit
+    def test_write_if_changed_keeps_existing_file_on_replace_failure(self, monkeypatch, tmp_path):
+        target = tmp_path / "ganesha.conf"
+        target.write_text("old config", encoding="utf-8")
+
+        def fail_replace(src, dst):
+            assert Path(src).read_text(encoding="utf-8") == "new config"
+            raise OSError("replace failed")
+
+        monkeypatch.setattr(ganesha.os, "replace", fail_replace)
+
+        with pytest.raises(OSError, match="replace failed"):
+            ganesha._write_if_changed(target, "new config")
+
+        assert target.read_text(encoding="utf-8") == "old config"
+        assert list(tmp_path.glob(".ganesha.conf.*")) == []
 
     @pytest.mark.unit
     def test_render_config_with_bind_addr(self, monkeypatch, tmp_path):

@@ -18,15 +18,6 @@
 # OCF_ERR_PERM=9
 # OCF_NOT_RUNNING=7
 
-# Resource parameters
-: "${OCF_RESKEY_ns?}"
-: "${OCF_RESKEY_vlan_id?}"
-: "${OCF_RESKEY_parent_if?}"
-: "${OCF_RESKEY_ifname:=}"
-: "${OCF_RESKEY_ip?}"
-: "${OCF_RESKEY_prefix?}"
-: "${OCF_RESKEY_gw?}"
-
 hash2b62() {
     CHARS="0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
     rem=0
@@ -70,11 +61,27 @@ make_ifname() {
     printf "%s" "${prefix}${core}${digest}" | cut -c1-"$max_len"
 }
 
-if [ -n "$OCF_RESKEY_ifname" ]; then
-    vlan_if="$OCF_RESKEY_ifname"
-else
-    vlan_if="$(make_ifname "$OCF_RESKEY_ns" "$OCF_RESKEY_vlan_id")"
-fi
+resolve_vlan_if() {
+    if [ -n "${OCF_RESKEY_ifname:-}" ]; then
+        vlan_if="$OCF_RESKEY_ifname"
+    else
+        vlan_if="$(make_ifname "$OCF_RESKEY_ns" "$OCF_RESKEY_vlan_id")"
+    fi
+}
+
+validate_stop() {
+    if [ -z "${OCF_RESKEY_ns:-}" ]; then
+        ocf_exit_reason "Namespace name (ns) is required"
+        return $OCF_ERR_ARGS
+    fi
+
+    if [ -z "${OCF_RESKEY_ifname:-}" ] && [ -z "${OCF_RESKEY_vlan_id:-}" ]; then
+        ocf_exit_reason "Either interface name (ifname) or VLAN ID (vlan_id) is required"
+        return $OCF_ERR_ARGS
+    fi
+
+    return $OCF_SUCCESS
+}
 
 meta_data() {
     cat <<'EOF'
@@ -143,19 +150,19 @@ EOF
 
 validate_all() {
     # Validate namespace name
-    if [ -z "$OCF_RESKEY_ns" ]; then
+    if [ -z "${OCF_RESKEY_ns:-}" ]; then
         ocf_exit_reason "Namespace name (ns) is required"
         return $OCF_ERR_ARGS
     fi
 
     # Validate VLAN ID
-    if [ -z "$OCF_RESKEY_vlan_id" ] || [ "$OCF_RESKEY_vlan_id" -lt 1 ] || [ "$OCF_RESKEY_vlan_id" -gt 4094 ]; then
+    if [ -z "${OCF_RESKEY_vlan_id:-}" ] || [ "$OCF_RESKEY_vlan_id" -lt 1 ] || [ "$OCF_RESKEY_vlan_id" -gt 4094 ]; then
         ocf_exit_reason "VLAN ID must be between 1 and 4094"
         return $OCF_ERR_ARGS
     fi
 
     # Validate parent interface
-    if [ -z "$OCF_RESKEY_parent_if" ]; then
+    if [ -z "${OCF_RESKEY_parent_if:-}" ]; then
         ocf_exit_reason "Parent interface (parent_if) is required"
         return $OCF_ERR_ARGS
     fi
@@ -166,7 +173,7 @@ validate_all() {
     fi
 
     # Validate optional ifname
-    if [ -n "$OCF_RESKEY_ifname" ]; then
+    if [ -n "${OCF_RESKEY_ifname:-}" ]; then
         # Linux interface names are typically limited to 15 chars (IFNAMSIZ-1)
         if [ "${#OCF_RESKEY_ifname}" -gt 15 ]; then
             ocf_exit_reason "Interface name (ifname) must be <= 15 characters"
@@ -181,19 +188,19 @@ validate_all() {
     fi
 
     # Validate IP address
-    if [ -z "$OCF_RESKEY_ip" ]; then
+    if [ -z "${OCF_RESKEY_ip:-}" ]; then
         ocf_exit_reason "IP address (ip) is required"
         return $OCF_ERR_ARGS
     fi
 
     # Validate prefix
-    if [ -z "$OCF_RESKEY_prefix" ] || [ "$OCF_RESKEY_prefix" -lt 0 ] || [ "$OCF_RESKEY_prefix" -gt 32 ]; then
+    if [ -z "${OCF_RESKEY_prefix:-}" ] || [ "$OCF_RESKEY_prefix" -lt 0 ] || [ "$OCF_RESKEY_prefix" -gt 32 ]; then
         ocf_exit_reason "Prefix length must be between 0 and 32"
         return $OCF_ERR_ARGS
     fi
     
     # Validate gateway
-    if [ -z "$OCF_RESKEY_gw" ]; then
+    if [ -z "${OCF_RESKEY_gw:-}" ]; then
         ocf_exit_reason "Gateway IP (gw) is required"
         return $OCF_ERR_ARGS
     fi
@@ -256,7 +263,7 @@ start() {
     fi
 
     # Configure MTU if specified
-    if [ -n "$OCF_RESKEY_mtu" ] && [ "$OCF_RESKEY_mtu" != "1500" ]; then
+    if [ -n "${OCF_RESKEY_mtu:-}" ] && [ "$OCF_RESKEY_mtu" != "1500" ]; then
         if ! ip netns exec "$OCF_RESKEY_ns" ip link set "$vlan_if" mtu "$OCF_RESKEY_mtu"; then
             ocf_log warn "Failed to set MTU %s on %s" "$OCF_RESKEY_mtu" "$vlan_if"
         fi
@@ -355,14 +362,19 @@ case "$1" in
         ;;
     start)
         validate_all || exit $?
+        resolve_vlan_if
         start
         exit $?
         ;;
     stop)
+        validate_stop || exit $?
+        resolve_vlan_if
         stop
         exit $?
         ;;
     monitor)
+        validate_all || exit $?
+        resolve_vlan_if
         monitor
         exit $?
         ;;

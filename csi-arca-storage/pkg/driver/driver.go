@@ -7,11 +7,13 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"sync"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/klog/v2"
+	mountutils "k8s.io/mount-utils"
 
 	"github.com/akam1o/csi-arca-storage/pkg/arca"
 	"github.com/akam1o/csi-arca-storage/pkg/idempotency"
@@ -38,8 +40,10 @@ type Driver struct {
 	allocator  *arca.StandaloneAllocator
 
 	// Mount management (for node service)
-	mountManager *mount.MountManager
-	nodeState    *mount.NodeState
+	mountManager         nodeMountManager
+	nodeState            *mount.NodeState
+	nodeMounter          mountutils.Interface
+	mountSourceValidator mount.MountSourceValidator
 
 	// Idempotency helpers
 	volumeIDGen   *idempotency.VolumeIDGenerator
@@ -54,10 +58,27 @@ type Driver struct {
 	// Metadata store
 	store store.Store
 
+	volumeCreateLocksMu sync.Mutex
+	volumeCreateLocks   map[string]*volumeCreateLock
+	nodeSVMLocksMu      sync.Mutex
+	nodeSVMLocks        map[string]*nodeSVMLock
+
 	// CSI capabilities
 	csi.UnimplementedIdentityServer
 	csi.UnimplementedControllerServer
 	csi.UnimplementedNodeServer
+}
+
+type nodeMountManager interface {
+	EnsureSVMMount(context.Context, string, string, string, []string) (string, error)
+	ShouldUnmountSVM(context.Context, string) (bool, error)
+	UnmountSVM(context.Context, string) error
+	GetMountPath(string) (string, error)
+}
+
+type nodeSVMLock struct {
+	mu   sync.Mutex
+	refs int
 }
 
 // DriverConfig holds configuration for the driver
@@ -93,19 +114,21 @@ func NewDriver(cfg *DriverConfig) (*Driver, error) {
 	}
 
 	d := &Driver{
-		name:          cfg.Name,
-		version:       cfg.Version,
-		mode:          cfg.Mode,
-		nodeID:        cfg.NodeID,
-		endpoint:      cfg.Endpoint,
-		arcaClient:    cfg.ArcaClient,
-		svmManager:    cfg.SVMManager,
-		allocator:     cfg.Allocator,
-		k8sClient:     cfg.K8sClient,
-		lockManager:   cfg.LockManager,
-		store:         storeInstance,
-		volumeIDGen:   idempotency.NewVolumeIDGenerator(),
-		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+		name:                 cfg.Name,
+		version:              cfg.Version,
+		mode:                 cfg.Mode,
+		nodeID:               cfg.NodeID,
+		endpoint:             cfg.Endpoint,
+		arcaClient:           cfg.ArcaClient,
+		svmManager:           cfg.SVMManager,
+		allocator:            cfg.Allocator,
+		k8sClient:            cfg.K8sClient,
+		lockManager:          cfg.LockManager,
+		store:                storeInstance,
+		volumeIDGen:          idempotency.NewVolumeIDGenerator(),
+		snapshotIDGen:        idempotency.NewSnapshotIDGenerator(),
+		nodeMounter:          mountutils.New(""),
+		mountSourceValidator: mount.ProcMountInfoSourceValidator{},
 	}
 
 	// Initialize node-specific components if this is a node plugin.
@@ -175,10 +198,11 @@ func (d *Driver) Run(ctx context.Context) error {
 	// Register CSI services based on mode
 	csi.RegisterIdentityServer(d.srv, d)
 
-	if d.mode == "controller" {
+	switch d.mode {
+	case "controller":
 		csi.RegisterControllerServer(d.srv, d)
 		klog.Info("Registered Identity and Controller services")
-	} else if d.mode == "node" {
+	case "node":
 		csi.RegisterNodeServer(d.srv, d)
 		klog.Info("Registered Identity and Node services")
 	}

@@ -24,11 +24,23 @@ var (
 	// ErrDirectoryAlreadyExists indicates the directory already exists
 	ErrDirectoryAlreadyExists = errors.New("directory already exists")
 
+	// ErrVolumeNotFound indicates the volume does not exist
+	ErrVolumeNotFound = errors.New("volume not found")
+
+	// ErrVolumeAlreadyExists indicates the volume already exists
+	ErrVolumeAlreadyExists = errors.New("volume already exists")
+
 	// ErrSnapshotNotFound indicates the snapshot does not exist
 	ErrSnapshotNotFound = errors.New("snapshot not found")
 
 	// ErrSnapshotAlreadyExists indicates the snapshot already exists
 	ErrSnapshotAlreadyExists = errors.New("snapshot already exists")
+
+	// ErrExportNotFound indicates the export does not exist
+	ErrExportNotFound = errors.New("export not found")
+
+	// ErrExportAlreadyExists indicates the export already exists
+	ErrExportAlreadyExists = errors.New("export already exists")
 
 	// ErrQuotaNotFound indicates the quota does not exist
 	ErrQuotaNotFound = errors.New("quota not found")
@@ -96,10 +108,16 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 	switch errResp.Code {
 	case "NOT_FOUND":
 		switch resourceType {
+		case "SVM":
+			return ErrSVMNotFound
 		case "Directory":
 			return ErrDirectoryNotFound
+		case "Volume":
+			return ErrVolumeNotFound
 		case "Snapshot":
 			return ErrSnapshotNotFound
+		case "Export":
+			return ErrExportNotFound
 		case "Quota":
 			return ErrQuotaNotFound
 		default:
@@ -107,10 +125,16 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 		}
 	case "ALREADY_EXISTS":
 		switch resourceType {
+		case "SVM":
+			return ErrSVMAlreadyExists
 		case "Directory":
 			return ErrDirectoryAlreadyExists
+		case "Volume":
+			return ErrVolumeAlreadyExists
 		case "Snapshot":
 			return ErrSnapshotAlreadyExists
+		case "Export":
+			return ErrExportAlreadyExists
 		default:
 			return ErrSVMAlreadyExists
 		}
@@ -149,8 +173,12 @@ func MapHTTPStatusToError(statusCode int, message string) error {
 			return ErrSVMNotFound
 		} else if containsAny(message, "directory", "path") {
 			return ErrDirectoryNotFound
+		} else if containsAny(message, "volume") {
+			return ErrVolumeNotFound
 		} else if containsAny(message, "snapshot") {
 			return ErrSnapshotNotFound
+		} else if containsAny(message, "export") {
+			return ErrExportNotFound
 		} else if containsAny(message, "quota") {
 			return ErrQuotaNotFound
 		}
@@ -160,8 +188,12 @@ func MapHTTPStatusToError(statusCode int, message string) error {
 			return ErrNetworkConflict
 		} else if containsAny(message, "directory") {
 			return ErrDirectoryAlreadyExists
+		} else if containsAny(message, "volume") {
+			return ErrVolumeAlreadyExists
 		} else if containsAny(message, "snapshot") {
 			return ErrSnapshotAlreadyExists
+		} else if containsAny(message, "export") {
+			return ErrExportAlreadyExists
 		}
 		return ErrSVMAlreadyExists
 	case 503:
@@ -175,7 +207,9 @@ func MapHTTPStatusToError(statusCode int, message string) error {
 func IsNotFoundError(err error) bool {
 	return errors.Is(err, ErrSVMNotFound) ||
 		errors.Is(err, ErrDirectoryNotFound) ||
+		errors.Is(err, ErrVolumeNotFound) ||
 		errors.Is(err, ErrSnapshotNotFound) ||
+		errors.Is(err, ErrExportNotFound) ||
 		errors.Is(err, ErrQuotaNotFound)
 }
 
@@ -183,7 +217,9 @@ func IsNotFoundError(err error) bool {
 func IsAlreadyExistsError(err error) bool {
 	return errors.Is(err, ErrSVMAlreadyExists) ||
 		errors.Is(err, ErrDirectoryAlreadyExists) ||
-		errors.Is(err, ErrSnapshotAlreadyExists)
+		errors.Is(err, ErrVolumeAlreadyExists) ||
+		errors.Is(err, ErrSnapshotAlreadyExists) ||
+		errors.Is(err, ErrExportAlreadyExists)
 }
 
 // containsAny checks if s contains any of the substrings

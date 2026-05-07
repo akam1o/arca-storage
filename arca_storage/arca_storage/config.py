@@ -2,8 +2,10 @@
 
 from __future__ import annotations
 
+import ipaddress
 import os
 from pathlib import Path
+from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -77,6 +79,33 @@ class GaneshaConfig(BaseModel):
         return protocols
 
 
+class CSIConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    client_cidrs: list[str] = Field(default_factory=list)
+    root_squash: bool = True
+
+    @field_validator("client_cidrs")
+    @classmethod
+    def validate_client_cidrs(cls, value: list[str]) -> list[str]:
+        cidrs: list[str] = []
+        seen: set[str] = set()
+        for raw in value:
+            try:
+                network = ipaddress.ip_network(str(raw).strip(), strict=False)
+            except Exception as e:
+                raise ValueError(f"invalid CSI client CIDR {raw!r}: {e}") from e
+            if network.version != 4:
+                raise ValueError(f"CSI client CIDR must be IPv4: {raw!r}")
+            if network.prefixlen == 0:
+                raise ValueError("CSI client CIDRs must not include the IPv4 default route")
+            normalized = str(network)
+            if normalized not in seen:
+                seen.add(normalized)
+                cidrs.append(normalized)
+        return cidrs
+
+
 class ArcaSettings(BaseModel):
     """Top-level validated configuration."""
 
@@ -89,6 +118,7 @@ class ArcaSettings(BaseModel):
     timeouts: TimeoutConfig = Field(default_factory=TimeoutConfig)
     state: StateConfig = Field(default_factory=StateConfig)
     ganesha: GaneshaConfig = Field(default_factory=GaneshaConfig)
+    csi: CSIConfig = Field(default_factory=CSIConfig)
 
     def to_reconciler_config(self) -> dict:
         """Flatten settings into the dict reconcilers expect."""
@@ -119,7 +149,7 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def load_settings(path: Path | str | None = None, *, require_file: bool = True) -> ArcaSettings:
+def load_settings(path: Optional[Union[Path, str]] = None, *, require_file: bool = True) -> ArcaSettings:
     """Load and validate configuration.
 
     Resolution order:

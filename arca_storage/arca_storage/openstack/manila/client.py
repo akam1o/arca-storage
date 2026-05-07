@@ -52,8 +52,6 @@ class ArcaManilaClient:
         verify_ssl: bool = True,
         auth_type: Optional[str] = None,
         api_token: Optional[str] = None,
-        username: Optional[str] = None,
-        password: Optional[str] = None,
         ca_bundle: Optional[str] = None,
         client_cert: Optional[str] = None,
         client_key: Optional[str] = None,
@@ -65,10 +63,8 @@ class ArcaManilaClient:
             timeout: HTTP request timeout in seconds
             retry_count: Number of retries for failed requests
             verify_ssl: Whether to verify SSL certificates
-            auth_type: Authentication type ('token', 'basic', or None)
+            auth_type: Authentication type ('token', 'none', or None)
             api_token: Bearer token for token authentication
-            username: Username for basic authentication
-            password: Password for basic authentication
             ca_bundle: Path to CA bundle file for SSL verification
             client_cert: Path to client certificate file for mTLS
             client_key: Path to client private key file for mTLS
@@ -101,12 +97,8 @@ class ArcaManilaClient:
             if not api_token:
                 raise ValueError("api_token is required when auth_type='token'")
             self.session.headers.update({"Authorization": f"Bearer {api_token}"})
-        elif auth_type == "basic":
-            if not username or not password:
-                raise ValueError("username and password are required when auth_type='basic'")
-            self.session.auth = (username, password)
         elif auth_type and auth_type != "none":
-            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token', 'basic', or 'none'")
+            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
 
         # Configure mTLS (client certificate)
         if client_cert:
@@ -445,6 +437,39 @@ class ArcaManilaClient:
         response = self._make_request("PATCH", f"/v1/volumes/{name}", json_data=data)
         return response.get("data", {}).get("volume", {})
 
+    def list_volumes(
+        self,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List volumes.
+
+        Args:
+            svm: Optional SVM name filter
+            name: Optional volume name filter
+
+        Returns:
+            List of volume info dictionaries
+        """
+        items: List[Dict[str, Any]] = []
+        cursor = None
+
+        while True:
+            params = {"limit": 200}
+            if svm:
+                params["svm"] = svm
+            if name:
+                params["name"] = name
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/volumes", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
+
     def get_volume(self, name: str, svm: str) -> Dict[str, Any]:
         """Get volume info.
 
@@ -459,9 +484,7 @@ class ArcaManilaClient:
             ArcaShareNotFound: Volume not found
             ArcaManilaAPIError: API error
         """
-        params = {"svm": svm, "name": name}
-        response = self._make_request("GET", "/v1/volumes", params=params)
-        items = response.get("data", {}).get("items", [])
+        items = self.list_volumes(svm=svm, name=name)
         if not items:
             raise ArcaShareNotFound(share_id=name)
         return items[0]
@@ -497,8 +520,20 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        response = self._make_request("GET", "/v1/svms")
-        return response.get("data", {}).get("items", [])
+        items: List[Dict[str, Any]] = []
+        cursor = None
+
+        while True:
+            params = {"limit": 200}
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/svms", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
 
     def create_svm(
         self,
@@ -620,14 +655,24 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        params = {}
-        if svm:
-            params["svm"] = svm
-        if volume:
-            params["volume"] = volume
+        items: List[Dict[str, Any]] = []
+        cursor = None
 
-        response = self._make_request("GET", "/v1/snapshots", params=params)
-        return response.get("data", {}).get("items", [])
+        while True:
+            params = {"limit": 200}
+            if svm:
+                params["svm"] = svm
+            if volume:
+                params["volume"] = volume
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/snapshots", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
 
     def clone_volume_from_snapshot(
         self,
@@ -652,7 +697,7 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        data = {"name": name, "svm": svm, "snapshot_name": snapshot_name}
+        data = {"name": name, "svm": svm, "snapshot": snapshot_name}
         if size_gib is not None:
             data["size_gib"] = size_gib
 
@@ -732,14 +777,24 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        params = {}
-        if svm:
-            params["svm"] = svm
-        if volume:
-            params["volume"] = volume
+        items: List[Dict[str, Any]] = []
+        cursor = None
 
-        response = self._make_request("GET", "/v1/exports", params=params)
-        return response.get("data", {}).get("items", [])
+        while True:
+            params = {"limit": 200}
+            if svm:
+                params["svm"] = svm
+            if volume:
+                params["volume"] = volume
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/exports", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
 
     # QoS operations
 

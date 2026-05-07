@@ -1,7 +1,7 @@
 """
 Export management commands.
 
-Core add/remove/list operations delegate to the Export reconciler.
+Core add/remove/list operations delegate to API services.
 Snapshot and rollback utilities still call legacy ganesha helpers.
 """
 
@@ -10,12 +10,12 @@ from typing import List, Optional
 
 import typer
 
+from arca_storage.api.models import ExportCreate
+from arca_storage.api.services import export_service
 from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
 from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
 from arca_storage.context import get_context
-from arca_storage.models.base import Phase, ResourceMeta
-from arca_storage.models.export import Export, ExportSpec, ExportStatus
 
 app = typer.Typer(help="Export management commands")
 
@@ -39,23 +39,17 @@ def add(
 
         typer.echo(f"Adding export for volume: {volume} in SVM: {svm}")
 
-        ctx = get_context()
-        export = Export(
-            spec=ExportSpec(
+        export = export_service.add_export(
+            ExportCreate(
                 svm=svm,
                 volume=volume,
                 client=client,
                 access=access,
                 root_squash=root_squash,
-            ),
+            )
         )
-        export = ctx.export_reconciler.reconcile(export)
 
-        if export.status.phase == Phase.FAILED:
-            typer.echo(f"Error adding export: {export.status.message}", err=True)
-            raise typer.Exit(1)
-
-        typer.echo(f"Export added successfully (phase={export.status.phase.value})")
+        typer.echo(f"Export added successfully (phase={export['status']})")
 
     except typer.Exit:
         raise
@@ -77,21 +71,7 @@ def remove(
         validate_ip_cidr(client)
 
         typer.echo(f"Removing export for volume: {volume} in SVM: {svm}")
-
-        ctx = get_context()
-        records = ctx.db.list_exports(svm=svm, volume=volume, client=client)
-        if not records:
-            typer.echo("Export not found", err=True)
-            raise typer.Exit(1)
-
-        record = records[0]
-        export = Export(
-            metadata=ResourceMeta(id=record["id"], generation=record.get("generation", 1)),
-            spec=ExportSpec.model_validate(record["spec"]),
-            status=ExportStatus.model_validate(record["status"]),
-        )
-        export.status.phase = Phase.DELETING
-        ctx.export_reconciler.reconcile(export)
+        export_service.remove_export(svm, volume, client)
 
         typer.echo("Export removed successfully")
 

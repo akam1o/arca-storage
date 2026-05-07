@@ -1,24 +1,23 @@
 """
 SVM management commands.
 
-Delegates to the SVM reconciler for create/delete operations.
+Delegates mutating operations to API services.
 """
 
 from typing import Optional
 
 import typer
 
+from arca_storage.api.models import SVMCreate
 from arca_storage.api.services import svm_service
 from arca_storage.cli.lib.validators import (
-    validate_ip_cidr,
-    validate_ipv4,
     infer_gateway_from_ip_cidr,
+    validate_ipv4,
     validate_name,
+    validate_svm_ip_cidr,
     validate_vlan,
 )
 from arca_storage.context import get_context
-from arca_storage.models.base import Phase
-from arca_storage.models.svm import SVM, SVMSpec
 
 app = typer.Typer(help="SVM management commands")
 
@@ -31,16 +30,13 @@ def create(
     gateway: Optional[str] = typer.Option(None, "--gateway", help="Gateway IP (optional; inferred if omitted)"),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
     root_size: Optional[int] = typer.Option(None, "--root-size", help="Create root LV size in GiB (optional)"),
-    drbd_resource: Optional[str] = typer.Option(
-        None, "--drbd-resource", help="DRBD resource name for Pacemaker (default: from config or r0)"
-    ),
 ):
     """Create a new SVM via the reconciler."""
     try:
         validate_name(name)
         if vlan_id is not None:
             validate_vlan(vlan_id)
-        validate_ip_cidr(ip)
+        validate_svm_ip_cidr(ip)
         if gateway is not None:
             validate_ipv4(gateway)
 
@@ -48,25 +44,18 @@ def create(
 
         typer.echo(f"Creating SVM: {name}")
 
-        ctx = get_context()
-        svm = SVM(
-            spec=SVMSpec(
+        result = svm_service.create_svm(
+            SVMCreate(
                 name=name,
                 vlan_id=vlan_id,
                 ip_cidr=ip,
                 gateway=gateway_ip,
                 mtu=mtu,
                 root_volume_size_gib=root_size,
-            ),
+            )
         )
 
-        svm = ctx.svm_reconciler.reconcile(svm)
-
-        if svm.status.phase == Phase.FAILED:
-            typer.echo(f"Error creating SVM: {svm.status.message}", err=True)
-            raise typer.Exit(1)
-
-        typer.echo(f"SVM {name} created successfully (phase={svm.status.phase.value})")
+        typer.echo(f"SVM {name} created successfully (phase={result['status']})")
 
     except typer.Exit:
         raise

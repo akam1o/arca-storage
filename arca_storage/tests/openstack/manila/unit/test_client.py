@@ -1,6 +1,6 @@
 """Unit tests for ARCA Manila API client."""
 
-from unittest.mock import Mock, patch
+from unittest.mock import Mock, call, patch
 
 import pytest
 import requests
@@ -10,7 +10,7 @@ from arca_storage.openstack.manila import exceptions
 
 
 class TestArcaManilaClientInit:
-    def test_init_basic(self):
+    def test_init_with_none_auth(self):
         client = manila_client.ArcaManilaClient(
             api_endpoint="http://192.168.10.5:8080",
             timeout=30,
@@ -111,9 +111,106 @@ class TestArcaManilaClientOperations:
             assert vol["name"] == "share-123"
             assert vol["export_path"] == "vip:/path"
 
+    def test_list_volumes_follows_pagination(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"name": "share-123"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"name": "share-456"}], "next_cursor": None}},
+            ]
+
+            result = client.list_volumes(svm="svm1", name="share-123")
+
+        assert result == [{"name": "share-123"}, {"name": "share-456"}]
+        mock_make.assert_has_calls(
+            [
+                call("GET", "/v1/volumes", params={"limit": 200, "svm": "svm1", "name": "share-123"}),
+                call(
+                    "GET",
+                    "/v1/volumes",
+                    params={"limit": 200, "svm": "svm1", "name": "share-123", "cursor": "cursor-1"},
+                ),
+            ]
+        )
+
+    def test_clone_volume_from_snapshot_uses_api_snapshot_field(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.return_value = {"data": {"volume": {"name": "share-new"}}}
+            client.clone_volume_from_snapshot(
+                name="share-new",
+                svm="svm1",
+                source_volume="share-src",
+                snapshot_name="snap1",
+                size_gib=12,
+            )
+            mock_make.assert_called_once_with(
+                "POST",
+                "/v1/volumes/share-src/clone",
+                json_data={"name": "share-new", "svm": "svm1", "snapshot": "snap1", "size_gib": 12},
+            )
+
     def test_list_exports_passes_filters(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.return_value = {"data": {"items": []}}
             client.list_exports(svm="svm1", volume="share-123")
-            mock_make.assert_called_once_with("GET", "/v1/exports", params={"svm": "svm1", "volume": "share-123"})
+            mock_make.assert_called_once_with(
+                "GET", "/v1/exports", params={"limit": 200, "svm": "svm1", "volume": "share-123"}
+            )
 
+    def test_list_exports_follows_pagination(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"client": "10.0.0.0/24"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"client": "10.0.1.0/24"}], "next_cursor": None}},
+            ]
+
+            result = client.list_exports(svm="svm1", volume="share-123")
+
+        assert result == [{"client": "10.0.0.0/24"}, {"client": "10.0.1.0/24"}]
+        mock_make.assert_has_calls(
+            [
+                call("GET", "/v1/exports", params={"limit": 200, "svm": "svm1", "volume": "share-123"}),
+                call(
+                    "GET",
+                    "/v1/exports",
+                    params={"limit": 200, "svm": "svm1", "volume": "share-123", "cursor": "cursor-1"},
+                ),
+            ]
+        )
+
+    def test_list_snapshots_follows_pagination(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"name": "snap1"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"name": "snap2"}], "next_cursor": None}},
+            ]
+
+            result = client.list_snapshots(svm="svm1", volume="share-123")
+
+        assert result == [{"name": "snap1"}, {"name": "snap2"}]
+        mock_make.assert_has_calls(
+            [
+                call("GET", "/v1/snapshots", params={"limit": 200, "svm": "svm1", "volume": "share-123"}),
+                call(
+                    "GET",
+                    "/v1/snapshots",
+                    params={"limit": 200, "svm": "svm1", "volume": "share-123", "cursor": "cursor-1"},
+                ),
+            ]
+        )
+
+    def test_list_svms_follows_pagination(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"name": "svm1"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"name": "svm2"}], "next_cursor": None}},
+            ]
+
+            result = client.list_svms()
+
+        assert result == [{"name": "svm1"}, {"name": "svm2"}]
+        mock_make.assert_has_calls(
+            [
+                call("GET", "/v1/svms", params={"limit": 200}),
+                call("GET", "/v1/svms", params={"limit": 200, "cursor": "cursor-1"}),
+            ]
+        )

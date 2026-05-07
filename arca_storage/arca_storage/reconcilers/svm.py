@@ -14,11 +14,14 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
-from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, validate_ip_cidr
+from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, svm_root_lv_name, validate_svm_ip_cidr
+from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
+from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
 from arca_storage.reconcilers.adapters import Adapters
+from arca_storage.reconcilers.lvm_resume import create_volume_lv_or_accept_existing
 
 logger = logging.getLogger(__name__)
 
@@ -41,16 +44,20 @@ class SVMReconciler:
         elif phase == Phase.READY:
             return self._reconcile_drift(svm)
         elif phase == Phase.FAILED:
-            return svm  # manual intervention needed
+            if not self._is_failed_delete(svm) and self._has_pending_create_step(svm):
+                svm.status.phase = Phase.CREATING
+                return self._reconcile_create(svm)
+            return svm  # failed delete or completed resource needs manual intervention
         return svm
 
     # ---- create ----
 
     def _reconcile_create(self, svm: SVM) -> SVM:
         svm.status.phase = Phase.CREATING
+        create_owner = svm.status.create_owner
         spec = svm.spec
 
-        ip_addr, prefix = validate_ip_cidr(spec.ip_cidr)
+        ip_addr, prefix = validate_svm_ip_cidr(spec.ip_cidr)
         uses_vlan = spec.vlan_id is not None
         gateway = spec.gateway or (infer_gateway_from_ip_cidr(spec.ip_cidr) if uses_vlan else None)
         parent_if = self._cfg.get("parent_if", "bond0")
@@ -84,11 +91,18 @@ class SVMReconciler:
         )
 
         if spec.root_volume_size_gib:
-            lv_name = f"vol_{spec.name}"
+            lv_name = svm_root_lv_name(spec.name)
             lv_path = f"/dev/{vg_name}/{lv_name}"
             steps.append((
                 "lv_created",
-                lambda: self.adapters.lvm.create_thin_lv(vg_name, thinpool, lv_name, spec.root_volume_size_gib),
+                lambda: create_volume_lv_or_accept_existing(
+                    self.adapters.lvm,
+                    vg_name,
+                    thinpool,
+                    lv_name,
+                    spec.root_volume_size_gib,
+                    thin=True,
+                ),
             ))
             steps.append((
                 "fs_formatted",
@@ -120,18 +134,24 @@ class SVMReconciler:
             try:
                 action()
                 setattr(svm.status, field, True)
-                self._persist(svm, f"step '{field}' completed")
+                self._persist(svm, f"step '{field}' completed", expected_create_owner=create_owner)
+            except CreateLeaseLostError:
+                raise
             except Exception as e:
                 svm.status.phase = Phase.FAILED
+                expected_owner = create_owner
+                clear_create_lease(svm.status)
                 svm.status.message = f"Step '{field}' failed: {e}"
-                self._persist(svm, svm.status.message)
+                self._persist(svm, svm.status.message, expected_create_owner=expected_owner)
                 logger.error("SVM %s reconcile failed at %s: %s", spec.name, field, e)
                 return svm
 
         svm.status.phase = Phase.READY
+        expected_owner = create_owner
+        clear_create_lease(svm.status)
         svm.status.message = ""
         svm.status.last_reconciled = datetime.now(timezone.utc)
-        self._persist(svm, "SVM ready")
+        self._persist(svm, "SVM ready", expected_create_owner=expected_owner)
         return svm
 
     def _attach_vlan(self, svm: SVM, parent_if: str, gateway: str) -> None:
@@ -155,9 +175,15 @@ class SVMReconciler:
 
     def _reconcile_delete(self, svm: SVM) -> SVM:
         spec = svm.spec
+        vg_name = self._cfg.get("vg_name", "vg_pool_01")
         try:
+            svm.status.phase = Phase.DELETING
+            self._persist(svm, "svm delete reserved")
             self.adapters.pacemaker.delete_group(spec.name)
-            self.adapters.netns.delete_namespace(spec.name)
+            if spec.vlan_id is not None or svm.status.namespace_created:
+                self.adapters.netns.delete_namespace(spec.name)
+            if spec.root_volume_size_gib or svm.status.lv_created:
+                self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
         except Exception as e:
@@ -175,6 +201,20 @@ class SVMReconciler:
 
     # ---- helpers ----
 
-    def _persist(self, svm: SVM, detail: str) -> None:
-        self.db.upsert_svm(svm)
+    def _persist(self, svm: SVM, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
+        if not self.db.upsert_svm(svm, expected_create_owner=expected_create_owner):
+            raise CreateLeaseLostError("SVM", svm.spec.name)
         self.db.log_operation("SVM", svm.metadata.id, "reconcile", svm.status.phase.value, detail)
+
+    @staticmethod
+    def _has_pending_create_step(svm: SVM) -> bool:
+        fields = ["ganesha_configured", "pacemaker_group_created"]
+        if svm.spec.vlan_id is not None:
+            fields.extend(["namespace_created", "vlan_attached"])
+        if svm.spec.root_volume_size_gib:
+            fields.extend(["lv_created", "fs_formatted"])
+        return any(not getattr(svm.status, field, False) for field in fields)
+
+    @staticmethod
+    def _is_failed_delete(svm: SVM) -> bool:
+        return svm.status.message.startswith("Delete failed:")

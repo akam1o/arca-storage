@@ -2,11 +2,12 @@
 Unit tests for netns module.
 """
 
-from unittest.mock import MagicMock, call
+from unittest.mock import MagicMock, call, patch
 
 import pytest
 
 from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, make_vlan_ifname
+from arca_storage.adapters.netns import SubprocessNetNSAdapter
 
 
 class TestCreateNamespace:
@@ -35,6 +36,18 @@ class TestCreateNamespace:
 
         # Should not raise error, just skip
         create_namespace("test_ns")
+
+    @pytest.mark.unit
+    def test_namespace_name_uses_exact_match(self, mock_subprocess):
+        """A similarly-prefixed namespace should not count as an exact match."""
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0, stdout="test_ns_prod (id: 0)\n"),
+            MagicMock(returncode=0),
+        ]
+
+        create_namespace("test_ns")
+
+        mock_subprocess.assert_any_call(["ip", "netns", "add", "test_ns"], capture_output=True, text=True, check=False)
 
     @pytest.mark.unit
     def test_create_namespace_fails(self, mock_subprocess):
@@ -138,6 +151,14 @@ class TestDeleteNamespace:
         delete_namespace("test_ns")
 
     @pytest.mark.unit
+    def test_delete_namespace_uses_exact_match(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="test_ns_prod (id: 0)\n")
+
+        delete_namespace("test_ns")
+
+        assert mock_subprocess.call_count == 1
+
+    @pytest.mark.unit
     def test_delete_namespace_fails(self, mock_subprocess):
         """Test deleting namespace fails."""
         mock_subprocess.side_effect = [
@@ -147,3 +168,14 @@ class TestDeleteNamespace:
 
         with pytest.raises(RuntimeError, match="Failed to delete namespace"):
             delete_namespace("test_ns")
+
+
+class TestSubprocessNetNSAdapter:
+    @pytest.mark.unit
+    @patch("arca_storage.adapters.netns.run_cmd")
+    def test_namespace_exists_uses_exact_match(self, mock_run_cmd):
+        mock_run_cmd.return_value = MagicMock(returncode=0, stdout="tenant-prod (id: 0)\n")
+
+        adapter = SubprocessNetNSAdapter()
+
+        assert adapter.namespace_exists("tenant") is False

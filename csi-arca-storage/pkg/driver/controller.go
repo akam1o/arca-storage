@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -22,22 +23,84 @@ const (
 	// Volume context keys
 	volumeContextSVM        = "svm"
 	volumeContextVIP        = "vip"
+	volumeContextExportRoot = "exportRoot"
 	volumeContextVolumePath = "volumePath"
 
 	// Default capacity if not specified
-	defaultCapacityBytes = 1 * 1024 * 1024 * 1024 // 1 GiB
+	gibBytes             = int64(1024 * 1024 * 1024)
+	defaultCapacityBytes = gibBytes // 1 GiB
+
+	arcaSnapshotReadyStatus = "Ready"
 )
+
+var errSnapshotBackendAlreadyExists = errors.New("snapshot backend already exists")
+
+func bytesToGiB(bytes int64) int {
+	if bytes <= 0 {
+		return 0
+	}
+	return int((bytes + gibBytes - 1) / gibBytes)
+}
+
+func provisionedCapacityBytes(bytes int64) int64 {
+	return int64(bytesToGiB(bytes)) * gibBytes
+}
+
+func maxCapacityBytes(a, b int64) int64 {
+	if b > a {
+		return b
+	}
+	return a
+}
+
+func requestedCapacityBytes(req *csi.CreateVolumeRequest) int64 {
+	capacityBytes := int64(defaultCapacityBytes)
+	if req.GetCapacityRange() != nil && req.GetCapacityRange().GetRequiredBytes() > 0 {
+		capacityBytes = req.GetCapacityRange().GetRequiredBytes()
+	}
+	return provisionedCapacityBytes(capacityBytes)
+}
+
+func capacityExceedsLimit(req *csi.CreateVolumeRequest, capacityBytes int64) bool {
+	return req.GetCapacityRange().GetLimitBytes() > 0 && capacityBytes > req.GetCapacityRange().GetLimitBytes()
+}
+
+func volumeStoreGetError(label, volumeID string, err error) error {
+	if store.IsNotFound(err) {
+		return status.Errorf(codes.NotFound, "%s %s not found", label, volumeID)
+	}
+	return status.Errorf(codes.Internal, "failed to get %s %s: %v", label, volumeID, err)
+}
+
+func snapshotStoreGetError(label, snapshotID string, err error) error {
+	if store.IsNotFound(err) {
+		return status.Errorf(codes.NotFound, "%s %s not found", label, snapshotID)
+	}
+	return status.Errorf(codes.Internal, "failed to get %s %s: %v", label, snapshotID, err)
+}
+
+func snapshotBackendCreateError(snapshotID string, err error) error {
+	if errors.Is(err, errSnapshotBackendAlreadyExists) {
+		return status.Errorf(codes.Aborted, "snapshot %s backend already exists but is not verified ready", snapshotID)
+	}
+	return status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
+}
 
 // compareVolumeParameters checks if requested matches existing
 func compareVolumeParameters(existing *store.VolumeInfo, req *csi.CreateVolumeRequest) error {
 	// Compare capacity
-	requestedBytes := int64(defaultCapacityBytes)
-	if req.GetCapacityRange() != nil && req.GetCapacityRange().GetRequiredBytes() > 0 {
-		requestedBytes = req.GetCapacityRange().GetRequiredBytes()
-	}
-	if requestedBytes != existing.CapacityBytes {
+	requestedBytes := requestedCapacityBytes(req)
+	if req.GetVolumeContentSource() == nil && existing.CapacityBytes != requestedBytes {
 		return fmt.Errorf("capacity mismatch: requested %d, existing %d",
 			requestedBytes, existing.CapacityBytes)
+	}
+	if req.GetVolumeContentSource() != nil && existing.CapacityBytes < requestedBytes {
+		return fmt.Errorf("capacity too small: requested %d, existing %d",
+			requestedBytes, existing.CapacityBytes)
+	}
+	if limitBytes := req.GetCapacityRange().GetLimitBytes(); limitBytes > 0 && existing.CapacityBytes > limitBytes {
+		return fmt.Errorf("capacity exceeds limit: limit %d, existing %d",
+			limitBytes, existing.CapacityBytes)
 	}
 
 	// Compare content source
@@ -115,11 +178,36 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	// Generate stable volume ID (idempotent)
 	volumeID := d.volumeIDGen.GenerateVolumeID(req.GetName())
 
+	releaseVolumeCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		return nil, status.Errorf(codes.Aborted, "failed to serialize volume creation: %v", err)
+	}
+	defer releaseVolumeCreateLock()
+
 	// Check if volume already exists (idempotency)
 	existingVol, err := d.store.GetVolume(volumeID)
 	if err == nil {
 		if err := compareVolumeParameters(existingVol, req); err != nil {
 			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists but is incompatible: %v", volumeID, err)
+		}
+		if !store.IsVolumeReady(existingVol) {
+			klog.V(4).Infof("Volume %s metadata exists but is not ready, resuming quota setup", volumeID)
+			if err := d.setVolumeQuota(ctx, existingVol); err != nil {
+				if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
+					klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
+				}
+				d.cleanupProvisionedVolume(existingVol, "quota failure")
+				return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+			}
+			if err := d.markVolumeReady(existingVol); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to mark volume metadata ready: %v", err)
+			}
+			return &csi.CreateVolumeResponse{
+				Volume: existingVol.ToCSIVolume(),
+			}, nil
 		}
 		klog.V(4).Infof("Volume %s already exists, returning existing volume", volumeID)
 		return &csi.CreateVolumeResponse{
@@ -130,11 +218,8 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		return nil, status.Errorf(codes.Internal, "failed to check existing volume %s: %v", volumeID, err)
 	}
 
-	// Determine capacity
-	capacityBytes := int64(defaultCapacityBytes)
-	if req.GetCapacityRange() != nil && req.GetCapacityRange().GetRequiredBytes() > 0 {
-		capacityBytes = req.GetCapacityRange().GetRequiredBytes()
-	}
+	// Determine capacity as the backend-provisioned GiB-aligned size.
+	capacityBytes := requestedCapacityBytes(req)
 
 	// Handle content source first to determine which SVM to use
 	var svm *arca.SVM
@@ -157,24 +242,74 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 			sourceVol, err := d.store.GetVolume(sourceVolumeID)
 			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "source volume %s not found: %v", sourceVolumeID, err)
+				return nil, volumeStoreGetError("source volume", sourceVolumeID, err)
+			}
+			if !store.IsVolumeReady(sourceVol) {
+				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
+			}
+			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(sourceVol.CapacityBytes))
+			if capacityExceedsLimit(req, capacityBytes) {
+				return nil, status.Errorf(codes.OutOfRange, "requested clone capacity exceeds limit")
 			}
 
 			// Clone must use the same SVM as the source volume
 			svm = &arca.SVM{
-				Name: sourceVol.SVMName,
-				VIP:  sourceVol.VIP,
+				Name:       sourceVol.SVMName,
+				VIP:        sourceVol.VIP,
+				ExportRoot: sourceVol.ExportRoot,
 			}
 			klog.V(4).Infof("Using source SVM for clone: %s with VIP: %s", svm.Name, svm.VIP)
 
-			// Create snapshot of source volume first (server-side reflink)
+			temporarySnapshotName := fmt.Sprintf("clone-%s", volumeID)
+			temporarySnapshotReady := false
+			cleanupTemporarySnapshot := func() error {
+				if !temporarySnapshotReady {
+					return nil
+				}
+				cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+				defer cancel()
+				if err := d.arcaClient.DeleteSnapshot(cleanupCtx, temporarySnapshotName, sourceVol.SVMName, sourceVol.Path); err != nil {
+					return fmt.Errorf("failed to delete temporary clone snapshot %s: %w", temporarySnapshotName, err)
+				}
+				temporarySnapshotReady = false
+				return nil
+			}
+			defer func() {
+				if err := cleanupTemporarySnapshot(); err != nil {
+					klog.Warningf("%v", err)
+				}
+			}()
+
 			err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-				SVMName:      sourceVol.SVMName,
-				SourcePath:   sourceVol.Path,
-				SnapshotPath: volumePath,
+				Name:   temporarySnapshotName,
+				SVM:    sourceVol.SVMName,
+				Volume: sourceVol.Path,
 			})
 			if err != nil && !arca.IsAlreadyExistsError(err) {
+				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
+			}
+			temporarySnapshotReady = true
+
+			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
+				Name:         volumePath,
+				SVM:          sourceVol.SVMName,
+				SourceVolume: sourceVol.Path,
+				Snapshot:     temporarySnapshotName,
+				SizeGiB:      bytesToGiB(capacityBytes),
+			})
+			if err != nil {
+				if arca.IsAlreadyExistsError(err) {
+					return nil, status.Errorf(
+						codes.AlreadyExists,
+						"backend volume %s already exists but is not tracked by CSI metadata",
+						volumePath,
+					)
+				}
 				return nil, status.Errorf(codes.Internal, "failed to clone volume: %v", err)
+			}
+
+			if err := cleanupTemporarySnapshot(); err != nil {
+				klog.Warningf("Failed to clean up temporary clone snapshot after cloning %s: %v", volumeID, err)
 			}
 
 			contentSource = &csi.VolumeContentSource{
@@ -194,11 +329,23 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 
 			snapshot, err := d.store.GetSnapshot(snapshotID)
 			if err != nil {
-				return nil, status.Errorf(codes.NotFound, "snapshot %s not found: %v", snapshotID, err)
+				return nil, snapshotStoreGetError("snapshot", snapshotID, err)
 			}
 
 			if !snapshot.ReadyToUse {
 				return nil, status.Errorf(codes.Unavailable, "snapshot %s is not ready", snapshotID)
+			}
+
+			sourceVol, err := d.store.GetVolume(snapshot.SourceVolumeID)
+			if err != nil {
+				return nil, volumeStoreGetError("snapshot source volume", snapshot.SourceVolumeID, err)
+			}
+			if !store.IsVolumeReady(sourceVol) {
+				return nil, status.Errorf(codes.Unavailable, "snapshot source volume %s is not ready", snapshot.SourceVolumeID)
+			}
+			capacityBytes = maxCapacityBytes(capacityBytes, provisionedCapacityBytes(snapshot.SizeBytes))
+			if capacityExceedsLimit(req, capacityBytes) {
+				return nil, status.Errorf(codes.OutOfRange, "requested restore capacity exceeds limit")
 			}
 
 			// Restore must use the same SVM as the snapshot
@@ -206,15 +353,26 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			if err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to get SVM %s for snapshot restore: %v", snapshot.SVMName, err)
 			}
+			if svm.ExportRoot == "" {
+				svm.ExportRoot = sourceVol.ExportRoot
+			}
 			klog.V(4).Infof("Using snapshot SVM for restore: %s (VIP: %s)", svm.Name, svm.VIP)
 
-			// Copy snapshot to new volume path (server-side reflink)
-			err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-				SVMName:      snapshot.SVMName,
-				SourcePath:   snapshot.Path,
-				SnapshotPath: volumePath,
+			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
+				Name:         volumePath,
+				SVM:          snapshot.SVMName,
+				SourceVolume: sourceVol.Path,
+				Snapshot:     snapshot.SnapshotID,
+				SizeGiB:      bytesToGiB(capacityBytes),
 			})
-			if err != nil && !arca.IsAlreadyExistsError(err) {
+			if err != nil {
+				if arca.IsAlreadyExistsError(err) {
+					return nil, status.Errorf(
+						codes.AlreadyExists,
+						"backend volume %s already exists but is not tracked by CSI metadata",
+						volumePath,
+					)
+				}
 				return nil, status.Errorf(codes.Internal, "failed to restore from snapshot: %v", err)
 			}
 
@@ -230,6 +388,10 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		}
 	} else {
 		// No content source - create new volume
+		if capacityExceedsLimit(req, capacityBytes) {
+			return nil, status.Errorf(codes.OutOfRange, "requested volume capacity exceeds limit")
+		}
+
 		// Ensure SVM exists for this namespace
 		klog.V(4).Infof("Ensuring SVM exists for namespace: %s", namespace)
 		var err error
@@ -250,27 +412,18 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		}
 	}
 
-	// Set quota
-	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeID, capacityBytes)
-	err = d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
-		SVMName:    svm.Name,
-		Path:       volumePath,
-		QuotaBytes: capacityBytes,
-	})
-	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
-	}
-
 	// Store volume metadata
 	volumeInfo := &store.VolumeInfo{
 		VolumeID:      volumeID,
 		Name:          pvcName,
 		SVMName:       svm.Name,
 		VIP:           svm.VIP,
+		ExportRoot:    defaultExportRoot(svm.Name, svm.ExportRoot),
 		Path:          volumePath,
 		CapacityBytes: capacityBytes,
 		CreatedAt:     time.Now(),
 		ContentSource: contentSource,
+		ReadyToUse:    store.VolumeReadyState(false),
 	}
 
 	if err := d.store.CreateVolume(volumeInfo); err != nil {
@@ -280,10 +433,36 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				if err := compareVolumeParameters(existingVol, req); err != nil {
 					return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists but is incompatible: %v", volumeID, err)
 				}
+				if !store.IsVolumeReady(existingVol) {
+					klog.V(4).Infof("Volume %s metadata won the create race but is not ready, resuming quota setup", volumeID)
+					if err := d.setVolumeQuota(ctx, existingVol); err != nil {
+						if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
+							klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
+						}
+						d.cleanupProvisionedVolume(existingVol, "quota failure")
+						return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+					}
+					if err := d.markVolumeReady(existingVol); err != nil {
+						return nil, status.Errorf(codes.Internal, "failed to mark volume metadata ready: %v", err)
+					}
+				}
 				return &csi.CreateVolumeResponse{Volume: existingVol.ToCSIVolume()}, nil
 			}
+			return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 		}
+		d.cleanupProvisionedVolume(volumeInfo, "metadata store failure")
 		return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
+	}
+
+	if err := d.setVolumeQuota(ctx, volumeInfo); err != nil {
+		if delErr := d.store.DeleteVolume(volumeID); delErr != nil && !store.IsNotFound(delErr) {
+			klog.Warningf("Failed to delete volume metadata %s after quota failure: %v", volumeID, delErr)
+		}
+		d.cleanupProvisionedVolume(volumeInfo, "quota failure")
+		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
+	}
+	if err := d.markVolumeReady(volumeInfo); err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to mark volume metadata ready: %v", err)
 	}
 
 	klog.Infof("Volume %s created successfully (SVM: %s, Path: %s)", volumeID, svm.Name, volumePath)
@@ -291,6 +470,38 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	return &csi.CreateVolumeResponse{
 		Volume: volumeInfo.ToCSIVolume(),
 	}, nil
+}
+
+func (d *Driver) setVolumeQuota(ctx context.Context, volumeInfo *store.VolumeInfo) error {
+	klog.V(4).Infof("Setting quota for volume %s: %d bytes", volumeInfo.VolumeID, volumeInfo.CapacityBytes)
+	return d.arcaClient.SetQuota(ctx, &arca.SetQuotaRequest{
+		SVMName:    volumeInfo.SVMName,
+		Path:       volumeInfo.Path,
+		QuotaBytes: volumeInfo.CapacityBytes,
+	})
+}
+
+func (d *Driver) markVolumeReady(volumeInfo *store.VolumeInfo) error {
+	updated := *volumeInfo
+	updated.ReadyToUse = store.VolumeReadyState(true)
+	if err := d.store.UpdateVolume(&updated); err != nil {
+		return err
+	}
+	volumeInfo.ReadyToUse = updated.ReadyToUse
+	return nil
+}
+
+func (d *Driver) cleanupProvisionedVolume(volumeInfo *store.VolumeInfo, reason string) {
+	if volumeInfo == nil || d.arcaClient == nil {
+		return
+	}
+
+	klog.Warningf("Cleaning up provisioned volume %s after %s", volumeInfo.VolumeID, reason)
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if err := d.arcaClient.DeleteDirectory(cleanupCtx, volumeInfo.SVMName, volumeInfo.Path); err != nil && !arca.IsNotFoundError(err) {
+		klog.Warningf("Failed to clean up backend volume %s on SVM %s: %v", volumeInfo.Path, volumeInfo.SVMName, err)
+	}
 }
 
 // DeleteVolume deletes a volume
@@ -315,6 +526,19 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 			return &csi.DeleteVolumeResponse{}, nil
 		}
 		return nil, status.Errorf(codes.Internal, "failed to get volume %s: %v", volumeID, err)
+	}
+
+	snapshots, _, err := d.store.ListSnapshots(volumeID, "", 1)
+	if err != nil {
+		return nil, status.Errorf(codes.Internal, "failed to check snapshots for volume %s: %v", volumeID, err)
+	}
+	if len(snapshots) > 0 {
+		return nil, status.Errorf(
+			codes.FailedPrecondition,
+			"volume %s has snapshot %s; delete snapshots before deleting the volume",
+			volumeID,
+			snapshots[0].SnapshotID,
+		)
 	}
 
 	// Delete directory from ARCA
@@ -366,9 +590,12 @@ func (d *Driver) ValidateVolumeCapabilities(ctx context.Context, req *csi.Valida
 	}
 
 	// Check if volume exists
-	_, err := d.store.GetVolume(volumeID)
+	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+		return nil, volumeStoreGetError("volume", volumeID, err)
+	}
+	if !store.IsVolumeReady(volumeInfo) {
+		return nil, status.Errorf(codes.Unavailable, "volume %s is not ready", volumeID)
 	}
 
 	// Validate capabilities
@@ -401,11 +628,14 @@ func (d *Driver) ListVolumes(ctx context.Context, req *csi.ListVolumesRequest) (
 		return nil, status.Errorf(codes.Internal, "failed to list volumes: %v", err)
 	}
 
-	entries := make([]*csi.ListVolumesResponse_Entry, len(volumes))
-	for i, vol := range volumes {
-		entries[i] = &csi.ListVolumesResponse_Entry{
-			Volume: vol.ToCSIVolume(),
+	entries := make([]*csi.ListVolumesResponse_Entry, 0, len(volumes))
+	for _, vol := range volumes {
+		if !store.IsVolumeReady(vol) {
+			continue
 		}
+		entries = append(entries, &csi.ListVolumesResponse_Entry{
+			Volume: vol.ToCSIVolume(),
+		})
 	}
 
 	return &csi.ListVolumesResponse{
@@ -486,6 +716,25 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	// Check if snapshot already exists (idempotency)
 	existingSnap, err := d.store.GetSnapshot(snapshotID)
 	if err == nil {
+		if !existingSnap.ReadyToUse {
+			sourceVolume, err := d.store.GetVolume(sourceVolumeID)
+			if err != nil {
+				return nil, volumeStoreGetError("source volume", sourceVolumeID, err)
+			}
+			if !store.IsVolumeReady(sourceVolume) {
+				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
+			}
+			klog.V(4).Infof("Snapshot %s metadata exists but is not ready, resuming creation", snapshotID)
+			if _, err := d.ensureSnapshotBackend(ctx, existingSnap, sourceVolume); err != nil {
+				return nil, snapshotBackendCreateError(snapshotID, err)
+			}
+			if err := d.markSnapshotReady(existingSnap); err != nil {
+				return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+			}
+			return &csi.CreateSnapshotResponse{
+				Snapshot: existingSnap.ToCSISnapshot(),
+			}, nil
+		}
 		klog.V(4).Infof("Snapshot %s already exists, returning existing snapshot", snapshotID)
 		return &csi.CreateSnapshotResponse{
 			Snapshot: existingSnap.ToCSISnapshot(),
@@ -498,63 +747,119 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	// Get source volume info
 	sourceVolume, err := d.store.GetVolume(sourceVolumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "source volume %s not found", sourceVolumeID)
+		return nil, volumeStoreGetError("source volume", sourceVolumeID, err)
 	}
-
-	// Create snapshot path (relative path for consistency)
-	snapshotPath := fmt.Sprintf(".snapshots/%s", snapshotID)
+	if !store.IsVolumeReady(sourceVolume) {
+		return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
+	}
 
 	// Create snapshot via ARCA API (server-side reflink)
 	klog.V(4).Infof("Creating snapshot %s from volume %s", snapshotID, sourceVolumeID)
-	err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-		SVMName:      sourceVolume.SVMName,
-		SourcePath:   sourceVolume.Path,
-		SnapshotPath: snapshotPath,
-	})
-	if err != nil && !arca.IsAlreadyExistsError(err) {
-		return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
+	backendSnapshotCreated, err := d.ensureSnapshotBackend(ctx, &store.SnapshotInfo{SnapshotID: snapshotID}, sourceVolume)
+	if err != nil {
+		return nil, snapshotBackendCreateError(snapshotID, err)
+	}
+	cleanupBackendSnapshot := func(reason string) {
+		if !backendSnapshotCreated {
+			return
+		}
+		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		if cleanupErr := d.arcaClient.DeleteSnapshot(cleanupCtx, snapshotID, sourceVolume.SVMName, sourceVolume.Path); cleanupErr != nil && !arca.IsNotFoundError(cleanupErr) {
+			klog.Warningf("Failed to clean up backend snapshot %s after %s: %v", snapshotID, reason, cleanupErr)
+		}
 	}
 
 	// Store snapshot metadata (initially not ready)
 	snapshotInfo := &store.SnapshotInfo{
-		SnapshotID:     snapshotID,
-		Name:           req.GetName(),
-		SourceVolumeID: sourceVolumeID,
-		SVMName:        sourceVolume.SVMName,
-		Path:           snapshotPath,
-		SizeBytes:      sourceVolume.CapacityBytes,
-		CreatedAt:      time.Now(),
-		ReadyToUse:     false, // Initially false, will be set via status update
+		SnapshotID:       snapshotID,
+		Name:             req.GetName(),
+		SourceVolumeID:   sourceVolumeID,
+		SourceVolumePath: sourceVolume.Path,
+		SVMName:          sourceVolume.SVMName,
+		Path:             snapshotID,
+		SizeBytes:        sourceVolume.CapacityBytes,
+		CreatedAt:        time.Now(),
+		ReadyToUse:       false, // Initially false, will be set via status update
 	}
 
 	if err := d.store.CreateSnapshot(snapshotInfo); err != nil {
 		if store.IsAlreadyExists(err) {
 			existingSnap, getErr := d.store.GetSnapshot(snapshotID)
 			if getErr == nil {
+				if !existingSnap.ReadyToUse {
+					if err := d.markSnapshotReady(existingSnap); err != nil {
+						return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+					}
+				}
 				return &csi.CreateSnapshotResponse{Snapshot: existingSnap.ToCSISnapshot()}, nil
 			}
+			return nil, status.Errorf(codes.Internal, "failed to get existing snapshot metadata: %v", getErr)
 		}
+		cleanupBackendSnapshot("metadata store failure")
 		return nil, status.Errorf(codes.Internal, "failed to store snapshot metadata: %v", err)
 	}
 
 	// Update status to ready (uses /status endpoint which persists correctly)
-	if err := d.store.UpdateSnapshotStatus(snapshotID, true); err != nil {
+	if err := d.markSnapshotReady(snapshotInfo); err != nil {
 		// Status persistence failed - must return error to maintain consistency
 		klog.Errorf("Failed to update snapshot %s status to ready: %v", snapshotID, err)
 		// Attempt to clean up the snapshot metadata since ReadyToUse=false is not useful
 		if delErr := d.store.DeleteSnapshot(snapshotID); delErr != nil {
 			klog.Errorf("Failed to cleanup snapshot metadata after status update failure: %v", delErr)
 		}
+		cleanupBackendSnapshot("status persistence failure")
 		return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
 	}
-	// Update our in-memory info to reflect the status
-	snapshotInfo.ReadyToUse = true
 
 	klog.Infof("Snapshot %s created successfully from volume %s", snapshotID, sourceVolumeID)
 
 	return &csi.CreateSnapshotResponse{
 		Snapshot: snapshotInfo.ToCSISnapshot(),
 	}, nil
+}
+
+func (d *Driver) ensureSnapshotBackend(ctx context.Context, snapshotInfo *store.SnapshotInfo, sourceVolume *store.VolumeInfo) (bool, error) {
+	err := d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
+		Name:   snapshotInfo.SnapshotID,
+		SVM:    sourceVolume.SVMName,
+		Volume: sourceVolume.Path,
+	})
+	if err != nil {
+		if arca.IsAlreadyExistsError(err) {
+			ready, verifyErr := d.backendSnapshotReady(ctx, snapshotInfo, sourceVolume)
+			if verifyErr != nil {
+				return false, verifyErr
+			}
+			if ready {
+				return false, nil
+			}
+			return false, fmt.Errorf("%w: %v", errSnapshotBackendAlreadyExists, err)
+		}
+		return false, err
+	}
+	return true, nil
+}
+
+func (d *Driver) backendSnapshotReady(ctx context.Context, snapshotInfo *store.SnapshotInfo, sourceVolume *store.VolumeInfo) (bool, error) {
+	snapshots, err := d.arcaClient.ListSnapshots(ctx, sourceVolume.SVMName, sourceVolume.Path, snapshotInfo.SnapshotID)
+	if err != nil {
+		return false, fmt.Errorf("failed to verify existing backend snapshot %s: %w", snapshotInfo.SnapshotID, err)
+	}
+	for _, snapshot := range snapshots {
+		if snapshot.Name == snapshotInfo.SnapshotID && snapshot.SVM == sourceVolume.SVMName && snapshot.Volume == sourceVolume.Path {
+			return snapshot.Status == arcaSnapshotReadyStatus, nil
+		}
+	}
+	return false, nil
+}
+
+func (d *Driver) markSnapshotReady(snapshotInfo *store.SnapshotInfo) error {
+	if err := d.store.UpdateSnapshotStatus(snapshotInfo.SnapshotID, true); err != nil {
+		return err
+	}
+	snapshotInfo.ReadyToUse = true
+	return nil
 }
 
 // DeleteSnapshot deletes a snapshot
@@ -581,9 +886,26 @@ func (d *Driver) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequ
 		return nil, status.Errorf(codes.Internal, "failed to get snapshot %s: %v", snapshotID, err)
 	}
 
+	sourceVolumePath := snapshotInfo.SourceVolumePath
+	if sourceVolumePath == "" {
+		sourceVolume, err := d.store.GetVolume(snapshotInfo.SourceVolumeID)
+		if err != nil {
+			if store.IsNotFound(err) {
+				return nil, status.Errorf(
+					codes.FailedPrecondition,
+					"source volume %s for snapshot %s is missing and snapshot metadata has no source volume path",
+					snapshotInfo.SourceVolumeID,
+					snapshotID,
+				)
+			}
+			return nil, status.Errorf(codes.Internal, "failed to get source volume %s: %v", snapshotInfo.SourceVolumeID, err)
+		}
+		sourceVolumePath = sourceVolume.Path
+	}
+
 	// Delete snapshot from ARCA
-	klog.V(4).Infof("Deleting snapshot: %s on SVM: %s", snapshotInfo.Path, snapshotInfo.SVMName)
-	err = d.arcaClient.DeleteSnapshot(ctx, snapshotInfo.SVMName, snapshotInfo.Path)
+	klog.V(4).Infof("Deleting snapshot: %s on SVM: %s", snapshotInfo.SnapshotID, snapshotInfo.SVMName)
+	err = d.arcaClient.DeleteSnapshot(ctx, snapshotInfo.SnapshotID, snapshotInfo.SVMName, sourceVolumePath)
 	if err != nil && !arca.IsNotFoundError(err) {
 		return nil, status.Errorf(codes.Internal, "failed to delete snapshot: %v", err)
 	}
@@ -619,7 +941,7 @@ func (d *Driver) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsReques
 	if snapshotID != "" {
 		snapshot, err := d.store.GetSnapshot(snapshotID)
 		if err != nil {
-			return nil, status.Errorf(codes.NotFound, "snapshot %s not found", snapshotID)
+			return nil, snapshotStoreGetError("snapshot", snapshotID, err)
 		}
 
 		return &csi.ListSnapshotsResponse{
@@ -667,15 +989,22 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 		return nil, status.Error(codes.InvalidArgument, "capacity range is required")
 	}
 
-	newCapacityBytes := req.GetCapacityRange().GetRequiredBytes()
-	if newCapacityBytes == 0 {
+	requiredBytes := req.GetCapacityRange().GetRequiredBytes()
+	if requiredBytes == 0 {
 		return nil, status.Error(codes.InvalidArgument, "required bytes must be greater than 0")
+	}
+	newCapacityBytes := provisionedCapacityBytes(requiredBytes)
+	if limitBytes := req.GetCapacityRange().GetLimitBytes(); limitBytes > 0 && newCapacityBytes > limitBytes {
+		return nil, status.Errorf(codes.OutOfRange, "requested expansion capacity exceeds limit")
 	}
 
 	// Get volume info
 	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
-		return nil, status.Errorf(codes.NotFound, "volume %s not found", volumeID)
+		return nil, volumeStoreGetError("volume", volumeID, err)
+	}
+	if !store.IsVolumeReady(volumeInfo) {
+		return nil, status.Errorf(codes.Unavailable, "volume %s is not ready", volumeID)
 	}
 
 	// Check if expansion is needed
@@ -701,14 +1030,19 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 	// Update volume metadata
 	volumeInfo.CapacityBytes = newCapacityBytes
 	if err := d.store.UpdateVolume(volumeInfo); err != nil {
-		klog.Warningf("Failed to update volume metadata for %s: %v", volumeID, err)
-		// Continue anyway - the quota is already expanded
+		return nil, status.Errorf(codes.Internal, "failed to update volume metadata: %v", err)
+	}
+	recordedCapacityBytes := newCapacityBytes
+	if updatedVolumeInfo, err := d.store.GetVolume(volumeID); err == nil {
+		recordedCapacityBytes = maxCapacityBytes(recordedCapacityBytes, updatedVolumeInfo.CapacityBytes)
+	} else {
+		klog.Warningf("Failed to refresh volume metadata after expansion for %s: %v", volumeID, err)
 	}
 
-	klog.Infof("Volume %s expanded successfully to %d bytes", volumeID, newCapacityBytes)
+	klog.Infof("Volume %s expanded successfully to %d bytes", volumeID, recordedCapacityBytes)
 
 	return &csi.ControllerExpandVolumeResponse{
-		CapacityBytes:         newCapacityBytes,
+		CapacityBytes:         recordedCapacityBytes,
 		NodeExpansionRequired: false, // NFS doesn't require node-side expansion
 	}, nil
 }

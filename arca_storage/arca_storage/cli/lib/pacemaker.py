@@ -21,6 +21,137 @@ def _constraints_text() -> str:
     return (result.stdout or "") + "\n" + (result.stderr or "")
 
 
+def _parse_group_members(group_name: str, text: str) -> list[str]:
+    members: list[str] = []
+    in_target_group = False
+    saw_group_header = False
+    for raw_line in text.splitlines():
+        line = raw_line.strip()
+        if not line:
+            continue
+        if line.startswith("* "):
+            line = line[2:].strip()
+
+        lower = line.lower()
+        if line.startswith(f"{group_name}:"):
+            for part in line.split(":", 1)[1].split():
+                _append_unique(members, part)
+            in_target_group = True
+            saw_group_header = True
+            continue
+        if lower.startswith("resource group:") or lower.startswith("group:"):
+            header_name = _name_after_colon(line)
+            in_target_group = header_name == group_name
+            saw_group_header = True
+            continue
+        if saw_group_header and not in_target_group:
+            continue
+        if lower.startswith("resource:"):
+            _append_unique(members, _name_after_colon(line))
+            continue
+        if in_target_group and "(" in line:
+            _append_unique(members, line.split()[0])
+    return members
+
+
+def _append_unique(members: list[str], resource: str) -> None:
+    resource = resource.strip().rstrip(":")
+    if resource and resource not in members:
+        members.append(resource)
+
+
+def _name_after_colon(line: str) -> str:
+    parts = line.split(":", 1)
+    if len(parts) != 2:
+        return ""
+    rest = parts[1].strip()
+    if not rest:
+        return ""
+    return rest.split()[0].rstrip(":")
+
+
+def _group_members(group_name: str) -> list[str]:
+    result = _run(["pcs", "resource", "config", group_name])
+    if result.returncode != 0:
+        result = _run(["pcs", "resource", "show", group_name])
+    return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+
+
+def _ensure_group_members(group_name: str, resources: list[str]) -> None:
+    members = _group_members(group_name)
+    for index, resource in enumerate(resources):
+        if _group_member_is_ordered(resource, resources, index, members):
+            continue
+        command, before, after = _group_add_command(group_name, resource, resources, index, members)
+        result = _run(command)
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to add {resource} to resource group {group_name}: {result.stderr.strip()}")
+        members = _insert_group_member(members, resource, before=before, after=after)
+
+
+def _previous_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
+    for resource in reversed(resources[:index]):
+        if resource in members:
+            return resource
+    return None
+
+
+def _next_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
+    for resource in resources[index + 1:]:
+        if resource in members:
+            return resource
+    return None
+
+
+def _group_member_is_ordered(resource: str, resources: list[str], index: int, members: list[str]) -> bool:
+    if resource not in members:
+        return False
+    resource_index = members.index(resource)
+
+    previous = _previous_desired_member(resources, index, members)
+    if previous is not None:
+        return members.index(previous) < resource_index
+
+    next_member = _next_desired_member(resources, index, members)
+    return next_member is None or resource_index < members.index(next_member)
+
+
+def _group_add_command(
+    group_name: str,
+    resource: str,
+    resources: list[str],
+    index: int,
+    members: list[str],
+) -> tuple[list[str], Optional[str], Optional[str]]:
+    previous = _previous_desired_member(resources, index, members)
+    if resource in members and previous is not None:
+        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+
+    next_member = _next_desired_member(resources, index, members)
+    if next_member is not None:
+        return ["pcs", "resource", "group", "add", group_name, resource, "--before", next_member], next_member, None
+    if previous is not None:
+        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+    return ["pcs", "resource", "group", "add", group_name, resource], None, None
+
+
+def _insert_group_member(
+    members: list[str],
+    resource: str,
+    *,
+    before: Optional[str],
+    after: Optional[str],
+) -> list[str]:
+    updated = [member for member in members if member != resource]
+    if before is not None and before in updated:
+        updated.insert(updated.index(before), resource)
+    elif after is not None and after in updated:
+        updated.insert(updated.index(after) + 1, resource)
+    else:
+        updated.append(resource)
+    return updated
+
+
 def ensure_drbd_master(drbd_resource_name: str = "r0") -> str:
     """
     Ensure DRBD resource and master/clone are created in Pacemaker.
@@ -129,11 +260,7 @@ def create_group(
         RuntimeError: If resource group creation fails
     """
     group_name = f"g_svm_{svm_name}"
-    
-    # Check if group already exists
-    if _resource_exists(group_name):
-        # Group already exists, skip
-        return
+    group_exists = _resource_exists(group_name)
 
     resources: list[str] = []
 
@@ -162,6 +289,7 @@ def create_group(
         )
         if result.returncode != 0:
             raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
+    if create_filesystem:
         resources.append(fs_resource)
 
     if vlan_id is None:
@@ -232,10 +360,12 @@ def create_group(
             raise RuntimeError(f"Failed to create NFS-Ganesha resource: {result.stderr.strip()}")
     resources.append(ganesha_resource)
 
-    # Create resource group
-    result = _run(["pcs", "resource", "group", "add", group_name, *resources])
-    if result.returncode != 0:
-        raise RuntimeError(f"Failed to create resource group: {result.stderr.strip()}")
+    if not group_exists:
+        result = _run(["pcs", "resource", "group", "add", group_name, *resources])
+        if result.returncode != 0:
+            raise RuntimeError(f"Failed to create resource group: {result.stderr.strip()}")
+    else:
+        _ensure_group_members(group_name, resources)
 
     # Constraints (DRBD -> group/fs ordering, group colocation with DRBD master)
     if master_name:

@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,8 @@ import (
 
 	"k8s.io/klog/v2"
 )
+
+const bytesPerGiB = int64(1024 * 1024 * 1024)
 
 // Client is an ARCA REST API client
 type Client struct {
@@ -176,7 +179,11 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 	if err != nil {
 		return nil, fmt.Errorf("http request failed: %w", err)
 	}
-	defer resp.Body.Close()
+	defer func() {
+		if err := resp.Body.Close(); err != nil {
+			klog.Warningf("Failed to close response body: %v", err)
+		}
+	}()
 
 	// Read response body
 	respBody, err := io.ReadAll(resp.Body)
@@ -215,9 +222,9 @@ func isNonRetryableError(err error) bool {
 
 	// Don't retry on specific known errors
 	switch {
-	case errors.Is(err, ErrSVMAlreadyExists), errors.Is(err, ErrDirectoryAlreadyExists), errors.Is(err, ErrSnapshotAlreadyExists):
+	case errors.Is(err, ErrSVMAlreadyExists), errors.Is(err, ErrDirectoryAlreadyExists), errors.Is(err, ErrVolumeAlreadyExists), errors.Is(err, ErrSnapshotAlreadyExists), errors.Is(err, ErrExportAlreadyExists):
 		return true
-	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrQuotaNotFound):
+	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrVolumeNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrExportNotFound), errors.Is(err, ErrQuotaNotFound):
 		return true
 	}
 
@@ -262,12 +269,31 @@ func (c *Client) DeleteSVM(ctx context.Context, name string) error {
 
 // ListSVMs lists all SVMs
 func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
-	respBody, err := c.doRequest(ctx, http.MethodGet, "/v1/svms", nil)
-	if err != nil {
-		return nil, err
-	}
+	var all []SVM
+	cursor := ""
 
-	return decodeSVMListResponse(respBody)
+	for {
+		params := url.Values{}
+		params.Set("limit", "200")
+		if cursor != "" {
+			params.Set("cursor", cursor)
+		}
+
+		respBody, err := c.doRequest(ctx, http.MethodGet, "/v1/svms", nil, params)
+		if err != nil {
+			return nil, err
+		}
+
+		page, nextCursor, err := decodeSVMListResponsePage(respBody)
+		if err != nil {
+			return nil, err
+		}
+		all = append(all, page...)
+		if nextCursor == "" {
+			return all, nil
+		}
+		cursor = nextCursor
+	}
 }
 
 // GetSVMCapacity retrieves SVM capacity information
@@ -278,13 +304,45 @@ func (c *Client) GetSVMCapacity(ctx context.Context, svmName string) (*CapacityI
 	}
 
 	var response struct {
-		Data CapacityInfo `json:"data"`
+		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &response); err != nil {
 		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 
-	return &response.Data, nil
+	if len(response.Data) == 0 {
+		return nil, fmt.Errorf("%w: missing data field", ErrInvalidResponse)
+	}
+
+	var direct CapacityInfo
+	if err := json.Unmarshal(response.Data, &direct); err == nil && !direct.isZero() {
+		return &direct, nil
+	}
+
+	var nested struct {
+		Capacity struct {
+			TotalGB float64 `json:"total_gb"`
+			FreeGB  float64 `json:"free_gb"`
+			UsedGB  float64 `json:"used_gb"`
+		} `json:"capacity"`
+	}
+	if err := json.Unmarshal(response.Data, &nested); err == nil && nested.Capacity.TotalGB > 0 {
+		return &CapacityInfo{
+			TotalBytes:     gibToBytes(nested.Capacity.TotalGB),
+			AvailableBytes: gibToBytes(nested.Capacity.FreeGB),
+			UsedBytes:      gibToBytes(nested.Capacity.UsedGB),
+		}, nil
+	}
+
+	return nil, fmt.Errorf("%w: missing capacity object in response", ErrInvalidResponse)
+}
+
+func (c CapacityInfo) isZero() bool {
+	return c.TotalBytes == 0 && c.AvailableBytes == 0 && c.UsedBytes == 0
+}
+
+func gibToBytes(gib float64) int64 {
+	return int64(math.Round(gib * float64(bytesPerGiB)))
 }
 
 func decodeSVMResponse(respBody []byte) (*SVM, error) {
@@ -314,33 +372,43 @@ func decodeSVMResponse(respBody []byte) (*SVM, error) {
 }
 
 func decodeSVMListResponse(respBody []byte) ([]SVM, error) {
+	svms, _, err := decodeSVMListResponsePage(respBody)
+	return svms, err
+}
+
+func decodeSVMListResponsePage(respBody []byte) ([]SVM, string, error) {
 	var response struct {
 		Data json.RawMessage `json:"data"`
 	}
 	if err := json.Unmarshal(respBody, &response); err != nil {
-		return nil, fmt.Errorf("failed to unmarshal response: %w", err)
+		return nil, "", fmt.Errorf("failed to unmarshal response: %w", err)
 	}
 	if len(response.Data) == 0 {
-		return nil, fmt.Errorf("%w: missing data field", ErrInvalidResponse)
+		return nil, "", fmt.Errorf("%w: missing data field", ErrInvalidResponse)
 	}
 
 	var svms []SVM
 	if err := json.Unmarshal(response.Data, &svms); err == nil {
-		return svms, nil
+		return svms, "", nil
 	}
 
 	var nested struct {
-		Items []SVM `json:"items"`
-		SVMs  []SVM `json:"svms"`
+		Items      []SVM   `json:"items"`
+		SVMs       []SVM   `json:"svms"`
+		NextCursor *string `json:"next_cursor"`
 	}
 	if err := json.Unmarshal(response.Data, &nested); err == nil {
+		nextCursor := ""
+		if nested.NextCursor != nil {
+			nextCursor = *nested.NextCursor
+		}
 		if nested.Items != nil {
-			return nested.Items, nil
+			return nested.Items, nextCursor, nil
 		}
 		if nested.SVMs != nil {
-			return nested.SVMs, nil
+			return nested.SVMs, nextCursor, nil
 		}
 	}
 
-	return nil, fmt.Errorf("%w: missing SVM list in response", ErrInvalidResponse)
+	return nil, "", fmt.Errorf("%w: missing SVM list in response", ErrInvalidResponse)
 }

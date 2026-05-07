@@ -53,9 +53,31 @@ class TestArcaStorageManilaDriverSharedStrategy:
             fs_type="xfs",
         )
 
+    def test_create_share_ignores_user_supplied_svm_metadata(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "other-svm"
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.5:/exports/test-svm/share-share-123",
+        }
+
+        driver.create_share(Mock(), mock_manila_share, None)
+
+        assert mock_manila_share["metadata"]["arca_svm_name"] == "test-svm"
+        mock_arca_client.create_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="test-svm",
+            size_gib=10,
+            thin=True,
+            fs_type="xfs",
+        )
+
     def test_delete_share_calls_delete_volume(self, driver, mock_arca_client, mock_manila_share):
-        # Share metadata tells driver which SVM to use.
-        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_manila_share["metadata"]["arca_svm_name"] = "user-supplied-svm"
+        mock_manila_share["export_locations"] = [
+            {"path": "192.168.100.5:/exports/test-svm/share-share-123"}
+        ]
         driver.delete_share(Mock(), mock_manila_share, None)
         mock_arca_client.delete_volume.assert_called_once_with(
             name="share-share-123",
@@ -82,7 +104,7 @@ class TestArcaStorageManilaDriverSharedStrategy:
             volume="share-share-123",
         )
 
-    def test_delete_snapshot_uses_snapshot_metadata_when_share_missing(self, driver, mock_arca_client):
+    def test_delete_snapshot_uses_shared_svm_when_share_missing(self, driver, mock_arca_client):
         snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {"arca_svm_name": "test-svm"}}
         driver.delete_snapshot(Mock(), snapshot, None)
         mock_arca_client.delete_snapshot.assert_called_once_with(
@@ -106,7 +128,42 @@ class TestArcaStorageManilaDriverSharedStrategy:
     def test_update_access_add_rule(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
         driver.update_access(Mock(), mock_manila_share, [], add_rules=mock_access_rules, delete_rules=[], share_server=None)
+        mock_arca_client.create_export.assert_called_once_with(
+            svm="test-svm",
+            volume="share-share-123",
+            client="192.168.1.100/32",
+            access="rw",
+            root_squash=True,
+        )
+
+    def test_update_access_reports_add_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.create_export.side_effect = RuntimeError("backend unavailable")
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to update 1 access"):
+            driver.update_access(Mock(), mock_manila_share, [], add_rules=mock_access_rules, delete_rules=[], share_server=None)
+
         mock_arca_client.create_export.assert_called_once()
+
+    def test_update_access_reports_delete_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.delete_export.side_effect = RuntimeError("backend unavailable")
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to update 1 access"):
+            driver.update_access(Mock(), mock_manila_share, [], add_rules=[], delete_rules=mock_access_rules, share_server=None)
+
+        mock_arca_client.delete_export.assert_called_once()
+
+    def test_update_access_delete_rule_normalizes_bare_ip(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+
+        driver.update_access(Mock(), mock_manila_share, [], add_rules=[], delete_rules=mock_access_rules, share_server=None)
+
+        mock_arca_client.delete_export.assert_called_once_with(
+            svm="test-svm",
+            volume="share-share-123",
+            client="192.168.1.100/32",
+        )
 
     def test_update_access_reconcile_fallback(self, driver, mock_arca_client, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
@@ -128,9 +185,43 @@ class TestArcaStorageManilaDriverSharedStrategy:
             root_squash=True,
         )
 
+    def test_update_access_reconcile_fallback_removes_all_exports(self, driver, mock_arca_client, mock_manila_share):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.list_exports.return_value = [{"client": "10.0.0.0/24", "access": "rw"}]
+
+        driver.update_access(Mock(), mock_manila_share, [], add_rules=[], delete_rules=[], share_server=None)
+
+        mock_arca_client.delete_export.assert_called_once_with(
+            svm="test-svm",
+            volume="share-share-123",
+            client="10.0.0.0/24",
+        )
+        mock_arca_client.create_export.assert_not_called()
+
+    def test_update_access_reconcile_fallback_reports_delete_failures(self, driver, mock_arca_client, mock_manila_share):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.list_exports.return_value = [{"client": "10.0.0.0/24", "access": "rw"}]
+        mock_arca_client.delete_export.side_effect = RuntimeError("backend unavailable")
+        desired = [{"access_type": "ip", "access_to": "192.168.1.100", "access_level": "ro"}]
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to reconcile 1 access"):
+            driver.update_access(Mock(), mock_manila_share, desired, add_rules=[], delete_rules=[], share_server=None)
+
+        mock_arca_client.delete_export.assert_called_once()
+
+    def test_update_access_reconcile_fallback_reports_add_failures(self, driver, mock_arca_client, mock_manila_share):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.list_exports.return_value = []
+        mock_arca_client.create_export.side_effect = RuntimeError("backend unavailable")
+        desired = [{"access_type": "ip", "access_to": "192.168.1.100", "access_level": "ro"}]
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to reconcile 1 access"):
+            driver.update_access(Mock(), mock_manila_share, desired, add_rules=[], delete_rules=[], share_server=None)
+
+        mock_arca_client.create_export.assert_called_once()
+
     def test_update_access_rejects_unsupported_access_type(self, driver, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
         bad = [{"access_type": "user", "access_to": "alice"}]
         with pytest.raises(manila_driver.manila_exception.InvalidShareAccess):
             driver.update_access(Mock(), mock_manila_share, bad, add_rules=[], delete_rules=[], share_server=None)
-
