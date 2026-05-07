@@ -2,6 +2,7 @@ package driver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"time"
 
@@ -29,6 +30,8 @@ const (
 	gibBytes             = int64(1024 * 1024 * 1024)
 	defaultCapacityBytes = gibBytes // 1 GiB
 )
+
+var errSnapshotBackendAlreadyExists = errors.New("snapshot backend already exists")
 
 func bytesToGiB(bytes int64) int {
 	if bytes <= 0 {
@@ -72,6 +75,13 @@ func snapshotStoreGetError(label, snapshotID string, err error) error {
 		return status.Errorf(codes.NotFound, "%s %s not found", label, snapshotID)
 	}
 	return status.Errorf(codes.Internal, "failed to get %s %s: %v", label, snapshotID, err)
+}
+
+func snapshotBackendCreateError(snapshotID string, err error) error {
+	if errors.Is(err, errSnapshotBackendAlreadyExists) {
+		return status.Errorf(codes.Aborted, "snapshot %s backend already exists but is not verified ready", snapshotID)
+	}
+	return status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
 }
 
 // compareVolumeParameters checks if requested matches existing
@@ -699,7 +709,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 			}
 			klog.V(4).Infof("Snapshot %s metadata exists but is not ready, resuming creation", snapshotID)
 			if _, err := d.ensureSnapshotBackend(ctx, existingSnap, sourceVolume); err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
+				return nil, snapshotBackendCreateError(snapshotID, err)
 			}
 			if err := d.markSnapshotReady(existingSnap); err != nil {
 				return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
@@ -730,7 +740,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	klog.V(4).Infof("Creating snapshot %s from volume %s", snapshotID, sourceVolumeID)
 	backendSnapshotCreated, err := d.ensureSnapshotBackend(ctx, &store.SnapshotInfo{SnapshotID: snapshotID}, sourceVolume)
 	if err != nil {
-		return nil, status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
+		return nil, snapshotBackendCreateError(snapshotID, err)
 	}
 	cleanupBackendSnapshot := func(reason string) {
 		if !backendSnapshotCreated {
@@ -800,7 +810,7 @@ func (d *Driver) ensureSnapshotBackend(ctx context.Context, snapshotInfo *store.
 	})
 	if err != nil {
 		if arca.IsAlreadyExistsError(err) {
-			return false, nil
+			return false, fmt.Errorf("%w: %v", errSnapshotBackendAlreadyExists, err)
 		}
 		return false, err
 	}
