@@ -6,8 +6,47 @@ from unittest.mock import MagicMock
 
 import pytest
 
-from arca_storage.adapters.pacemaker import SubprocessPacemakerAdapter
-from arca_storage.cli.lib.pacemaker import create_group
+from arca_storage.adapters.pacemaker import (
+    SubprocessPacemakerAdapter,
+    _parse_group_members as parse_adapter_group_members,
+)
+from arca_storage.cli.lib.pacemaker import create_group, _parse_group_members as parse_cli_group_members
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parse_members", [parse_adapter_group_members, parse_cli_group_members])
+def test_parse_group_members_handles_detailed_pcs_output(parse_members):
+    text = """
+Group: g_svm_tenant_a
+  Resource: fs_tenant_a (class=ocf provider=heartbeat type=Filesystem)
+    Attributes: device=/dev/vg_pool_01/vol_tenant_a directory=/exports/tenant_a fstype=xfs
+    Operations: monitor interval=10s
+  Resource: netns_tenant_a (class=ocf provider=local type=NetnsVlan)
+  Resource: ganesha_tenant_a (class=systemd type=nfs-ganesha@tenant_a)
+"""
+
+    assert parse_members("g_svm_tenant_a", text) == [
+        "fs_tenant_a",
+        "netns_tenant_a",
+        "ganesha_tenant_a",
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("parse_members", [parse_adapter_group_members, parse_cli_group_members])
+def test_parse_group_members_handles_resource_group_status_output(parse_members):
+    text = """
+  * Resource Group: g_svm_tenant_a:
+    * fs_tenant_a      (ocf:heartbeat:Filesystem):   Started node1
+    * netns_tenant_a   (ocf:local:NetnsVlan):        Started node1
+    * ganesha_tenant_a (systemd:nfs-ganesha@tenant_a): Started node1
+"""
+
+    assert parse_members("g_svm_tenant_a", text) == [
+        "fs_tenant_a",
+        "netns_tenant_a",
+        "ganesha_tenant_a",
+    ]
 
 
 @pytest.mark.unit
@@ -187,7 +226,7 @@ def test_create_group_repairs_missing_members_when_group_exists(mock_subprocess)
         MagicMock(returncode=0),  # pcs resource create netns_tenant_a
         MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
         MagicMock(returncode=0, stdout="g_svm_tenant_a: fs_tenant_a ganesha_tenant_a\n", stderr=""),
-        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a netns_tenant_a --before ganesha_tenant_a
         MagicMock(returncode=0, stdout="order ms_drbd_r0:promote fs_tenant_a:start\n", stderr=""),
         MagicMock(returncode=0, stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n", stderr=""),
     ]
@@ -206,7 +245,56 @@ def test_create_group_repairs_missing_members_when_group_exists(mock_subprocess)
 
     calls = [c.args[0] for c in mock_subprocess.call_args_list]
     assert any(cmd[:5] == ["pcs", "resource", "create", "netns_tenant_a", "ocf:local:NetnsVlan"] for cmd in calls)
-    assert ["pcs", "resource", "group", "add", "g_svm_tenant_a", "netns_tenant_a"] in calls
+    assert [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "netns_tenant_a",
+        "--before",
+        "ganesha_tenant_a",
+    ] in calls
+
+
+@pytest.mark.unit
+def test_create_group_reorders_existing_members_when_group_exists(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=0),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0, stdout="g_svm_tenant_a: ganesha_tenant_a fs_tenant_a netns_tenant_a\n", stderr=""),
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ganesha_tenant_a --after netns_tenant_a
+        MagicMock(returncode=0, stdout="order ms_drbd_r0:promote fs_tenant_a:start\n", stderr=""),
+        MagicMock(returncode=0, stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n", stderr=""),
+    ]
+
+    create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "ganesha_tenant_a",
+        "--after",
+        "netns_tenant_a",
+    ] in calls
 
 
 @pytest.mark.unit
@@ -307,7 +395,7 @@ def test_subprocess_adapter_repairs_missing_members_when_group_exists(mock_subpr
         MagicMock(returncode=0),  # pcs resource create netns_tenant_a
         MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
         MagicMock(returncode=0, stdout="g_svm_tenant_a: fs_tenant_a ganesha_tenant_a\n", stderr=""),
-        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a netns_tenant_a --before ganesha_tenant_a
         MagicMock(returncode=0, stdout="order ms_drbd_r0:promote fs_tenant_a:start\n", stderr=""),
         MagicMock(returncode=0, stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n", stderr=""),
     ]
@@ -326,4 +414,53 @@ def test_subprocess_adapter_repairs_missing_members_when_group_exists(mock_subpr
 
     calls = [c.args[0] for c in mock_subprocess.call_args_list]
     assert any(cmd[:5] == ["pcs", "resource", "create", "netns_tenant_a", "ocf:local:NetnsVlan"] for cmd in calls)
-    assert ["pcs", "resource", "group", "add", "g_svm_tenant_a", "netns_tenant_a"] in calls
+    assert [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "netns_tenant_a",
+        "--before",
+        "ganesha_tenant_a",
+    ] in calls
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_reorders_existing_members_when_group_exists(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=0),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0, stdout="g_svm_tenant_a: ganesha_tenant_a fs_tenant_a netns_tenant_a\n", stderr=""),
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ganesha_tenant_a --after netns_tenant_a
+        MagicMock(returncode=0, stdout="order ms_drbd_r0:promote fs_tenant_a:start\n", stderr=""),
+        MagicMock(returncode=0, stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n", stderr=""),
+    ]
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "ganesha_tenant_a",
+        "--after",
+        "netns_tenant_a",
+    ] in calls

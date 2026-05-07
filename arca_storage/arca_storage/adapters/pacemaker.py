@@ -182,7 +182,7 @@ class SubprocessPacemakerAdapter:
         result = run_cmd(["pcs", "constraint", "show", "--full"], timeout=self._timeout, check=False)
         return (result.stdout or "") + "\n" + (result.stderr or "")
 
-    def _group_members(self, group_name: str) -> set[str]:
+    def _group_members(self, group_name: str) -> list[str]:
         result = run_cmd(["pcs", "resource", "config", group_name], timeout=self._timeout, check=False)
         if result.returncode != 0:
             result = run_cmd(["pcs", "resource", "show", group_name], timeout=self._timeout, check=False)
@@ -190,10 +190,13 @@ class SubprocessPacemakerAdapter:
 
     def _ensure_group_members(self, group_name: str, resources: list[str]) -> None:
         members = self._group_members(group_name)
-        for resource in resources:
-            if resource in members:
+        for index, resource in enumerate(resources):
+            previous = _previous_desired_member(resources, index, members)
+            if resource in members and (previous is None or members.index(previous) < members.index(resource)):
                 continue
-            run_cmd(["pcs", "resource", "group", "add", group_name, resource], timeout=self._timeout)
+            command, before, after = _group_add_command(group_name, resource, resources, index, members)
+            run_cmd(command, timeout=self._timeout)
+            members = _insert_group_member(members, resource, before=before, after=after)
 
     def _ensure_order(self, master_name: str, target: str) -> None:
         needle = f"order {master_name}:promote {target}:start"
@@ -260,10 +263,9 @@ class FakePacemakerAdapter:
         self.resources.setdefault(ganesha, {"type": "nfs-ganesha-host" if vlan_id is None else "nfs-ganesha"})
         resources.append(ganesha)
         if not group_exists:
-            self.groups[group_name] = []
-        for resource in resources:
-            if resource not in self.groups[group_name]:
-                self.groups[group_name].append(resource)
+            self.groups[group_name] = list(resources)
+        else:
+            self.groups[group_name] = _reconcile_group_members(self.groups[group_name], resources)
 
     def delete_group(self, svm_name: str) -> None:
         group_name = f"g_svm_{svm_name}"
@@ -272,18 +274,111 @@ class FakePacemakerAdapter:
             self.resources.pop(m, None)
 
 
-def _parse_group_members(group_name: str, text: str) -> set[str]:
-    members: set[str] = set()
+def _parse_group_members(group_name: str, text: str) -> list[str]:
+    members: list[str] = []
+    in_target_group = False
+    saw_group_header = False
     for raw_line in text.splitlines():
         line = raw_line.strip()
         if not line:
             continue
-        if line.lower().startswith("resource group:"):
-            continue
+        if line.startswith("* "):
+            line = line[2:].strip()
+
+        lower = line.lower()
         if line.startswith(f"{group_name}:"):
-            members.update(part.strip().rstrip(":") for part in line.split(":", 1)[1].split())
+            for part in line.split(":", 1)[1].split():
+                _append_unique(members, part)
+            in_target_group = True
+            saw_group_header = True
             continue
-        token = line.split()[0].rstrip(":")
-        if token != group_name:
-            members.add(token)
+        if lower.startswith("resource group:") or lower.startswith("group:"):
+            header_name = _name_after_colon(line)
+            in_target_group = header_name == group_name
+            saw_group_header = True
+            continue
+        if saw_group_header and not in_target_group:
+            continue
+        if lower.startswith("resource:"):
+            _append_unique(members, _name_after_colon(line))
+            continue
+        if in_target_group and "(" in line:
+            _append_unique(members, line.split()[0])
     return members
+
+
+def _append_unique(members: list[str], resource: str) -> None:
+    resource = resource.strip().rstrip(":")
+    if resource and resource not in members:
+        members.append(resource)
+
+
+def _name_after_colon(line: str) -> str:
+    parts = line.split(":", 1)
+    if len(parts) != 2:
+        return ""
+    rest = parts[1].strip()
+    if not rest:
+        return ""
+    return rest.split()[0].rstrip(":")
+
+
+def _previous_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
+    for resource in reversed(resources[:index]):
+        if resource in members:
+            return resource
+    return None
+
+
+def _next_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
+    for resource in resources[index + 1:]:
+        if resource in members:
+            return resource
+    return None
+
+
+def _group_add_command(
+    group_name: str,
+    resource: str,
+    resources: list[str],
+    index: int,
+    members: list[str],
+) -> tuple[list[str], Optional[str], Optional[str]]:
+    previous = _previous_desired_member(resources, index, members)
+    if resource in members and previous is not None:
+        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+
+    next_member = _next_desired_member(resources, index, members)
+    if next_member is not None:
+        return ["pcs", "resource", "group", "add", group_name, resource, "--before", next_member], next_member, None
+    if previous is not None:
+        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+    return ["pcs", "resource", "group", "add", group_name, resource], None, None
+
+
+def _insert_group_member(
+    members: list[str],
+    resource: str,
+    *,
+    before: Optional[str],
+    after: Optional[str],
+) -> list[str]:
+    updated = [member for member in members if member != resource]
+    if before is not None and before in updated:
+        updated.insert(updated.index(before), resource)
+    elif after is not None and after in updated:
+        updated.insert(updated.index(after) + 1, resource)
+    else:
+        updated.append(resource)
+    return updated
+
+
+def _reconcile_group_members(members: list[str], resources: list[str]) -> list[str]:
+    updated = list(members)
+    for index, resource in enumerate(resources):
+        previous = _previous_desired_member(resources, index, updated)
+        if resource in updated and (previous is None or updated.index(previous) < updated.index(resource)):
+            continue
+        _, before, after = _group_add_command("", resource, resources, index, updated)
+        updated = _insert_group_member(updated, resource, before=before, after=after)
+    return updated
