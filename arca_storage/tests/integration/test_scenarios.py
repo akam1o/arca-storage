@@ -11,6 +11,7 @@ from typer.testing import CliRunner
 from arca_storage.api.main import app as api_app
 from arca_storage.cli.cli import app as cli_app
 from arca_storage.errors import NotFoundError
+from .helpers import cli_output
 
 
 class TestSVMWorkflow:
@@ -143,7 +144,7 @@ class TestErrorHandling:
         result = runner.invoke(cli_app, ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24"])
 
         assert result.exit_code == 1
-        assert "Error" in result.output + result.stderr
+        assert "Error" in cli_output(result)
 
     @pytest.mark.integration
     def test_failed_svm_create_retries_existing_record(self, fake_context):

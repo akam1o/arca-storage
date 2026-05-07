@@ -8,6 +8,7 @@ import pytest
 from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
+from .helpers import cli_output
 
 
 class TestSVMCreate:
@@ -35,7 +36,7 @@ class TestSVMCreate:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.output + result.stderr
+        assert "Error" in cli_output(result)
 
     @pytest.mark.integration
     def test_create_svm_invalid_vlan(self):
@@ -46,7 +47,7 @@ class TestSVMCreate:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.output + result.stderr
+        assert "Error" in cli_output(result)
 
     @pytest.mark.integration
     def test_create_svm_invalid_ip(self):
@@ -55,7 +56,7 @@ class TestSVMCreate:
         result = runner.invoke(app, ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "invalid-ip"])  # invalid IP
 
         assert result.exit_code == 1
-        assert "Error" in result.output + result.stderr
+        assert "Error" in cli_output(result)
 
     @pytest.mark.integration
     def test_create_svm_without_vlan(self, fake_context):

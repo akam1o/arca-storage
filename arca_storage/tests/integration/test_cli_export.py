@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
+from .helpers import cli_output
 
 
 def create_test_volume(runner: CliRunner) -> None:
@@ -42,7 +43,7 @@ class TestExportAdd:
         )
 
         assert result.exit_code == 1
-        assert "Error" in result.output + result.stderr
+        assert "Error" in cli_output(result)
 
 
 class TestExportRemove:
