@@ -65,7 +65,7 @@ func (s *MemoryStore) CreateVolume(info *VolumeInfo) error {
 	if info.CreatedAt.IsZero() {
 		info.CreatedAt = time.Now()
 	}
-	s.volumes[info.VolumeID] = info
+	s.volumes[info.VolumeID] = deepCopyVolumeInfo(info)
 	return nil
 }
 
@@ -74,11 +74,16 @@ func (s *MemoryStore) UpdateVolume(info *VolumeInfo) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
-	if _, exists := s.volumes[info.VolumeID]; !exists {
+	existing, exists := s.volumes[info.VolumeID]
+	if !exists {
 		return fmt.Errorf("%w: volume %s", ErrNotFound, info.VolumeID)
 	}
 
-	s.volumes[info.VolumeID] = info
+	updated := deepCopyVolumeInfo(info)
+	if updated.CapacityBytes < existing.CapacityBytes {
+		updated.CapacityBytes = existing.CapacityBytes
+	}
+	s.volumes[info.VolumeID] = updated
 	return nil
 }
 
@@ -92,7 +97,7 @@ func (s *MemoryStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 		return nil, fmt.Errorf("%w: volume %s", ErrNotFound, volumeID)
 	}
 
-	return info, nil
+	return deepCopyVolumeInfo(info), nil
 }
 
 // DeleteVolume removes volume metadata

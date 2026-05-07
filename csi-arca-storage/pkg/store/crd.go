@@ -132,6 +132,9 @@ func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 
 	// Update spec fields
 	updated := volumeInfoToArcaVolume(info)
+	if updated.Spec.CapacityBytes < existing.Spec.CapacityBytes {
+		updated.Spec.CapacityBytes = existing.Spec.CapacityBytes
+	}
 	existing.Spec = updated.Spec
 	if existing.Labels == nil {
 		existing.Labels = make(map[string]string)

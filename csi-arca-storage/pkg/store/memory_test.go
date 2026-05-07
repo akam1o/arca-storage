@@ -29,6 +29,31 @@ func TestMemoryStoreListVolumesStablePagination(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
+	st := NewMemoryStore()
+	if err := st.CreateVolume(&VolumeInfo{VolumeID: "vol-a", CapacityBytes: 20 << 30}); err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+
+	stale, err := st.GetVolume("vol-a")
+	if err != nil {
+		t.Fatalf("GetVolume() error = %v", err)
+	}
+	stale.CapacityBytes = 10 << 30
+
+	if err := st.UpdateVolume(stale); err != nil {
+		t.Fatalf("UpdateVolume() error = %v", err)
+	}
+
+	stored, err := st.GetVolume("vol-a")
+	if err != nil {
+		t.Fatalf("GetVolume(updated) error = %v", err)
+	}
+	if stored.CapacityBytes != 20<<30 {
+		t.Fatalf("capacity = %d, want %d", stored.CapacityBytes, int64(20<<30))
+	}
+}
+
 func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 	st := NewMemoryStore()
 	for _, snapshot := range []*SnapshotInfo{

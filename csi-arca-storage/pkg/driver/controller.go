@@ -985,11 +985,17 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 	if err := d.store.UpdateVolume(volumeInfo); err != nil {
 		return nil, status.Errorf(codes.Internal, "failed to update volume metadata: %v", err)
 	}
+	recordedCapacityBytes := newCapacityBytes
+	if updatedVolumeInfo, err := d.store.GetVolume(volumeID); err == nil {
+		recordedCapacityBytes = maxCapacityBytes(recordedCapacityBytes, updatedVolumeInfo.CapacityBytes)
+	} else {
+		klog.Warningf("Failed to refresh volume metadata after expansion for %s: %v", volumeID, err)
+	}
 
-	klog.Infof("Volume %s expanded successfully to %d bytes", volumeID, newCapacityBytes)
+	klog.Infof("Volume %s expanded successfully to %d bytes", volumeID, recordedCapacityBytes)
 
 	return &csi.ControllerExpandVolumeResponse{
-		CapacityBytes:         newCapacityBytes,
+		CapacityBytes:         recordedCapacityBytes,
 		NodeExpansionRequired: false, // NFS doesn't require node-side expansion
 	}, nil
 }
