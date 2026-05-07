@@ -165,6 +165,18 @@ func (ns *NodeState) ValidateVolumeStagingPath(volumeID, stagingPath string) err
 	return nil
 }
 
+// GetVolumeStaging returns a copy of the staging record for volumeID.
+func (ns *NodeState) GetVolumeStaging(volumeID string) (*VolumeStaging, error) {
+	ns.mu.RLock()
+	defer ns.mu.RUnlock()
+
+	staging, exists := ns.data.Volumes[volumeID]
+	if !exists {
+		return nil, fmt.Errorf("volume %s is not staged in node state", volumeID)
+	}
+	return cloneVolumeStaging(staging), nil
+}
+
 // RemoveVolumeStaging removes a volume from staging records (atomic, with fsync)
 func (ns *NodeState) RemoveVolumeStaging(volumeID string) error {
 	ns.mu.Lock()
@@ -225,14 +237,21 @@ func (ns *NodeState) GetStagedVolumes() map[string]*VolumeStaging {
 	// Return a copy to prevent external modification
 	result := make(map[string]*VolumeStaging, len(ns.data.Volumes))
 	for k, v := range ns.data.Volumes {
-		staging := *v // Copy struct
-		staging.NFSMountOptions = cloneMountOptions(v.NFSMountOptions)
-		staging.PublishedPaths = cloneMountOptions(v.PublishedPaths)
-		staging.PublishedReadOnly = cloneBoolMap(v.PublishedReadOnly)
-		result[k] = &staging
+		result[k] = cloneVolumeStaging(v)
 	}
 
 	return result
+}
+
+func cloneVolumeStaging(staging *VolumeStaging) *VolumeStaging {
+	if staging == nil {
+		return nil
+	}
+	cloned := *staging
+	cloned.NFSMountOptions = cloneMountOptions(staging.NFSMountOptions)
+	cloned.PublishedPaths = cloneMountOptions(staging.PublishedPaths)
+	cloned.PublishedReadOnly = cloneBoolMap(staging.PublishedReadOnly)
+	return &cloned
 }
 
 // GetUniqueSVMs returns a list of unique SVM names from staged volumes

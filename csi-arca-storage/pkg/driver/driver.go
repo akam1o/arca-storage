@@ -71,6 +71,7 @@ type nodeMountManager interface {
 	EnsureSVMMount(context.Context, string, string, string, []string) (string, error)
 	ShouldUnmountSVM(context.Context, string) (bool, error)
 	UnmountSVM(context.Context, string) error
+	GetMountPath(string) (string, error)
 }
 
 // DriverConfig holds configuration for the driver

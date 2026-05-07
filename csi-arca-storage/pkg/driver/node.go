@@ -203,8 +203,19 @@ func (d *Driver) cleanupUnusedSVMMount(ctx context.Context, svmName string) {
 }
 
 func (d *Driver) validateStagedMountForPublish(volumeID, stagingTargetPath string, mounter mountutils.Interface) error {
-	if err := d.nodeState.ValidateVolumeStagingPath(volumeID, stagingTargetPath); err != nil {
+	staging, err := d.nodeState.GetVolumeStaging(volumeID)
+	if err != nil {
 		return status.Errorf(codes.FailedPrecondition, "staging path %s cannot be used for volume %s: %v", stagingTargetPath, volumeID, err)
+	}
+	if staging.StagingPath != stagingTargetPath {
+		return status.Errorf(
+			codes.FailedPrecondition,
+			"staging path %s cannot be used for volume %s: staging path mismatch: recorded=%s requested=%s",
+			stagingTargetPath,
+			volumeID,
+			staging.StagingPath,
+			stagingTargetPath,
+		)
 	}
 
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
@@ -216,6 +227,22 @@ func (d *Driver) validateStagedMountForPublish(volumeID, stagingTargetPath strin
 	}
 	if notMnt {
 		return status.Errorf(codes.FailedPrecondition, "staging path %s is not mounted", stagingTargetPath)
+	}
+
+	if err := validateSVMName(staging.SVMName); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "recorded SVM name for volume %s is invalid: %v", volumeID, err)
+	}
+	if err := validateVolumePath(staging.VolumePath); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "recorded volume path for volume %s is invalid: %v", volumeID, err)
+	}
+
+	svmMountPath, err := d.mountManager.GetMountPath(staging.SVMName)
+	if err != nil {
+		return status.Errorf(codes.FailedPrecondition, "SVM mount for volume %s is not available: %v", volumeID, err)
+	}
+	expectedSource := filepath.Join(svmMountPath, staging.VolumePath)
+	if err := d.sourceValidator().ValidateMountSource(stagingTargetPath, expectedSource); err != nil {
+		return status.Errorf(codes.FailedPrecondition, "staging path %s does not match recorded source: %v", stagingTargetPath, err)
 	}
 
 	return nil
