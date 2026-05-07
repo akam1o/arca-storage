@@ -298,6 +298,61 @@ def test_create_group_reorders_existing_members_when_group_exists(mock_subproces
 
 
 @pytest.mark.unit
+def test_create_group_reorders_first_member_when_group_exists(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource create netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0, stdout="g_svm_tenant_a: ganesha_tenant_a fs_tenant_a\n", stderr=""),
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a fs_tenant_a --before ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a netns_tenant_a --before ganesha_tenant_a
+        MagicMock(returncode=0, stdout="order ms_drbd_r0:promote fs_tenant_a:start\n", stderr=""),
+        MagicMock(returncode=0, stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n", stderr=""),
+    ]
+
+    create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    fs_repair = [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "fs_tenant_a",
+        "--before",
+        "ganesha_tenant_a",
+    ]
+    netns_repair = [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "netns_tenant_a",
+        "--before",
+        "ganesha_tenant_a",
+    ]
+    assert fs_repair in calls
+    assert netns_repair in calls
+    assert calls.index(fs_repair) < calls.index(netns_repair)
+
+
+@pytest.mark.unit
 def test_subprocess_adapter_includes_existing_filesystem_on_retry(mock_subprocess):
     mock_subprocess.side_effect = [
         MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
@@ -464,3 +519,58 @@ def test_subprocess_adapter_reorders_existing_members_when_group_exists(mock_sub
         "--after",
         "netns_tenant_a",
     ] in calls
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_reorders_first_member_when_group_exists(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource create netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0, stdout="g_svm_tenant_a: ganesha_tenant_a fs_tenant_a\n", stderr=""),
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a fs_tenant_a --before ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a netns_tenant_a --before ganesha_tenant_a
+        MagicMock(returncode=0, stdout="order ms_drbd_r0:promote fs_tenant_a:start\n", stderr=""),
+        MagicMock(returncode=0, stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n", stderr=""),
+    ]
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=100,
+        ifname="v100-tenantxxxx",
+        ip="192.168.10.5",
+        prefix=24,
+        gw="192.168.10.1",
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    fs_repair = [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "fs_tenant_a",
+        "--before",
+        "ganesha_tenant_a",
+    ]
+    netns_repair = [
+        "pcs",
+        "resource",
+        "group",
+        "add",
+        "g_svm_tenant_a",
+        "netns_tenant_a",
+        "--before",
+        "ganesha_tenant_a",
+    ]
+    assert fs_repair in calls
+    assert netns_repair in calls
+    assert calls.index(fs_repair) < calls.index(netns_repair)

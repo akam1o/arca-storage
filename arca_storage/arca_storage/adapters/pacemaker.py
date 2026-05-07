@@ -191,8 +191,7 @@ class SubprocessPacemakerAdapter:
     def _ensure_group_members(self, group_name: str, resources: list[str]) -> None:
         members = self._group_members(group_name)
         for index, resource in enumerate(resources):
-            previous = _previous_desired_member(resources, index, members)
-            if resource in members and (previous is None or members.index(previous) < members.index(resource)):
+            if _group_member_is_ordered(resource, resources, index, members):
                 continue
             command, before, after = _group_add_command(group_name, resource, resources, index, members)
             run_cmd(command, timeout=self._timeout)
@@ -337,6 +336,19 @@ def _next_desired_member(resources: list[str], index: int, members: list[str]) -
     return None
 
 
+def _group_member_is_ordered(resource: str, resources: list[str], index: int, members: list[str]) -> bool:
+    if resource not in members:
+        return False
+    resource_index = members.index(resource)
+
+    previous = _previous_desired_member(resources, index, members)
+    if previous is not None:
+        return members.index(previous) < resource_index
+
+    next_member = _next_desired_member(resources, index, members)
+    return next_member is None or resource_index < members.index(next_member)
+
+
 def _group_add_command(
     group_name: str,
     resource: str,
@@ -376,8 +388,7 @@ def _insert_group_member(
 def _reconcile_group_members(members: list[str], resources: list[str]) -> list[str]:
     updated = list(members)
     for index, resource in enumerate(resources):
-        previous = _previous_desired_member(resources, index, updated)
-        if resource in updated and (previous is None or updated.index(previous) < updated.index(resource)):
+        if _group_member_is_ordered(resource, resources, index, updated):
             continue
         _, before, after = _group_add_command("", resource, resources, index, updated)
         updated = _insert_group_member(updated, resource, before=before, after=after)
