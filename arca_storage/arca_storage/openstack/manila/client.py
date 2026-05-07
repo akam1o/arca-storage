@@ -437,6 +437,39 @@ class ArcaManilaClient:
         response = self._make_request("PATCH", f"/v1/volumes/{name}", json_data=data)
         return response.get("data", {}).get("volume", {})
 
+    def list_volumes(
+        self,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> List[Dict[str, Any]]:
+        """List volumes.
+
+        Args:
+            svm: Optional SVM name filter
+            name: Optional volume name filter
+
+        Returns:
+            List of volume info dictionaries
+        """
+        items: List[Dict[str, Any]] = []
+        cursor = None
+
+        while True:
+            params = {"limit": 200}
+            if svm:
+                params["svm"] = svm
+            if name:
+                params["name"] = name
+            if cursor:
+                params["cursor"] = cursor
+
+            response = self._make_request("GET", "/v1/volumes", params=params)
+            data = response.get("data", {})
+            items.extend(data.get("items", []))
+            cursor = data.get("next_cursor")
+            if not cursor:
+                return items
+
     def get_volume(self, name: str, svm: str) -> Dict[str, Any]:
         """Get volume info.
 
@@ -451,9 +484,7 @@ class ArcaManilaClient:
             ArcaShareNotFound: Volume not found
             ArcaManilaAPIError: API error
         """
-        params = {"svm": svm, "name": name}
-        response = self._make_request("GET", "/v1/volumes", params=params)
-        items = response.get("data", {}).get("items", [])
+        items = self.list_volumes(svm=svm, name=name)
         if not items:
             raise ArcaShareNotFound(share_id=name)
         return items[0]

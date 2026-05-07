@@ -88,14 +88,17 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
             fs_type="xfs",
         )
 
-    def test_extend_share_uses_persisted_svm_metadata_without_project_id(
+    def test_extend_share_uses_backend_svm_without_project_id(
         self, driver, mock_arca_client
     ):
         share = {
             "id": "share-123",
             "size": 10,
-            "metadata": {"arca_svm_name": "manila_test-project-id"},
+            "metadata": {"arca_svm_name": "manila_user_supplied"},
         }
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "manila_test-project-id"}
+        ]
 
         driver.extend_share(share, 20, None)
 

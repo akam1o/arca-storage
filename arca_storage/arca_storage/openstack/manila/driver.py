@@ -703,6 +703,117 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 resolved_svm,
             )
 
+    def _share_volume_name(self, share: Any) -> Optional[str]:
+        """Return the ARCA volume name for a Manila share object."""
+        share_id = share.get("id") if hasattr(share, "get") else None
+        return f"share-{share_id}" if share_id else None
+
+    def _svm_from_export_path(
+        self,
+        export_path: Optional[str],
+        volume_name: str,
+    ) -> Optional[str]:
+        """Extract SVM from driver-owned export path format."""
+        if not isinstance(export_path, str) or not export_path.strip():
+            return None
+
+        path = export_path.strip()
+        if ":" in path:
+            path = path.split(":", 1)[1]
+
+        segments = [segment for segment in path.split("/") if segment]
+        if len(segments) >= 2 and segments[-1] == volume_name:
+            return segments[-2]
+        return None
+
+    def _get_export_paths(self, share: Any) -> List[str]:
+        """Return export/provider paths carried by a Manila share object."""
+        if not share or not hasattr(share, "get"):
+            return []
+
+        paths: List[str] = []
+        for key in ("export_location", "provider_location", "export_path"):
+            value = share.get(key)
+            if isinstance(value, str) and value.strip():
+                paths.append(value.strip())
+
+        export_locations = share.get("export_locations")
+        if isinstance(export_locations, list):
+            for location in export_locations:
+                if isinstance(location, str) and location.strip():
+                    paths.append(location.strip())
+                elif hasattr(location, "get"):
+                    for key in ("path", "export_location", "provider_location"):
+                        value = location.get(key)
+                        if isinstance(value, str) and value.strip():
+                            paths.append(value.strip())
+                            break
+
+        return paths
+
+    def _get_svm_from_share_export_locations(
+        self,
+        share: Any,
+        volume_name: str,
+    ) -> Optional[str]:
+        """Resolve SVM from Manila's driver-returned export locations."""
+        for export_path in self._get_export_paths(share):
+            svm_name = self._svm_from_export_path(export_path, volume_name)
+            if svm_name:
+                return svm_name
+        return None
+
+    def _get_svm_from_backend_volume(
+        self,
+        volume_name: str,
+    ) -> Optional[str]:
+        """Resolve SVM from ARCA backend state instead of user metadata."""
+        list_volumes = getattr(self.arca_client, "list_volumes", None)
+        if not callable(list_volumes):
+            return None
+
+        try:
+            volumes = list_volumes(name=volume_name) or []
+        except Exception as e:
+            raise manila_exception.ManilaException(
+                f"Failed to look up ARCA volume {volume_name}: {e}"
+            )
+
+        resolved_svms = set()
+        for volume in volumes:
+            if not isinstance(volume, dict) or volume.get("name") != volume_name:
+                continue
+
+            svm_name = volume.get("svm") or volume.get("svm_name")
+            if not svm_name:
+                svm_name = self._svm_from_export_path(
+                    volume.get("export_path"),
+                    volume_name,
+                )
+            if isinstance(svm_name, str) and svm_name.strip():
+                resolved_svms.add(svm_name.strip())
+
+        if len(resolved_svms) > 1:
+            raise manila_exception.ManilaException(
+                f"Multiple ARCA volumes named {volume_name} found across SVMs"
+            )
+        return next(iter(resolved_svms)) if resolved_svms else None
+
+    def _get_authoritative_svm_for_existing_share(
+        self,
+        share: Any,
+    ) -> Optional[str]:
+        """Resolve create-time SVM from driver-owned state for existing shares."""
+        volume_name = self._share_volume_name(share)
+        if not volume_name:
+            return None
+
+        svm_name = self._get_svm_from_share_export_locations(share, volume_name)
+        if svm_name:
+            return svm_name
+
+        return self._get_svm_from_backend_volume(volume_name)
+
     def _get_svm_for_share(self, share, ensure_exists=False):
         """Determine SVM for a share based on strategy.
 
@@ -720,16 +831,22 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
 
         metadata_svm = self._get_metadata_value(share, "arca_svm_name")
-        if metadata_svm and not ensure_exists and strategy in (
-            "shared",
-            "manual",
-            "per_project",
-        ):
+        authoritative_svm = (
+            None
+            if ensure_exists
+            else self._get_authoritative_svm_for_existing_share(share)
+        )
+        if authoritative_svm:
             LOG.debug(
-                "Using persisted arca_svm_name metadata %r for existing share",
-                metadata_svm,
+                "Using driver-owned SVM mapping %r for existing share",
+                authoritative_svm,
             )
-            return metadata_svm
+            self._warn_if_metadata_svm_ignored(
+                metadata_svm,
+                authoritative_svm,
+                "driver-owned share mapping",
+            )
+            return authoritative_svm
 
         if strategy == "shared":
             # Use default SVM for all shares
@@ -1905,7 +2022,6 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
     # SVM Lifecycle Management
     # NOTE: SVM garbage collection for per_project strategy is planned but not yet implemented.
     # Future implementation will require:
-    # 1. Adding list_volumes(svm) method to ArcaManilaClient
-    # 2. Adding delete_svm(name, force) method to ArcaManilaClient
-    # 3. Proper timezone-aware datetime handling
+    # 1. Adding delete_svm(name, force) method to ArcaManilaClient
+    # 2. Proper timezone-aware datetime handling
     # For now, SVM cleanup must be performed manually via ARCA API or CLI.

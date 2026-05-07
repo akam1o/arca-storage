@@ -95,6 +95,7 @@ def mock_arca_client():
     # Volume (share) operations
     client.create_volume.return_value = {"name": "share-share-123", "export_path": "192.168.100.5:/exports/test-svm/share-share-123"}
     client.get_volume.return_value = {"name": "share-share-123", "export_path": "192.168.100.5:/exports/test-svm/share-share-123"}
+    client.list_volumes.return_value = []
     client.delete_volume.return_value = None
     client.resize_volume.return_value = {"name": "share-share-123"}
     client.clone_volume_from_snapshot.return_value = {

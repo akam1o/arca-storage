@@ -295,11 +295,13 @@ class TestMetadataPersistence:
         # New share should have same SVM as source
         assert new_share["metadata"]["arca_svm_name"] == "test-svm"
 
-    def test_operations_use_persisted_metadata(self, driver, mock_arca_client, mock_manila_share):
-        """Test that subsequent operations use persisted metadata."""
-        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+    def test_operations_use_driver_owned_svm_mapping(self, driver, mock_arca_client, mock_manila_share):
+        """Test that subsequent operations ignore caller-supplied metadata."""
+        mock_manila_share["metadata"]["arca_svm_name"] = "user-supplied-svm"
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "test-svm"}
+        ]
 
-        # All these operations should use the persisted SVM name
         driver.extend_share(mock_manila_share, 20, None)
         assert mock_arca_client.resize_volume.call_args[1]["svm"] == "test-svm"
 

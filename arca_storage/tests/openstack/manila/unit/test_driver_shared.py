@@ -74,8 +74,10 @@ class TestArcaStorageManilaDriverSharedStrategy:
         )
 
     def test_delete_share_calls_delete_volume(self, driver, mock_arca_client, mock_manila_share):
-        # Share metadata tells driver which SVM to use.
-        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_manila_share["metadata"]["arca_svm_name"] = "user-supplied-svm"
+        mock_manila_share["export_locations"] = [
+            {"path": "192.168.100.5:/exports/test-svm/share-share-123"}
+        ]
         driver.delete_share(Mock(), mock_manila_share, None)
         mock_arca_client.delete_volume.assert_called_once_with(
             name="share-share-123",

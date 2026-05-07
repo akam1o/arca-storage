@@ -111,6 +111,27 @@ class TestArcaManilaClientOperations:
             assert vol["name"] == "share-123"
             assert vol["export_path"] == "vip:/path"
 
+    def test_list_volumes_follows_pagination(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"name": "share-123"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"name": "share-456"}], "next_cursor": None}},
+            ]
+
+            result = client.list_volumes(svm="svm1", name="share-123")
+
+        assert result == [{"name": "share-123"}, {"name": "share-456"}]
+        mock_make.assert_has_calls(
+            [
+                call("GET", "/v1/volumes", params={"limit": 200, "svm": "svm1", "name": "share-123"}),
+                call(
+                    "GET",
+                    "/v1/volumes",
+                    params={"limit": 200, "svm": "svm1", "name": "share-123", "cursor": "cursor-1"},
+                ),
+            ]
+        )
+
     def test_clone_volume_from_snapshot_uses_api_snapshot_field(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.return_value = {"data": {"volume": {"name": "share-new"}}}
