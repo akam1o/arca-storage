@@ -287,6 +287,64 @@ class TestArcaStorageClient(unittest.TestCase):
         mock_session.request.assert_called_once()
 
     @patch("arca_storage.openstack.cinder.client.requests")
+    def test_list_volumes_follows_pagination(self, mock_requests):
+        """Test volume listing follows cursor pagination."""
+        first_response = Mock()
+        first_response.status_code = 200
+        first_response.json.return_value = {
+            "data": {"items": [{"name": "vol1"}], "next_cursor": "cursor-1"}
+        }
+        second_response = Mock()
+        second_response.status_code = 200
+        second_response.json.return_value = {
+            "data": {"items": [{"name": "vol2"}], "next_cursor": None}
+        }
+
+        mock_session = Mock()
+        mock_session.request.side_effect = [first_response, second_response]
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+        result = client.list_volumes(svm="test-svm", limit=1)
+
+        assert [item["name"] for item in result] == ["vol1", "vol2"]
+        assert mock_session.request.call_count == 2
+        assert mock_session.request.call_args_list[0].kwargs["params"] == {
+            "svm": "test-svm",
+            "limit": 1,
+        }
+        assert mock_session.request.call_args_list[1].kwargs["params"] == {
+            "svm": "test-svm",
+            "limit": 1,
+            "cursor": "cursor-1",
+        }
+
+    @patch("arca_storage.openstack.cinder.client.requests")
+    def test_list_exports_follows_pagination(self, mock_requests):
+        """Test export listing follows cursor pagination."""
+        first_response = Mock()
+        first_response.status_code = 200
+        first_response.json.return_value = {
+            "data": {"items": [{"client": "10.0.0.0/24"}], "next_cursor": "cursor-1"}
+        }
+        second_response = Mock()
+        second_response.status_code = 200
+        second_response.json.return_value = {
+            "data": {"items": [{"client": "10.0.1.0/24"}], "next_cursor": None}
+        }
+
+        mock_session = Mock()
+        mock_session.request.side_effect = [first_response, second_response]
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+        result = client.list_exports(svm="test-svm", volume="test-vol", limit=1)
+
+        assert [item["client"] for item in result] == ["10.0.0.0/24", "10.0.1.0/24"]
+        assert mock_session.request.call_count == 2
+        assert mock_session.request.call_args_list[1].kwargs["params"]["cursor"] == "cursor-1"
+
+    @patch("arca_storage.openstack.cinder.client.requests")
     def test_list_svms_success(self, mock_requests):
         """Test successful SVM listing."""
         mock_response = Mock()
@@ -310,6 +368,34 @@ class TestArcaStorageClient(unittest.TestCase):
         assert len(result) == 2
         assert result[0]["name"] == "svm1"
         assert result[1]["name"] == "svm2"
+
+    @patch("arca_storage.openstack.cinder.client.requests")
+    def test_list_svms_follows_pagination(self, mock_requests):
+        """Test SVM listing follows cursor pagination."""
+        first_response = Mock()
+        first_response.status_code = 200
+        first_response.json.return_value = {
+            "data": {"items": [{"name": "svm1"}], "next_cursor": "cursor-1"}
+        }
+        second_response = Mock()
+        second_response.status_code = 200
+        second_response.json.return_value = {
+            "data": {"items": [{"name": "svm2"}], "next_cursor": None}
+        }
+
+        mock_session = Mock()
+        mock_session.request.side_effect = [first_response, second_response]
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+        result = client.list_svms(limit=1)
+
+        assert [item["name"] for item in result] == ["svm1", "svm2"]
+        assert mock_session.request.call_count == 2
+        assert mock_session.request.call_args_list[1].kwargs["params"] == {
+            "limit": 1,
+            "cursor": "cursor-1",
+        }
 
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_get_svm_success(self, mock_requests):
