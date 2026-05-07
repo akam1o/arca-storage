@@ -720,6 +720,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
 
         metadata_svm = self._get_metadata_value(share, "arca_svm_name")
+        if metadata_svm and not ensure_exists and strategy in (
+            "shared",
+            "manual",
+            "per_project",
+        ):
+            LOG.debug(
+                "Using persisted arca_svm_name metadata %r for existing share",
+                metadata_svm,
+            )
+            return metadata_svm
 
         if strategy == "shared":
             # Use default SVM for all shares

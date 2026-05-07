@@ -88,14 +88,19 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
             fs_type="xfs",
         )
 
-    def test_missing_project_id_does_not_fallback_to_metadata(self, driver, mock_arca_client):
+    def test_extend_share_uses_persisted_svm_metadata_without_project_id(
+        self, driver, mock_arca_client
+    ):
         share = {
             "id": "share-123",
             "size": 10,
-            "metadata": {"arca_svm_name": "manila_other-project"},
+            "metadata": {"arca_svm_name": "manila_test-project-id"},
         }
 
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException):
-            driver.extend_share(share, 20, None)
+        driver.extend_share(share, 20, None)
 
-        mock_arca_client.resize_volume.assert_not_called()
+        mock_arca_client.resize_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="manila_test-project-id",
+            new_size_gib=20,
+        )

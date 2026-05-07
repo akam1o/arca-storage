@@ -559,6 +559,29 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert updates == {}
         self.driver.arca_client.apply_qos.assert_not_called()
 
+    def test_retype_rejects_manual_svm_changes(self):
+        """Retype cannot change the SVM that owns an existing backing file."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        volume = self._create_mock_volume()
+        volume.volume_type = {
+            "extra_specs": {"arca_storage:svm_name": "source-svm"}
+        }
+        new_type = {
+            "name": "target-type",
+            "extra_specs": {"arca_storage:svm_name": "target-svm"},
+        }
+        diff = {
+            "extra_specs": {
+                "arca_storage:svm_name": ("source-svm", "target-svm")
+            }
+        }
+
+        changed, updates = self.driver.retype(None, volume, new_type, diff, None)
+
+        assert changed is False
+        assert updates == {}
+        self.driver.arca_client.apply_qos.assert_not_called()
+
 
 if __name__ == "__main__":
     pytest.main([__file__, "-v"])

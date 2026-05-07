@@ -77,14 +77,33 @@ class TestArcaStorageManilaDriverManualStrategy:
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
             driver.create_share(Mock(), mock_manila_share, None)
 
-    def test_missing_share_type_does_not_fallback_to_metadata(self, driver, mock_arca_client):
+    def test_delete_share_uses_persisted_svm_metadata_without_share_type(self, driver, mock_arca_client):
         share = {
             "id": "share-123",
             "size": 10,
-            "metadata": {"arca_svm_name": "other-svm"},
+            "metadata": {"arca_svm_name": "target-svm"},
         }
 
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException):
-            driver.delete_share(Mock(), share, None)
+        driver.delete_share(Mock(), share, None)
 
-        mock_arca_client.delete_volume.assert_not_called()
+        mock_arca_client.delete_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="target-svm",
+            force=False,
+        )
+
+    def test_extend_share_uses_persisted_svm_metadata_over_share_type(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "original-svm"
+        mock_manila_share["share_type"]["extra_specs"] = {
+            "arca_manila:svm_name": "new-svm"
+        }
+
+        driver.extend_share(mock_manila_share, 20, None)
+
+        mock_arca_client.resize_volume.assert_called_once_with(
+            name="share-share-123",
+            svm="original-svm",
+            new_size_gib=20,
+        )

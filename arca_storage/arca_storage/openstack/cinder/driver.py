@@ -469,8 +469,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         elif strategy == "manual":
             # Check volume type extra_specs
             if hasattr(volume, "volume_type") and volume.volume_type:
-                extra_specs = self._get_volume_type_extra_specs(volume.volume_type)
-                svm_name = extra_specs.get("arca_storage:svm_name")
+                svm_name = self._svm_name_from_volume_type(volume.volume_type)
                 if svm_name:
                     return svm_name
 
@@ -595,6 +594,34 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return value if isinstance(value, dict) else {}
 
         return {}
+
+    def _svm_name_from_volume_type(self, volume_type) -> Optional[str]:
+        """Return normalized ARCA SVM extra spec from a Cinder volume type."""
+        extra_specs = self._get_volume_type_extra_specs(volume_type)
+        svm_name = extra_specs.get("arca_storage:svm_name")
+        if isinstance(svm_name, str):
+            svm_name = svm_name.strip()
+        return svm_name or None
+
+    def _retype_preserves_svm_mapping(self, volume, new_type) -> bool:
+        """Return whether a retype keeps the volume on its create-time SVM."""
+        if self.configuration.arca_storage_svm_strategy != "manual":
+            return True
+
+        current_svm = self._svm_name_from_volume_type(
+            getattr(volume, "volume_type", None)
+        )
+        requested_svm = self._svm_name_from_volume_type(new_type)
+        if current_svm == requested_svm:
+            return True
+
+        LOG.error(
+            "Retype would change ARCA SVM for volume %s: current=%s requested=%s",
+            getattr(volume, "name", "<unknown>"),
+            current_svm,
+            requested_svm,
+        )
+        return False
 
     def _cleanup_failed_volume(self, volume_name: str, cleanup_state: dict):
         """Cleanup resources after failed volume creation.
@@ -1088,6 +1115,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         try:
             # For ARCA Storage NFS driver, we mainly care about QoS changes
             # Other attributes (thin provisioning, etc.) are set at volume creation
+            if not self._retype_preserves_svm_mapping(volume, new_type):
+                return False, {}
 
             # Check if QoS specs changed
             if "qos_specs" in diff or "extra_specs" in diff:
