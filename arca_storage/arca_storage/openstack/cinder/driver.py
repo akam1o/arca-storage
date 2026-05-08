@@ -5,6 +5,7 @@ using NFS as the transport protocol.
 """
 
 import os
+import posixpath
 from typing import Any, Dict, Optional
 
 from oslo_log import log as logging
@@ -177,7 +178,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         }
 
         try:
-            # Determine SVM for this volume
+            # Determine SVM placement for this new volume.
             svm_name = self._get_svm_for_volume(volume)
             cleanup_state["svm_name"] = svm_name
 
@@ -213,11 +214,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Apply QoS if specified in volume type
             self._apply_qos_to_volume(volume)
 
-            # Store provider location (per-SVM export path)
-            # Note: All volumes in same SVM share this export
-            provider_location = export_path
-
-            return {"provider_location": provider_location}
+            return self._volume_model_update(svm_name, export_path)
 
         except arca_exceptions.ArcaStorageException as e:
             msg = _("Failed to create volume %s: %s") % (volume_name, e)
@@ -246,8 +243,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         LOG.info("Deleting volume: %s (ID: %s)", volume_name, volume_id)
 
         try:
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
+            # Use the SVM recorded when the volume was created.
+            svm_name = self._get_existing_volume_svm(volume)
 
             # Get SVM-level mount point (per-SVM export architecture)
             mount_point = arca_utils.get_mount_point_for_svm(
@@ -308,8 +305,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         )
 
         try:
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
+            # Use the SVM recorded when the volume was created.
+            svm_name = self._get_existing_volume_svm(volume)
 
             # Get SVM-level mount point (per-SVM export architecture)
             mount_point = arca_utils.get_mount_point_for_svm(
@@ -375,7 +372,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             else:
                 # Fallback: regenerate per-SVM export path
                 # (for volumes created before per-SVM export architecture)
-                svm_name = self._get_svm_for_volume(volume)
+                svm_name = self._get_existing_volume_svm(volume)
                 # Use per-SVM export path, NOT per-volume export path
                 export_path = self._get_export_path(svm_name)
                 LOG.warning(
@@ -492,6 +489,51 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             msg = _("Invalid SVM strategy: %s") % strategy
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
+
+    def _volume_provider_svm(self, volume) -> Optional[str]:
+        """Return the driver-managed SVM persisted on a Cinder volume."""
+        provider_id = getattr(volume, "provider_id", None)
+        if isinstance(provider_id, str):
+            provider_id = provider_id.strip()
+            if provider_id:
+                return provider_id
+        return None
+
+    def _svm_from_volume_provider_location(self, volume) -> Optional[str]:
+        """Best-effort SVM inference for legacy volumes without provider_id."""
+        provider_location = getattr(volume, "provider_location", None)
+        if not isinstance(provider_location, str):
+            return None
+
+        provider_location = provider_location.strip()
+        if not provider_location:
+            return None
+
+        _server, separator, export_root = provider_location.rpartition(":")
+        if not separator or not export_root.startswith("/"):
+            return None
+
+        svm_name = posixpath.basename(export_root.rstrip("/"))
+        if svm_name and svm_name not in (".", "/"):
+            return svm_name
+        return None
+
+    def _get_existing_volume_svm(self, volume) -> str:
+        """Resolve the SVM that owns an already-created volume."""
+        svm_name = self._volume_provider_svm(volume)
+        if svm_name:
+            return svm_name
+
+        svm_name = self._svm_from_volume_provider_location(volume)
+        if svm_name:
+            LOG.warning(
+                "Volume %s has no provider_id; inferred SVM %s from provider_location",
+                getattr(volume, "name", getattr(volume, "id", "<unknown>")),
+                svm_name,
+            )
+            return svm_name
+
+        return self._get_svm_for_volume(volume)
 
     def _get_svm_info(self, svm_name: str, refresh: bool = False) -> Dict[str, Any]:
         """Get SVM information, optionally using the last cached response.
@@ -612,6 +654,13 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
     def _snapshot_model_update(self, svm_name: str, export_path: str) -> Dict[str, Any]:
         """Return driver-managed snapshot storage fields for future cleanup."""
+        return {
+            "provider_location": export_path,
+            "provider_id": svm_name,
+        }
+
+    def _volume_model_update(self, svm_name: str, export_path: str) -> Dict[str, Any]:
+        """Return driver-managed volume storage fields for future operations."""
         return {
             "provider_location": export_path,
             "provider_id": svm_name,
@@ -760,8 +809,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             context = self._get_operation_context(snapshot=snapshot)
             volume = self.db.volume_get(context, volume_id)
 
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
+            # Use the SVM recorded when the source volume was created.
+            svm_name = self._get_existing_volume_svm(volume)
 
             export_path, mount_point = self._mount_svm_export(svm_name)
 
@@ -908,12 +957,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 )
                 LOG.info("Extended volume file to %sGB", volume_size)
 
-            # Store provider location (export path)
-            provider_location = target_export_path
-
             # Note: We do NOT unmount to avoid concurrency issues
 
-            return {"provider_location": provider_location}
+            return self._volume_model_update(target_svm_name, target_export_path)
 
         except Exception as e:
             if volume_file_created and volume_file:
@@ -959,7 +1005,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_file_created = False
 
         try:
-            source_svm_name = self._get_svm_for_volume(src_vref)
+            source_svm_name = self._get_existing_volume_svm(src_vref)
             target_svm_name = self._get_svm_for_volume(volume)
             self._ensure_copy_stays_within_svm(
                 "clone",
@@ -993,12 +1039,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 )
                 LOG.info("Extended cloned volume file to %sGB", volume_size)
 
-            # Store provider location (export path)
-            provider_location = target_export_path
-
             # Note: We do NOT unmount to avoid concurrency issues
 
-            return {"provider_location": provider_location}
+            return self._volume_model_update(target_svm_name, target_export_path)
 
         except Exception as e:
             if volume_file_created and volume_file:
