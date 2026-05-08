@@ -1524,6 +1524,113 @@ func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T)
 	if !store.IsVolumeReady(stored) {
 		t.Fatalf("target volume metadata was not marked ready")
 	}
+	if stored.TemporaryCloneSnapshot != temporarySnapshotName || stored.TemporaryCloneSourceVolumePath != "source-path" {
+		t.Fatalf("temporary clone metadata = (%q, %q), want (%q, source-path)", stored.TemporaryCloneSnapshot, stored.TemporaryCloneSourceVolumePath, temporarySnapshotName)
+	}
+}
+
+func TestCreateVolumeRetriesTemporaryCloneSnapshotCleanupForReadyVolume(t *testing.T) {
+	st := store.NewMemoryStore()
+	const sourceCapacity = int64(2 << 30)
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		ExportRoot:    "/exports/svm-a",
+		Path:          "source-path",
+		CapacityBytes: sourceCapacity,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	targetPath := volumeIDGen.GenerateVolumeID("clone-pvc")
+	temporarySnapshotName := "clone-" + targetPath + "-0123456789abcdef"
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      targetPath,
+		Name:          "clone-pvc",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		ExportRoot:    "/exports/svm-a",
+		Path:          targetPath,
+		CapacityBytes: sourceCapacity,
+		ContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "source-vol"},
+			},
+		},
+		ReadyToUse:                     store.VolumeReadyState(true),
+		TemporaryCloneSnapshot:         temporarySnapshotName,
+		TemporaryCloneSourceVolumePath: "source-path",
+	}); err != nil {
+		t.Fatalf("seed ready target volume: %v", err)
+	}
+
+	var snapshotDeleted bool
+	var deletedQuery string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+temporarySnapshotName:
+			snapshotDeleted = true
+			deletedQuery = r.URL.RawQuery
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	resp, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "clone-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "clone-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: sourceCapacity},
+		VolumeCapabilities: testVolumeCapabilities(),
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "source-vol"},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+	if resp.GetVolume().GetVolumeId() != targetPath {
+		t.Fatalf("response volume ID = %q, want %q", resp.GetVolume().GetVolumeId(), targetPath)
+	}
+	if !snapshotDeleted {
+		t.Fatalf("temporary snapshot cleanup was not retried")
+	}
+	if deletedQuery != "svm=svm-a&volume=source-path" {
+		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
+	}
+	stored, err := st.GetVolume(targetPath)
+	if err != nil {
+		t.Fatalf("stored volume not found: %v", err)
+	}
+	if stored.TemporaryCloneSnapshot != "" || stored.TemporaryCloneSourceVolumePath != "" {
+		t.Fatalf("temporary clone metadata was not cleared: %#v", stored)
+	}
+	if !store.IsVolumeReady(stored) {
+		t.Fatalf("stored volume is not ready")
+	}
 }
 
 func TestCreateVolumeIgnoresLegacyTemporaryCloneSnapshot(t *testing.T) {

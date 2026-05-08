@@ -214,6 +214,9 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				Volume: existingVol.ToCSIVolume(),
 			}, nil
 		}
+		if existingVol.TemporaryCloneSnapshot != "" {
+			d.retryTemporaryCloneSnapshotCleanup(existingVol)
+		}
 		klog.V(4).Infof("Volume %s already exists, returning existing volume", volumeID)
 		return &csi.CreateVolumeResponse{
 			Volume: existingVol.ToCSIVolume(),
@@ -628,6 +631,21 @@ func (d *Driver) cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol *store.Volu
 	volumeInfo.TemporaryCloneSnapshot = ""
 	volumeInfo.TemporaryCloneSourceVolumePath = ""
 	return nil
+}
+
+func (d *Driver) retryTemporaryCloneSnapshotCleanup(volumeInfo *store.VolumeInfo) {
+	sourceVol, err := d.temporaryCloneSourceVolume(volumeInfo)
+	if err != nil {
+		klog.Warningf("Failed to resolve source volume for temporary clone snapshot cleanup on %s: %v", volumeInfo.VolumeID, err)
+		return
+	}
+	if err := d.cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol); err != nil {
+		klog.Warningf("Failed to retry temporary clone snapshot cleanup for %s: %v", volumeInfo.VolumeID, err)
+		return
+	}
+	if err := d.store.UpdateVolume(volumeInfo); err != nil {
+		klog.Warningf("Failed to persist temporary clone snapshot cleanup for %s: %v", volumeInfo.VolumeID, err)
+	}
 }
 
 func (d *Driver) finishSnapshotVolumeClone(ctx context.Context, volumeInfo *store.VolumeInfo, allowExistingBackend bool) error {
