@@ -1487,7 +1487,7 @@ func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T)
 	}
 }
 
-func TestCreateVolumeCleansUpExistingTemporaryCloneSnapshotOnRetry(t *testing.T) {
+func TestCreateVolumeRejectsExistingTemporaryCloneSnapshot(t *testing.T) {
 	st := store.NewMemoryStore()
 	const sourceCapacity = int64(4 << 30)
 	if err := st.CreateVolume(&store.VolumeInfo{
@@ -1506,13 +1506,7 @@ func TestCreateVolumeCleansUpExistingTemporaryCloneSnapshotOnRetry(t *testing.T)
 	temporarySnapshotName := "clone-" + targetPath
 	var snapshotConflict bool
 	var snapshotDeleted bool
-	var deletedVolume string
-	var cloneBody struct {
-		Name     string `json:"name"`
-		SVM      string `json:"svm"`
-		Snapshot string `json:"snapshot"`
-		SizeGiB  int    `json:"size_gib"`
-	}
+	var cloneAttempted bool
 
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -1522,18 +1516,11 @@ func TestCreateVolumeCleansUpExistingTemporaryCloneSnapshotOnRetry(t *testing.T)
 			w.WriteHeader(http.StatusConflict)
 			_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"ALREADY_EXISTS","message":"snapshot already exists","details":{"resource":"Snapshot"}}}`))
 		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/source-path/clone":
-			body, _ := io.ReadAll(r.Body)
-			if err := json.Unmarshal(body, &cloneBody); err != nil {
-				t.Fatalf("clone body unmarshal error = %v", err)
-			}
-			w.WriteHeader(http.StatusCreated)
-			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"volume":{"name":"cloned"}}}`))
+			cloneAttempted = true
+			http.Error(w, "clone should not be attempted", http.StatusInternalServerError)
 		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+temporarySnapshotName:
 			snapshotDeleted = true
-			deletedVolume = r.URL.Query().Get("volume")
 			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
-		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
-			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
 		default:
 			http.NotFound(w, r)
 		}
@@ -1568,20 +1555,17 @@ func TestCreateVolumeCleansUpExistingTemporaryCloneSnapshotOnRetry(t *testing.T)
 		},
 	})
 
-	if err != nil {
-		t.Fatalf("CreateVolume() error = %v", err)
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("expected Aborted error, got %v", err)
 	}
 	if !snapshotConflict {
 		t.Fatalf("existing temporary snapshot path was not exercised")
 	}
-	if cloneBody.Name != targetPath || cloneBody.SVM != "svm-a" || cloneBody.Snapshot != temporarySnapshotName {
-		t.Fatalf("CloneVolumeFromSnapshot body = %#v", cloneBody)
+	if cloneAttempted {
+		t.Fatalf("clone was attempted with an unowned temporary snapshot")
 	}
-	if !snapshotDeleted {
-		t.Fatalf("existing temporary snapshot was not deleted after clone retry")
-	}
-	if deletedVolume != "source-path" {
-		t.Fatalf("deleted snapshot volume = %q, want source-path", deletedVolume)
+	if snapshotDeleted {
+		t.Fatalf("existing temporary snapshot was deleted")
 	}
 }
 

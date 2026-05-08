@@ -285,7 +285,14 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				SVM:    sourceVol.SVMName,
 				Volume: sourceVol.Path,
 			})
-			if err != nil && !arca.IsAlreadyExistsError(err) {
+			if err != nil {
+				if arca.IsAlreadyExistsError(err) {
+					return nil, status.Errorf(
+						codes.Aborted,
+						"temporary clone snapshot %s already exists but is not owned by this request",
+						temporarySnapshotName,
+					)
+				}
 				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
 			}
 			temporarySnapshotReady = true
