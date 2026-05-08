@@ -21,6 +21,8 @@ from . import utils as arca_utils
 LOG = logging.getLogger(__name__)
 
 VERSION = "1.0.0"
+SNAPSHOT_METADATA_SVM_KEY = "arca_storage:svm_name"
+SNAPSHOT_METADATA_EXPORT_KEY = "arca_storage:export_path"
 
 
 class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
@@ -493,11 +495,12 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
-    def _get_svm_info(self, svm_name: str) -> Dict[str, Any]:
-        """Get SVM information with caching.
+    def _get_svm_info(self, svm_name: str, refresh: bool = False) -> Dict[str, Any]:
+        """Get SVM information, optionally using the last cached response.
 
         Args:
             svm_name: SVM name
+            refresh: Fetch from the API even when a cached response exists.
 
         Returns:
             SVM information dictionary
@@ -505,8 +508,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         Raises:
             arca_exceptions.ArcaSVMNotFound: If SVM not found
         """
-        # Check cache first
-        if svm_name in self._svm_cache:
+        if not refresh and svm_name in self._svm_cache:
             return self._svm_cache[svm_name]
 
         # Fetch from API
@@ -549,7 +551,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return f"{self.configuration.arca_storage_nfs_server}:{export_root}"
 
         if self.configuration.arca_storage_use_api:
-            svm_info = self._get_svm_info(svm_name)
+            svm_info = self._get_svm_info(svm_name, refresh=True)
             svm_vip = svm_info["vip"]
             export_root = svm_info.get("export_root") or self._configured_svm_export_root(svm_name)
             return f"{svm_vip}:{export_root}"
@@ -564,6 +566,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
     def _mount_svm_export(self, svm_name: str) -> tuple[str, str]:
         """Mount an SVM export and return (export_path, mount_point)."""
         export_path = self._get_export_path(svm_name)
+        return self._mount_svm_export_path(svm_name, export_path)
+
+    def _mount_svm_export_path(self, svm_name: str, export_path: str) -> tuple[str, str]:
+        """Mount the provided export path for an SVM."""
         mount_point = arca_utils.get_mount_point_for_svm(
             self.configuration.arca_storage_nfs_mount_point_base,
             svm_name,
@@ -574,6 +580,88 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             mount_options=self.configuration.arca_storage_nfs_mount_options,
         )
         return export_path, mount_point
+
+    def _get_snapshot_metadata(self, snapshot) -> Dict[str, Any]:
+        """Return snapshot metadata as a plain dictionary."""
+        metadata = getattr(snapshot, "metadata", None)
+        if isinstance(metadata, dict):
+            return dict(metadata)
+
+        if metadata is None:
+            return {}
+
+        try:
+            return dict(metadata)
+        except (TypeError, ValueError):
+            return {}
+
+    def _snapshot_provider_location(self, snapshot) -> Optional[str]:
+        """Return a persisted snapshot provider_location when present."""
+        provider_location = getattr(snapshot, "provider_location", None)
+        if isinstance(provider_location, str):
+            provider_location = provider_location.strip()
+            if provider_location:
+                return provider_location
+        return None
+
+    def _get_snapshot_storage(self, snapshot) -> tuple[str, str]:
+        """Resolve the SVM and export path where a snapshot file is stored."""
+        metadata = self._get_snapshot_metadata(snapshot)
+        svm_name = metadata.get(SNAPSHOT_METADATA_SVM_KEY)
+        if isinstance(svm_name, str):
+            svm_name = svm_name.strip()
+        else:
+            svm_name = None
+
+        export_path = metadata.get(SNAPSHOT_METADATA_EXPORT_KEY)
+        if not isinstance(export_path, str) or not export_path.strip():
+            export_path = self._snapshot_provider_location(snapshot)
+        else:
+            export_path = export_path.strip()
+
+        if svm_name:
+            return svm_name, export_path or self._get_export_path(svm_name)
+
+        volume_id = snapshot.volume_id
+        context = self._get_operation_context(snapshot=snapshot)
+        volume = self.db.volume_get(context, volume_id)
+        svm_name = self._get_svm_for_volume(volume)
+        return svm_name, export_path or self._get_export_path(svm_name)
+
+    def _snapshot_model_update(self, svm_name: str, export_path: str, snapshot) -> Dict[str, Any]:
+        """Return persisted snapshot storage fields for future cleanup."""
+        metadata = self._get_snapshot_metadata(snapshot)
+        metadata.update(
+            {
+                SNAPSHOT_METADATA_SVM_KEY: svm_name,
+                SNAPSHOT_METADATA_EXPORT_KEY: export_path,
+            }
+        )
+        return {
+            "provider_location": export_path,
+            "metadata": metadata,
+        }
+
+    def _ensure_copy_stays_within_svm(
+        self,
+        operation: str,
+        source_svm_name: str,
+        target_svm_name: str,
+    ) -> None:
+        """Reject copy-style operations that would cross SVM boundaries."""
+        if source_svm_name == target_svm_name:
+            return
+
+        msg = _(
+            "Cross-SVM %(operation)s is not supported: "
+            "source SVM %(source)s differs from target SVM %(target)s"
+        ) % {
+            "operation": operation,
+            "source": source_svm_name,
+            "target": target_svm_name,
+        }
+        LOG.error(msg)
+        raise exception.VolumeBackendAPIException(data=msg)
 
     def _get_volume_type_extra_specs(self, volume_type) -> Dict[str, Any]:
         """Return extra_specs dict from either an object or a dict-like."""
@@ -700,20 +788,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Determine SVM for this volume
             svm_name = self._get_svm_for_volume(volume)
 
-            # Get NFS export path (per-SVM, not per-volume)
-            export_path = self._get_export_path(svm_name)
-
-            # Mount SVM's NFS export (idempotent - won't remount if already mounted)
-            mount_point = arca_utils.get_mount_point_for_svm(
-                self.configuration.arca_storage_nfs_mount_point_base,
-                svm_name,
-            )
-
-            arca_utils.mount_nfs(
-                export_path=export_path,
-                mount_point=mount_point,
-                mount_options=self.configuration.arca_storage_nfs_mount_options,
-            )
+            export_path, mount_point = self._mount_svm_export(svm_name)
 
             # Source volume file path
             source_file = os.path.join(mount_point, f"volume-{volume_id}")
@@ -732,7 +807,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Note: We do NOT unmount to avoid concurrency issues
             # The SVM export remains mounted for subsequent operations
 
-            return {}  # Cinder expects empty dict for snapshot creation
+            return self._snapshot_model_update(svm_name, export_path, snapshot)
 
         except Exception as e:
             msg = _("Failed to create snapshot %s: %s") % (snapshot_name, e)
@@ -760,27 +835,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         mount_point = None
         try:
-            # Get source volume to determine SVM
-            context = self._get_operation_context(snapshot=snapshot)
-            volume = self.db.volume_get(context, volume_id)
-
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
-
-            # Get NFS export path (per-SVM, not per-volume)
-            export_path = self._get_export_path(svm_name)
-
-            # Mount SVM's NFS export (idempotent - won't remount if already mounted)
-            mount_point = arca_utils.get_mount_point_for_svm(
-                self.configuration.arca_storage_nfs_mount_point_base,
-                svm_name,
-            )
-
-            arca_utils.mount_nfs(
-                export_path=export_path,
-                mount_point=mount_point,
-                mount_options=self.configuration.arca_storage_nfs_mount_options,
-            )
+            svm_name, export_path = self._get_snapshot_storage(snapshot)
+            _, mount_point = self._mount_svm_export_path(svm_name, export_path)
 
             # Snapshot file path (using snapshot ID)
             snapshot_file = os.path.join(mount_point, f"snapshot-{snapshot_id}")
@@ -821,7 +877,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         snapshot_name = snapshot.name
         snapshot_id = snapshot.id
-        source_volume_id = snapshot.volume_id
 
         LOG.info(
             "Creating volume: %s (id=%s, size=%sGB) from snapshot: %s (id=%s)",
@@ -835,21 +890,19 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_file = None
         volume_file_created = False
         try:
-            # Get source volume to determine SVM
-            # IMPORTANT: Use snapshot's volume, not the new volume
-            context = self._get_operation_context(volume=volume, snapshot=snapshot)
-            source_volume = self.db.volume_get(context, source_volume_id)
-
-            # Snapshot data lives in the source SVM, while the new volume must
-            # be placed according to the target volume's SVM mapping.
-            source_svm_name = self._get_svm_for_volume(source_volume)
+            source_svm_name, source_export_path = self._get_snapshot_storage(snapshot)
             target_svm_name = self._get_svm_for_volume(volume)
-            source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
-            if target_svm_name == source_svm_name:
-                target_export_path = source_export_path
-                target_mount_point = source_mount_point
-            else:
-                target_export_path, target_mount_point = self._mount_svm_export(target_svm_name)
+            self._ensure_copy_stays_within_svm(
+                "create volume from snapshot",
+                source_svm_name,
+                target_svm_name,
+            )
+            source_export_path, source_mount_point = self._mount_svm_export_path(
+                source_svm_name,
+                source_export_path,
+            )
+            target_export_path = source_export_path
+            target_mount_point = source_mount_point
 
             # Snapshot file path (using snapshot ID)
             snapshot_file = os.path.join(source_mount_point, f"snapshot-{snapshot_id}")
@@ -933,12 +986,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         try:
             source_svm_name = self._get_svm_for_volume(src_vref)
             target_svm_name = self._get_svm_for_volume(volume)
+            self._ensure_copy_stays_within_svm(
+                "clone",
+                source_svm_name,
+                target_svm_name,
+            )
             source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
-            if target_svm_name == source_svm_name:
-                target_export_path = source_export_path
-                target_mount_point = source_mount_point
-            else:
-                target_export_path, target_mount_point = self._mount_svm_export(target_svm_name)
+            target_export_path = source_export_path
+            target_mount_point = source_mount_point
 
             # Source volume file path
             source_file = os.path.join(source_mount_point, f"volume-{src_volume_id}")
