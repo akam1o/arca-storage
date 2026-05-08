@@ -58,7 +58,7 @@ Controller は `ArcaVolume` と `ArcaSnapshot` を永続メタデータストア
 
 ### 1. Image を決める
 
-素のマニフェストは `csi-arca-storage:latest` を使います。production Kustomize overlay は `ghcr.io/akam1o/csi-arca-storage:v1.0.0` を使います。
+素のマニフェストと production Kustomize overlay は `ghcr.io/akam1o/csi-arca-storage:v1.0.0` を使います。
 
 独自 image を使う場合:
 

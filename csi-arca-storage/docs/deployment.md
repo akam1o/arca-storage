@@ -58,7 +58,7 @@ The controller uses `ArcaVolume` and `ArcaSnapshot` cluster-scoped CRDs as its p
 
 ### 1. Choose an Image
 
-The raw manifests use `csi-arca-storage:latest`. The production Kustomize overlay uses `ghcr.io/akam1o/csi-arca-storage:v1.0.0`.
+The raw manifests and production Kustomize overlay use `ghcr.io/akam1o/csi-arca-storage:v1.0.0`.
 
 For a custom image:
 

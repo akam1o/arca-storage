@@ -14,7 +14,7 @@ resources:
 images:
   - name: csi-arca-storage
     newName: ghcr.io/akam1o/csi-arca-storage
-    newTag: latest
+    newTag: v1.0.0
 
 configMapGenerator:
   - name: csi-arca-storage-config

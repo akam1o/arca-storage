@@ -54,7 +54,7 @@ spec:
       containers:
         # CSI Driver Controller
         - name: csi-driver
-          image: csi-arca-storage:latest
+          image: ghcr.io/akam1o/csi-arca-storage:v1.0.0
           imagePullPolicy: IfNotPresent
           args:
             - --mode=controller
