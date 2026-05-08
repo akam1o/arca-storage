@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Generator, Optional, Union
 
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
-from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, ConflictError
 from arca_storage.models.base import Phase
 
 

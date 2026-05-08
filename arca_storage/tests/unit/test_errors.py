@@ -1,6 +1,5 @@
 """Tests for the structured error model."""
 
-import pytest
 
 from arca_storage.errors import (
     AlreadyExistsError,

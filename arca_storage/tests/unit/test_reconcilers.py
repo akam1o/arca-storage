@@ -10,9 +10,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 import json
-import tempfile
 from datetime import datetime, timedelta, timezone
-from pathlib import Path
 
 import pytest
 

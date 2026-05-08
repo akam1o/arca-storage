@@ -16,8 +16,6 @@ from .exceptions import (
     ArcaAPIError,
     ArcaAPITimeout,
     ArcaExportError,
-    ArcaSnapshotAlreadyExists,
-    ArcaSnapshotNotFound,
     ArcaSVMNotFound,
     ArcaVolumeAlreadyExists,
     ArcaVolumeNotFound,

@@ -1,6 +1,6 @@
 """Integration tests for driver with NetworkAllocator modes."""
 
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
 from oslo_config import cfg

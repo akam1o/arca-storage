@@ -1,7 +1,7 @@
 """Unit tests for ARCA Storage API client."""
 
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 import requests

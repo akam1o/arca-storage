@@ -3,10 +3,10 @@
 from datetime import datetime, timezone
 
 from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
-from arca_storage.models.export import Export, ExportSpec, ExportStatus
-from arca_storage.models.snapshot import Snapshot, SnapshotSpec, SnapshotStatus
-from arca_storage.models.svm import SVM, SVMSpec, SVMStatus
-from arca_storage.models.volume import Volume, VolumeSpec, VolumeStatus
+from arca_storage.models.export import Export, ExportSpec
+from arca_storage.models.snapshot import Snapshot, SnapshotSpec
+from arca_storage.models.svm import SVM, SVMSpec
+from arca_storage.models.volume import Volume, VolumeSpec
 
 
 class TestResourceMeta:

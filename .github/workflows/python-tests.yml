@@ -12,12 +12,12 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
-      # Run only on Python 3.9 to reduce CI usage (EL9 baseline)
       matrix:
         python-version:
           - '3.9'
-          # - '3.11'
-          # - '3.12'
+          - '3.10'
+          - '3.11'
+          - '3.12'
 
     steps:
       - uses: actions/checkout@v4
@@ -73,6 +73,11 @@ jobs:
           for p in sorted(root.iterdir()):
               print('lib content:', p)
           PY
+
+      - name: Run ruff
+        if: matrix.python-version == '3.9'
+        working-directory: ./arca_storage
+        run: python -m ruff check .
 
       - name: Run tests with pytest
         run: |

@@ -3,7 +3,7 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import MagicMock, Mock, patch, mock_open
+from unittest.mock import Mock, patch, mock_open
 
 import pytest
 

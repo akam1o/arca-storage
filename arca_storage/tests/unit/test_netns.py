@@ -2,7 +2,7 @@
 Unit tests for netns module.
 """
 
-from unittest.mock import MagicMock, call, patch
+from unittest.mock import MagicMock, patch
 
 import pytest
 

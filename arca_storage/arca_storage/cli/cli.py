@@ -4,7 +4,6 @@ Main CLI entry point using Typer.
 """
 
 import sys
-from typing import Optional
 
 import typer
 

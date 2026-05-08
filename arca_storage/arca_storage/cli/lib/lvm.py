@@ -3,7 +3,6 @@ LVM Thin Provisioning management functions.
 """
 
 import subprocess
-from typing import Optional
 
 
 def _parse_lvm_float(value: str) -> float:

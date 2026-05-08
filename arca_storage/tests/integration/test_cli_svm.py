@@ -2,7 +2,6 @@
 Integration tests for CLI SVM commands.
 """
 
-from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner

@@ -19,7 +19,7 @@ from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
-from arca_storage.models.svm import SVM, SVMSpec
+from arca_storage.models.svm import SVM
 from arca_storage.reconcilers.adapters import Adapters
 from arca_storage.reconcilers.lvm_resume import create_volume_lv_or_accept_existing
 
