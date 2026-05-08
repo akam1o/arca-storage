@@ -448,6 +448,61 @@ class TestSnapshotReconciler:
 
         assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
 
+    def test_create_snapshot_keeps_new_lv_when_lease_taken_over(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+        assign_create_lease(snap.status, "owner-1", now=datetime.now(timezone.utc) - timedelta(minutes=20))
+        db.insert_snapshot(snap, require_ready_volume=True)
+        original_create_snapshot = adapters.lvm.create_snapshot
+
+        def take_over_after_snapshot(vg_name, source_lv, snap_lv):
+            result = original_create_snapshot(vg_name, source_lv, snap_lv)
+            acquired = db.acquire_snapshot_create_lease(
+                "svm1",
+                "data",
+                "snap1",
+                "owner-2",
+                expected_spec=snap.spec.model_dump(mode="json"),
+                require_ready_volume=True,
+            )
+            assert acquired is not None
+            return result
+
+        adapters.lvm.create_snapshot = take_over_after_snapshot
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        with pytest.raises(CreateLeaseLostError):
+            rec.reconcile(snap)
+
+        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        record = db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]
+        assert record["status"]["create_owner"] == "owner-2"
+
+    def test_create_snapshot_cleans_new_lv_when_lost_lease_record_removed(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap, require_ready_volume=True)
+        original_create_snapshot = adapters.lvm.create_snapshot
+
+        def remove_record_after_snapshot(vg_name, source_lv, snap_lv):
+            result = original_create_snapshot(vg_name, source_lv, snap_lv)
+            db.reserve_volume_delete("svm1", "data", force=True)
+            db.delete_snapshot("svm1", "data", "snap1")
+            return result
+
+        adapters.lvm.create_snapshot = remove_record_after_snapshot
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        with pytest.raises(CreateLeaseLostError):
+            rec.reconcile(snap)
+
+        assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.DELETING.value
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
+        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+
     def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
         rec = SnapshotReconciler(db, adapters, config=config)
         snap = Snapshot(
