@@ -5,7 +5,7 @@ After=network.target
 
 [Service]
 Type=forking
-ExecStart=/usr/bin/ganesha.nfsd -f /etc/ganesha/ganesha.%i.conf
+ExecStart=/usr/bin/ganesha.nfsd -f /etc/ganesha/ganesha.%i.conf -p /var/run/ganesha.%i.pid
 ExecReload=/bin/kill -HUP $MAINPID
 PIDFile=/var/run/ganesha.%i.pid
 
