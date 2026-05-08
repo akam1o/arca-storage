@@ -262,6 +262,20 @@ class TestUtilityFunctions(unittest.TestCase):
             assert result == volume_file
             assert created is False
 
+    def test_ensure_volume_file_removes_partial_file_after_truncate_failure(self):
+        """Creation failures after O_EXCL do not leave stale zero-byte files."""
+        with tempfile.TemporaryDirectory() as mount_point:
+            volume_file = os.path.join(mount_point, "test-volume")
+
+            with patch("arca_storage.openstack.cinder.utils.os.ftruncate", side_effect=OSError("truncate failed")):
+                with pytest.raises(
+                    arca_exceptions.ArcaStorageException,
+                    match="Failed to create volume file",
+                ):
+                    arca_utils.ensure_volume_file(mount_point, "test-volume", 1)
+
+            assert not os.path.exists(volume_file)
+
     @patch("arca_storage.openstack.cinder.utils.os.remove")
     def test_delete_volume_file_success(self, mock_remove):
         """Test volume file deletion."""

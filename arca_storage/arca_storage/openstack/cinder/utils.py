@@ -374,11 +374,13 @@ def ensure_volume_file(
     """Create a raw volume file and report whether this process created it."""
     # Volume file path (use volume_name for compatibility with RemoteFSDriver)
     volume_file = os.path.join(mount_point, volume_name)
+    created = False
 
     try:
         # Atomic file creation using O_CREAT | O_EXCL to prevent race conditions
         # This will fail if the file already exists (another worker created it)
         fd = os.open(volume_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
 
         try:
             # Extend file to desired size using ftruncate (sparse file)
@@ -394,6 +396,14 @@ def ensure_volume_file(
             return _adopt_existing_volume_file(volume_file, size_gb), False
         raise ArcaStorageException(f"Volume file already exists: {volume_file}")
     except OSError as e:
+        if created:
+            try:
+                os.remove(volume_file)
+            except OSError as cleanup_error:
+                raise ArcaStorageException(
+                    f"Failed to create volume file {volume_file}: {e}; "
+                    f"failed to remove partial file: {cleanup_error}"
+                ) from e
         raise ArcaStorageException(f"Failed to create volume file {volume_file}: {e}")
 
 
