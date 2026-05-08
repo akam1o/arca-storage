@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Generator, Optional, Union
 
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
-from arca_storage.errors import AlreadyExistsError, ConflictError
+from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 
 
@@ -360,11 +360,7 @@ class StateDB:
 
     def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
-        cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return self._row_to_resource(row)
+        return self._get_volume_conn(conn, svm, name)
 
     def acquire_volume_create_lease(
         self,
@@ -417,13 +413,42 @@ class StateDB:
             cur = conn.execute("DELETE FROM volumes WHERE svm = ? AND name = ?", (svm, name))
             return cur.rowcount > 0
 
+    def reserve_volume_delete(self, svm: str, name: str, *, force: bool = False) -> Optional[dict[str, Any]]:
+        """Atomically mark a volume deleting after validating snapshot preconditions."""
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return None
+            snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
+            if snapshots and not force:
+                raise PreconditionFailedError(
+                    f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "snapshot_count": len(snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in snapshots],
+                    },
+                )
+
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            record["status"] = status
+            return record
+
     # ---- Snapshot operations ----
 
-    def insert_snapshot(self, snapshot: Any) -> None:
+    def insert_snapshot(self, snapshot: Any, *, require_ready_volume: bool = False) -> None:
         """Insert a new snapshot record without overwriting an existing one."""
         now = _now_iso()
         try:
             with self.transaction(immediate=True) as conn:
+                if require_ready_volume:
+                    self._require_ready_volume_conn(conn, snapshot.spec.svm, snapshot.spec.volume)
                 conn.execute(
                     """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -509,6 +534,17 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
+        return self._list_snapshots_conn(conn, svm=svm, volume=volume, name=name, limit=limit, cursor=cursor)
+
+    def _list_snapshots_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM snapshots WHERE 1=1"
         params: list[Any] = []
         if svm:
@@ -543,10 +579,24 @@ class StateDB:
 
     # ---- Export operations ----
 
-    def upsert_export(self, export: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+    def upsert_export(
+        self,
+        export: Any,
+        *,
+        expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        allow_missing_create_owner: bool = True,
+    ) -> bool:
         now = _now_iso()
         with self.transaction(immediate=expected_create_owner is not None) as conn:
-            return self._upsert_export_conn(conn, export, now=now, expected_create_owner=expected_create_owner)
+            return self._upsert_export_conn(
+                conn,
+                export,
+                now=now,
+                expected_create_owner=expected_create_owner,
+                require_ready_volume=require_ready_volume,
+                allow_missing_create_owner=allow_missing_create_owner,
+            )
 
     def _upsert_export_conn(
         self,
@@ -555,11 +605,21 @@ class StateDB:
         *,
         now: Optional[str] = None,
         expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        allow_missing_create_owner: bool = True,
     ) -> bool:
         now = now or _now_iso()
         key = {"svm": export.spec.svm, "volume": export.spec.volume, "client": export.spec.client}
-        if not self._create_owner_matches_conn(conn, "exports", key, expected_create_owner, allow_missing=True):
+        if not self._create_owner_matches_conn(
+            conn,
+            "exports",
+            key,
+            expected_create_owner,
+            allow_missing=allow_missing_create_owner,
+        ):
             return False
+        if require_ready_volume:
+            self._require_ready_volume_conn(conn, export.spec.svm, export.spec.volume)
         conn.execute(
             """INSERT INTO exports (id, svm, volume, client, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -779,6 +839,29 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
+    def _get_volume_conn(self, conn: sqlite3.Connection, svm: str, name: str) -> Optional[dict[str, Any]]:
+        cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_resource(row)
+
+    def _require_ready_volume_conn(self, conn: sqlite3.Connection, svm: str, name: str) -> dict[str, Any]:
+        record = self._get_volume_conn(conn, svm, name)
+        if record is None:
+            raise NotFoundError("Volume", f"{svm}/{name}")
+        phase = str(record.get("status", {}).get("phase") or "")
+        if phase != Phase.READY.value:
+            raise PreconditionFailedError(
+                f"Volume '{svm}/{name}' is not ready",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "phase": phase,
+                },
+            )
+        return record
+
     def _update_status_by_key_conn(
         self,
         conn: sqlite3.Connection,
@@ -821,6 +904,11 @@ class StateDB:
                         "conflicting_svm": existing_name,
                     },
                 )
+
+    @staticmethod
+    def _snapshot_ref(snapshot: dict[str, Any]) -> str:
+        spec = snapshot.get("spec", {})
+        return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('name')}"
 
     @staticmethod
     def _row_to_resource(row: sqlite3.Row) -> dict[str, Any]:

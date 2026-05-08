@@ -22,7 +22,7 @@ from arca_storage.adapters.systemd import FakeSystemdAdapter
 from arca_storage.adapters.xfs import FakeXFSAdapter
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB
-from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
+from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -424,8 +424,15 @@ class TestSnapshotReconciler:
 # ── Export Reconciler ─────────────────────────────────────────────
 
 
+def _insert_ready_volume(db: StateDB, svm: str, name: str) -> None:
+    volume = Volume(spec=VolumeSpec(name=name, svm=svm, size_gib=1))
+    volume.status.phase = Phase.READY
+    db.upsert_volume(volume)
+
+
 class TestExportReconciler:
     def test_create_export(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         export = Export(
             spec=ExportSpec(
@@ -445,6 +452,7 @@ class TestExportReconciler:
         assert adapters.ganesha.exports["svm1"][0]["path"] == "/export/svm1/vol1"
 
     def test_create_export_commits_reservation_before_render(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         original_render = adapters.ganesha.render_config
 
@@ -466,6 +474,7 @@ class TestExportReconciler:
         assert result.status.phase == Phase.READY
 
     def test_create_export_rejects_existing_key_without_overwrite(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         created = rec.reconcile(
             Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw"))
@@ -480,6 +489,7 @@ class TestExportReconciler:
         assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
 
     def test_update_export_keeps_ready_record_on_reload_failure(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         created = rec.reconcile(
             Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw"))
@@ -503,6 +513,7 @@ class TestExportReconciler:
         assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
 
     def test_create_export_resumes_only_matching_live_lease_owner(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         spec = ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24", access="rw")
         reserved = Export(spec=spec)
@@ -522,7 +533,26 @@ class TestExportReconciler:
         record = db.get_export("svm1", "vol1", "10.0.0.0/24")
         assert record["status"]["create_owner"] is None
 
+    def test_create_export_stops_when_volume_deleting_after_render(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
+        rec = ExportReconciler(db, adapters, config=config)
+        original_render = adapters.ganesha.render_config
+
+        def delete_parent_after_render(svm_name, exports, *, bind_addr=None, host_network=False):
+            result = original_render(svm_name, exports, bind_addr=bind_addr, host_network=host_network)
+            db.reserve_volume_delete("svm1", "vol1")
+            return result
+
+        adapters.ganesha.render_config = delete_parent_after_render
+
+        with pytest.raises(PreconditionFailedError):
+            rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")))
+
+        assert adapters.ganesha.exports["svm1"] == []
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.DELETING.value
+
     def test_delete_export(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         export = Export(
             spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24"),
@@ -538,6 +568,7 @@ class TestExportReconciler:
         assert adapters.ganesha.exports["svm1"] == []
 
     def test_delete_export_commits_deleting_before_render(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
         created = rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")))
         assert created.status.phase == Phase.READY
@@ -561,6 +592,8 @@ class TestExportReconciler:
         assert len(db.list_exports(svm="svm1")) == 0
 
     def test_concurrent_export_creates_allocate_unique_ids(self, db, adapters, config):
+        for i in range(1, 5):
+            _insert_ready_volume(db, "svm1", f"vol{i}")
         rec = ExportReconciler(db, adapters, config=config)
 
         def create_export(i: int):
@@ -584,6 +617,7 @@ class TestExportReconciler:
     def test_export_render_preserves_svm_bind_addr(self, db, adapters, config):
         svm_rec = SVMReconciler(db, adapters, config=config)
         svm_rec.reconcile(SVM(spec=SVMSpec(name="host-svm", ip_cidr="10.0.8.5/32")))
+        _insert_ready_volume(db, "host-svm", "vol1")
 
         rec = ExportReconciler(db, adapters, config=config)
         export = Export(
@@ -597,6 +631,7 @@ class TestExportReconciler:
         assert adapters.ganesha.host_network["host-svm"] is True
 
     def test_sync_skips_failed_exports(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "ready")
         rec = ExportReconciler(db, adapters, config=config)
         ready = rec.reconcile(
             Export(spec=ExportSpec(svm="svm1", volume="ready", client="10.0.0.0/24"))

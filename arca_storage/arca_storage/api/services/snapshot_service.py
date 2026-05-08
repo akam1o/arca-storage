@@ -67,7 +67,7 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     owner = new_create_owner()
     assign_create_lease(snapshot.status, owner)
     try:
-        ctx.db.insert_snapshot(snapshot)
+        ctx.db.insert_snapshot(snapshot, require_ready_volume=True)
     except AlreadyExistsError:
         existing = ctx.db.list_snapshots(
             svm=snapshot_data.svm,

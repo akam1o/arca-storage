@@ -130,30 +130,23 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
     validate_name(svm)
 
     ctx = get_context()
-    record = ctx.db.get_volume(svm, name)
+    record = ctx.db.reserve_volume_delete(svm, name, force=force)
     if not record:
         raise NotFoundError("Volume", f"{svm}/{name}")
 
-    snapshots = ctx.db.list_snapshots(svm=svm, volume=name, limit=_LIST_ALL_LIMIT)
-    if snapshots and not force:
-        raise PreconditionFailedError(
-            f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
-            {
-                "resource": "Volume",
-                "name": f"{svm}/{name}",
-                "snapshot_count": len(snapshots),
-                "snapshots": [_snapshot_ref(s) for s in snapshots],
-            },
-        )
+    try:
+        snapshots = ctx.db.list_snapshots(svm=svm, volume=name, limit=_LIST_ALL_LIMIT)
+        _delete_exports_for_volume(ctx, svm, name)
 
-    _delete_exports_for_volume(ctx, svm, name)
+        if snapshots:
+            from arca_storage.api.services import snapshot_service
 
-    if snapshots:
-        from arca_storage.api.services import snapshot_service
-
-        for snapshot in snapshots:
-            spec = snapshot["spec"]
-            snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+            for snapshot in snapshots:
+                spec = snapshot["spec"]
+                snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+    except Exception as e:
+        _mark_volume_delete_failed(ctx, record, f"Delete failed: {e}")
+        raise
 
     volume = Volume(
         metadata=_meta_from_record(record),
@@ -340,6 +333,17 @@ def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
             spec = export.get("spec", {})
             if spec.get("owner") == "csi":
                 export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, spec["client"])
+
+
+def _mark_volume_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:
+    volume = Volume(
+        metadata=_meta_from_record(record),
+        spec=VolumeSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    volume.status.phase = Phase.FAILED
+    volume.status.message = message
+    ctx.db.upsert_volume(volume)
 
 
 def _snapshot_ref(snapshot: Dict[str, Any]) -> str:

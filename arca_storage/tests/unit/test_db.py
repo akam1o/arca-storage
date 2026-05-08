@@ -7,7 +7,7 @@ import pytest
 
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB, encode_cursor
-from arca_storage.errors import AlreadyExistsError, ConflictError
+from arca_storage.errors import AlreadyExistsError, ConflictError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -221,6 +221,38 @@ class TestStateDB:
         assert record["status"]["create_owner"] == "owner-2"
         assert record["status"]["lv_created"] is False
 
+    def test_reserve_volume_delete_rejects_snapshots_without_marking_deleting(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")))
+
+        with pytest.raises(PreconditionFailedError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1")
+
+        assert exc_info.value.details["snapshot_count"] == 1
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
+
+    def test_reserve_volume_delete_blocks_guarded_dependents(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+
+        reserved = db.reserve_volume_delete("svm1", "vol1")
+
+        assert reserved["status"]["phase"] == "Deleting"
+        assert reserved["status"]["create_owner"] is None
+        with pytest.raises(PreconditionFailedError):
+            db.insert_snapshot(
+                Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")),
+                require_ready_volume=True,
+            )
+        with pytest.raises(PreconditionFailedError):
+            db.upsert_export(
+                Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")),
+                require_ready_volume=True,
+            )
+
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):
             snap = Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1"))
@@ -258,6 +290,25 @@ class TestStateDB:
 
         page = db.list_exports(svm="svm1", limit=2, cursor=encode_cursor(["svm1", "vol1", "10.0.0.0/24"]))
         assert [item["spec"]["client"] for item in page] == ["10.0.1.0/24", "10.0.2.0/24"]
+
+    def test_guarded_export_update_rejects_missing_create_owner_record(self, db):
+        export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24"))
+        assign_create_lease(export.status, "owner-1")
+
+        assert db.upsert_export(
+            export,
+            expected_create_owner="owner-1",
+            allow_missing_create_owner=True,
+        )
+        db.delete_export("svm1", "vol1", "10.0.0.0/24")
+
+        export.status.ganesha_configured = True
+        assert not db.upsert_export(
+            export,
+            expected_create_owner="owner-1",
+            allow_missing_create_owner=False,
+        )
+        assert db.get_export("svm1", "vol1", "10.0.0.0/24") is None
 
     def test_invalid_cursor_is_rejected(self, db):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):
