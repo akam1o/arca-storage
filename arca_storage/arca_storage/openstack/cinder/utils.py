@@ -593,6 +593,23 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
     dest_name = os.path.basename(dest_path)
     random_suffix = secrets.token_hex(8)  # 16 character random hex
     temp_path = os.path.join(dest_dir, f".{dest_name}.tmp.{random_suffix}")
+    dest_installed = False
+
+    def cleanup_temp_file() -> None:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+    def cleanup_installed_dest() -> None:
+        if not dest_installed:
+            return
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except OSError:
+            pass
 
     try:
         # Copy to temporary file with -- to prevent filename attacks
@@ -618,6 +635,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
         try:
             # Try to create hard link at destination (fails if dest exists)
             os.link(temp_path, dest_path)
+            dest_installed = True
             # If successful, remove the temp file
             os.unlink(temp_path)
         except FileExistsError:
@@ -630,6 +648,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             # install the completed temp file with a no-overwrite atomic rename.
             try:
                 _rename_noreplace(temp_path, dest_path)
+                dest_installed = True
             except FileExistsError:
                 raise ArcaStorageException(
                     f"Destination file was created by another worker: {dest_path}"
@@ -648,36 +667,24 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             os.close(dir_fd)
 
     except ArcaStorageException:
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         raise
     except subprocess.TimeoutExpired:
         # Clean up temp file on timeout
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         raise ArcaStorageException(
             f"File copy timed out after {timeout}s: {source_path} -> {dest_path}"
         )
     except subprocess.CalledProcessError as e:
         # Clean up temp file on copy failure
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         error_msg = e.stderr or e.stdout or str(e)
         raise ArcaStorageException(f"Failed to copy file: {error_msg}")
     except OSError as e:
         # Clean up temp file on any OS error
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         raise ArcaStorageException(f"Failed during file copy operation: {e}")

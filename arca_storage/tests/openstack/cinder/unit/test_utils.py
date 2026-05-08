@@ -388,6 +388,33 @@ class TestUtilityFunctions(unittest.TestCase):
             with open(dest_path, "rb") as dest:
                 assert dest.read() == b"concurrent-data"
 
+    def test_copy_sparse_file_removes_installed_destination_after_late_failure(self):
+        """Copy cleanup removes a destination installed before a durability failure."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=self._fake_sparse_cp,
+            ):
+                with patch(
+                    "arca_storage.openstack.cinder.utils.os.fsync",
+                    side_effect=[None, OSError("dir sync failed")],
+                ):
+                    with pytest.raises(
+                        arca_exceptions.ArcaStorageException,
+                        match="dir sync failed",
+                    ):
+                        arca_utils.copy_sparse_file(source_path, dest_path)
+
+            assert not os.path.exists(dest_path)
+            assert not [
+                name for name in os.listdir(temp_dir) if name.startswith(".dest.tmp.")
+            ]
+
     @patch("arca_storage.openstack.cinder.utils.os.rmdir")
     def test_cleanup_mount_point_success(self, mock_rmdir):
         """Test mount point cleanup."""
