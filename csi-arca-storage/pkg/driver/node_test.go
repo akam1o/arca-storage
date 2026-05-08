@@ -400,6 +400,72 @@ func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T
 	}
 }
 
+func TestNodeUnstageUsesFreshNodeStateForSVMCleanup(t *testing.T) {
+	tmp := t.TempDir()
+	stateFile := filepath.Join(tmp, "state.json")
+	writer, err := arcamount.NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("failed to create writer node state: %v", err)
+	}
+	reader, err := arcamount.NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("failed to create reader node state: %v", err)
+	}
+
+	stagingPath := filepath.Join(tmp, "stage")
+	if err := os.MkdirAll(stagingPath, 0750); err != nil {
+		t.Fatalf("failed to create staging path: %v", err)
+	}
+	mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+	if err != nil {
+		t.Fatalf("failed to resolve staging path: %v", err)
+	}
+	if err := writer.RecordVolumeStaging(
+		"vol-a",
+		"svm-a",
+		"10.0.0.1",
+		"",
+		"volumes/vol-a",
+		stagingPath,
+		nil,
+	); err != nil {
+		t.Fatalf("failed to record staging: %v", err)
+	}
+
+	mountManager := &fakeNodeMountManager{shouldUnmount: true}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    reader,
+		mountManager: mountManager,
+		nodeMounter: mountutils.NewFakeMounter([]mountutils.MountPoint{
+			{Device: "/svm/volumes/vol-a", Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+		}),
+	}
+
+	_, err = driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: stagingPath,
+	})
+	if err != nil {
+		t.Fatalf("NodeUnstageVolume failed: %v", err)
+	}
+	if !reflect.DeepEqual(mountManager.shouldCalls, []string{"svm-a"}) {
+		t.Fatalf("ShouldUnmountSVM calls = %#v", mountManager.shouldCalls)
+	}
+	if !reflect.DeepEqual(mountManager.unmountCalls, []string{"svm-a"}) {
+		t.Fatalf("UnmountSVM calls = %#v", mountManager.unmountCalls)
+	}
+
+	reloaded, err := arcamount.NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("failed to reload node state: %v", err)
+	}
+	if got := reloaded.CountStagedVolumesForSVM("svm-a"); got != 0 {
+		t.Fatalf("staged volumes for svm-a = %d, want 0", got)
+	}
+}
+
 func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	tmp := t.TempDir()
 	targetPath := filepath.Join(tmp, "target")

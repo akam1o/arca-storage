@@ -431,7 +431,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	klog.V(4).Infof("Unstaging volume %s from %s", volumeID, stagingTargetPath)
 
 	// Get SVM name from NodeState
-	svmName, err := d.nodeState.GetSVMForVolume(volumeID)
+	svmName, err := d.nodeState.GetSVMForVolumeFresh(volumeID)
 	if err != nil {
 		klog.Warningf("Volume %s not found in node state: %v", volumeID, err)
 		// Continue with unmount attempt
@@ -449,6 +449,9 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 			// Clean up NodeState
 			if err := d.nodeState.RemoveVolumeStaging(volumeID); err != nil {
 				klog.Warningf("Failed to remove volume staging from node state: %v", err)
+			}
+			if svmName != "" {
+				d.cleanupUnusedSVMMount(ctx, svmName)
 			}
 			return &csi.NodeUnstageVolumeResponse{}, nil
 		}

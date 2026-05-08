@@ -205,6 +205,24 @@ func (ns *NodeState) GetSVMForVolume(volumeID string) (string, error) {
 	return staging.SVMName, nil
 }
 
+// GetSVMForVolumeFresh reloads state under the cross-process file lock before
+// returning the SVM for a staged volume.
+func (ns *NodeState) GetSVMForVolumeFresh(volumeID string) (string, error) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+
+	if err := ns.reloadFromDiskWithFileLock(syscall.LOCK_SH); err != nil {
+		return "", err
+	}
+
+	staging, exists := ns.data.Volumes[volumeID]
+	if !exists {
+		return "", fmt.Errorf("volume %s not found in node state", volumeID)
+	}
+
+	return staging.SVMName, nil
+}
+
 // GetVIPForVolume retrieves the VIP for a volume
 func (ns *NodeState) GetVIPForVolume(volumeID string) (string, error) {
 	ns.mu.RLock()

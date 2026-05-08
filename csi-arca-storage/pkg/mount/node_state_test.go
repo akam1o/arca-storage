@@ -78,6 +78,16 @@ func TestNodeStateFreshCountReloadsExternalUpdates(t *testing.T) {
 	if stale := reader.CountStagedVolumesForSVM("tenant-a"); stale != 0 {
 		t.Fatalf("stale count = %d, want 0 before refresh", stale)
 	}
+	if _, err := reader.GetSVMForVolume("volume-a"); err == nil {
+		t.Fatal("stale SVM lookup succeeded before refresh")
+	}
+	svmName, err := reader.GetSVMForVolumeFresh("volume-a")
+	if err != nil {
+		t.Fatalf("GetSVMForVolumeFresh failed: %v", err)
+	}
+	if svmName != "tenant-a" {
+		t.Fatalf("fresh SVM name = %s, want tenant-a", svmName)
+	}
 	fresh, err := reader.CountStagedVolumesForSVMFresh("tenant-a")
 	if err != nil {
 		t.Fatalf("CountStagedVolumesForSVMFresh failed: %v", err)
