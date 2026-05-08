@@ -1322,7 +1322,7 @@ func TestDeleteSnapshotRejectsLegacyMetadataWhenSourcePathIsUnavailable(t *testi
 	}
 }
 
-func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) {
+func TestCreateVolumeKeepsPendingTemporaryCloneSnapshotOnCloneFailure(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{
 		VolumeID:      "source-vol",
@@ -1408,11 +1408,21 @@ func TestCreateVolumeCleansUpTemporaryCloneSnapshotOnCloneFailure(t *testing.T) 
 	if !snapshotCreated {
 		t.Fatalf("temporary snapshot was not created")
 	}
-	if !snapshotDeleted {
-		t.Fatalf("temporary snapshot was not deleted after clone failure")
+	if snapshotDeleted {
+		t.Fatalf("temporary snapshot was deleted after ambiguous clone failure")
 	}
-	if deletedVolume != "source-path" {
-		t.Fatalf("deleted snapshot volume = %q, want source-path", deletedVolume)
+	if deletedVolume != "" {
+		t.Fatalf("deleted snapshot volume = %q, want no cleanup", deletedVolume)
+	}
+	stored, err := st.GetVolume(targetPath)
+	if err != nil {
+		t.Fatalf("pending target volume metadata was not stored: %v", err)
+	}
+	if store.IsVolumeReady(stored) {
+		t.Fatalf("pending target volume metadata was marked ready")
+	}
+	if stored.TemporaryCloneSnapshot != temporarySnapshotName || stored.TemporaryCloneSourceVolumePath != "source-path" {
+		t.Fatalf("temporary clone metadata = (%q, %q), want (%q, source-path)", stored.TemporaryCloneSnapshot, stored.TemporaryCloneSourceVolumePath, temporarySnapshotName)
 	}
 }
 
@@ -1747,6 +1757,150 @@ func TestCreateVolumeRetriesTemporaryCloneSnapshotNameConflict(t *testing.T) {
 	}
 	if !quotaSet {
 		t.Fatalf("quota was not set")
+	}
+}
+
+func TestCreateVolumeResumesPendingTemporaryCloneSnapshot(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		ExportRoot:    "/exports/svm-a",
+		Path:          "source-path",
+		CapacityBytes: 2 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	targetPath := volumeIDGen.GenerateVolumeID("clone-pvc")
+	temporarySnapshotName := "clone-" + targetPath + "-0123456789abcdef"
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:                       targetPath,
+		Name:                           "clone-pvc",
+		SVMName:                        "svm-a",
+		VIP:                            "10.0.0.10",
+		ExportRoot:                     "/exports/svm-a",
+		Path:                           targetPath,
+		CapacityBytes:                  2 << 30,
+		ContentSource:                  &csi.VolumeContentSource{Type: &csi.VolumeContentSource_Volume{Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "source-vol"}}},
+		ReadyToUse:                     store.VolumeReadyState(false),
+		TemporaryCloneSnapshot:         temporarySnapshotName,
+		TemporaryCloneSourceVolumePath: "source-path",
+	}); err != nil {
+		t.Fatalf("seed pending target volume: %v", err)
+	}
+
+	var snapshotCreateAttempts int
+	var snapshotVerified bool
+	var snapshotDeleted bool
+	var quotaSet bool
+	var cloneBody struct {
+		Name     string `json:"name"`
+		SVM      string `json:"svm"`
+		Snapshot string `json:"snapshot"`
+		SizeGiB  int    `json:"size_gib"`
+	}
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			var createBody arca.CreateSnapshotRequest
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &createBody); err != nil {
+				t.Fatalf("create snapshot body unmarshal error = %v", err)
+			}
+			if createBody.Name != temporarySnapshotName || createBody.SVM != "svm-a" || createBody.Volume != "source-path" {
+				t.Fatalf("CreateSnapshot body = %#v", createBody)
+			}
+			snapshotCreateAttempts++
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"ALREADY_EXISTS","message":"snapshot already exists","details":{"resource":"Snapshot"}}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots":
+			if r.URL.Query().Get("name") != temporarySnapshotName || r.URL.Query().Get("svm") != "svm-a" || r.URL.Query().Get("volume") != "source-path" {
+				t.Fatalf("ListSnapshots query = %s", r.URL.RawQuery)
+			}
+			snapshotVerified = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"` + temporarySnapshotName + `","svm":"svm-a","volume":"source-path","status":"Ready","created_at":"2026-01-01T00:00:00Z"}]}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/source-path/clone":
+			body, _ := io.ReadAll(r.Body)
+			if err := json.Unmarshal(body, &cloneBody); err != nil {
+				t.Fatalf("clone body unmarshal error = %v", err)
+			}
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"ALREADY_EXISTS","message":"volume already exists","details":{"resource":"Volume"}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+temporarySnapshotName:
+			snapshotDeleted = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaSet = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	resp, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+		Name: "clone-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "clone-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 2 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+		VolumeContentSource: &csi.VolumeContentSource{
+			Type: &csi.VolumeContentSource_Volume{
+				Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "source-vol"},
+			},
+		},
+	})
+
+	if err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+	if resp.GetVolume().GetVolumeId() != targetPath {
+		t.Fatalf("response volume ID = %q, want %q", resp.GetVolume().GetVolumeId(), targetPath)
+	}
+	if snapshotCreateAttempts != 1 {
+		t.Fatalf("CreateSnapshot attempts = %d, want 1", snapshotCreateAttempts)
+	}
+	if !snapshotVerified {
+		t.Fatalf("existing temporary snapshot was not verified")
+	}
+	if cloneBody.Name != targetPath || cloneBody.SVM != "svm-a" || cloneBody.Snapshot != temporarySnapshotName {
+		t.Fatalf("CloneVolumeFromSnapshot body = %#v", cloneBody)
+	}
+	if !snapshotDeleted {
+		t.Fatalf("temporary snapshot was not deleted")
+	}
+	if !quotaSet {
+		t.Fatalf("quota was not set")
+	}
+	stored, err := st.GetVolume(targetPath)
+	if err != nil {
+		t.Fatalf("target volume metadata was not stored: %v", err)
+	}
+	if !store.IsVolumeReady(stored) {
+		t.Fatalf("target volume metadata was not marked ready")
+	}
+	if stored.TemporaryCloneSnapshot != "" || stored.TemporaryCloneSourceVolumePath != "" {
+		t.Fatalf("temporary clone metadata was not cleared: %#v", stored)
 	}
 }
 

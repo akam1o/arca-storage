@@ -22,6 +22,9 @@ type VolumeInfo struct {
 	CreatedAt     time.Time
 	ContentSource *csi.VolumeContentSource
 	ReadyToUse    *bool
+
+	TemporaryCloneSnapshot         string
+	TemporaryCloneSourceVolumePath string
 }
 
 // SnapshotInfo represents snapshot metadata

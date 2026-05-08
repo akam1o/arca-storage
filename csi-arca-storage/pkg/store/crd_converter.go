@@ -10,7 +10,11 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
-const volumeReadyToUseAnnotation = "storage.arca.io/ready-to-use"
+const (
+	volumeReadyToUseAnnotation               = "storage.arca.io/ready-to-use"
+	temporaryCloneSnapshotAnnotation         = "storage.arca.io/temporary-clone-snapshot"
+	temporaryCloneSourceVolumePathAnnotation = "storage.arca.io/temporary-clone-source-volume-path"
+)
 
 // convertContentSourceToCRD converts CSI VolumeContentSource to CRD ArcaContentSource
 func convertContentSourceToCRD(source *csi.VolumeContentSource) *v1alpha1.ArcaContentSource {
@@ -86,6 +90,8 @@ func volumeInfoToArcaVolume(info *VolumeInfo) *v1alpha1.ArcaVolume {
 		Status: v1alpha1.ArcaVolumeStatus{},
 	}
 	setVolumeReadyAnnotation(av, info)
+	setVolumeAnnotation(av, temporaryCloneSnapshotAnnotation, info.TemporaryCloneSnapshot)
+	setVolumeAnnotation(av, temporaryCloneSourceVolumePathAnnotation, info.TemporaryCloneSourceVolumePath)
 	return av
 }
 
@@ -109,6 +115,9 @@ func arcaVolumeToVolumeInfo(av *v1alpha1.ArcaVolume) *VolumeInfo {
 		CreatedAt:     av.Spec.CreatedAt.Time,
 		ContentSource: convertContentSourceFromCRD(av.Spec.ContentSource),
 		ReadyToUse:    readyToUse,
+
+		TemporaryCloneSnapshot:         av.Annotations[temporaryCloneSnapshotAnnotation],
+		TemporaryCloneSourceVolumePath: av.Annotations[temporaryCloneSourceVolumePathAnnotation],
 	}
 }
 
@@ -120,6 +129,16 @@ func setVolumeReadyAnnotation(av *v1alpha1.ArcaVolume, info *VolumeInfo) {
 		av.Annotations = make(map[string]string)
 	}
 	av.Annotations[volumeReadyToUseAnnotation] = strconv.FormatBool(*info.ReadyToUse)
+}
+
+func setVolumeAnnotation(av *v1alpha1.ArcaVolume, key, value string) {
+	if value == "" {
+		return
+	}
+	if av.Annotations == nil {
+		av.Annotations = make(map[string]string)
+	}
+	av.Annotations[key] = value
 }
 
 // snapshotInfoToArcaSnapshot converts SnapshotInfo to ArcaSnapshot CRD
