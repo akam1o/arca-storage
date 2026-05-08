@@ -878,6 +878,24 @@ func TestGetCapacityReturnsUnknownWithoutNamespace(t *testing.T) {
 	}
 }
 
+func TestControllerGetCapabilitiesAdvertisesGetCapacity(t *testing.T) {
+	driver := &Driver{
+		mode: "controller",
+	}
+
+	resp, err := driver.ControllerGetCapabilities(context.Background(), &csi.ControllerGetCapabilitiesRequest{})
+	if err != nil {
+		t.Fatalf("ControllerGetCapabilities() error = %v", err)
+	}
+
+	for _, capability := range resp.GetCapabilities() {
+		if capability.GetRpc().GetType() == csi.ControllerServiceCapability_RPC_GET_CAPACITY {
+			return
+		}
+	}
+	t.Fatalf("GET_CAPACITY capability was not advertised: %#v", resp.GetCapabilities())
+}
+
 func TestValidateVolumeCapabilitiesRejectsPendingVolume(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{
