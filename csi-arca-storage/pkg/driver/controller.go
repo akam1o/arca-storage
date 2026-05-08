@@ -990,10 +990,29 @@ func (d *Driver) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (
 		return nil, err
 	}
 
-	// For now, return unlimited capacity
-	// In production, this should query ARCA API for actual SVM capacity
+	namespace := req.GetParameters()[paramNamespace]
+	if namespace == "" || d.svmManager == nil || d.arcaClient == nil {
+		return &csi.GetCapacityResponse{}, nil
+	}
+
+	svm, err := d.svmManager.GetSVMForNamespace(ctx, namespace)
+	if err != nil {
+		if errors.Is(err, arca.ErrSVMNotFound) {
+			return &csi.GetCapacityResponse{}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get SVM capacity target for namespace %s: %v", namespace, err)
+	}
+
+	capacity, err := d.arcaClient.GetSVMCapacity(ctx, svm.Name)
+	if err != nil {
+		if errors.Is(err, arca.ErrSVMNotFound) {
+			return &csi.GetCapacityResponse{}, nil
+		}
+		return nil, status.Errorf(codes.Internal, "failed to get capacity for SVM %s: %v", svm.Name, err)
+	}
+
 	return &csi.GetCapacityResponse{
-		AvailableCapacity: 0, // 0 means unknown/unlimited
+		AvailableCapacity: capacity.AvailableBytes,
 	}, nil
 }
 
@@ -1280,6 +1299,9 @@ func (d *Driver) ListSnapshots(ctx context.Context, req *csi.ListSnapshotsReques
 		snapshot, err := d.store.GetSnapshot(snapshotID)
 		if err != nil {
 			return nil, snapshotStoreGetError("snapshot", snapshotID, err)
+		}
+		if sourceVolumeID != "" && snapshot.SourceVolumeID != sourceVolumeID {
+			return &csi.ListSnapshotsResponse{}, nil
 		}
 
 		return &csi.ListSnapshotsResponse{

@@ -156,6 +156,45 @@ func TestListSnapshotsReturnsInternalOnStoreGetFailure(t *testing.T) {
 	}
 }
 
+func TestListSnapshotsWithSnapshotIDFiltersSourceVolume(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateSnapshot(&store.SnapshotInfo{
+		SnapshotID:     "snap-a",
+		SourceVolumeID: "vol-a",
+		ReadyToUse:     true,
+	}); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	resp, err := driver.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{
+		SnapshotId:     "snap-a",
+		SourceVolumeId: "vol-b",
+		MaxEntries:     10,
+		StartingToken:  "ignored-with-snapshot-id",
+	})
+	if err != nil {
+		t.Fatalf("ListSnapshots() error = %v", err)
+	}
+	if got := len(resp.GetEntries()); got != 0 {
+		t.Fatalf("len(entries) = %d, want 0", got)
+	}
+
+	resp, err = driver.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{
+		SnapshotId:     "snap-a",
+		SourceVolumeId: "vol-a",
+	})
+	if err != nil {
+		t.Fatalf("ListSnapshots(matching source) error = %v", err)
+	}
+	if got := len(resp.GetEntries()); got != 1 {
+		t.Fatalf("len(entries) = %d, want 1", got)
+	}
+}
+
 func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{
@@ -785,6 +824,57 @@ func TestListVolumesSkipsPendingVolumes(t *testing.T) {
 	}
 	if got := resp.GetEntries()[0].GetVolume().GetVolumeId(); got != "vol-ready" {
 		t.Fatalf("listed volume = %q, want vol-ready", got)
+	}
+}
+
+func TestGetCapacityReturnsNamespaceSVMCapacity(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-ns-a","ip_cidr":"10.0.0.10/24","vip":"10.0.0.10","gateway":"","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a/capacity":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"capacity":{"svm":"k8s-ns-a","vg":"vg_arca","total_gb":100.0,"free_gb":25.5,"used_gb":74.5,"provisioned_gb":80.0}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		svmManager: arca.NewSVMManager(client, nil, nil, 1500),
+	}
+
+	resp, err := driver.GetCapacity(context.Background(), &csi.GetCapacityRequest{
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+		},
+	})
+	if err != nil {
+		t.Fatalf("GetCapacity() error = %v", err)
+	}
+	if resp.GetAvailableCapacity() != 255*1024*1024*1024/10 {
+		t.Fatalf("available capacity = %d", resp.GetAvailableCapacity())
+	}
+}
+
+func TestGetCapacityReturnsUnknownWithoutNamespace(t *testing.T) {
+	driver := &Driver{
+		mode: "controller",
+	}
+
+	resp, err := driver.GetCapacity(context.Background(), &csi.GetCapacityRequest{})
+	if err != nil {
+		t.Fatalf("GetCapacity() error = %v", err)
+	}
+	if resp.GetAvailableCapacity() != 0 {
+		t.Fatalf("available capacity = %d, want 0", resp.GetAvailableCapacity())
 	}
 }
 
