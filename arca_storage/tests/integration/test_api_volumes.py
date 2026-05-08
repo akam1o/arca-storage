@@ -300,6 +300,21 @@ class TestResizeVolume:
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
 
     @pytest.mark.integration
+    def test_resize_volume_rejects_deleting_svm(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+        fake_context.db.reserve_svm_delete("tenant_a", delete_volumes=True)
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["phase"] == "Deleting"
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
+
+    @pytest.mark.integration
     def test_resize_volume_retries_grow_after_lv_extension(self, fake_context):
         client = TestClient(app, raise_server_exceptions=False)
         create_test_svm(client)
@@ -364,6 +379,33 @@ class TestResizeVolume:
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "CONFLICT"
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
+
+    @pytest.mark.integration
+    def test_resize_volume_rejects_overlapping_resize(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        original_resize = fake_context.adapters.lvm.resize_lv
+        nested_responses = []
+        triggered = {"value": False}
+
+        def resize_with_nested_request(vg_name, lv_name, new_size_gib):
+            if new_size_gib == 30 and not triggered["value"]:
+                triggered["value"] = True
+                nested_responses.append(
+                    client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+                )
+            original_resize(vg_name, lv_name, new_size_gib)
+
+        fake_context.adapters.lvm.resize_lv = resize_with_nested_request
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30})
+
+        assert response.status_code == 200
+        assert nested_responses[0].status_code == 409
+        assert nested_responses[0].json()["error"]["code"] == "CONFLICT"
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 30
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 30
 
 
 class TestCloneVolume:

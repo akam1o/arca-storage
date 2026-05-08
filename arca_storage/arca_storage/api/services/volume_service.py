@@ -88,56 +88,64 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     validate_name(svm)
 
     ctx = get_context()
-    record = ctx.db.get_volume(svm, name)
+    owner = new_create_owner()
+    record = ctx.db.reserve_volume_resize(svm, name, owner, new_size_gib)
     if not record:
         raise NotFoundError("Volume", f"{svm}/{name}")
-    require_volume_ready_record(record, svm, name)
+    completed = False
+    try:
+        require_volume_ready_record(record, svm, name)
+        current_size = int(record.get("spec", {}).get("size_gib") or 0)
+        if new_size_gib < current_size:
+            raise PreconditionFailedError(
+                f"Volume '{svm}/{name}' cannot be shrunk",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "current_size_gib": current_size,
+                    "requested_size_gib": new_size_gib,
+                },
+            )
 
-    current_size = int(record.get("spec", {}).get("size_gib") or 0)
-    if new_size_gib < current_size:
-        raise PreconditionFailedError(
-            f"Volume '{svm}/{name}' cannot be shrunk",
-            {
-                "resource": "Volume",
-                "name": f"{svm}/{name}",
-                "current_size_gib": current_size,
-                "requested_size_gib": new_size_gib,
-            },
-        )
-    if new_size_gib == current_size:
         vol = Volume(
             metadata=_meta_from_record(record),
             spec=VolumeSpec.model_validate(record["spec"]),
             status=_parse_status(record),
         )
+        if new_size_gib == current_size:
+            ctx.db.release_volume_resize(svm, name, owner)
+            completed = True
+            return _volume_to_dict(vol, ctx)
+
+        cfg = ctx.settings.to_reconciler_config()
+        vg_name = cfg["vg_name"]
+        export_dir = cfg["export_dir"]
+        lv_name = vol.status.lv_name or volume_lv_name(svm, name)
+        mount_path = vol.status.mount_path or f"{export_dir}/{svm}/{name}"
+
+        def refresh() -> bool:
+            return ctx.db.refresh_volume_resize_lease(svm, name, owner)
+
+        with create_lease_heartbeat(refresh):
+            ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
+            ctx.adapters.xfs.grow(mount_path)
+
+        vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
+        vol.metadata.bump()
+        if not ctx.db.complete_volume_resize(vol, owner):
+            raise ConflictError(
+                f"Volume '{svm}/{name}' changed during resize",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "requested_size_gib": new_size_gib,
+                },
+            )
+        completed = True
         return _volume_to_dict(vol, ctx)
-
-    vol = Volume(
-        metadata=_meta_from_record(record),
-        spec=VolumeSpec.model_validate(record["spec"]),
-        status=_parse_status(record),
-    )
-    cfg = ctx.settings.to_reconciler_config()
-    vg_name = cfg["vg_name"]
-    export_dir = cfg["export_dir"]
-    lv_name = vol.status.lv_name or volume_lv_name(svm, name)
-    mount_path = vol.status.mount_path or f"{export_dir}/{svm}/{name}"
-
-    ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
-    ctx.adapters.xfs.grow(mount_path)
-
-    vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
-    vol.metadata.bump()
-    if not ctx.db.update_ready_volume(vol):
-        raise ConflictError(
-            f"Volume '{svm}/{name}' changed during resize",
-            {
-                "resource": "Volume",
-                "name": f"{svm}/{name}",
-                "requested_size_gib": new_size_gib,
-            },
-        )
-    return _volume_to_dict(vol, ctx)
+    finally:
+        if not completed:
+            ctx.db.release_volume_resize(svm, name, owner)
 
 
 def delete_volume(name: str, svm: str, force: bool = False) -> None:

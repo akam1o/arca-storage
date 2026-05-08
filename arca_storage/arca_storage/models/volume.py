@@ -44,6 +44,9 @@ class VolumeStatus(BaseModel):
     last_reconciled: Optional[datetime] = None
     create_owner: Optional[str] = None
     create_lease_expires_at: Optional[datetime] = None
+    resize_owner: Optional[str] = None
+    resize_lease_expires_at: Optional[datetime] = None
+    resize_target_size_gib: Optional[int] = None
 
 
 class Volume(BaseModel):

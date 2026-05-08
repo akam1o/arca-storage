@@ -376,6 +376,17 @@ class StateDB:
                 return None
 
             volumes = self._list_volumes_conn(conn, svm=name, limit=1_000_000)
+            resizing_volumes = [volume for volume in volumes if self._resize_lease_active(volume)]
+            if resizing_volumes:
+                raise ConflictError(
+                    f"SVM '{name}' has volumes being resized; retry after resize completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "volume_count": len(resizing_volumes),
+                        "volumes": [self._volume_ref(volume) for volume in resizing_volumes],
+                    },
+                )
             if volumes and not cascade_volumes:
                 raise PreconditionFailedError(
                     f"SVM '{name}' has volumes; delete volumes first or retry with delete_volumes",
@@ -488,6 +499,8 @@ class StateDB:
                 return False
             if str(record.get("status", {}).get("phase") or "") != Phase.READY.value:
                 return False
+            if self._resize_lease_active(record):
+                return False
             cur = conn.execute(
                 """UPDATE volumes
                    SET spec = ?, status = ?, generation = ?, updated_at = ?
@@ -503,6 +516,97 @@ class StateDB:
                 ),
             )
             return cur.rowcount > 0
+
+    def reserve_volume_resize(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        target_size_gib: int,
+    ) -> Optional[dict[str, Any]]:
+        """Atomically reserve a READY volume for resize."""
+        with self.transaction(immediate=True) as conn:
+            if self._get_volume_conn(conn, svm, name) is None:
+                return None
+            self._require_ready_svm_conn(conn, svm)
+            record = self._require_ready_volume_conn(conn, svm, name)
+            if self._resize_lease_active(record):
+                status = record.get("status", {})
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' is already being resized",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "resize_target_size_gib": status.get("resize_target_size_gib"),
+                    },
+                )
+
+            status = dict(record["status"])
+            status["resize_owner"] = owner
+            status["resize_lease_expires_at"] = lease_expiration().isoformat()
+            status["resize_target_size_gib"] = target_size_gib
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            record["status"] = status
+            return record
+
+    def refresh_volume_resize_lease(self, svm: str, name: str, owner: str) -> bool:
+        with self.transaction(immediate=True) as conn:
+            self._require_ready_svm_conn(conn, svm)
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return False
+            status = dict(record["status"])
+            if str(status.get("phase") or "") != Phase.READY.value:
+                return False
+            if status.get("resize_owner") != owner:
+                return False
+            status["resize_lease_expires_at"] = lease_expiration().isoformat()
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            return True
+
+    def complete_volume_resize(self, volume: Any, owner: str) -> bool:
+        now = _now_iso()
+        with self.transaction(immediate=True) as conn:
+            self._require_ready_svm_conn(conn, volume.spec.svm)
+            record = self._get_volume_conn(conn, volume.spec.svm, volume.spec.name)
+            if record is None:
+                return False
+            current_status = record["status"]
+            if str(current_status.get("phase") or "") != Phase.READY.value:
+                return False
+            if current_status.get("resize_owner") != owner:
+                return False
+            if current_status.get("resize_target_size_gib") != volume.spec.size_gib:
+                return False
+
+            status = json.loads(volume.status.model_dump_json())
+            self._clear_resize_lease(status)
+            cur = conn.execute(
+                """UPDATE volumes
+                   SET spec = ?, status = ?, generation = ?, updated_at = ?
+                   WHERE svm = ? AND name = ?
+                """,
+                (
+                    volume.spec.model_dump_json(),
+                    json.dumps(status),
+                    volume.metadata.generation,
+                    now,
+                    volume.spec.svm,
+                    volume.spec.name,
+                ),
+            )
+            return cur.rowcount > 0
+
+    def release_volume_resize(self, svm: str, name: str, owner: str) -> None:
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return
+            status = dict(record["status"])
+            if status.get("resize_owner") != owner:
+                return
+            self._clear_resize_lease(status)
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
 
     def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
@@ -589,6 +693,16 @@ class StateDB:
             record = self._get_volume_conn(conn, svm, name)
             if record is None:
                 return None
+            if self._resize_lease_active(record):
+                status = record.get("status", {})
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' is being resized; retry after resize completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "resize_target_size_gib": status.get("resize_target_size_gib"),
+                    },
+                )
             snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
             if snapshots and not force:
                 raise PreconditionFailedError(
@@ -1228,6 +1342,16 @@ class StateDB:
                     "phase": phase,
                 },
             )
+        if self._resize_lease_active(record):
+            status = record.get("status", {})
+            raise ConflictError(
+                f"Volume '{svm}/{name}' is being resized",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "resize_target_size_gib": status.get("resize_target_size_gib"),
+                },
+            )
         return record
 
     def _update_status_by_key_conn(
@@ -1299,6 +1423,28 @@ class StateDB:
                 continue
             blocking.append(export)
         return blocking
+
+    @staticmethod
+    def _resize_lease_active(record: dict[str, Any]) -> bool:
+        status = record.get("status", {})
+        if not status.get("resize_owner"):
+            return False
+        raw_expires_at = status.get("resize_lease_expires_at")
+        if not raw_expires_at:
+            return True
+        try:
+            expires_at = datetime.fromisoformat(str(raw_expires_at).replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at.astimezone(timezone.utc) > datetime.now(timezone.utc)
+
+    @staticmethod
+    def _clear_resize_lease(status: dict[str, Any]) -> None:
+        status["resize_owner"] = None
+        status["resize_lease_expires_at"] = None
+        status["resize_target_size_gib"] = None
 
     @staticmethod
     def _volume_ref(volume: dict[str, Any]) -> str:

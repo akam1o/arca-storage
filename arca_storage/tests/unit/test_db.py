@@ -356,6 +356,52 @@ class TestStateDB:
         assert record["status"]["phase"] == "Deleting"
         assert record["spec"]["size_gib"] == 10
 
+    def test_volume_resize_lease_blocks_delete_paths(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+
+        reserved = db.reserve_volume_resize("svm1", "vol1", "resize-owner", 20)
+
+        assert reserved["status"]["resize_owner"] == "resize-owner"
+        with pytest.raises(ConflictError):
+            db.reserve_volume_delete("svm1", "vol1")
+        with pytest.raises(ConflictError):
+            db.reserve_svm_delete("svm1", delete_volumes=True)
+
+        vol.spec = VolumeSpec(name="vol1", svm="svm1", size_gib=20)
+        vol.metadata.bump()
+        assert db.complete_volume_resize(vol, "resize-owner") is True
+        record = db.get_volume("svm1", "vol1")
+        assert record["spec"]["size_gib"] == 20
+        assert record["status"]["resize_owner"] is None
+        assert db.reserve_volume_delete("svm1", "vol1")["status"]["phase"] == "Deleting"
+
+    def test_volume_resize_lease_blocks_guarded_dependents(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        db.reserve_volume_resize("svm1", "vol1", "resize-owner", 20)
+
+        with pytest.raises(ConflictError):
+            db.insert_snapshot(
+                Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")),
+                require_ready_volume=True,
+                require_ready_svm=True,
+            )
+        with pytest.raises(ConflictError):
+            db.upsert_export(
+                Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")),
+                require_ready_volume=True,
+                require_ready_svm=True,
+            )
+
     def test_guarded_snapshot_resume_rejects_deleting_volume(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
         vol.status.phase = Phase.READY
