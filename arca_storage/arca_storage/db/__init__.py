@@ -12,7 +12,7 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from ipaddress import IPv4Interface
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional, Union
@@ -22,7 +22,8 @@ from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError
 from arca_storage.models.base import Phase
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 2
+_SNAPSHOT_CLEANUP_RESERVATION_DURATION = timedelta(minutes=5)
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -62,6 +63,16 @@ CREATE TABLE IF NOT EXISTS snapshots (
     created_at  TEXT NOT NULL,
     updated_at  TEXT NOT NULL,
     UNIQUE(svm, volume, name)
+);
+
+CREATE TABLE IF NOT EXISTS snapshot_cleanup_reservations (
+    svm         TEXT NOT NULL,
+    volume      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    owner       TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY(svm, volume, name)
 );
 
 CREATE TABLE IF NOT EXISTS exports (
@@ -149,6 +160,8 @@ class StateDB:
             row = cur.fetchone()
             if row is None:
                 conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+            elif int(row["version"]) < _SCHEMA_VERSION:
+                conn.execute("UPDATE schema_version SET version = ?", (_SCHEMA_VERSION,))
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -449,6 +462,11 @@ class StateDB:
             with self.transaction(immediate=True) as conn:
                 if require_ready_volume:
                     self._require_ready_volume_conn(conn, snapshot.spec.svm, snapshot.spec.volume)
+                if self._snapshot_cleanup_reserved_conn(conn, snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name):
+                    raise AlreadyExistsError(
+                        "Snapshot",
+                        f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+                    )
                 conn.execute(
                     """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -607,6 +625,55 @@ class StateDB:
                 (svm, volume, name),
             )
             return cur.rowcount > 0
+
+    def reserve_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> bool:
+        now = datetime.now(timezone.utc)
+        expires_at = (now + _SNAPSHOT_CLEANUP_RESERVATION_DURATION).isoformat()
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            self._prune_snapshot_cleanup_reservations_conn(conn, now.isoformat())
+            if self._get_resource_by_key_conn(conn, "snapshots", key) is not None:
+                return False
+            try:
+                conn.execute(
+                    """INSERT INTO snapshot_cleanup_reservations (svm, volume, name, owner, expires_at, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (svm, volume, name, owner, expires_at, now.isoformat()),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            return True
+
+    def release_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> None:
+        with self.transaction(immediate=True) as conn:
+            conn.execute(
+                """DELETE FROM snapshot_cleanup_reservations
+                   WHERE svm = ? AND volume = ? AND name = ? AND owner = ?
+                """,
+                (svm, volume, name, owner),
+            )
+
+    def _snapshot_cleanup_reserved_conn(self, conn: sqlite3.Connection, svm: str, volume: str, name: str) -> bool:
+        self._prune_snapshot_cleanup_reservations_conn(conn)
+        cur = conn.execute(
+            """SELECT 1 FROM snapshot_cleanup_reservations
+               WHERE svm = ? AND volume = ? AND name = ?
+               LIMIT 1
+            """,
+            (svm, volume, name),
+        )
+        return cur.fetchone() is not None
+
+    def _prune_snapshot_cleanup_reservations_conn(
+        self,
+        conn: sqlite3.Connection,
+        now: Optional[str] = None,
+    ) -> None:
+        conn.execute(
+            "DELETE FROM snapshot_cleanup_reservations WHERE expires_at <= ?",
+            (now or _now_iso(),),
+        )
 
     # ---- Export operations ----
 

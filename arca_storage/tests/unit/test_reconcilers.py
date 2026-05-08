@@ -11,7 +11,6 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 from datetime import datetime, timedelta, timezone
-from threading import Event
 
 import pytest
 
@@ -527,7 +526,7 @@ class TestSnapshotReconciler:
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
         assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
 
-    def test_create_snapshot_serializes_untracked_lv_cleanup_with_recreate(self, db, adapters, config):
+    def test_create_snapshot_cleanup_reservation_blocks_recreate_without_global_writer_lock(self, db, adapters, config):
         _insert_ready_volume(db, "svm1", "data")
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
         snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
@@ -535,6 +534,8 @@ class TestSnapshotReconciler:
         db.insert_snapshot(snap, require_ready_volume=True)
         original_create_snapshot = adapters.lvm.create_snapshot
         original_delete_lv = adapters.lvm.delete_lv
+        recreated = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+        assign_create_lease(recreated.status, "owner-2")
 
         def delete_snapshot_record_after_snapshot(vg_name, source_lv, snap_lv):
             result = original_create_snapshot(vg_name, source_lv, snap_lv)
@@ -542,40 +543,31 @@ class TestSnapshotReconciler:
             return result
 
         adapters.lvm.create_snapshot = delete_snapshot_record_after_snapshot
-        insert_started = Event()
-        insert_done = Event()
-        futures = []
-        recreated_snapshots = []
 
-        def recreate_snapshot_record():
-            insert_started.set()
-            recreated = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
-            assign_create_lease(recreated.status, "owner-2")
-            db.insert_snapshot(recreated, require_ready_volume=True)
-            recreated_snapshots.append(recreated)
-            insert_done.set()
+        def delete_lv_while_cleanup_reserved(vg_name, lv_name):
+            observer = StateDB(db._db_path)
+            try:
+                with pytest.raises(AlreadyExistsError):
+                    observer.insert_snapshot(recreated, require_ready_volume=True)
+                _insert_ready_volume(observer, "svm1", "side")
+            finally:
+                observer.close()
+            original_delete_lv(vg_name, lv_name)
 
-        with ThreadPoolExecutor(max_workers=1) as pool:
+        adapters.lvm.delete_lv = delete_lv_while_cleanup_reserved
+        rec = SnapshotReconciler(db, adapters, config=config)
+        with pytest.raises(CreateLeaseLostError):
+            rec.reconcile(snap)
 
-            def delete_lv_while_recreate_waits(vg_name, lv_name):
-                futures.append(pool.submit(recreate_snapshot_record))
-                assert insert_started.wait(1)
-                assert not insert_done.wait(0.05)
-                original_delete_lv(vg_name, lv_name)
-
-            adapters.lvm.delete_lv = delete_lv_while_recreate_waits
-            rec = SnapshotReconciler(db, adapters, config=config)
-            with pytest.raises(CreateLeaseLostError):
-                rec.reconcile(snap)
-
-            futures[0].result(timeout=1)
-
-        assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["create_owner"] == "owner-2"
+        assert db.get_volume("svm1", "side") is not None
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
         assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
 
         adapters.lvm.create_snapshot = original_create_snapshot
         adapters.lvm.delete_lv = original_delete_lv
-        result = rec.reconcile(recreated_snapshots[0])
+        db.insert_snapshot(recreated, require_ready_volume=True)
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["create_owner"] == "owner-2"
+        result = rec.reconcile(recreated)
 
         assert result.status.phase == Phase.READY
         assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")

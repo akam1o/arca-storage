@@ -162,21 +162,31 @@ class SnapshotReconciler:
             logger.warning("Failed to delete unrecorded snapshot LV %s/%s: %s", vg_name, snap_lv, e)
 
     def _delete_created_snapshot_lv_if_untracked(self, snapshot: Snapshot, vg_name: str, snap_lv: str) -> None:
+        cleanup_owner = snapshot.status.create_owner or snapshot.metadata.id
         try:
-            # Keep the writer lock through lvremove so same-key recreate cannot
-            # insert a new tracked record between the absence check and delete.
-            with self.db.transaction(immediate=True) as conn:
-                records = self.db._list_snapshots_conn(
-                    conn,
-                    svm=snapshot.spec.svm,
-                    volume=snapshot.spec.volume,
-                    name=snapshot.spec.name,
-                    limit=1,
-                )
-                if records:
-                    logger.info("Keeping snapshot LV %s/%s because the snapshot record is still tracked", vg_name, snap_lv)
-                    return
-
-                self._delete_created_snapshot_lv(vg_name, snap_lv)
+            reserved = self.db.reserve_snapshot_cleanup(
+                snapshot.spec.svm,
+                snapshot.spec.volume,
+                snapshot.spec.name,
+                cleanup_owner,
+            )
         except Exception as e:
             logger.warning("Skipping snapshot LV cleanup after lost lease for %s/%s: %s", vg_name, snap_lv, e)
+            return
+
+        if not reserved:
+            logger.info("Keeping snapshot LV %s/%s because the snapshot record is tracked or cleanup is reserved", vg_name, snap_lv)
+            return
+
+        try:
+            self._delete_created_snapshot_lv(vg_name, snap_lv)
+        finally:
+            try:
+                self.db.release_snapshot_cleanup(
+                    snapshot.spec.svm,
+                    snapshot.spec.volume,
+                    snapshot.spec.name,
+                    cleanup_owner,
+                )
+            except Exception as e:
+                logger.warning("Failed to release snapshot LV cleanup reservation for %s/%s: %s", vg_name, snap_lv, e)

@@ -309,6 +309,17 @@ class TestStateDB:
         result = db.list_snapshots(svm="svm1", volume="vol1", name="snap1")
         assert result[0]["status"]["phase"] == "Pending"
 
+    def test_insert_snapshot_rejects_active_cleanup_reservation(self, db):
+        assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner") is True
+
+        with pytest.raises(AlreadyExistsError):
+            db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")))
+
+        db.release_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner")
+        db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")))
+
+        assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner") is False
+
     def test_upsert_and_list_exports(self, db):
         for client in ("10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"):
             export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client=client))
