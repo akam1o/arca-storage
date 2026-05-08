@@ -19,10 +19,37 @@
     group: root
     mode: "0755"
 
+- name: Ensure NFS-Ganesha config directory exists
+  ansible.builtin.file:
+    path: "{{ nfs_ganesha_config_dir }}"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Ensure Arca Storage config directory exists
+  ansible.builtin.file:
+    path: /etc/arca-storage
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+
+- name: Render Arca Ganesha systemd environment
+  ansible.builtin.copy:
+    dest: /etc/arca-storage/arca-storage.env
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      # Managed by Ansible (derived from nfs_ganesha_config_dir)
+      ARCA_GANESHA_CONFIG_DIR={{ nfs_ganesha_config_dir }}
+  notify: Reload systemd
+
 - name: Render NFS-Ganesha configuration
   ansible.builtin.template:
     src: ganesha.conf.j2
-    dest: /etc/ganesha/ganesha.conf
+    dest: "{{ nfs_ganesha_config_dir }}/ganesha.conf"
     owner: root
     group: root
     mode: "0644"
@@ -49,7 +76,7 @@
 - name: Render per-tenant NFS-Ganesha configuration
   ansible.builtin.template:
     src: ganesha.conf.j2
-    dest: "/etc/ganesha/ganesha.{{ item }}.conf"
+    dest: "{{ nfs_ganesha_config_dir }}/ganesha.{{ item }}.conf"
     owner: root
     group: root
     mode: "0644"

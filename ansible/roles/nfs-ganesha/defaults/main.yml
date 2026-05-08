@@ -28,6 +28,7 @@ nfs_ganesha_v3_packages:
 nfs_ganesha_packages: "{{ nfs_ganesha_base_packages + (nfs_ganesha_enable_v3 | bool | ternary(nfs_ganesha_v3_packages, [])) }}"
 
 # Export configuration defaults
+nfs_ganesha_config_dir: /etc/ganesha
 nfs_ganesha_export_dir: /exports
 nfs_ganesha_export_id: 101
 nfs_ganesha_export_clients: "10.0.0.0/24"

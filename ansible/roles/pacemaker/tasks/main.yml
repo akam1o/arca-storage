@@ -78,7 +78,7 @@
 
 - name: Install NetnsVlan resource agent
   ansible.builtin.copy:
-    src: NetnsVlan
+    src: "{{ pacemaker_netnsvlan_ra_src }}"
     dest: "/usr/lib/ocf/resource.d/{{ pacemaker_ra_vendor }}/NetnsVlan"
     owner: root
     group: root
