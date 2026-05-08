@@ -284,8 +284,6 @@ def _is_failed_delete(status: Dict[str, Any]) -> bool:
 
 def _has_pending_create_step(spec: SVMSpec, status: Dict[str, Any]) -> bool:
     fields = ["ganesha_configured", "pacemaker_group_created"]
-    if spec.vlan_id is not None:
-        fields.extend(["namespace_created", "vlan_attached"])
     if spec.root_volume_size_gib:
         fields.extend(["lv_created", "fs_formatted"])
     return any(not status.get(field, False) for field in fields)

@@ -76,7 +76,23 @@ def test_failed_delete_records_are_not_create_resume_candidates():
 
 
 def test_failed_create_with_pending_steps_can_resume():
+    svm_spec = SVMSpec(name="tenant", vlan_id=100, ip_cidr="10.0.0.2/24")
     volume_spec = VolumeSpec(name="vol1", svm="tenant", size_gib=10)
+
+    assert svm_service._can_resume_create(
+        _record(
+            svm_spec,
+            {
+                "phase": "Failed",
+                "message": "Step 'pacemaker_group_created' failed: pcs failed",
+                "namespace_created": False,
+                "vlan_attached": False,
+                "ganesha_configured": True,
+                "pacemaker_group_created": False,
+            },
+        ),
+        svm_spec,
+    )
 
     assert volume_service._can_resume_create(
         _record(
@@ -90,6 +106,25 @@ def test_failed_create_with_pending_steps_can_resume():
             },
         ),
         volume_spec,
+    )
+
+
+def test_failed_vlan_svm_with_completed_create_steps_cannot_resume():
+    svm_spec = SVMSpec(name="tenant", vlan_id=100, ip_cidr="10.0.0.2/24")
+
+    assert not svm_service._can_resume_create(
+        _record(
+            svm_spec,
+            {
+                "phase": "Failed",
+                "message": "Manual intervention required",
+                "namespace_created": False,
+                "vlan_attached": False,
+                "ganesha_configured": True,
+                "pacemaker_group_created": True,
+            },
+        ),
+        svm_spec,
     )
 
 
