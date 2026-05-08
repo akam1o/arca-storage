@@ -175,6 +175,29 @@ class TestSVMReconciler:
         assert result.status.fs_formatted is True
         assert db.get_svm("root-resume")["status"]["phase"] == Phase.READY.value
 
+    def test_create_svm_root_lv_recreates_missing_recorded_lv(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(
+                name="root-missing",
+                ip_cidr="10.0.8.6/32",
+                root_volume_size_gib=10,
+            ),
+        )
+        assign_create_lease(svm.status, "owner-1")
+        svm.status.ganesha_configured = True
+        svm.status.lv_created = True
+        svm.status.fs_formatted = True
+        db.insert_svm(svm)
+
+        result = rec.reconcile(svm)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.fs_formatted is True
+        assert adapters.lvm.lv_exists("vg_arca", "vol_root-missing")
+        assert db.get_svm("root-missing")["status"]["phase"] == Phase.READY.value
+
     def test_delete_svm(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
         svm = SVM(
@@ -276,6 +299,28 @@ class TestVolumeReconciler:
         assert result.status.lv_created is True
         assert result.status.fs_formatted is True
         assert result.status.mounted is True
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.READY.value
+
+    def test_create_volume_recreates_missing_recorded_lv(self, db, adapters, config):
+        rec = VolumeReconciler(db, adapters, config=config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        vol.status.lv_created = True
+        vol.status.lv_path = "/dev/vg_arca/vol_svm1_vol1"
+        vol.status.lv_name = "vol_svm1_vol1"
+        vol.status.fs_formatted = True
+        vol.status.mounted = True
+        vol.status.mount_path = "/export/svm1/vol1"
+        db.insert_volume(vol)
+
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.lv_created is True
+        assert result.status.fs_formatted is True
+        assert result.status.mounted is True
+        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_vol1")
+        assert adapters.xfs.is_mounted("/export/svm1/vol1")
         assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.READY.value
 
     def test_create_volume_rejects_existing_lv_with_wrong_type(self, db, adapters, config):

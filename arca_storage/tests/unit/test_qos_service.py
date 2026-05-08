@@ -176,6 +176,37 @@ def test_get_qos_reapplies_persisted_limits_when_cgroup_is_missing(monkeypatch, 
     assert ctx.db.persisted_qos == result
 
 
+def test_get_qos_reattaches_current_ganesha_pid_when_limits_are_active(monkeypatch, tmp_path):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "io.max").write_text("8:16 riops=1000", encoding="utf-8")
+    (cgroup_path / "cgroup.procs").write_text("1111", encoding="utf-8")
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {"phase": "Ready", "lv_path": "/dev/vg_arca/test-vol"},
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    result = qos_service.get_qos_settings("tenant-a", "test-vol")
+
+    assert result["qos_enabled"] is True
+    assert result["read_iops"] == 1000
+    assert (cgroup_path / "cgroup.procs").read_text(encoding="utf-8") == "4242"
+    assert ctx.db.persisted_qos == result
+
+
 @pytest.mark.parametrize(
     ("operation", "kwargs"),
     [

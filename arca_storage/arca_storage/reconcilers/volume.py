@@ -52,6 +52,7 @@ class VolumeReconciler:
         lv_name = volume_lv_name(spec.svm, spec.name)
         lv_path = f"/dev/{vg_name}/{lv_name}"
         mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        self._reset_missing_create_resources(volume, vg_name, lv_name, mount_path, create_owner)
 
         steps = [
             (
@@ -98,6 +99,37 @@ class VolumeReconciler:
         volume.status.last_reconciled = datetime.now(timezone.utc)
         self._persist(volume, "Volume ready", expected_create_owner=expected_owner)
         return volume
+
+    def _reset_missing_create_resources(
+        self,
+        volume: Volume,
+        vg_name: str,
+        lv_name: str,
+        mount_path: str,
+        create_owner: Optional[str],
+    ) -> None:
+        changed = False
+        if volume.status.lv_created and not self.adapters.lvm.lv_exists(vg_name, lv_name):
+            volume.status.lv_created = False
+            volume.status.lv_path = None
+            volume.status.lv_name = None
+            volume.status.fs_formatted = False
+            volume.status.mounted = False
+            volume.status.mount_path = None
+            changed = True
+
+        if volume.status.mounted:
+            try:
+                mounted = self.adapters.xfs.is_mounted(mount_path)
+            except Exception:
+                mounted = True
+            if not mounted:
+                volume.status.mounted = False
+                volume.status.mount_path = None
+                changed = True
+
+        if changed:
+            self._persist(volume, "Volume create state reset", expected_create_owner=create_owner)
 
     def _reconcile_delete(self, volume: Volume) -> Volume:
         spec = volume.spec

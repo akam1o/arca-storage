@@ -85,6 +85,7 @@ class SVMReconciler:
         if spec.root_volume_size_gib:
             lv_name = svm_root_lv_name(spec.name)
             lv_path = f"/dev/{vg_name}/{lv_name}"
+            self._reset_missing_root_lv(svm, vg_name, lv_name, create_owner)
             steps.append((
                 "lv_created",
                 lambda: create_volume_lv_or_accept_existing(
@@ -167,6 +168,21 @@ class SVMReconciler:
             self._persist(svm, svm.status.message)
             logger.error("SVM %s delete failed: %s", spec.name, e)
         return svm
+
+    def _reset_missing_root_lv(
+        self,
+        svm: SVM,
+        vg_name: str,
+        lv_name: str,
+        create_owner: Optional[str],
+    ) -> None:
+        if not svm.status.lv_created:
+            return
+        if self.adapters.lvm.lv_exists(vg_name, lv_name):
+            return
+        svm.status.lv_created = False
+        svm.status.fs_formatted = False
+        self._persist(svm, "SVM root LV state reset", expected_create_owner=create_owner)
 
     # ---- drift detection (placeholder) ----
 

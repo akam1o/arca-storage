@@ -338,5 +338,6 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
         ctx.db.set_volume_qos(svm, volume, qos_settings)
         return qos_settings
     if settings["qos_enabled"]:
+        _attach_ganesha_process(ctx, svm, cgroup_path)
         ctx.db.set_volume_qos(svm, volume, settings)
     return settings
