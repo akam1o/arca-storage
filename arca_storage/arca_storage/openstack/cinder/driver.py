@@ -436,14 +436,37 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             "clone_support": self._clone_support,
             "replication_enabled": self._replication_support,
             "multiattach": self._multiattach_support,
-            # Capacity (these would need real values from ARCA Storage)
+            # Capacity falls back to unknown when the ARCA API is unavailable.
             "total_capacity_gb": "unknown",
             "free_capacity_gb": "unknown",
             "reserved_percentage": self.configuration.reserved_percentage,
             "max_over_subscription_ratio": self.configuration.arca_storage_max_over_subscription_ratio,
         }
 
+        capacity = self._get_backend_capacity()
+        if capacity is not None:
+            data.update(capacity)
+
         self._stats = data
+
+    def _get_backend_capacity(self) -> Optional[Dict[str, float]]:
+        """Return scheduler capacity stats when the backend SVM is unambiguous."""
+        if not self.configuration.arca_storage_use_api or not self.arca_client:
+            return None
+        if self.configuration.arca_storage_svm_strategy != "shared":
+            return None
+
+        svm_name = self.configuration.arca_storage_default_svm
+        try:
+            capacity = self.arca_client.get_svm_capacity(svm_name)
+            return {
+                "total_capacity_gb": float(capacity["total_gb"]),
+                "free_capacity_gb": float(capacity["free_gb"]),
+                "provisioned_capacity_gb": float(capacity.get("provisioned_gb", 0)),
+            }
+        except Exception as e:
+            LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+            return None
 
     def _get_svm_for_volume(self, volume) -> str:
         """Determine which SVM to use for a volume.

@@ -358,6 +358,31 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert self.driver._stats["clone_support"] is True
         assert self.driver._stats["thick_provisioning_support"] is False
 
+    def test_update_volume_stats_reports_shared_svm_capacity(self):
+        """Shared-SVM stats include scheduler capacity from the ARCA API."""
+        self.driver.arca_client.get_svm_capacity.return_value = {
+            "total_gb": 1000,
+            "free_gb": 750,
+            "provisioned_gb": 125,
+        }
+
+        self.driver._update_volume_stats()
+
+        assert self.driver._stats["total_capacity_gb"] == 1000.0
+        assert self.driver._stats["free_capacity_gb"] == 750.0
+        assert self.driver._stats["provisioned_capacity_gb"] == 125.0
+        self.driver.arca_client.get_svm_capacity.assert_called_once_with("test-svm")
+
+    def test_update_volume_stats_keeps_unknown_capacity_for_manual_strategy(self):
+        """Manual SVM mapping cannot safely aggregate capacity without pool membership."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+
+        self.driver._update_volume_stats()
+
+        assert self.driver._stats["total_capacity_gb"] == "unknown"
+        assert self.driver._stats["free_capacity_gb"] == "unknown"
+        self.driver.arca_client.get_svm_capacity.assert_not_called()
+
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_snapshot_copies_volume_file(self, mock_utils):
         """Snapshots are file copies from volume-id to snapshot-id paths."""
