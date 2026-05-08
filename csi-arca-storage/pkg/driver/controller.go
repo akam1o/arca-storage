@@ -2,6 +2,8 @@ package driver
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"errors"
 	"fmt"
 	"time"
@@ -30,10 +32,20 @@ const (
 	gibBytes             = int64(1024 * 1024 * 1024)
 	defaultCapacityBytes = gibBytes // 1 GiB
 
-	arcaSnapshotReadyStatus = "Ready"
+	arcaSnapshotReadyStatus              = "Ready"
+	temporaryCloneSnapshotRandomBytes    = 8
+	temporaryCloneSnapshotCreateAttempts = 4
 )
 
 var errSnapshotBackendAlreadyExists = errors.New("snapshot backend already exists")
+
+func temporaryCloneSnapshotName(volumeID string) (string, error) {
+	random := make([]byte, temporaryCloneSnapshotRandomBytes)
+	if _, err := rand.Read(random); err != nil {
+		return "", err
+	}
+	return fmt.Sprintf("clone-%s-%s", volumeID, hex.EncodeToString(random)), nil
+}
 
 func bytesToGiB(bytes int64) int {
 	if bytes <= 0 {
@@ -260,7 +272,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			}
 			klog.V(4).Infof("Using source SVM for clone: %s with VIP: %s", svm.Name, svm.VIP)
 
-			temporarySnapshotName := fmt.Sprintf("clone-%s", volumeID)
+			temporarySnapshotName := ""
 			temporarySnapshotReady := false
 			cleanupTemporarySnapshot := func() error {
 				if !temporarySnapshotReady {
@@ -280,22 +292,34 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				}
 			}()
 
-			err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
-				Name:   temporarySnapshotName,
-				SVM:    sourceVol.SVMName,
-				Volume: sourceVol.Path,
-			})
-			if err != nil {
+			for attempt := 0; attempt < temporaryCloneSnapshotCreateAttempts; attempt++ {
+				var nameErr error
+				temporarySnapshotName, nameErr = temporaryCloneSnapshotName(volumeID)
+				if nameErr != nil {
+					return nil, status.Errorf(codes.Internal, "failed to generate temporary clone snapshot name: %v", nameErr)
+				}
+				err = d.arcaClient.CreateSnapshot(ctx, &arca.CreateSnapshotRequest{
+					Name:   temporarySnapshotName,
+					SVM:    sourceVol.SVMName,
+					Volume: sourceVol.Path,
+				})
+				if err == nil {
+					temporarySnapshotReady = true
+					break
+				}
 				if arca.IsAlreadyExistsError(err) {
-					return nil, status.Errorf(
-						codes.Aborted,
-						"temporary clone snapshot %s already exists but is not owned by this request",
-						temporarySnapshotName,
-					)
+					klog.Warningf("Temporary clone snapshot %s already exists, retrying with a new name", temporarySnapshotName)
+					continue
 				}
 				return nil, status.Errorf(codes.Internal, "failed to snapshot source volume: %v", err)
 			}
-			temporarySnapshotReady = true
+			if !temporarySnapshotReady {
+				return nil, status.Errorf(
+					codes.Aborted,
+					"failed to allocate a unique temporary clone snapshot for volume %s",
+					volumeID,
+				)
+			}
 
 			err = d.arcaClient.CloneVolumeFromSnapshot(ctx, &arca.CloneVolumeFromSnapshotRequest{
 				Name:         volumePath,
