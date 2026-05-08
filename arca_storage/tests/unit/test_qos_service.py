@@ -7,7 +7,7 @@ from types import SimpleNamespace
 import pytest
 
 from arca_storage.api.services import qos_service
-from arca_storage.errors import InvalidArgumentError, PreconditionFailedError
+from arca_storage.errors import InvalidArgumentError, NotFoundError, PreconditionFailedError
 
 
 class DummyDB:
@@ -31,6 +31,12 @@ class DummyDB:
             else:
                 status.pop("qos", None)
         return True
+
+
+class LostVolumeDB(DummyDB):
+    def set_volume_qos(self, svm, name, qos):
+        super().set_volume_qos(svm, name, qos)
+        return False
 
 
 def test_apply_qos_attaches_ganesha_process_and_writes_io_limits(monkeypatch, tmp_path):
@@ -74,6 +80,40 @@ def test_apply_qos_attaches_ganesha_process_and_writes_io_limits(monkeypatch, tm
         "8:16 rbps=1048576 wbps=524288 riops=1000 wiops=500"
     )
     assert ctx.db.persisted_qos == result
+
+
+def test_apply_qos_rolls_back_cgroup_when_volume_disappears_before_persist(
+    monkeypatch,
+    tmp_path,
+):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    ctx = SimpleNamespace(
+        db=LostVolumeDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {"phase": "Ready", "lv_path": "/dev/vg_arca/test-vol"},
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(
+        qos_service,
+        "_ensure_cgroup_hierarchy",
+        lambda: cgroup_base.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    with pytest.raises(NotFoundError):
+        qos_service.apply_qos_to_volume("tenant-a", "test-vol", read_iops=1000)
+
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == ""
 
 
 def test_apply_qos_rejects_empty_limits(monkeypatch):
