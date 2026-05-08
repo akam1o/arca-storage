@@ -34,6 +34,7 @@ type NodeStateData struct {
 type NodeState struct {
 	stateFilePath string
 	mu            sync.RWMutex
+	lockFile      *os.File
 	data          *NodeStateData
 }
 
@@ -85,8 +86,10 @@ func (ns *NodeState) RecordVolumeStaging(
 	stagingPath string,
 	nfsMountOptions []string,
 ) error {
-	ns.mu.Lock()
-	defer ns.mu.Unlock()
+	if err := ns.Lock(); err != nil {
+		return err
+	}
+	defer ns.Unlock()
 
 	ns.data.Volumes[volumeID] = &VolumeStaging{
 		VolumeID:        volumeID,
@@ -179,8 +182,10 @@ func (ns *NodeState) GetVolumeStaging(volumeID string) (*VolumeStaging, error) {
 
 // RemoveVolumeStaging removes a volume from staging records (atomic, with fsync)
 func (ns *NodeState) RemoveVolumeStaging(volumeID string) error {
-	ns.mu.Lock()
-	defer ns.mu.Unlock()
+	if err := ns.Lock(); err != nil {
+		return err
+	}
+	defer ns.Unlock()
 
 	delete(ns.data.Volumes, volumeID)
 
@@ -343,14 +348,12 @@ func (ns *NodeState) persistLocked() error {
 		return fmt.Errorf("failed to marshal state: %w", err)
 	}
 
-	// Atomic write: write to temp file, fsync, then rename
-	tempPath := ns.stateFilePath + ".tmp"
-
-	// Write to temp file
-	f, err := os.OpenFile(tempPath, os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0600)
+	// Atomic write: write to a per-call temp file, fsync, then rename.
+	f, err := os.CreateTemp(filepath.Dir(ns.stateFilePath), "."+filepath.Base(ns.stateFilePath)+".*.tmp")
 	if err != nil {
 		return fmt.Errorf("failed to create temp file: %w", err)
 	}
+	tempPath := f.Name()
 
 	if _, err := f.Write(data); err != nil {
 		if closeErr := f.Close(); closeErr != nil {
@@ -423,22 +426,62 @@ func (ns *NodeState) quarantineCorruptState() error {
 // Lock acquires an exclusive file lock for cross-process synchronization
 // This is important when multiple processes might access the state file
 func (ns *NodeState) Lock() error {
-	// For this implementation, we rely on the internal mutex
-	// For true cross-process locking, we would use flock(2)
-	// That's an implementation detail for the actual deployment
 	ns.mu.Lock()
+	if ns.stateFilePath == "" {
+		return nil
+	}
+
+	stateDir := filepath.Dir(ns.stateFilePath)
+	if err := os.MkdirAll(stateDir, 0750); err != nil {
+		ns.mu.Unlock()
+		return fmt.Errorf("failed to create state directory: %w", err)
+	}
+
+	lockFile, err := os.OpenFile(ns.stateFilePath+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		ns.mu.Unlock()
+		return fmt.Errorf("failed to open state lock file: %w", err)
+	}
+	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
+		if closeErr := lockFile.Close(); closeErr != nil {
+			klog.Warningf("Failed to close state lock file after lock error: %v", closeErr)
+		}
+		ns.mu.Unlock()
+		return fmt.Errorf("failed to lock state file: %w", err)
+	}
+	ns.lockFile = lockFile
+
+	if err := ns.load(); err != nil {
+		if os.IsNotExist(err) {
+			ns.data = &NodeStateData{Volumes: make(map[string]*VolumeStaging)}
+			return nil
+		}
+		ns.Unlock()
+		return fmt.Errorf("failed to reload state file after locking: %w", err)
+	}
 	return nil
 }
 
 // Unlock releases the file lock
 func (ns *NodeState) Unlock() {
+	if ns.lockFile != nil {
+		if err := syscall.Flock(int(ns.lockFile.Fd()), syscall.LOCK_UN); err != nil {
+			klog.Warningf("Failed to unlock state file: %v", err)
+		}
+		if err := ns.lockFile.Close(); err != nil {
+			klog.Warningf("Failed to close state lock file: %v", err)
+		}
+		ns.lockFile = nil
+	}
 	ns.mu.Unlock()
 }
 
 // RecordVolumePublish records that a volume has been published to a target path.
 func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string, readOnly bool) error {
-	ns.mu.Lock()
-	defer ns.mu.Unlock()
+	if err := ns.Lock(); err != nil {
+		return err
+	}
+	defer ns.Unlock()
 
 	staging, exists := ns.data.Volumes[volumeID]
 	if !exists {
@@ -532,8 +575,10 @@ func (ns *NodeState) ValidateVolumePublish(volumeID, targetPath string, readOnly
 
 // RemoveVolumePublish removes a target path from the published paths
 func (ns *NodeState) RemoveVolumePublish(volumeID, targetPath string) error {
-	ns.mu.Lock()
-	defer ns.mu.Unlock()
+	if err := ns.Lock(); err != nil {
+		return err
+	}
+	defer ns.Unlock()
 
 	staging, exists := ns.data.Volumes[volumeID]
 	if !exists {
