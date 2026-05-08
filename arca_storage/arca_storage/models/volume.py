@@ -5,7 +5,7 @@ Volume resource model.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
+from typing import Any, Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -47,6 +47,7 @@ class VolumeStatus(BaseModel):
     resize_owner: Optional[str] = None
     resize_lease_expires_at: Optional[datetime] = None
     resize_target_size_gib: Optional[int] = None
+    qos: Optional[dict[str, Any]] = None
 
 
 class Volume(BaseModel):

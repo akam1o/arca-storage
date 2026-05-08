@@ -413,6 +413,18 @@ class StateDB:
                         "snapshots": [self._snapshot_ref(snapshot) for snapshot in snapshots],
                     },
                 )
+            active_clone_snapshots = [
+                self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
+            ]
+            if active_clone_snapshots:
+                raise ConflictError(
+                    f"SVM '{name}' has snapshots that are being cloned; retry after clone completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "snapshots": active_clone_snapshots,
+                    },
+                )
 
             exports = self._blocking_exports_for_svm_delete(conn, name, volumes, force=force)
             if exports:

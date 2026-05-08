@@ -13,7 +13,7 @@ from arca_storage.models.base import Phase
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.svm import SVM, SVMSpec
-from arca_storage.models.volume import Volume, VolumeSpec
+from arca_storage.models.volume import Volume, VolumeSpec, VolumeStatus
 
 
 @pytest.fixture
@@ -183,6 +183,25 @@ class TestStateDB:
                 Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10)),
                 require_ready_svm=True,
             )
+
+    def test_reserve_svm_delete_blocks_active_snapshot_clone_lease(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        snap.status.phase = Phase.READY
+        snap.status.lv_created = True
+        db.insert_snapshot(snap)
+        db.reserve_snapshot_clone("svm1", "vol1", "snap1", "clone-owner")
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_svm_delete("svm1", force=True, delete_volumes=True)
+
+        assert exc_info.value.details["snapshots"] == ["svm1/vol1/snap1"]
+        assert db.get_svm("svm1")["status"]["phase"] == "Ready"
 
     def test_upsert_and_list_volumes(self, db):
         for name in ("vol1", "vol2", "vol3"):
@@ -429,6 +448,26 @@ class TestStateDB:
         assert db.set_volume_qos("svm1", "vol1", None) is True
 
         assert "qos" not in db.get_volume("svm1", "vol1")["status"]
+
+    def test_complete_volume_resize_preserves_qos_settings(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        db.set_volume_qos("svm1", "vol1", {"qos_enabled": True, "read_iops": 1000})
+        db.reserve_volume_resize("svm1", "vol1", "resize-owner", 20)
+        record = db.get_volume("svm1", "vol1")
+        resized = Volume(
+            spec=VolumeSpec(name="vol1", svm="svm1", size_gib=20),
+            status=VolumeStatus.model_validate(record["status"]),
+        )
+        resized.status.phase = Phase.READY
+
+        assert db.complete_volume_resize(resized, "resize-owner") is True
+
+        assert db.get_volume("svm1", "vol1")["status"]["qos"]["read_iops"] == 1000
 
     def test_volume_resize_lease_blocks_guarded_dependents(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
