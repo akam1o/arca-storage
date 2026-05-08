@@ -5,12 +5,11 @@ Uvicorn server entrypoint for Arca Storage API.
 from __future__ import annotations
 
 import argparse
-import ipaddress
 from typing import Optional
 
 import uvicorn
 
-from arca_storage.api.auth import configured_api_token
+from arca_storage.api.auth import API_TOKEN_REQUIRED_MESSAGE, configured_api_token, is_loopback_bind_host
 from arca_storage.config import load_settings
 
 
@@ -22,22 +21,12 @@ def build_parser() -> argparse.ArgumentParser:
     return parser
 
 
-def _is_loopback_bind_host(host: str) -> bool:
-    normalized = host.strip().strip("[]").lower()
-    if normalized == "localhost":
-        return True
-    try:
-        return ipaddress.ip_address(normalized).is_loopback
-    except ValueError:
-        return False
-
-
 def _validate_auth_for_bind(parser: argparse.ArgumentParser, host: str) -> None:
-    if _is_loopback_bind_host(host):
+    if is_loopback_bind_host(host):
         return
     if configured_api_token():
         return
-    parser.error("ARCA_API_TOKEN or ARCA_AUTH_TOKEN is required when binding to a non-loopback host")
+    parser.error(API_TOKEN_REQUIRED_MESSAGE)
 
 
 def main(argv: Optional[list[str]] = None) -> int:

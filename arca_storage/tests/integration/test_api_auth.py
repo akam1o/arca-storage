@@ -38,10 +38,32 @@ def test_api_auth_accepts_configured_bearer_token(monkeypatch):
     assert response.status_code == 200
 
 
-def test_api_auth_leaves_docs_open(monkeypatch):
+def test_api_auth_protects_openapi_schema(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
     with TestClient(app) as client:
         response = client.get("/openapi.json")
 
+    assert response.status_code == 401
+
+
+def test_api_auth_accepts_openapi_schema_with_bearer_token(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+
+    with TestClient(app) as client:
+        response = client.get("/openapi.json", headers={"Authorization": "Bearer secret-token"})
+
     assert response.status_code == 200
+
+
+def test_api_auth_rejects_non_loopback_request_without_token(monkeypatch):
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+
+    with TestClient(app, base_url="http://192.0.2.10:8080") as client:
+        response = client.get("/v1/svms")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "AUTH_TOKEN_REQUIRED"
+    assert payload["error"]["details"]["host"] == "192.0.2.10"
