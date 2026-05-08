@@ -66,18 +66,10 @@ class SVMReconciler:
         export_dir = self._cfg.get("export_dir", "/exports")
         drbd_resource = self._cfg.get("drbd_resource", "r0")
 
+        if uses_vlan and not svm.status.vlan_ifname:
+            svm.status.vlan_ifname = allocate_vlan_ifname(spec.name, spec.vlan_id)
+
         steps = []
-        if uses_vlan:
-            steps.extend([
-                (
-                    "namespace_created",
-                    lambda: self.adapters.netns.create_namespace(spec.name),
-                ),
-                (
-                    "vlan_attached",
-                    lambda: self._attach_vlan(svm, parent_if, gateway),
-                ),
-            ])
         steps.append(
             (
                 "ganesha_configured",
@@ -154,23 +146,6 @@ class SVMReconciler:
         self._persist(svm, "SVM ready", expected_create_owner=expected_owner)
         return svm
 
-    def _attach_vlan(self, svm: SVM, parent_if: str, gateway: str) -> None:
-        if svm.spec.vlan_id is None:
-            raise ValueError("vlan_id is required to attach a VLAN interface")
-        ifname = svm.status.vlan_ifname
-        if not ifname:
-            ifname = allocate_vlan_ifname(svm.spec.name, svm.spec.vlan_id)
-            svm.status.vlan_ifname = ifname
-        self.adapters.netns.attach_vlan(
-            svm.spec.name,
-            parent_if,
-            svm.spec.vlan_id,
-            svm.spec.ip_cidr,
-            gateway,
-            svm.spec.mtu,
-            ifname,
-        )
-
     # ---- delete ----
 
     def _reconcile_delete(self, svm: SVM) -> SVM:
@@ -180,7 +155,7 @@ class SVMReconciler:
             svm.status.phase = Phase.DELETING
             self._persist(svm, "svm delete reserved")
             self.adapters.pacemaker.delete_group(spec.name)
-            if spec.vlan_id is not None or svm.status.namespace_created:
+            if svm.status.namespace_created:
                 self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:
                 self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
@@ -209,8 +184,6 @@ class SVMReconciler:
     @staticmethod
     def _has_pending_create_step(svm: SVM) -> bool:
         fields = ["ganesha_configured", "pacemaker_group_created"]
-        if svm.spec.vlan_id is not None:
-            fields.extend(["namespace_created", "vlan_attached"])
         if svm.spec.root_volume_size_gib:
             fields.extend(["lv_created", "fs_formatted"])
         return any(not getattr(svm.status, field, False) for field in fields)

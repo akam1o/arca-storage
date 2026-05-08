@@ -23,7 +23,8 @@ class TestSVMCreate:
 
         assert result.exit_code == 0
         assert "Creating SVM: tenant_a" in result.stdout
-        assert fake_context.adapters.netns.namespace_exists("tenant_a")
+        assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
+        assert fake_context.adapters.pacemaker.resource_exists("netns_tenant_a")
         assert fake_context.adapters.pacemaker.resource_exists("g_svm_tenant_a")
 
     @pytest.mark.integration

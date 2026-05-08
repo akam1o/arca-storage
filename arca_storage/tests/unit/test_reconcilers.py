@@ -85,13 +85,15 @@ class TestSVMReconciler:
         result = rec.reconcile(svm)
 
         assert result.status.phase == Phase.READY
-        assert result.status.namespace_created is True
-        assert result.status.vlan_attached is True
+        assert result.status.namespace_created is False
+        assert result.status.vlan_attached is False
+        assert result.status.vlan_ifname is not None
         assert result.status.ganesha_configured is True
         assert result.status.pacemaker_group_created is True
 
         # Verify adapter state
-        assert adapters.netns.namespace_exists("test-svm")
+        assert adapters.netns.namespace_exists("test-svm") is False
+        assert adapters.pacemaker.resource_exists("netns_test-svm")
         assert adapters.pacemaker.resource_exists("g_svm_test-svm")
 
         # Verify DB state
@@ -189,6 +191,21 @@ class TestSVMReconciler:
         # Verify cleaned up
         assert not adapters.netns.namespace_exists("del-svm")
         assert len(db.list_svms(name="del-svm")) == 0
+
+    def test_delete_legacy_vlan_svm_removes_reconciler_created_namespace(self, db, adapters, config):
+        rec = SVMReconciler(db, adapters, config=config)
+        svm = SVM(
+            spec=SVMSpec(name="legacy-svm", vlan_id=301, ip_cidr="10.0.2.6/24", gateway="10.0.2.1"),
+        )
+
+        created = rec.reconcile(svm)
+        adapters.netns.create_namespace("legacy-svm")
+        created.status.namespace_created = True
+        created.status.phase = Phase.DELETING
+
+        rec.reconcile(created)
+
+        assert adapters.netns.namespace_exists("legacy-svm") is False
 
     def test_delete_svm_removes_root_lv(self, db, adapters, config):
         rec = SVMReconciler(db, adapters, config=config)
@@ -628,7 +645,7 @@ class TestReconcilerErrors:
 
         failed = rec.reconcile(svm)
         assert failed.status.phase == Phase.FAILED
-        assert failed.status.namespace_created is True
+        assert failed.status.namespace_created is False
         assert failed.status.pacemaker_group_created is False
 
         adapters.pacemaker.groups = {}
