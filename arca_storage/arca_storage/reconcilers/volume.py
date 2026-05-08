@@ -127,7 +127,6 @@ class VolumeReconciler:
                 mounted = True
             if not mounted:
                 volume.status.mounted = False
-                volume.status.mount_path = None
                 changed = True
 
         if changed:
