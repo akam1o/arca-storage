@@ -223,7 +223,10 @@ func (m *MountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bo
 	defer m.mu.Unlock()
 
 	// Derive refcount from NodeState
-	refcount := m.nodeState.CountStagedVolumesForSVM(svmName)
+	refcount, err := m.nodeState.CountStagedVolumesForSVMFresh(svmName)
+	if err != nil {
+		return false, fmt.Errorf("failed to refresh node state for SVM %s refcount: %w", svmName, err)
+	}
 
 	klog.V(4).Infof("SVM %s refcount (derived from NodeState): %d", svmName, refcount)
 
@@ -242,7 +245,10 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 	}
 
 	// Double-check refcount before unmounting (safety check)
-	refcount := m.nodeState.CountStagedVolumesForSVM(svmName)
+	refcount, err := m.nodeState.CountStagedVolumesForSVMFresh(svmName)
+	if err != nil {
+		return fmt.Errorf("failed to refresh node state for SVM %s refcount: %w", svmName, err)
+	}
 	if refcount > 0 {
 		return fmt.Errorf("cannot unmount SVM %s: refcount is %d (not zero)", svmName, refcount)
 	}

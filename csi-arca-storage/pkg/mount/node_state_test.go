@@ -51,3 +51,38 @@ func TestNodeStateRecordVolumeStagingPreservesExternalUpdates(t *testing.T) {
 		t.Fatalf("staged volumes = %#v, want volume-a and volume-b", staged)
 	}
 }
+
+func TestNodeStateFreshCountReloadsExternalUpdates(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	writer, err := NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("NewNodeState(writer) failed: %v", err)
+	}
+	reader, err := NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("NewNodeState(reader) failed: %v", err)
+	}
+
+	if err := writer.RecordVolumeStaging(
+		"volume-a",
+		"tenant-a",
+		"192.0.2.10",
+		"",
+		"pvc-a",
+		"/stage/volume-a",
+		nil,
+	); err != nil {
+		t.Fatalf("RecordVolumeStaging(writer) failed: %v", err)
+	}
+
+	if stale := reader.CountStagedVolumesForSVM("tenant-a"); stale != 0 {
+		t.Fatalf("stale count = %d, want 0 before refresh", stale)
+	}
+	fresh, err := reader.CountStagedVolumesForSVMFresh("tenant-a")
+	if err != nil {
+		t.Fatalf("CountStagedVolumesForSVMFresh failed: %v", err)
+	}
+	if fresh != 1 {
+		t.Fatalf("fresh count = %d, want 1", fresh)
+	}
+}

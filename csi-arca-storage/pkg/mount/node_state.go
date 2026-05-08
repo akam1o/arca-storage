@@ -224,6 +224,24 @@ func (ns *NodeState) CountStagedVolumesForSVM(svmName string) int {
 	ns.mu.RLock()
 	defer ns.mu.RUnlock()
 
+	return ns.countStagedVolumesForSVMLocked(svmName)
+}
+
+// CountStagedVolumesForSVMFresh reloads state under the cross-process file lock
+// before counting. Use this for mount lifecycle decisions that must not rely on
+// stale in-memory state.
+func (ns *NodeState) CountStagedVolumesForSVMFresh(svmName string) (int, error) {
+	ns.mu.Lock()
+	defer ns.mu.Unlock()
+
+	if err := ns.reloadFromDiskWithFileLock(syscall.LOCK_SH); err != nil {
+		return 0, err
+	}
+
+	return ns.countStagedVolumesForSVMLocked(svmName), nil
+}
+
+func (ns *NodeState) countStagedVolumesForSVMLocked(svmName string) int {
 	count := 0
 	for _, staging := range ns.data.Volumes {
 		if staging.SVMName == svmName {
@@ -457,6 +475,45 @@ func (ns *NodeState) Lock() error {
 			return nil
 		}
 		ns.Unlock()
+		return fmt.Errorf("failed to reload state file after locking: %w", err)
+	}
+	return nil
+}
+
+func (ns *NodeState) reloadFromDiskWithFileLock(lockType int) error {
+	if ns.stateFilePath == "" {
+		return nil
+	}
+
+	stateDir := filepath.Dir(ns.stateFilePath)
+	if err := os.MkdirAll(stateDir, 0750); err != nil {
+		return fmt.Errorf("failed to create state directory: %w", err)
+	}
+
+	lockFile, err := os.OpenFile(ns.stateFilePath+".lock", os.O_CREATE|os.O_RDWR, 0600)
+	if err != nil {
+		return fmt.Errorf("failed to open state lock file: %w", err)
+	}
+	defer func() {
+		if err := lockFile.Close(); err != nil {
+			klog.Warningf("Failed to close state lock file: %v", err)
+		}
+	}()
+
+	if err := syscall.Flock(int(lockFile.Fd()), lockType); err != nil {
+		return fmt.Errorf("failed to lock state file: %w", err)
+	}
+	defer func() {
+		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
+			klog.Warningf("Failed to unlock state file: %v", err)
+		}
+	}()
+
+	if err := ns.load(); err != nil {
+		if os.IsNotExist(err) {
+			ns.data = &NodeStateData{Volumes: make(map[string]*VolumeStaging)}
+			return nil
+		}
 		return fmt.Errorf("failed to reload state file after locking: %w", err)
 	}
 	return nil
