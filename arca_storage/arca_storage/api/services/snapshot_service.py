@@ -66,9 +66,19 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     snapshot.status.size_gib = int(source_record.get("spec", {}).get("size_gib") or 10)
     owner = new_create_owner()
     assign_create_lease(snapshot.status, owner)
+    inserted = False
     try:
         ctx.db.insert_snapshot(snapshot, require_ready_volume=True)
+        inserted = True
     except AlreadyExistsError:
+        if _cleanup_expired_snapshot_reservation(ctx, requested_spec, owner):
+            try:
+                ctx.db.insert_snapshot(snapshot, require_ready_volume=True)
+                inserted = True
+            except AlreadyExistsError:
+                pass
+
+    if not inserted:
         existing = ctx.db.list_snapshots(
             svm=snapshot_data.svm,
             volume=snapshot_data.volume,
@@ -96,6 +106,24 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
         raise RuntimeError(snapshot.status.message)
 
     return _snapshot_to_dict(snapshot)
+
+
+def _cleanup_expired_snapshot_reservation(ctx: Any, spec: SnapshotSpec, owner: str) -> bool:
+    if not ctx.db.reserve_snapshot_cleanup(spec.svm, spec.volume, spec.name, owner):
+        return False
+
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg.get("vg_name", "vg_pool_01")
+    snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
+    try:
+        ctx.adapters.lvm.delete_lv(vg_name, snap_lv)
+    except Exception as e:
+        raise InternalError(
+            f"Failed to clean pending Snapshot '{spec.svm}/{spec.volume}/{spec.name}'",
+            {"resource": "Snapshot", "name": f"{spec.svm}/{spec.volume}/{spec.name}", "lv_name": snap_lv},
+        ) from e
+    ctx.db.release_snapshot_cleanup(spec.svm, spec.volume, spec.name, owner)
+    return True
 
 
 def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> None:

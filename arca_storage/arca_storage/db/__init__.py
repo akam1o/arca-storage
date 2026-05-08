@@ -498,7 +498,7 @@ class StateDB:
     ) -> bool:
         now = _now_iso()
         key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
-        with self.transaction(immediate=expected_create_owner is not None) as conn:
+        with self.transaction(immediate=True) as conn:
             if not self._create_owner_matches_conn(conn, "snapshots", key, expected_create_owner):
                 return False
             if require_ready_volume:
@@ -638,18 +638,36 @@ class StateDB:
 
     def reserve_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> bool:
         now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
         expires_at = (now + _SNAPSHOT_CLEANUP_RESERVATION_DURATION).isoformat()
         key = {"svm": svm, "volume": volume, "name": name}
         with self.transaction(immediate=True) as conn:
-            self._prune_snapshot_cleanup_reservations_conn(conn, now.isoformat())
             if self._get_resource_by_key_conn(conn, "snapshots", key) is not None:
                 return False
+            cur = conn.execute(
+                """SELECT expires_at FROM snapshot_cleanup_reservations
+                   WHERE svm = ? AND volume = ? AND name = ?
+                """,
+                (svm, volume, name),
+            )
+            reservation = cur.fetchone()
+            if reservation is not None:
+                if str(reservation["expires_at"]) > now_iso:
+                    return False
+                conn.execute(
+                    """UPDATE snapshot_cleanup_reservations
+                       SET owner = ?, expires_at = ?, created_at = ?
+                       WHERE svm = ? AND volume = ? AND name = ?
+                    """,
+                    (owner, expires_at, now_iso, svm, volume, name),
+                )
+                return True
             try:
                 conn.execute(
                     """INSERT INTO snapshot_cleanup_reservations (svm, volume, name, owner, expires_at, created_at)
                        VALUES (?, ?, ?, ?, ?, ?)
                     """,
-                    (svm, volume, name, owner, expires_at, now.isoformat()),
+                    (svm, volume, name, owner, expires_at, now_iso),
                 )
             except sqlite3.IntegrityError:
                 return False
@@ -665,7 +683,6 @@ class StateDB:
             )
 
     def _snapshot_cleanup_reserved_conn(self, conn: sqlite3.Connection, svm: str, volume: str, name: str) -> bool:
-        self._prune_snapshot_cleanup_reservations_conn(conn)
         cur = conn.execute(
             """SELECT 1 FROM snapshot_cleanup_reservations
                WHERE svm = ? AND volume = ? AND name = ?
@@ -674,16 +691,6 @@ class StateDB:
             (svm, volume, name),
         )
         return cur.fetchone() is not None
-
-    def _prune_snapshot_cleanup_reservations_conn(
-        self,
-        conn: sqlite3.Connection,
-        now: Optional[str] = None,
-    ) -> None:
-        conn.execute(
-            "DELETE FROM snapshot_cleanup_reservations WHERE expires_at <= ?",
-            (now or _now_iso(),),
-        )
 
     # ---- Export operations ----
 

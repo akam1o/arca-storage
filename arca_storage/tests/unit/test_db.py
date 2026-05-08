@@ -311,11 +311,21 @@ class TestStateDB:
 
     def test_insert_snapshot_rejects_active_cleanup_reservation(self, db):
         assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner") is True
+        conn = db._conn()
+        conn.execute(
+            """UPDATE snapshot_cleanup_reservations
+               SET expires_at = ?
+               WHERE svm = ? AND volume = ? AND name = ?
+            """,
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "svm1", "vol1", "snap1"),
+        )
+        conn.commit()
 
         with pytest.raises(AlreadyExistsError):
             db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")))
 
-        db.release_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner")
+        assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner-2") is True
+        db.release_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner-2")
         db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")))
 
         assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner") is False

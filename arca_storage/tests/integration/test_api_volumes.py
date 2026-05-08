@@ -655,6 +655,42 @@ class TestSnapshots:
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1_snap_snap1")
 
     @pytest.mark.integration
+    def test_create_snapshot_recovers_expired_cleanup_reservation(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        assert client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}).status_code == 201
+        fake_context.adapters.lvm.create_snapshot(
+            "vg_pool_01",
+            "vol_tenant_a_vol1",
+            "vol_tenant_a_vol1_snap_snap1",
+        )
+        assert fake_context.db.reserve_snapshot_cleanup("tenant_a", "vol1", "snap1", "cleanup-owner") is True
+        conn = fake_context.db._conn()
+        conn.execute(
+            """UPDATE snapshot_cleanup_reservations
+               SET expires_at = ?
+               WHERE svm = ? AND volume = ? AND name = ?
+            """,
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "tenant_a", "vol1", "snap1"),
+        )
+        conn.commit()
+        original_delete_lv = fake_context.adapters.lvm.delete_lv
+        deleted_lvs = []
+
+        def record_delete(vg_name, lv_name):
+            deleted_lvs.append((vg_name, lv_name))
+            original_delete_lv(vg_name, lv_name)
+
+        fake_context.adapters.lvm.delete_lv = record_delete
+
+        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        assert response.status_code == 201
+        assert ("vg_pool_01", "vol_tenant_a_vol1_snap_snap1") in deleted_lvs
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1_snap_snap1")
+
+    @pytest.mark.integration
     def test_delete_snapshot_reports_reconciler_failure(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
