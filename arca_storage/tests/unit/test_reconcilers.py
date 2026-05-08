@@ -434,6 +434,19 @@ class TestSnapshotReconciler:
 
         assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.DELETING.value
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
+        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+
+    def test_create_snapshot_keeps_existing_lv_when_volume_deleting_after_accept(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        adapters.lvm.create_snapshot("vg_arca", "vol_svm1_data", "vol_svm1_data_snap_snap1")
+        db.reserve_volume_delete("svm1", "data", force=True)
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        with pytest.raises(PreconditionFailedError):
+            rec.reconcile(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data")))
+
+        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
 
     def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
         rec = SnapshotReconciler(db, adapters, config=config)

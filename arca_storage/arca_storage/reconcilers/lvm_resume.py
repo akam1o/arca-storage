@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 import math
 
 from arca_storage.adapters.lvm import LVMAdapter, LVInfo
@@ -9,6 +10,12 @@ from arca_storage.errors import AlreadyExistsError, PreconditionFailedError
 
 
 _SIZE_ABS_TOLERANCE_GIB = 0.01
+
+
+@dataclass(frozen=True)
+class CreateSnapshotLVResult:
+    path: str
+    created: bool
 
 
 def create_volume_lv_or_accept_existing(
@@ -37,9 +44,18 @@ def create_snapshot_lv_or_accept_existing(
     source_lv: str,
     snap_lv: str,
 ) -> str:
+    return create_snapshot_lv_or_accept_existing_with_result(lvm, vg, source_lv, snap_lv).path
+
+
+def create_snapshot_lv_or_accept_existing_with_result(
+    lvm: LVMAdapter,
+    vg: str,
+    source_lv: str,
+    snap_lv: str,
+) -> CreateSnapshotLVResult:
     """Create a snapshot LV, or accept an existing snapshot of the same origin."""
     try:
-        return lvm.create_snapshot(vg, source_lv, snap_lv)
+        return CreateSnapshotLVResult(path=lvm.create_snapshot(vg, source_lv, snap_lv), created=True)
     except AlreadyExistsError:
         info = lvm.get_lv_info(vg, snap_lv)
         if not info.is_snapshot:
@@ -62,7 +78,7 @@ def create_snapshot_lv_or_accept_existing(
                     "actual_origin": info.origin,
                 },
             )
-        return f"/dev/{vg}/{snap_lv}"
+        return CreateSnapshotLVResult(path=f"/dev/{vg}/{snap_lv}", created=False)
 
 
 def _ensure_volume_lv_matches(info: LVInfo, lv_path: str, size_gib: int, *, thin: bool) -> None:

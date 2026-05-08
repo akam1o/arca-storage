@@ -16,7 +16,7 @@ from arca_storage.errors import CreateLeaseLostError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot
 from arca_storage.reconcilers.adapters import Adapters
-from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
+from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing_with_result
 
 logger = logging.getLogger(__name__)
 
@@ -51,8 +51,16 @@ class SnapshotReconciler:
         snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
 
         if not snapshot.status.lv_created:
+            created_snap_lv = False
             try:
-                snap_path = create_snapshot_lv_or_accept_existing(self.adapters.lvm, vg_name, source_lv, snap_lv)
+                snap_result = create_snapshot_lv_or_accept_existing_with_result(
+                    self.adapters.lvm,
+                    vg_name,
+                    source_lv,
+                    snap_lv,
+                )
+                created_snap_lv = snap_result.created
+                snap_path = snap_result.path
                 snapshot.status.lv_created = True
                 snapshot.status.lv_path = snap_path
                 snapshot.status.lv_name = snap_lv
@@ -64,10 +72,20 @@ class SnapshotReconciler:
                     require_ready_volume=True,
                 )
             except CreateLeaseLostError:
+                if created_snap_lv:
+                    self._delete_created_snapshot_lv(vg_name, snap_lv)
                 raise
             except PreconditionFailedError:
+                if created_snap_lv:
+                    self._delete_created_snapshot_lv(vg_name, snap_lv)
                 raise
             except Exception as e:
+                if created_snap_lv:
+                    self._delete_created_snapshot_lv(vg_name, snap_lv)
+                    snapshot.status.lv_created = False
+                    snapshot.status.lv_path = None
+                    snapshot.status.lv_name = None
+                    snapshot.status.size_gib = None
                 snapshot.status.phase = Phase.FAILED
                 expected_owner = create_owner
                 clear_create_lease(snapshot.status)
@@ -136,3 +154,9 @@ class SnapshotReconciler:
         except Exception as e:
             logger.warning("Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e)
             return None
+
+    def _delete_created_snapshot_lv(self, vg_name: str, snap_lv: str) -> None:
+        try:
+            self.adapters.lvm.delete_lv(vg_name, snap_lv)
+        except Exception as e:
+            logger.warning("Failed to delete unrecorded snapshot LV %s/%s: %s", vg_name, snap_lv, e)
