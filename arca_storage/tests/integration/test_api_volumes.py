@@ -280,7 +280,26 @@ class TestResizeVolume:
         response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 10})
 
         assert response.status_code == 412
-        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+        record = fake_context.db.get_volume("tenant_a", "vol1")
+        assert record["spec"]["size_gib"] == 20
+        assert record["status"].get("resize_owner") is None
+        assert record["status"].get("resize_lease_expires_at") is None
+        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
+
+    @pytest.mark.integration
+    def test_resize_volume_noop_does_not_reserve_lease(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+
+        assert response.status_code == 200
+        assert response.json()["data"]["volume"]["size_gib"] == 20
+        record = fake_context.db.get_volume("tenant_a", "vol1")
+        assert record["spec"]["size_gib"] == 20
+        assert record["status"].get("resize_owner") is None
+        assert record["status"].get("resize_lease_expires_at") is None
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
 
     @pytest.mark.integration

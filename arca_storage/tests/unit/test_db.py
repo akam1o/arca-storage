@@ -380,6 +380,43 @@ class TestStateDB:
         assert record["status"]["resize_owner"] is None
         assert db.reserve_volume_delete("svm1", "vol1")["status"]["phase"] == "Deleting"
 
+    def test_volume_resize_rejects_shrink_without_lease(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+
+        with pytest.raises(PreconditionFailedError) as exc_info:
+            db.reserve_volume_resize("svm1", "vol1", "resize-owner", 5)
+
+        assert exc_info.value.details["current_size_gib"] == 10
+        assert exc_info.value.details["requested_size_gib"] == 5
+        record = db.get_volume("svm1", "vol1")
+        assert record["spec"]["size_gib"] == 10
+        assert record["status"].get("resize_owner") is None
+        assert record["status"].get("resize_lease_expires_at") is None
+        assert db.reserve_volume_delete("svm1", "vol1")["status"]["phase"] == "Deleting"
+
+    def test_volume_resize_noop_does_not_reserve_lease(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+
+        reserved = db.reserve_volume_resize("svm1", "vol1", "resize-owner", 10)
+
+        assert reserved["spec"]["size_gib"] == 10
+        assert reserved["status"].get("resize_owner") is None
+        assert reserved["status"].get("resize_lease_expires_at") is None
+        record = db.get_volume("svm1", "vol1")
+        assert record["status"].get("resize_owner") is None
+        assert record["status"].get("resize_lease_expires_at") is None
+        assert db.reserve_volume_delete("svm1", "vol1")["status"]["phase"] == "Deleting"
+
     def test_volume_resize_lease_blocks_guarded_dependents(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
         svm.status.phase = Phase.READY

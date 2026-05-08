@@ -541,6 +541,20 @@ class StateDB:
                     },
                 )
 
+            current_size = int(record.get("spec", {}).get("size_gib") or 0)
+            if target_size_gib < current_size:
+                raise PreconditionFailedError(
+                    f"Volume '{svm}/{name}' cannot be shrunk",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "current_size_gib": current_size,
+                        "requested_size_gib": target_size_gib,
+                    },
+                )
+            if target_size_gib == current_size:
+                return record
+
             status = dict(record["status"])
             status["resize_owner"] = owner
             status["resize_lease_expires_at"] = lease_expiration().isoformat()
