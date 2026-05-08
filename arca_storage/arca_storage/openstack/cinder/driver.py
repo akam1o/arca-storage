@@ -21,8 +21,6 @@ from . import utils as arca_utils
 LOG = logging.getLogger(__name__)
 
 VERSION = "1.0.0"
-SNAPSHOT_METADATA_SVM_KEY = "arca_storage:svm_name"
-SNAPSHOT_METADATA_EXPORT_KEY = "arca_storage:export_path"
 
 
 class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
@@ -581,20 +579,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         )
         return export_path, mount_point
 
-    def _get_snapshot_metadata(self, snapshot) -> Dict[str, Any]:
-        """Return snapshot metadata as a plain dictionary."""
-        metadata = getattr(snapshot, "metadata", None)
-        if isinstance(metadata, dict):
-            return dict(metadata)
-
-        if metadata is None:
-            return {}
-
-        try:
-            return dict(metadata)
-        except (TypeError, ValueError):
-            return {}
-
     def _snapshot_provider_location(self, snapshot) -> Optional[str]:
         """Return a persisted snapshot provider_location when present."""
         provider_location = getattr(snapshot, "provider_location", None)
@@ -604,21 +588,19 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 return provider_location
         return None
 
+    def _snapshot_provider_svm(self, snapshot) -> Optional[str]:
+        """Return a driver-managed snapshot SVM when present."""
+        provider_id = getattr(snapshot, "provider_id", None)
+        if isinstance(provider_id, str):
+            provider_id = provider_id.strip()
+            if provider_id:
+                return provider_id
+        return None
+
     def _get_snapshot_storage(self, snapshot) -> tuple[str, str]:
         """Resolve the SVM and export path where a snapshot file is stored."""
-        metadata = self._get_snapshot_metadata(snapshot)
-        svm_name = metadata.get(SNAPSHOT_METADATA_SVM_KEY)
-        if isinstance(svm_name, str):
-            svm_name = svm_name.strip()
-        else:
-            svm_name = None
-
-        export_path = metadata.get(SNAPSHOT_METADATA_EXPORT_KEY)
-        if not isinstance(export_path, str) or not export_path.strip():
-            export_path = self._snapshot_provider_location(snapshot)
-        else:
-            export_path = export_path.strip()
-
+        svm_name = self._snapshot_provider_svm(snapshot)
+        export_path = self._snapshot_provider_location(snapshot)
         if svm_name:
             return svm_name, export_path or self._get_export_path(svm_name)
 
@@ -628,18 +610,11 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         svm_name = self._get_svm_for_volume(volume)
         return svm_name, export_path or self._get_export_path(svm_name)
 
-    def _snapshot_model_update(self, svm_name: str, export_path: str, snapshot) -> Dict[str, Any]:
-        """Return persisted snapshot storage fields for future cleanup."""
-        metadata = self._get_snapshot_metadata(snapshot)
-        metadata.update(
-            {
-                SNAPSHOT_METADATA_SVM_KEY: svm_name,
-                SNAPSHOT_METADATA_EXPORT_KEY: export_path,
-            }
-        )
+    def _snapshot_model_update(self, svm_name: str, export_path: str) -> Dict[str, Any]:
+        """Return driver-managed snapshot storage fields for future cleanup."""
         return {
             "provider_location": export_path,
-            "metadata": metadata,
+            "provider_id": svm_name,
         }
 
     def _ensure_copy_stays_within_svm(
@@ -807,7 +782,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Note: We do NOT unmount to avoid concurrency issues
             # The SVM export remains mounted for subsequent operations
 
-            return self._snapshot_model_update(svm_name, export_path, snapshot)
+            return self._snapshot_model_update(svm_name, export_path)
 
         except Exception as e:
             msg = _("Failed to create snapshot %s: %s") % (snapshot_name, e)

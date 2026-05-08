@@ -90,6 +90,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         snapshot.name = "test-snapshot"
         snapshot.volume_id = volume_id
         snapshot.provider_location = None
+        snapshot.provider_id = None
         snapshot.metadata = {}
         snapshot.context = Mock(name=f"context-{snapshot_id}")
         return snapshot
@@ -326,10 +327,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         assert result == {
             "provider_location": "192.168.100.5:/exports/test-svm",
-            "metadata": {
-                "arca_storage:svm_name": "test-svm",
-                "arca_storage:export_path": "192.168.100.5:/exports/test-svm",
-            },
+            "provider_id": "test-svm",
         }
         mock_utils.copy_sparse_file.assert_called_once_with(
             os.path.join(mount_point, "volume-source-vol-id"),
@@ -359,15 +357,39 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
-    def test_delete_snapshot_uses_snapshot_metadata_without_source_volume(
+    def test_delete_snapshot_uses_provider_fields_without_source_volume(
         self, mock_utils, mock_exists, mock_remove
     ):
-        """Persisted snapshot storage metadata is enough to remove a snapshot file."""
+        """Driver-managed provider fields are enough to remove a snapshot file."""
         snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
         snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
+
+        self.driver.delete_snapshot(snapshot)
+
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.mount_nfs.assert_called_once_with(
+            export_path="192.168.100.5:/exports/source-svm",
+            mount_point="/var/lib/cinder/mnt/svm_source-svm",
+            mount_options="rw,noatime,vers=4.1",
+        )
+        mock_remove.assert_called_once_with("/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id")
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_snapshot_ignores_user_metadata_for_storage_routing(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """User-facing metadata must not control snapshot storage routing."""
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
         snapshot.metadata = {
-            "arca_storage:svm_name": "source-svm",
-            "arca_storage:export_path": "192.168.100.5:/exports/source-svm",
+            "arca_storage:svm_name": "target-svm",
+            "arca_storage:export_path": "192.168.100.5:/exports/target-svm",
         }
         mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
         self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
@@ -375,6 +397,10 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.delete_snapshot(snapshot)
 
         self.driver.db.volume_get.assert_not_called()
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
         mock_utils.mount_nfs.assert_called_once_with(
             export_path="192.168.100.5:/exports/source-svm",
             mount_point="/var/lib/cinder/mnt/svm_source-svm",
@@ -432,17 +458,45 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
     @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
-    def test_create_volume_from_snapshot_uses_snapshot_metadata_without_source_volume(
+    def test_create_volume_from_snapshot_uses_provider_fields_without_source_volume(
         self, mock_utils, mock_getsize
     ):
-        """Persisted snapshot storage metadata is enough to restore a snapshot."""
+        """Driver-managed provider fields are enough to restore a snapshot."""
         self.driver.configuration.arca_storage_default_svm = "source-svm"
         new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
         snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
         snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        mock_getsize.return_value = 10 * 1024**3
+        self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
+
+        result = self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        assert result == {"provider_location": "192.168.100.5:/exports/source-svm"}
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.copy_sparse_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
+            "/var/lib/cinder/mnt/svm_source-svm/volume-new-vol-id",
+            timeout=600,
+        )
+        mock_utils.extend_volume_file.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_ignores_user_metadata_for_storage_routing(
+        self, mock_utils, mock_getsize
+    ):
+        """User-facing metadata must not bypass cross-SVM restore protection."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
+        new_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
         snapshot.metadata = {
-            "arca_storage:svm_name": "source-svm",
-            "arca_storage:export_path": "192.168.100.5:/exports/source-svm",
+            "arca_storage:svm_name": "target-svm",
+            "arca_storage:export_path": "192.168.100.5:/exports/target-svm",
         }
         mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
         mock_getsize.return_value = 10 * 1024**3
@@ -452,6 +506,10 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         assert result == {"provider_location": "192.168.100.5:/exports/source-svm"}
         self.driver.db.volume_get.assert_not_called()
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
         mock_utils.copy_sparse_file.assert_called_once_with(
             "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
             "/var/lib/cinder/mnt/svm_source-svm/volume-new-vol-id",
