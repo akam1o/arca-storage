@@ -65,6 +65,27 @@ func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	}
 }
 
+func TestClientNormalizesTrailingSlashBaseURL(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/svms/k8s-default" {
+			http.NotFound(w, r)
+			return
+		}
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-default","vip":"192.168.10.5"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL + "/", Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	if _, err := client.GetSVM(context.Background(), "k8s-default"); err != nil {
+		t.Fatalf("GetSVM() error = %v", err)
+	}
+}
+
 func TestListSVMsFollowsPagination(t *testing.T) {
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

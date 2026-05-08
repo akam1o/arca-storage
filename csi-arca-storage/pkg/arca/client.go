@@ -13,6 +13,7 @@ import (
 	"net/http"
 	"net/url"
 	"os"
+	"strings"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -71,7 +72,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	}
 
 	return &Client{
-		baseURL:    config.BaseURL,
+		baseURL:    strings.TrimRight(config.BaseURL, "/"),
 		httpClient: httpClient,
 		timeout:    config.Timeout,
 		retryCount: config.RetryCount,
