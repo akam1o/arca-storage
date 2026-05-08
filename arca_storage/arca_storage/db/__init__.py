@@ -15,7 +15,7 @@ from contextlib import contextmanager
 from datetime import datetime, timezone
 from ipaddress import IPv4Interface
 from pathlib import Path
-from typing import Any, Generator, Optional, Union
+from typing import Any, Callable, Generator, Optional, Union
 
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
 from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError, PreconditionFailedError
@@ -471,12 +471,20 @@ class StateDB:
                 f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
             ) from e
 
-    def upsert_snapshot(self, snapshot: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+    def upsert_snapshot(
+        self,
+        snapshot: Any,
+        *,
+        expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+    ) -> bool:
         now = _now_iso()
         key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
         with self.transaction(immediate=expected_create_owner is not None) as conn:
             if not self._create_owner_matches_conn(conn, "snapshots", key, expected_create_owner):
                 return False
+            if require_ready_volume:
+                self._require_ready_volume_conn(conn, snapshot.spec.svm, snapshot.spec.volume)
             self._upsert_snapshot_conn(conn, snapshot, now=now)
             return True
 
@@ -513,6 +521,7 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
+        require_ready_volume: bool = False,
     ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "snapshots",
@@ -520,10 +529,32 @@ class StateDB:
             owner,
             expected_spec=expected_spec,
             allow_failed=allow_failed,
+            precondition=(
+                (lambda conn: self._require_ready_volume_conn(conn, svm, volume))
+                if require_ready_volume
+                else None
+            ),
         )
 
-    def refresh_snapshot_create_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
-        return self._refresh_create_lease("snapshots", {"svm": svm, "volume": volume, "name": name}, owner)
+    def refresh_snapshot_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        owner: str,
+        *,
+        require_ready_volume: bool = False,
+    ) -> bool:
+        return self._refresh_create_lease(
+            "snapshots",
+            {"svm": svm, "volume": volume, "name": name},
+            owner,
+            precondition=(
+                (lambda conn: self._require_ready_volume_conn(conn, svm, volume))
+                if require_ready_volume
+                else None
+            ),
+        )
 
     def list_snapshots(
         self,
@@ -777,8 +808,11 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
+        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
     ) -> Optional[dict[str, Any]]:
         with self.transaction(immediate=True) as conn:
+            if precondition is not None:
+                precondition(conn)
             record = self._get_resource_by_key_conn(conn, table, key)
             if record is None:
                 return None
@@ -814,8 +848,17 @@ class StateDB:
             return allow_missing
         return record["status"].get("create_owner") == expected_owner
 
-    def _refresh_create_lease(self, table: str, key: dict[str, str], owner: str) -> bool:
+    def _refresh_create_lease(
+        self,
+        table: str,
+        key: dict[str, str],
+        owner: str,
+        *,
+        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
+    ) -> bool:
         with self.transaction(immediate=True) as conn:
+            if precondition is not None:
+                precondition(conn)
             record = self._get_resource_by_key_conn(conn, table, key)
             if record is None:
                 return False

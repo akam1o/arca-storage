@@ -12,7 +12,7 @@ from typing import Optional
 from arca_storage.cli.lib.validators import snapshot_lv_name, volume_lv_name
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
-from arca_storage.errors import CreateLeaseLostError
+from arca_storage.errors import CreateLeaseLostError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot
 from arca_storage.reconcilers.adapters import Adapters
@@ -57,8 +57,15 @@ class SnapshotReconciler:
                 snapshot.status.lv_path = snap_path
                 snapshot.status.lv_name = snap_lv
                 snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
-                self._persist(snapshot, "snapshot LV created", expected_create_owner=create_owner)
+                self._persist(
+                    snapshot,
+                    "snapshot LV created",
+                    expected_create_owner=create_owner,
+                    require_ready_volume=True,
+                )
             except CreateLeaseLostError:
+                raise
+            except PreconditionFailedError:
                 raise
             except Exception as e:
                 snapshot.status.phase = Phase.FAILED
@@ -77,7 +84,12 @@ class SnapshotReconciler:
         clear_create_lease(snapshot.status)
         snapshot.status.message = ""
         snapshot.status.last_reconciled = datetime.now(timezone.utc)
-        self._persist(snapshot, "Snapshot ready", expected_create_owner=expected_owner)
+        self._persist(
+            snapshot,
+            "Snapshot ready",
+            expected_create_owner=expected_owner,
+            require_ready_volume=True,
+        )
         return snapshot
 
     def _reconcile_delete(self, snapshot: Snapshot) -> Snapshot:
@@ -96,8 +108,19 @@ class SnapshotReconciler:
             self._persist(snapshot, snapshot.status.message)
         return snapshot
 
-    def _persist(self, snapshot: Snapshot, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
-        if not self.db.upsert_snapshot(snapshot, expected_create_owner=expected_create_owner):
+    def _persist(
+        self,
+        snapshot: Snapshot,
+        detail: str,
+        *,
+        expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+    ) -> None:
+        if not self.db.upsert_snapshot(
+            snapshot,
+            expected_create_owner=expected_create_owner,
+            require_ready_volume=require_ready_volume,
+        ):
             raise CreateLeaseLostError("Snapshot", f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}")
         self.db.log_operation(
             "Snapshot", snapshot.metadata.id, "reconcile", snapshot.status.phase.value, detail

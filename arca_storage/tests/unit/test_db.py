@@ -253,6 +253,37 @@ class TestStateDB:
                 require_ready_volume=True,
             )
 
+    def test_guarded_snapshot_resume_rejects_deleting_volume(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        snap.status.phase = Phase.FAILED
+        db.insert_snapshot(snap)
+
+        db.reserve_volume_delete("svm1", "vol1", force=True)
+
+        with pytest.raises(PreconditionFailedError):
+            db.acquire_snapshot_create_lease(
+                "svm1",
+                "vol1",
+                "snap1",
+                "owner-1",
+                expected_spec=snap.spec.model_dump(mode="json"),
+                allow_failed=True,
+                require_ready_volume=True,
+            )
+        with pytest.raises(PreconditionFailedError):
+            db.refresh_snapshot_create_lease(
+                "svm1",
+                "vol1",
+                "snap1",
+                "owner-1",
+                require_ready_volume=True,
+            )
+        with pytest.raises(PreconditionFailedError):
+            db.upsert_snapshot(snap, require_ready_volume=True)
+
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):
             snap = Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1"))

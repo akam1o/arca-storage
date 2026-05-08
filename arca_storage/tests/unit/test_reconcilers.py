@@ -357,8 +357,15 @@ class TestVolumeReconciler:
 # ── Snapshot Reconciler ───────────────────────────────────────────
 
 
+def _insert_ready_volume(db: StateDB, svm: str, name: str) -> None:
+    volume = Volume(spec=VolumeSpec(name=name, svm=svm, size_gib=1))
+    volume.status.phase = Phase.READY
+    db.upsert_volume(volume)
+
+
 class TestSnapshotReconciler:
     def test_create_snapshot(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
         # First create the source volume LV
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
 
@@ -374,6 +381,7 @@ class TestSnapshotReconciler:
         assert result.status.lv_path is not None
 
     def test_create_snapshot_accepts_matching_existing_lv(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
         adapters.lvm.create_snapshot("vg_arca", "vol_svm1_data", "vol_svm1_data_snap_snap1")
 
@@ -392,6 +400,7 @@ class TestSnapshotReconciler:
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["phase"] == Phase.READY.value
 
     def test_delete_snapshot(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
 
         rec = SnapshotReconciler(db, adapters, config=config)
@@ -406,6 +415,25 @@ class TestSnapshotReconciler:
         rec.reconcile(created)
 
         assert len(db.list_snapshots(svm="svm1", name="snap-del")) == 0
+
+    def test_create_snapshot_stops_when_volume_deleting_after_lv_create(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        original_create_snapshot = adapters.lvm.create_snapshot
+
+        def delete_parent_after_snapshot(vg_name, source_lv, snap_lv):
+            result = original_create_snapshot(vg_name, source_lv, snap_lv)
+            db.reserve_volume_delete("svm1", "data", force=True)
+            return result
+
+        adapters.lvm.create_snapshot = delete_parent_after_snapshot
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        with pytest.raises(PreconditionFailedError):
+            rec.reconcile(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data")))
+
+        assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.DELETING.value
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
 
     def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
         rec = SnapshotReconciler(db, adapters, config=config)
@@ -422,12 +450,6 @@ class TestSnapshotReconciler:
 
 
 # ── Export Reconciler ─────────────────────────────────────────────
-
-
-def _insert_ready_volume(db: StateDB, svm: str, name: str) -> None:
-    volume = Volume(spec=VolumeSpec(name=name, svm=svm, size_gib=1))
-    volume.status.phase = Phase.READY
-    db.upsert_volume(volume)
 
 
 class TestExportReconciler:
