@@ -210,25 +210,54 @@ def _clear_qos_limit_best_effort(settings: dict[str, Any]) -> None:
         pass
 
 
+def _clear_qos_limit_for_volume_best_effort(svm: str, volume: str, lv_path: str) -> None:
+    try:
+        cgroup_path = _get_cgroup_path(svm, volume)
+        if cgroup_path.exists():
+            _clear_io_max_limit(cgroup_path, _get_device_id(lv_path))
+    except Exception:
+        pass
+
+
+def _restore_qos_state_best_effort(
+    ctx: Any,
+    svm: str,
+    volume: str,
+    lv_path: str,
+    settings: Optional[dict[str, Any]],
+) -> None:
+    try:
+        limits = _qos_limits_from_settings(settings) if isinstance(settings, dict) else {}
+        if limits:
+            _write_qos_limits(ctx, svm, volume, lv_path, limits)
+            return
+    except Exception:
+        pass
+    _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
+
+
 def _persist_volume_qos(
     ctx: Any,
     svm: str,
     volume: str,
     qos: Optional[dict[str, Any]],
-    *,
-    rollback_settings: Optional[dict[str, Any]] = None,
+) -> None:
+    persisted = ctx.db.set_volume_qos(svm, volume, qos)
+    if not persisted:
+        raise NotFoundError("Volume", f"{svm}/{volume}")
+
+
+def _persist_reapplied_qos(
+    ctx: Any,
+    svm: str,
+    volume: str,
+    qos_settings: dict[str, Any],
 ) -> None:
     try:
-        persisted = ctx.db.set_volume_qos(svm, volume, qos)
-    except Exception:
-        if rollback_settings is not None:
-            _clear_qos_limit_best_effort(rollback_settings)
+        _persist_volume_qos(ctx, svm, volume, qos_settings)
+    except NotFoundError:
+        _clear_qos_limit_best_effort(qos_settings)
         raise
-
-    if not persisted:
-        if rollback_settings is not None:
-            _clear_qos_limit_best_effort(rollback_settings)
-        raise NotFoundError("Volume", f"{svm}/{volume}")
 
 
 def _attach_ganesha_process(ctx: Any, svm: str, cgroup_path: Path) -> None:
@@ -275,7 +304,9 @@ def apply_qos_to_volume(
     validate_name(volume)
 
     ctx = get_context()
-    lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
+    volume_info = _require_qos_volume_record(ctx, svm, volume)
+    lv_path = _qos_volume_lv_path(volume_info, svm, volume)
+    previous_qos = volume_info.get("status", {}).get("qos")
 
     if all(value is None for value in (read_iops, write_iops, read_bps, write_bps)):
         raise InvalidArgumentError(
@@ -294,13 +325,14 @@ def apply_qos_to_volume(
         limits["write_iops"] = write_iops
 
     qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, limits)
-    _persist_volume_qos(
-        ctx,
-        svm,
-        volume,
-        qos_settings,
-        rollback_settings=qos_settings,
-    )
+    try:
+        _persist_volume_qos(ctx, svm, volume, qos_settings)
+    except NotFoundError:
+        _clear_qos_limit_best_effort(qos_settings)
+        raise
+    except Exception:
+        _restore_qos_state_best_effort(ctx, svm, volume, lv_path, previous_qos)
+        raise
     return qos_settings
 
 
@@ -310,12 +342,20 @@ def remove_qos_from_volume(svm: str, volume: str) -> None:
     validate_name(volume)
 
     ctx = get_context()
-    lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
+    volume_info = _require_qos_volume_record(ctx, svm, volume)
+    lv_path = _qos_volume_lv_path(volume_info, svm, volume)
+    previous_qos = volume_info.get("status", {}).get("qos")
     cgroup_path = _get_cgroup_path(svm, volume)
     if cgroup_path.exists():
         device_id = _get_device_id(lv_path)
         _clear_io_max_limit(cgroup_path, device_id)
-    _persist_volume_qos(ctx, svm, volume, None)
+    try:
+        _persist_volume_qos(ctx, svm, volume, None)
+    except NotFoundError:
+        raise
+    except Exception:
+        _restore_qos_state_best_effort(ctx, svm, volume, lv_path, previous_qos)
+        raise
 
 
 def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
@@ -332,13 +372,7 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     if not cgroup_path.exists():
         if persisted_limits:
             qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
-            _persist_volume_qos(
-                ctx,
-                svm,
-                volume,
-                qos_settings,
-                rollback_settings=qos_settings,
-            )
+            _persist_reapplied_qos(ctx, svm, volume, qos_settings)
             return qos_settings
         return _disabled_qos_settings(svm, volume, persisted)
 
@@ -348,13 +382,7 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     if not io_max_file.exists():
         if persisted_limits:
             qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
-            _persist_volume_qos(
-                ctx,
-                svm,
-                volume,
-                qos_settings,
-                rollback_settings=qos_settings,
-            )
+            _persist_reapplied_qos(ctx, svm, volume, qos_settings)
             return qos_settings
         return _disabled_qos_settings(svm, volume, persisted)
 
@@ -387,13 +415,7 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
 
     if not settings["qos_enabled"] and persisted_limits:
         qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
-        _persist_volume_qos(
-            ctx,
-            svm,
-            volume,
-            qos_settings,
-            rollback_settings=qos_settings,
-        )
+        _persist_reapplied_qos(ctx, svm, volume, qos_settings)
         return qos_settings
     if settings["qos_enabled"]:
         _attach_ganesha_process(ctx, svm, cgroup_path)

@@ -35,8 +35,14 @@ class DummyDB:
 
 class LostVolumeDB(DummyDB):
     def set_volume_qos(self, svm, name, qos):
-        super().set_volume_qos(svm, name, qos)
+        self.persisted_qos = qos
         return False
+
+
+class FailingPersistDB(DummyDB):
+    def set_volume_qos(self, svm, name, qos):
+        self.persisted_qos = qos
+        raise RuntimeError("persist failed")
 
 
 def test_apply_qos_attaches_ganesha_process_and_writes_io_limits(monkeypatch, tmp_path):
@@ -116,6 +122,48 @@ def test_apply_qos_rolls_back_cgroup_when_volume_disappears_before_persist(
     assert (cgroup_path / "io.max").read_text(encoding="utf-8") == ""
 
 
+def test_apply_qos_restores_previous_limits_when_persist_raises(
+    monkeypatch,
+    tmp_path,
+):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "io.max").write_text(
+        "8:1 rbps=1024\n8:16 riops=1000",
+        encoding="utf-8",
+    )
+    ctx = SimpleNamespace(
+        db=FailingPersistDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {
+                        "phase": "Ready",
+                        "lv_path": "/dev/vg_arca/test-vol",
+                        "qos": {"qos_enabled": True, "read_iops": 1000},
+                    },
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_ensure_cgroup_hierarchy", lambda: None)
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        qos_service.apply_qos_to_volume("tenant-a", "test-vol", read_iops=2000)
+
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8").splitlines() == [
+        "8:1 rbps=1024",
+        "8:16 riops=1000",
+    ]
+
+
 def test_apply_qos_rejects_empty_limits(monkeypatch):
     ctx = SimpleNamespace(
         db=DummyDB(
@@ -178,6 +226,48 @@ def test_qos_updates_preserve_other_device_limits(monkeypatch, tmp_path):
     assert qos_service.get_qos_settings("tenant-a", "test-vol")["qos_enabled"] is False
 
 
+def test_remove_qos_restores_previous_limits_when_persist_raises(
+    monkeypatch,
+    tmp_path,
+):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "io.max").write_text(
+        "8:1 rbps=1024\n8:16 riops=1000",
+        encoding="utf-8",
+    )
+    ctx = SimpleNamespace(
+        db=FailingPersistDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {
+                        "phase": "Ready",
+                        "lv_path": "/dev/vg_arca/test-vol",
+                        "qos": {"qos_enabled": True, "read_iops": 1000},
+                    },
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_ensure_cgroup_hierarchy", lambda: None)
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        qos_service.remove_qos_from_volume("tenant-a", "test-vol")
+
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8").splitlines() == [
+        "8:1 rbps=1024",
+        "8:16 riops=1000",
+    ]
+
+
 def test_get_qos_reapplies_persisted_limits_when_cgroup_is_missing(monkeypatch, tmp_path):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
     ctx = SimpleNamespace(
@@ -214,6 +304,41 @@ def test_get_qos_reapplies_persisted_limits_when_cgroup_is_missing(monkeypatch, 
     assert (cgroup_path / "cgroup.procs").read_text(encoding="utf-8") == "4242"
     assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
     assert ctx.db.persisted_qos == result
+
+
+def test_get_qos_keeps_reapplied_limits_when_persist_raises(monkeypatch, tmp_path):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    ctx = SimpleNamespace(
+        db=FailingPersistDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {
+                        "phase": "Ready",
+                        "lv_path": "/dev/vg_arca/test-vol",
+                        "qos": {"qos_enabled": True, "read_iops": 1000},
+                    },
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(
+        qos_service,
+        "_ensure_cgroup_hierarchy",
+        lambda: cgroup_base.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    with pytest.raises(RuntimeError, match="persist failed"):
+        qos_service.get_qos_settings("tenant-a", "test-vol")
+
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
 
 
 def test_get_qos_reattaches_current_ganesha_pid_when_limits_are_active(monkeypatch, tmp_path):
