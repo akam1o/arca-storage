@@ -323,6 +323,30 @@ class TestVolumeReconciler:
         assert adapters.xfs.is_mounted("/export/svm1/vol1")
         assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.READY.value
 
+    def test_create_volume_resume_uses_persisted_mount_path_after_export_dir_change(self, db, adapters, config):
+        changed_config = {**config, "export_dir": "/new-export"}
+        rec = VolumeReconciler(db, adapters, config=changed_config)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        vol.status.lv_created = True
+        vol.status.lv_path = "/dev/vg_arca/vol_svm1_vol1"
+        vol.status.lv_name = "vol_svm1_vol1"
+        vol.status.fs_formatted = True
+        vol.status.mounted = True
+        vol.status.mount_path = "/export/svm1/vol1"
+        db.insert_volume(vol)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_vol1", 10)
+        adapters.xfs.format_xfs("/dev/vg_arca/vol_svm1_vol1")
+        adapters.xfs.mount("/dev/vg_arca/vol_svm1_vol1", "/export/svm1/vol1")
+
+        result = rec.reconcile(vol)
+
+        assert result.status.phase == Phase.READY
+        assert result.status.mount_path == "/export/svm1/vol1"
+        assert adapters.xfs.is_mounted("/export/svm1/vol1")
+        assert not adapters.xfs.is_mounted("/new-export/svm1/vol1")
+        assert db.get_volume("svm1", "vol1")["status"]["mount_path"] == "/export/svm1/vol1"
+
     def test_create_volume_rejects_existing_lv_with_wrong_type(self, db, adapters, config):
         rec = VolumeReconciler(db, adapters, config=config)
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))

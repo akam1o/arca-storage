@@ -51,8 +51,10 @@ class VolumeReconciler:
         export_dir = self._cfg.get("export_dir", "/exports")
         lv_name = volume_lv_name(spec.svm, spec.name)
         lv_path = f"/dev/{vg_name}/{lv_name}"
-        mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        default_mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        mount_path = volume.status.mount_path or default_mount_path
         self._reset_missing_create_resources(volume, vg_name, lv_name, mount_path, create_owner)
+        mount_path = volume.status.mount_path or default_mount_path
 
         steps = [
             (
