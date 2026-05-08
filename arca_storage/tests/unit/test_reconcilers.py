@@ -358,6 +358,11 @@ class TestVolumeReconciler:
 
 
 def _insert_ready_volume(db: StateDB, svm: str, name: str) -> None:
+    if db.get_svm(svm) is None:
+        octet = (sum(ord(char) for char in svm) % 200) + 1
+        svm_record = SVM(spec=SVMSpec(name=svm, ip_cidr=f"10.250.{octet}.5/32"))
+        svm_record.status.phase = Phase.READY
+        db.insert_svm(svm_record)
     volume = Volume(spec=VolumeSpec(name=name, svm=svm, size_gib=1))
     volume.status.phase = Phase.READY
     db.upsert_volume(volume)

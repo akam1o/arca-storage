@@ -235,6 +235,7 @@ class TestDeleteSVM:
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert fake_context.db.get_svm("tenant_a") is not None
+        assert fake_context.db.get_svm("tenant_a")["status"]["phase"] == "Ready"
         assert fake_context.db.get_volume("tenant_a", "vol1") is not None
 
     @pytest.mark.integration

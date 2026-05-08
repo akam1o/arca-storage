@@ -138,6 +138,7 @@ class SnapshotReconciler:
             snapshot,
             expected_create_owner=expected_create_owner,
             require_ready_volume=require_ready_volume,
+            require_ready_svm=require_ready_volume,
         ):
             raise CreateLeaseLostError("Snapshot", f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}")
         self.db.log_operation(

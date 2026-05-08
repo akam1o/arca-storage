@@ -1,6 +1,7 @@
 """Tests for SQLite state database."""
 
 import json
+import sqlite3
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -23,6 +24,54 @@ def db(tmp_path):
 
 
 class TestStateDB:
+    def test_state_db_migrates_version_one_cleanup_reservations(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+            conn.execute("INSERT INTO schema_version (version) VALUES (1)")
+            conn.commit()
+        finally:
+            conn.close()
+
+        state = StateDB(str(db_path))
+        try:
+            version = state._conn().execute("SELECT version FROM schema_version").fetchone()[0]
+            columns = {
+                row["name"]
+                for row in state._conn().execute("PRAGMA table_info(snapshot_cleanup_reservations)").fetchall()
+            }
+        finally:
+            state.close()
+
+        assert version == 2
+        assert {"svm", "volume", "name", "owner", "expires_at", "created_at"} <= columns
+
+    def test_state_db_rejects_current_schema_missing_columns(self, tmp_path):
+        db_path = tmp_path / "bad.db"
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+            conn.execute("INSERT INTO schema_version (version) VALUES (2)")
+            conn.execute(
+                """CREATE TABLE volumes (
+                    id          TEXT PRIMARY KEY,
+                    name        TEXT NOT NULL,
+                    svm         TEXT NOT NULL,
+                    spec        TEXT NOT NULL,
+                    status      TEXT NOT NULL,
+                    created_at  TEXT NOT NULL,
+                    updated_at  TEXT NOT NULL,
+                    UNIQUE(svm, name)
+                )"""
+            )
+            conn.commit()
+        finally:
+            conn.close()
+
+        with pytest.raises(RuntimeError, match="volumes.*generation"):
+            StateDB(str(db_path))
+
     def test_upsert_and_get_svm(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"))
         svm.status.phase = Phase.READY
@@ -106,6 +155,34 @@ class TestStateDB:
 
         db.delete_svm(svm.spec.name)
         assert db.get_svm(svm.spec.name) is None
+
+    def test_reserve_svm_delete_rejects_volumes_without_marking_deleting(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+
+        with pytest.raises(PreconditionFailedError) as exc_info:
+            db.reserve_svm_delete("svm1")
+
+        assert exc_info.value.details["volume_count"] == 1
+        assert db.get_svm("svm1")["status"]["phase"] == "Ready"
+
+    def test_reserve_svm_delete_blocks_guarded_volume_create(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+
+        reserved = db.reserve_svm_delete("svm1")
+
+        assert reserved["status"]["phase"] == "Deleting"
+        with pytest.raises(PreconditionFailedError):
+            db.insert_volume(
+                Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10)),
+                require_ready_svm=True,
+            )
 
     def test_upsert_and_list_volumes(self, db):
         for name in ("vol1", "vol2", "vol3"):
@@ -252,6 +329,32 @@ class TestStateDB:
                 Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24")),
                 require_ready_volume=True,
             )
+
+    def test_update_ready_volume_does_not_reinsert_deleted_record(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        db.delete_volume("svm1", "vol1")
+
+        vol.spec = VolumeSpec(name="vol1", svm="svm1", size_gib=20)
+        vol.metadata.bump()
+
+        assert db.update_ready_volume(vol) is False
+        assert db.get_volume("svm1", "vol1") is None
+
+    def test_update_ready_volume_rejects_deleting_record(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        db.reserve_volume_delete("svm1", "vol1", force=True)
+
+        vol.spec = VolumeSpec(name="vol1", svm="svm1", size_gib=20)
+        vol.metadata.bump()
+
+        assert db.update_ready_volume(vol) is False
+        record = db.get_volume("svm1", "vol1")
+        assert record["status"]["phase"] == "Deleting"
+        assert record["spec"]["size_gib"] == 10
 
     def test_guarded_snapshot_resume_rejects_deleting_volume(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))

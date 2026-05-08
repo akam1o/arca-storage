@@ -19,7 +19,14 @@ from arca_storage.create_resume import (
     new_create_owner,
 )
 from arca_storage.db import encode_cursor
-from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    ConflictError,
+    InternalError,
+    InvalidArgumentError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name, volume_lv_name
@@ -51,7 +58,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     owner = new_create_owner()
     assign_create_lease(volume.status, owner)
     try:
-        ctx.db.insert_volume(volume)
+        ctx.db.insert_volume(volume, require_ready_svm=True)
     except AlreadyExistsError:
         existing = ctx.db.get_volume(volume_data.svm, volume_data.name)
         allow_failed_resume = _can_resume_create(existing, requested_spec)
@@ -61,6 +68,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
             owner,
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
+            require_ready_svm=True,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_volume_create(ctx, acquired, owner)
@@ -120,7 +128,15 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
 
     vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
     vol.metadata.bump()
-    ctx.db.upsert_volume(vol)
+    if not ctx.db.update_ready_volume(vol):
+        raise ConflictError(
+            f"Volume '{svm}/{name}' changed during resize",
+            {
+                "resource": "Volume",
+                "name": f"{svm}/{name}",
+                "requested_size_gib": new_size_gib,
+            },
+        )
     return _volume_to_dict(vol, ctx)
 
 
@@ -300,7 +316,12 @@ def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
 
 def _reconcile_volume_create(ctx: Any, volume: Volume, owner: str) -> Volume:
     def refresh() -> bool:
-        if not ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner):
+        if not ctx.db.refresh_volume_create_lease(
+            volume.spec.svm,
+            volume.spec.name,
+            owner,
+            require_ready_svm=True,
+        ):
             return False
         return extend_create_lease(volume.status, owner)
 

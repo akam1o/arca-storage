@@ -160,31 +160,24 @@ def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> 
     validate_name(name)
 
     ctx = get_context()
-    record = ctx.db.get_svm(name)
+    record = ctx.db.reserve_svm_delete(name, force=force, delete_volumes=delete_volumes)
     if not record:
         raise NotFoundError("SVM", name)
 
-    volumes = ctx.db.list_volumes(svm=name, limit=_LIST_ALL_LIMIT)
     cascade_volumes = delete_volumes or force
-    if volumes and not cascade_volumes:
-        raise PreconditionFailedError(
-            f"SVM '{name}' has volumes; delete volumes first or retry with delete_volumes",
-            {
-                "resource": "SVM",
-                "name": name,
-                "volume_count": len(volumes),
-                "volumes": [_volume_ref(v) for v in volumes],
-            },
-        )
+    try:
+        volumes = ctx.db.list_volumes(svm=name, limit=_LIST_ALL_LIMIT)
+        if cascade_volumes:
+            from arca_storage.api.services import volume_service
 
-    if cascade_volumes:
-        from arca_storage.api.services import volume_service
+            for volume in volumes:
+                spec = volume["spec"]
+                volume_service.delete_volume(spec["name"], spec["svm"], force=force)
 
-        for volume in volumes:
-            spec = volume["spec"]
-            volume_service.delete_volume(spec["name"], spec["svm"], force=force)
-
-    _cleanup_or_reject_remaining_dependents(ctx, name, force=force)
+        _cleanup_or_reject_remaining_dependents(ctx, name, force=force)
+    except Exception as e:
+        _mark_svm_delete_failed(ctx, record, f"Delete failed: {e}")
+        raise
 
     svm = SVM(
         metadata=_meta_from_record(record),
@@ -354,6 +347,17 @@ def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: b
                 export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
             else:
                 export_service.remove_internal_export(spec["svm"], spec["volume"], spec["client"])
+
+
+def _mark_svm_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:
+    svm = SVM(
+        metadata=_meta_from_record(record),
+        spec=SVMSpec.model_validate(record["spec"]),
+        status=_parse_status(record, "svm"),
+    )
+    svm.status.phase = Phase.FAILED
+    svm.status.message = message
+    ctx.db.upsert_svm(svm)
 
 
 def _volume_ref(volume: Dict[str, Any]) -> str:

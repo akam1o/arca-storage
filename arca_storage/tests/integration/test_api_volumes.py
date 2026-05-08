@@ -113,6 +113,19 @@ class TestCreateVolume:
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
 
     @pytest.mark.integration
+    def test_create_volume_rejects_deleting_svm(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        fake_context.db.reserve_svm_delete("tenant_a")
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert response.status_code == 412
+        assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
+        assert response.json()["error"]["details"]["phase"] == "Deleting"
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
+
+    @pytest.mark.integration
     def test_create_volume_rejects_duplicate_without_mutating_existing(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
@@ -332,6 +345,25 @@ class TestResizeVolume:
         assert response.status_code == 200
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_vol1"] == 20
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
+
+    @pytest.mark.integration
+    def test_resize_volume_does_not_recreate_concurrently_deleted_record(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        original_grow = fake_context.adapters.xfs.grow
+
+        def delete_record_during_grow(mount_path):
+            original_grow(mount_path)
+            fake_context.db.delete_volume("tenant_a", "vol1")
+
+        fake_context.adapters.xfs.grow = delete_record_during_grow
+
+        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "CONFLICT"
+        assert fake_context.db.get_volume("tenant_a", "vol1") is None
 
 
 class TestCloneVolume:

@@ -51,6 +51,7 @@ class ExportReconciler:
         export_dir = self._cfg.get("export_dir", "/exports")
         previous_ready_export: Optional[Export] = None
         require_ready_volume = _requires_ready_volume(export)
+        require_ready_svm = True
 
         with self.db.transaction(immediate=True) as conn:
             existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
@@ -79,6 +80,7 @@ class ExportReconciler:
                 "export state reserved",
                 expected_create_owner=create_owner,
                 require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
                 allow_missing_create_owner=True,
             )
 
@@ -101,6 +103,7 @@ class ExportReconciler:
                     "ganesha config rendered",
                     expected_create_owner=create_owner,
                     require_ready_volume=require_ready_volume,
+                    require_ready_svm=require_ready_svm,
                 )
             except CreateLeaseLostError:
                 raise
@@ -125,6 +128,7 @@ class ExportReconciler:
                     "ganesha reloaded",
                     expected_create_owner=create_owner,
                     require_ready_volume=require_ready_volume,
+                    require_ready_svm=require_ready_svm,
                 )
             except CreateLeaseLostError:
                 raise
@@ -151,6 +155,7 @@ class ExportReconciler:
                 "Export ready",
                 expected_create_owner=expected_owner,
                 require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
             )
         return export
 
@@ -230,6 +235,7 @@ class ExportReconciler:
         *,
         expected_create_owner: Optional[str] = None,
         require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
     ) -> None:
         with self.db.transaction(immediate=True) as conn:
             self._persist_conn(
@@ -238,6 +244,7 @@ class ExportReconciler:
                 detail,
                 expected_create_owner=expected_create_owner,
                 require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
             )
 
     def _persist_conn(
@@ -248,6 +255,7 @@ class ExportReconciler:
         *,
         expected_create_owner: Optional[str] = None,
         require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
         allow_missing_create_owner: bool = False,
     ) -> None:
         if not self.db._upsert_export_conn(
@@ -255,6 +263,7 @@ class ExportReconciler:
             export,
             expected_create_owner=expected_create_owner,
             require_ready_volume=require_ready_volume,
+            require_ready_svm=require_ready_svm,
             allow_missing_create_owner=allow_missing_create_owner,
         ):
             raise CreateLeaseLostError("Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}")
