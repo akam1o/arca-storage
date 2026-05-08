@@ -11,6 +11,7 @@ from __future__ import annotations
 from concurrent.futures import ThreadPoolExecutor
 import json
 from datetime import datetime, timedelta, timezone
+from threading import Event
 
 import pytest
 
@@ -525,6 +526,59 @@ class TestSnapshotReconciler:
         assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.READY.value
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
         assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+
+    def test_create_snapshot_serializes_untracked_lv_cleanup_with_recreate(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap, require_ready_volume=True)
+        original_create_snapshot = adapters.lvm.create_snapshot
+        original_delete_lv = adapters.lvm.delete_lv
+
+        def delete_snapshot_record_after_snapshot(vg_name, source_lv, snap_lv):
+            result = original_create_snapshot(vg_name, source_lv, snap_lv)
+            db.delete_snapshot("svm1", "data", "snap1")
+            return result
+
+        adapters.lvm.create_snapshot = delete_snapshot_record_after_snapshot
+        insert_started = Event()
+        insert_done = Event()
+        futures = []
+        recreated_snapshots = []
+
+        def recreate_snapshot_record():
+            insert_started.set()
+            recreated = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+            assign_create_lease(recreated.status, "owner-2")
+            db.insert_snapshot(recreated, require_ready_volume=True)
+            recreated_snapshots.append(recreated)
+            insert_done.set()
+
+        with ThreadPoolExecutor(max_workers=1) as pool:
+
+            def delete_lv_while_recreate_waits(vg_name, lv_name):
+                futures.append(pool.submit(recreate_snapshot_record))
+                assert insert_started.wait(1)
+                assert not insert_done.wait(0.05)
+                original_delete_lv(vg_name, lv_name)
+
+            adapters.lvm.delete_lv = delete_lv_while_recreate_waits
+            rec = SnapshotReconciler(db, adapters, config=config)
+            with pytest.raises(CreateLeaseLostError):
+                rec.reconcile(snap)
+
+            futures[0].result(timeout=1)
+
+        assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["create_owner"] == "owner-2"
+        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+
+        adapters.lvm.create_snapshot = original_create_snapshot
+        adapters.lvm.delete_lv = original_delete_lv
+        result = rec.reconcile(recreated_snapshots[0])
+
+        assert result.status.phase == Phase.READY
+        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
 
     def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
         rec = SnapshotReconciler(db, adapters, config=config)

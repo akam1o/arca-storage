@@ -163,18 +163,20 @@ class SnapshotReconciler:
 
     def _delete_created_snapshot_lv_if_untracked(self, snapshot: Snapshot, vg_name: str, snap_lv: str) -> None:
         try:
-            records = self.db.list_snapshots(
-                svm=snapshot.spec.svm,
-                volume=snapshot.spec.volume,
-                name=snapshot.spec.name,
-                limit=1,
-            )
+            # Keep the writer lock through lvremove so same-key recreate cannot
+            # insert a new tracked record between the absence check and delete.
+            with self.db.transaction(immediate=True) as conn:
+                records = self.db._list_snapshots_conn(
+                    conn,
+                    svm=snapshot.spec.svm,
+                    volume=snapshot.spec.volume,
+                    name=snapshot.spec.name,
+                    limit=1,
+                )
+                if records:
+                    logger.info("Keeping snapshot LV %s/%s because the snapshot record is still tracked", vg_name, snap_lv)
+                    return
+
+                self._delete_created_snapshot_lv(vg_name, snap_lv)
         except Exception as e:
             logger.warning("Skipping snapshot LV cleanup after lost lease for %s/%s: %s", vg_name, snap_lv, e)
-            return
-
-        if records:
-            logger.info("Keeping snapshot LV %s/%s because the snapshot record is still tracked", vg_name, snap_lv)
-            return
-
-        self._delete_created_snapshot_lv(vg_name, snap_lv)
