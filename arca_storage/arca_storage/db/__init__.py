@@ -194,25 +194,29 @@ class StateDB:
         self._connections: dict[int, sqlite3.Connection] = {}
         self._connections_lock = threading.Lock()
         # Initialise schema on first connection
-        with self.transaction() as conn:
-            conn.executescript(_SCHEMA_SQL)
-            cur = conn.execute("SELECT version FROM schema_version")
-            row = cur.fetchone()
-            if row is None:
-                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
-            else:
-                current_version = int(row["version"])
-                if current_version > _SCHEMA_VERSION:
-                    raise RuntimeError(
-                        f"State DB schema version {current_version} is newer than supported version {_SCHEMA_VERSION}"
-                    )
-                for version in range(current_version + 1, _SCHEMA_VERSION + 1):
-                    migration = _MIGRATIONS.get(version)
-                    if migration is None:
-                        raise RuntimeError(f"No State DB migration registered for version {version}")
-                    migration(conn)
-                    conn.execute("UPDATE schema_version SET version = ?", (version,))
-            _validate_schema(conn)
+        try:
+            with self.transaction() as conn:
+                conn.executescript(_SCHEMA_SQL)
+                cur = conn.execute("SELECT version FROM schema_version")
+                row = cur.fetchone()
+                if row is None:
+                    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+                else:
+                    current_version = int(row["version"])
+                    if current_version > _SCHEMA_VERSION:
+                        raise RuntimeError(
+                            f"State DB schema version {current_version} is newer than supported version {_SCHEMA_VERSION}"
+                        )
+                    for version in range(current_version + 1, _SCHEMA_VERSION + 1):
+                        migration = _MIGRATIONS.get(version)
+                        if migration is None:
+                            raise RuntimeError(f"No State DB migration registered for version {version}")
+                        migration(conn)
+                        conn.execute("UPDATE schema_version SET version = ?", (version,))
+                _validate_schema(conn)
+        except Exception:
+            self.close()
+            raise
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
