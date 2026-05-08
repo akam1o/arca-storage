@@ -331,7 +331,13 @@ def get_volume_usage(mount_point: str) -> Optional[dict]:
         return None
 
 
-def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
+def create_volume_file(
+    mount_point: str,
+    volume_name: str,
+    size_gb: int,
+    *,
+    adopt_existing: bool = False,
+) -> str:
     """Create a raw volume file for Cinder (atomic, concurrency-safe).
 
     This creates a sparse file that will be used as the actual volume backing store.
@@ -341,6 +347,7 @@ def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
         mount_point: NFS mount point
         volume_name: Volume name (used as filename)
         size_gb: Volume size in GB
+        adopt_existing: Return an existing file when it already has the requested size
 
     Returns:
         Path to created volume file
@@ -348,6 +355,23 @@ def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
     Raises:
         ArcaStorageException: If file creation fails
     """
+    volume_file, _created = ensure_volume_file(
+        mount_point,
+        volume_name,
+        size_gb,
+        adopt_existing=adopt_existing,
+    )
+    return volume_file
+
+
+def ensure_volume_file(
+    mount_point: str,
+    volume_name: str,
+    size_gb: int,
+    *,
+    adopt_existing: bool = False,
+) -> tuple[str, bool]:
+    """Create a raw volume file and report whether this process created it."""
     # Volume file path (use volume_name for compatibility with RemoteFSDriver)
     volume_file = os.path.join(mount_point, volume_name)
 
@@ -363,12 +387,33 @@ def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
         finally:
             os.close(fd)
 
-        return volume_file
+        return volume_file, True
 
     except FileExistsError:
+        if adopt_existing:
+            return _adopt_existing_volume_file(volume_file, size_gb), False
         raise ArcaStorageException(f"Volume file already exists: {volume_file}")
     except OSError as e:
         raise ArcaStorageException(f"Failed to create volume file {volume_file}: {e}")
+
+
+def _adopt_existing_volume_file(volume_file: str, size_gb: int) -> str:
+    """Return an existing volume file only when it matches the requested shape."""
+    expected_size = size_gb * 1024 * 1024 * 1024
+    try:
+        if os.path.islink(volume_file) or not os.path.isfile(volume_file):
+            raise ArcaStorageException(f"Existing volume path is not a regular file: {volume_file}")
+        actual_size = os.path.getsize(volume_file)
+    except ArcaStorageException:
+        raise
+    except OSError as e:
+        raise ArcaStorageException(f"Failed to inspect existing volume file {volume_file}: {e}") from e
+
+    if actual_size != expected_size:
+        raise ArcaStorageException(
+            f"Existing volume file has size {actual_size} bytes, expected {expected_size}: {volume_file}"
+        )
+    return volume_file
 
 
 def delete_volume_file(mount_point: str, volume_name: str) -> None:

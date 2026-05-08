@@ -200,13 +200,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             LOG.info("Mounted SVM export at: %s", mount_point)
 
-            # Create volume file (raw sparse file) using volume ID for unique naming
-            volume_file = arca_utils.create_volume_file(
+            # Create or adopt the raw sparse file using volume ID for unique naming.
+            volume_file, volume_file_created = arca_utils.ensure_volume_file(
                 mount_point=mount_point,
                 volume_name=f"volume-{volume_id}",  # Use volume ID, not name
                 size_gb=volume_size,
+                adopt_existing=True,
             )
-            cleanup_state["volume_file_created"] = True
+            cleanup_state["volume_file_created"] = volume_file_created
             cleanup_state["volume_file_path"] = volume_file
 
             LOG.info("Created volume file: %s", volume_file)
@@ -768,6 +769,38 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         )
         return False
 
+    def _assert_file_snapshot_source_available(self, volume):
+        """Reject file-copy snapshots when Cinder reports active attachments."""
+        if not self._volume_has_active_attachments(volume):
+            return
+        volume_id = getattr(volume, "id", "<unknown>")
+        msg = _(
+            "Cannot create a file-backed snapshot for attached volume %s; "
+            "detach the volume before snapshotting"
+        ) % volume_id
+        LOG.error(msg)
+        raise exception.VolumeBackendAPIException(data=msg)
+
+    @staticmethod
+    def _volume_has_active_attachments(volume) -> bool:
+        status = getattr(volume, "status", None)
+        if isinstance(status, str) and status.lower() == "in-use":
+            return True
+
+        attach_status = getattr(volume, "attach_status", None)
+        if isinstance(attach_status, str):
+            normalized = attach_status.strip().lower()
+            if normalized and normalized != "detached":
+                return True
+
+        for attr_name in ("volume_attachment", "attachments"):
+            attachments = getattr(volume, attr_name, None)
+            if isinstance(attachments, dict) and attachments:
+                return True
+            if isinstance(attachments, (list, tuple, set)) and len(attachments) > 0:
+                return True
+        return False
+
     def _cleanup_failed_volume(self, volume_name: str, cleanup_state: dict):
         """Cleanup resources after failed volume creation.
 
@@ -831,6 +864,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # We use get_volume to fetch it explicitly
             context = self._get_operation_context(snapshot=snapshot)
             volume = self.db.volume_get(context, volume_id)
+            self._assert_file_snapshot_source_available(volume)
 
             # Use the SVM recorded when the source volume was created.
             svm_name = self._get_existing_volume_svm(volume)
@@ -856,6 +890,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             return self._snapshot_model_update(svm_name, export_path)
 
+        except exception.VolumeBackendAPIException:
+            raise
         except Exception as e:
             msg = _("Failed to create snapshot %s: %s") % (snapshot_name, e)
             LOG.error(msg)

@@ -212,6 +212,56 @@ class TestUtilityFunctions(unittest.TestCase):
             ):
                 arca_utils.create_volume_file(mount_point, "test-volume", 10)
 
+    def test_create_volume_file_adopts_matching_existing_file(self):
+        """Retry adoption accepts an existing file only when its size matches."""
+        with tempfile.TemporaryDirectory() as mount_point:
+            volume_file = os.path.join(mount_point, "test-volume")
+            with open(volume_file, "wb") as handle:
+                handle.truncate(1024**3)
+
+            result = arca_utils.create_volume_file(
+                mount_point,
+                "test-volume",
+                1,
+                adopt_existing=True,
+            )
+
+            assert result == volume_file
+
+    def test_create_volume_file_rejects_mismatched_existing_file(self):
+        """Retry adoption rejects stale files with the wrong size."""
+        with tempfile.TemporaryDirectory() as mount_point:
+            volume_file = os.path.join(mount_point, "test-volume")
+            with open(volume_file, "wb") as handle:
+                handle.truncate(512)
+
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException, match="expected"
+            ):
+                arca_utils.create_volume_file(
+                    mount_point,
+                    "test-volume",
+                    1,
+                    adopt_existing=True,
+                )
+
+    def test_ensure_volume_file_reports_adopted_existing_file(self):
+        """ensure_volume_file tells callers whether cleanup owns the file."""
+        with tempfile.TemporaryDirectory() as mount_point:
+            volume_file = os.path.join(mount_point, "test-volume")
+            with open(volume_file, "wb") as handle:
+                handle.truncate(1024**3)
+
+            result, created = arca_utils.ensure_volume_file(
+                mount_point,
+                "test-volume",
+                1,
+                adopt_existing=True,
+            )
+
+            assert result == volume_file
+            assert created is False
+
     @patch("arca_storage.openstack.cinder.utils.os.remove")
     def test_delete_volume_file_success(self, mock_remove):
         """Test volume file deletion."""

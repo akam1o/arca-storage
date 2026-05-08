@@ -104,9 +104,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         export_path = "192.168.100.5:/exports/test-svm"
 
         mock_utils.get_mount_point_for_svm.return_value = mount_point
-        mock_utils.create_volume_file.return_value = os.path.join(
-            mount_point, "volume-test-vol-id"
-        )
+        mock_utils.ensure_volume_file.return_value = (os.path.join(mount_point, "volume-test-vol-id"), True)
 
         result = self.driver.create_volume(volume)
 
@@ -119,10 +117,11 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             mount_point=mount_point,
             mount_options="rw,noatime,vers=4.1",
         )
-        mock_utils.create_volume_file.assert_called_once_with(
+        mock_utils.ensure_volume_file.assert_called_once_with(
             mount_point=mount_point,
             volume_name="volume-test-vol-id",
             size_gb=10,
+            adopt_existing=True,
         )
         self.driver.arca_client.create_volume.assert_not_called()
         self.driver.arca_client.create_export.assert_not_called()
@@ -132,10 +131,30 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         """Create volume wraps file creation failures in Cinder's backend exception."""
         volume = self._create_mock_volume()
         mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_test-svm"
-        mock_utils.create_volume_file.side_effect = RuntimeError("file creation failed")
+        mock_utils.ensure_volume_file.side_effect = RuntimeError("file creation failed")
 
         with pytest.raises(exception.VolumeBackendAPIException):
             self.driver.create_volume(volume)
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_does_not_cleanup_adopted_file_after_later_failure(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """Retry adoption must not delete a pre-existing backend file on later failure."""
+        volume = self._create_mock_volume()
+        mount_point = "/var/lib/cinder/mnt/svm_test-svm"
+        volume_path = os.path.join(mount_point, "volume-test-vol-id")
+        mock_utils.get_mount_point_for_svm.return_value = mount_point
+        mock_utils.ensure_volume_file.return_value = (volume_path, False)
+        self.driver._apply_qos_to_volume = Mock(side_effect=RuntimeError("qos failed"))
+
+        with pytest.raises(exception.VolumeBackendAPIException):
+            self.driver.create_volume(volume)
+
+        mock_exists.assert_not_called()
+        mock_remove.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_delete_volume_removes_file_without_export_api(self, mock_utils):
@@ -430,6 +449,21 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
             timeout=600,
         )
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_snapshot_rejects_attached_source_volume(self, mock_utils):
+        """File-backed snapshots avoid copying a live attached volume file."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        source_volume.status = "in-use"
+        source_volume.attach_status = "attached"
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        self.driver.db.volume_get.return_value = source_volume
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="attached volume"):
+            self.driver.create_snapshot(snapshot)
+
+        mock_utils.mount_nfs.assert_not_called()
+        mock_utils.copy_sparse_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
