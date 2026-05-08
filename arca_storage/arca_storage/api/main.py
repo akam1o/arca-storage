@@ -3,7 +3,6 @@ FastAPI main application.
 """
 
 import logging
-import os
 import secrets
 import uuid
 from typing import Any, Dict, Optional
@@ -36,23 +35,18 @@ from arca_storage.api.models import (
     VolumeResponse,
 )
 from arca_storage.api.services import directory_service, export_service, qos_service, snapshot_service, svm_service, volume_service
+from arca_storage.api.auth import AUTH_EXEMPT_PATHS, configured_api_token
 from arca_storage.errors import ArcaError, InvalidArgumentError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
 
-_AUTH_EXEMPT_PATHS = {"/docs", "/redoc", "/openapi.json"}
-
-
-def _configured_api_token() -> str:
-    return os.environ.get("ARCA_API_TOKEN", "") or os.environ.get("ARCA_AUTH_TOKEN", "")
-
 
 @app.middleware("http")
 async def require_bearer_token(request: Request, call_next):
     """Require a bearer token when ARCA_API_TOKEN/ARCA_AUTH_TOKEN is configured."""
-    token = _configured_api_token()
-    if not token or request.url.path in _AUTH_EXEMPT_PATHS:
+    token = configured_api_token()
+    if not token or request.url.path in AUTH_EXEMPT_PATHS:
         return await call_next(request)
 
     auth_header = request.headers.get("authorization", "")
