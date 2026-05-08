@@ -47,6 +47,28 @@ def _pcs_host_auth(nodes: list[str], hacluster_password: str) -> subprocess.Comp
     )
 
 
+def _completed_successfully(cmd: list[str]) -> bool:
+    return _run(cmd, check=False).returncode == 0
+
+
+def _run_required(cmd: list[str]) -> subprocess.CompletedProcess[str]:
+    result = _run(cmd, check=False)
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout or "").strip()
+        detail = output or f"exit status {result.returncode}"
+        raise RuntimeError(f"{' '.join(cmd)} failed: {detail}")
+    return result
+
+
+def _apply_drbd_config(resource: str, *, primary: bool = False) -> None:
+    if not _completed_successfully(["drbdadm", "dump-md", resource]):
+        _run_required(["drbdadm", "create-md", resource])
+    if not _completed_successfully(["drbdadm", "status", resource]):
+        _run_required(["drbdadm", "up", resource])
+    if primary:
+        _run_required(["drbdadm", "primary", "--force", resource])
+
+
 def _write_env_file(cfg) -> Path:
     env_dst_dir = Path("/etc/arca-storage")
     env_dst_dir.mkdir(parents=True, exist_ok=True)
@@ -357,10 +379,7 @@ def drbd_config(
         typer.echo(f"Wrote DRBD resource config: {res_path}")
 
         if apply:
-            _run(["drbdadm", "create-md", resource], check=False)
-            _run(["drbdadm", "up", resource], check=False)
-            if primary:
-                _run(["drbdadm", "primary", "--force", resource], check=False)
+            _apply_drbd_config(resource, primary=primary)
             typer.echo("Applied DRBD configuration")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
