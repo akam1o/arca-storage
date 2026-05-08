@@ -113,11 +113,15 @@ func buildTLSConfig(config *TLSConfig) (*tls.Config, error) {
 // doRequest performs HTTP request with exponential backoff retry
 func (c *Client) doRequest(ctx context.Context, method, path string, body interface{}, queryParams ...url.Values) ([]byte, error) {
 	var lastErr error
+	retryCount := c.retryCount
+	if !isRetryableMethod(method) {
+		retryCount = 0
+	}
 
-	for attempt := 0; attempt <= c.retryCount; attempt++ {
+	for attempt := 0; attempt <= retryCount; attempt++ {
 		if attempt > 0 {
 			backoff := time.Duration(1<<uint(attempt-1)) * time.Second
-			klog.V(4).Infof("Retrying request (attempt %d/%d) after %v", attempt+1, c.retryCount+1, backoff)
+			klog.V(4).Infof("Retrying request (attempt %d/%d) after %v", attempt+1, retryCount+1, backoff)
 			select {
 			case <-time.After(backoff):
 			case <-ctx.Done():
@@ -138,10 +142,19 @@ func (c *Client) doRequest(ctx context.Context, method, path string, body interf
 			break
 		}
 
-		klog.V(4).Infof("Request failed (attempt %d/%d): %v", attempt+1, c.retryCount+1, err)
+		klog.V(4).Infof("Request failed (attempt %d/%d): %v", attempt+1, retryCount+1, err)
 	}
 
-	return nil, fmt.Errorf("request failed after %d attempts: %w", c.retryCount+1, lastErr)
+	return nil, fmt.Errorf("request failed after %d attempts: %w", retryCount+1, lastErr)
+}
+
+func isRetryableMethod(method string) bool {
+	switch method {
+	case http.MethodGet, http.MethodHead, http.MethodOptions:
+		return true
+	default:
+		return false
+	}
 }
 
 // doRequestOnce performs a single HTTP request
