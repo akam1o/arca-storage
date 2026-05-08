@@ -8,6 +8,7 @@ from typing import Dict, List, Optional, Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.cli.lib.ganesha import render_config as _legacy_render_config
+from arca_storage.config import ArcaSettings
 
 
 @runtime_checkable
@@ -26,8 +27,9 @@ class GaneshaAdapter(Protocol):
 class SubprocessGaneshaAdapter:
     """Production adapter — renders config and reloads via systemctl."""
 
-    def __init__(self, timeout: int = 30) -> None:
+    def __init__(self, timeout: int = 30, settings: Optional[ArcaSettings] = None) -> None:
         self._timeout = timeout
+        self._settings = settings
 
     def render_config(
         self,
@@ -37,7 +39,7 @@ class SubprocessGaneshaAdapter:
         bind_addr: Optional[str] = None,
         host_network: bool = False,
     ) -> str:
-        return _legacy_render_config(svm_name, exports, bind_addr=bind_addr)
+        return _legacy_render_config(svm_name, exports, bind_addr=bind_addr, settings=self._settings)
 
     def reload(self, svm_name: str, *, host_network: bool = False) -> None:
         unit = "nfs-ganesha-host" if host_network else "nfs-ganesha"

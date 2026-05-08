@@ -7,8 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arca_storage.adapters.ganesha import SubprocessGaneshaAdapter
 from arca_storage.cli.lib import ganesha
 from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config, sync
+from arca_storage.config import ArcaSettings, GaneshaConfig, StateConfig
 
 
 @pytest.fixture(autouse=True)
@@ -85,6 +87,20 @@ class TestRenderConfig:
 
         content = Path(result).read_text(encoding="utf-8")
         assert "Bind_addr = 192.168.10.5;" in content
+
+    @pytest.mark.unit
+    def test_subprocess_adapter_uses_injected_settings(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ARCA_CONFIG_PATH", raising=False)
+        settings = ArcaSettings(
+            state=StateConfig(runtime_dir=str(tmp_path / "state")),
+            ganesha=GaneshaConfig(config_dir=str(tmp_path / "custom-ganesha")),
+        )
+        adapter = SubprocessGaneshaAdapter(settings=settings)
+
+        result = adapter.render_config("tenant_injected", [])
+
+        assert result == str(tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf")
+        assert (tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf").exists()
 
 
 class TestReload:

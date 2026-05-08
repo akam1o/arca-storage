@@ -13,8 +13,8 @@ from typing import Dict, List, Optional, Sequence
 
 from jinja2 import Template
 
-from arca_storage.config import load_settings
 from arca_storage.cli.lib.state import get_state_dir
+from arca_storage.config import ArcaSettings, load_settings
 
 TEMPLATE_VERSION = "1.1.0"
 
@@ -23,16 +23,18 @@ def _template_path() -> Path:
     # arca_storage/cli/lib/ganesha.py -> arca_storage/templates/ganesha.conf.j2
     return Path(__file__).resolve().parents[2] / "templates" / "ganesha.conf.j2"
 
-def _config_snapshot_dir() -> Path:
+def _config_snapshot_dir(settings: Optional[ArcaSettings] = None) -> Path:
     # Keep snapshots under the same persistent state directory as exports.*.json.
+    if settings is not None:
+        return Path(settings.state.runtime_dir) / "config"
     return get_state_dir() / "config"
 
 
-def _snapshot_path(svm_name: str, config_version: str) -> Path:
-    return _config_snapshot_dir() / f"ganesha.{svm_name}.{config_version}.conf"
+def _snapshot_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+    return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.conf"
 
-def _snapshot_meta_path(svm_name: str, config_version: str) -> Path:
-    return _config_snapshot_dir() / f"ganesha.{svm_name}.{config_version}.json"
+def _snapshot_meta_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+    return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.json"
 
 
 def _render_sectype(value: object) -> str:
@@ -118,7 +120,13 @@ def _write_json_if_changed(path: Path, data: object) -> None:
     _write_if_changed(path, content)
 
 
-def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str] = None) -> str:
+def render_config(
+    svm_name: str,
+    exports: List[Dict],
+    *,
+    bind_addr: Optional[str] = None,
+    settings: Optional[ArcaSettings] = None,
+) -> str:
     """
     Render ganesha.conf configuration file.
     
@@ -129,7 +137,7 @@ def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str
     Returns:
         Path to the generated config file
     """
-    cfg = load_settings()
+    cfg = settings or load_settings()
     config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     
@@ -197,11 +205,11 @@ def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str
     )
 
     # Save snapshots for rollback purposes.
-    snapshot_dir = _config_snapshot_dir()
+    snapshot_dir = _config_snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    _write_if_changed(_snapshot_path(svm_name, config_version), config_content)
+    _write_if_changed(_snapshot_path(svm_name, config_version, snapshot_dir), config_content)
     _write_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.conf", config_content)
-    _write_json_if_changed(_snapshot_meta_path(svm_name, config_version), meta)
+    _write_json_if_changed(_snapshot_meta_path(svm_name, config_version, snapshot_dir), meta)
     _write_json_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.json", meta)
 
     _write_if_changed(config_path, config_content)
