@@ -35,6 +35,7 @@ const (
 	arcaSnapshotReadyStatus              = "Ready"
 	temporaryCloneSnapshotRandomBytes    = 8
 	temporaryCloneSnapshotCreateAttempts = 4
+	svmCleanupListPageSize               = 200
 )
 
 var errSnapshotBackendAlreadyExists = errors.New("snapshot backend already exists")
@@ -790,6 +791,45 @@ func (d *Driver) cleanupProvisionedVolume(volumeInfo *store.VolumeInfo, reason s
 	}
 }
 
+func (d *Driver) cleanupUnusedControllerSVM(ctx context.Context, deletedVolume *store.VolumeInfo) {
+	if deletedVolume == nil || deletedVolume.SVMName == "" || d.svmManager == nil {
+		return
+	}
+
+	hasVolumes, err := d.hasVolumesInSVM(deletedVolume.SVMName)
+	if err != nil {
+		klog.Warningf("Failed to check remaining volumes for SVM %s: %v", deletedVolume.SVMName, err)
+		return
+	}
+	if hasVolumes {
+		klog.V(4).Infof("Keeping SVM %s because other volumes still reference it", deletedVolume.SVMName)
+		return
+	}
+
+	if err := d.svmManager.DeleteSVM(ctx, deletedVolume.SVMName); err != nil {
+		klog.Warningf("Failed to delete unused SVM %s after deleting volume %s: %v", deletedVolume.SVMName, deletedVolume.VolumeID, err)
+	}
+}
+
+func (d *Driver) hasVolumesInSVM(svmName string) (bool, error) {
+	startingToken := ""
+	for {
+		volumes, nextToken, err := d.store.ListVolumes(startingToken, svmCleanupListPageSize)
+		if err != nil {
+			return false, err
+		}
+		for _, volume := range volumes {
+			if volume != nil && volume.SVMName == svmName {
+				return true, nil
+			}
+		}
+		if nextToken == "" {
+			return false, nil
+		}
+		startingToken = nextToken
+	}
+}
+
 // DeleteVolume deletes a volume
 func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest) (*csi.DeleteVolumeResponse, error) {
 	klog.V(4).Infof("DeleteVolume called with volumeID: %s", req.GetVolumeId())
@@ -852,6 +892,8 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 		}
 		klog.V(4).Infof("Volume metadata %s already deleted", volumeID)
 	}
+
+	d.cleanupUnusedControllerSVM(ctx, volumeInfo)
 
 	klog.Infof("Volume %s deleted successfully", volumeID)
 

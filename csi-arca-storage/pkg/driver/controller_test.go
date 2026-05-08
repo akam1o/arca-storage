@@ -196,6 +196,118 @@ func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 	}
 }
 
+func TestDeleteVolumeDeletesUnusedSVM(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-a",
+		SVMName:       "k8s-ns-a",
+		VIP:           "10.0.0.10",
+		ExportRoot:    "/exports/k8s-ns-a",
+		Path:          "vol-a",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	var directoryDeleted bool
+	var svmDeleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/k8s-ns-a":
+			directoryDeleted = true
+			if got := r.URL.Query().Get("path"); got != "vol-a" {
+				t.Fatalf("directory delete path = %q, want vol-a", got)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/svms/k8s-ns-a":
+			svmDeleted = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		svmManager: arca.NewSVMManager(client, nil, nil, 1500),
+		store:      st,
+	}
+
+	_, err = driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "vol-a"})
+	if err != nil {
+		t.Fatalf("DeleteVolume() error = %v", err)
+	}
+	if !directoryDeleted {
+		t.Fatalf("directory was not deleted")
+	}
+	if !svmDeleted {
+		t.Fatalf("unused SVM was not deleted")
+	}
+	if _, err := st.GetVolume("vol-a"); !store.IsNotFound(err) {
+		t.Fatalf("volume metadata error = %v, want not found", err)
+	}
+}
+
+func TestDeleteVolumeKeepsSVMWithOtherVolumes(t *testing.T) {
+	st := store.NewMemoryStore()
+	for _, volumeID := range []string{"vol-a", "vol-b"} {
+		if err := st.CreateVolume(&store.VolumeInfo{
+			VolumeID:      volumeID,
+			SVMName:       "k8s-ns-a",
+			VIP:           "10.0.0.10",
+			ExportRoot:    "/exports/k8s-ns-a",
+			Path:          volumeID,
+			CapacityBytes: 1 << 30,
+		}); err != nil {
+			t.Fatalf("seed volume %s: %v", volumeID, err)
+		}
+	}
+
+	var svmDeleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/svms/k8s-ns-a":
+			svmDeleted = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		svmManager: arca.NewSVMManager(client, nil, nil, 1500),
+		store:      st,
+	}
+
+	_, err = driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "vol-a"})
+	if err != nil {
+		t.Fatalf("DeleteVolume() error = %v", err)
+	}
+	if svmDeleted {
+		t.Fatalf("SVM was deleted while another volume still references it")
+	}
+	if _, err := st.GetVolume("vol-b"); err != nil {
+		t.Fatalf("remaining volume metadata missing: %v", err)
+	}
+}
+
 func TestCreateVolumeDoesNotRestoreSnapshotWhenMetadataStoreFails(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	st := &failingCreateStore{MemoryStore: memoryStore}
