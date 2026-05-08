@@ -626,6 +626,20 @@ class StateDB:
             self._clear_resize_lease(status)
             self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
 
+    def set_volume_qos(self, svm: str, name: str, qos: Optional[dict[str, Any]]) -> bool:
+        """Persist or clear QoS settings in the volume status."""
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return False
+            status = dict(record["status"])
+            if qos:
+                status["qos"] = dict(qos)
+            else:
+                status.pop("qos", None)
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            return True
+
     def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         return self._get_volume_conn(conn, svm, name)
@@ -722,6 +736,18 @@ class StateDB:
                     },
                 )
             snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
+            active_clone_snapshots = [
+                self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
+            ]
+            if active_clone_snapshots:
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' has snapshots that are being cloned; retry after clone completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "snapshots": active_clone_snapshots,
+                    },
+                )
             if snapshots and not force:
                 raise PreconditionFailedError(
                     f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
@@ -951,6 +977,103 @@ class StateDB:
                 (svm, volume, name),
             )
             return cur.rowcount > 0
+
+    def reserve_snapshot_clone(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        owner: str,
+    ) -> Optional[dict[str, Any]]:
+        """Reserve a READY snapshot so delete cannot remove it during clone."""
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return None
+            status = dict(record["status"])
+            phase = status.get("phase")
+            if phase != Phase.READY.value or not status.get("lv_created"):
+                raise PreconditionFailedError(
+                    f"Snapshot '{svm}/{volume}/{name}' is not ready",
+                    {
+                        "resource": "Snapshot",
+                        "name": f"{svm}/{volume}/{name}",
+                        "phase": phase,
+                    },
+                )
+            leases = self._pruned_snapshot_clone_leases(status)
+            leases[owner] = lease_expiration().isoformat()
+            status["clone_leases"] = leases
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+            record["status"] = status
+            return record
+
+    def refresh_snapshot_clone_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return False
+            status = dict(record["status"])
+            if status.get("phase") != Phase.READY.value or not status.get("lv_created"):
+                return False
+            leases = self._pruned_snapshot_clone_leases(status)
+            if owner not in leases:
+                return False
+            leases[owner] = lease_expiration().isoformat()
+            status["clone_leases"] = leases
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+            return True
+
+    def release_snapshot_clone(self, svm: str, volume: str, name: str, owner: str) -> None:
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return
+            status = dict(record["status"])
+            leases = self._pruned_snapshot_clone_leases(status)
+            leases.pop(owner, None)
+            if leases:
+                status["clone_leases"] = leases
+            else:
+                status.pop("clone_leases", None)
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+
+    def reserve_snapshot_delete(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        *,
+        force: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """Atomically mark a snapshot deleting after validating clone preconditions."""
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return None
+            active_leases = self._active_snapshot_clone_leases(record)
+            if active_leases:
+                raise ConflictError(
+                    f"Snapshot '{svm}/{volume}/{name}' is being cloned; retry after clone completes",
+                    {
+                        "resource": "Snapshot",
+                        "name": f"{svm}/{volume}/{name}",
+                        "clone_owners": sorted(active_leases),
+                    },
+                )
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            status.pop("clone_leases", None)
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+            record["status"] = status
+            return record
 
     def reserve_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> bool:
         now = datetime.now(timezone.utc)
@@ -1457,6 +1580,35 @@ class StateDB:
         if expires_at.tzinfo is None:
             expires_at = expires_at.replace(tzinfo=timezone.utc)
         return expires_at.astimezone(timezone.utc) > datetime.now(timezone.utc)
+
+    @classmethod
+    def _active_snapshot_clone_leases(cls, record: dict[str, Any]) -> dict[str, str]:
+        status = dict(record.get("status", {}))
+        return cls._pruned_snapshot_clone_leases(status)
+
+    @staticmethod
+    def _pruned_snapshot_clone_leases(status: dict[str, Any]) -> dict[str, str]:
+        raw_leases = status.get("clone_leases")
+        if not isinstance(raw_leases, dict):
+            return {}
+        now = datetime.now(timezone.utc)
+        active: dict[str, str] = {}
+        for owner, raw_expires_at in raw_leases.items():
+            if not owner:
+                continue
+            if not raw_expires_at:
+                active[str(owner)] = ""
+                continue
+            try:
+                expires_at = datetime.fromisoformat(str(raw_expires_at).replace("Z", "+00:00"))
+            except ValueError:
+                active[str(owner)] = str(raw_expires_at)
+                continue
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at.astimezone(timezone.utc) > now:
+                active[str(owner)] = str(raw_expires_at)
+        return active
 
     @staticmethod
     def _clear_resize_lease(status: dict[str, Any]) -> None:

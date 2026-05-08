@@ -452,6 +452,8 @@ class TestCloneVolume:
         assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_clone1"] == 20
         assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20
         assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
+        snapshot = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert "clone_leases" not in snapshot["status"]
 
     @pytest.mark.integration
     def test_clone_volume_uses_source_volume_from_route(self, fake_context):
@@ -522,6 +524,8 @@ class TestCloneVolume:
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert fake_context.db.get_volume("tenant_a", "clone1") is None
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_clone1")
+        snapshot = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert "clone_leases" not in snapshot["status"]
 
     @pytest.mark.integration
     def test_clone_volume_resume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
@@ -804,6 +808,27 @@ class TestSnapshots:
         record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["message"].startswith("Delete failed:")
+
+    @pytest.mark.integration
+    def test_delete_snapshot_rejects_active_clone_lease(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        fake_context.db.reserve_snapshot_clone("tenant_a", "vol1", "snap1", "clone-owner")
+
+        response = client.delete("/v1/snapshots/snap1?svm=tenant_a&volume=vol1")
+
+        assert response.status_code == 409
+        assert response.json()["error"]["code"] == "CONFLICT"
+        record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert record["status"]["phase"] == "Ready"
+        fake_context.db.release_snapshot_clone("tenant_a", "vol1", "snap1", "clone-owner")
+
+        response = client.delete("/v1/snapshots/snap1?svm=tenant_a&volume=vol1")
+
+        assert response.status_code == 200
+        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1") == []
 
 
 class TestDeleteVolume:

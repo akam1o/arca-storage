@@ -109,13 +109,22 @@ def _clear_io_max_limit(cgroup_path: Path, device_id: str) -> None:
     io_max_file.write_text("\n".join(lines), encoding="utf-8")
 
 
-def _require_qos_volume_lv_path(ctx: Any, svm: str, volume: str) -> str:
+def _require_qos_volume_record(ctx: Any, svm: str, volume: str) -> dict[str, Any]:
     volumes = ctx.db.list_volumes(svm=svm, name=volume)
     if not volumes:
         raise NotFoundError("Volume", f"{svm}/{volume}")
 
     volume_info = volumes[0]
     require_volume_ready_record(volume_info, svm, volume)
+    return volume_info
+
+
+def _require_qos_volume_lv_path(ctx: Any, svm: str, volume: str) -> str:
+    volume_info = _require_qos_volume_record(ctx, svm, volume)
+    return _qos_volume_lv_path(volume_info, svm, volume)
+
+
+def _qos_volume_lv_path(volume_info: dict[str, Any], svm: str, volume: str) -> str:
     lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get("status", {}).get("lv_path")
     if not lv_path:
         raise PreconditionFailedError(
@@ -127,6 +136,65 @@ def _require_qos_volume_lv_path(ctx: Any, svm: str, volume: str) -> str:
             },
         )
     return str(lv_path)
+
+
+def _qos_limits_from_settings(settings: dict[str, Any]) -> dict[str, int]:
+    limits: dict[str, int] = {}
+    for field in _QOS_LIMIT_FIELDS:
+        value = settings.get(field)
+        if value is not None:
+            limits[field] = int(value)
+    return limits
+
+
+def _write_qos_limits(
+    ctx: Any,
+    svm: str,
+    volume: str,
+    lv_path: str,
+    limits: dict[str, int],
+) -> Dict[str, Any]:
+    _ensure_cgroup_hierarchy()
+
+    cgroup_path = _get_cgroup_path(svm, volume)
+    if not cgroup_path.exists():
+        cgroup_path.mkdir(parents=True, exist_ok=True)
+    _attach_ganesha_process(ctx, svm, cgroup_path)
+
+    device_id = _get_device_id(lv_path)
+    io_limits = []
+    if "read_bps" in limits:
+        io_limits.append(f"rbps={limits['read_bps']}")
+    if "write_bps" in limits:
+        io_limits.append(f"wbps={limits['write_bps']}")
+    if "read_iops" in limits:
+        io_limits.append(f"riops={limits['read_iops']}")
+    if "write_iops" in limits:
+        io_limits.append(f"wiops={limits['write_iops']}")
+
+    io_max_content = f"{device_id} {' '.join(io_limits)}"
+    _write_io_max_limit(cgroup_path, device_id, io_max_content)
+
+    qos_settings: Dict[str, Any] = {
+        "svm": svm,
+        "volume": volume,
+        "qos_enabled": True,
+        "device_id": device_id,
+        "cgroup_path": str(cgroup_path),
+    }
+    qos_settings.update(limits)
+    return qos_settings
+
+
+def _disabled_qos_settings(svm: str, volume: str, persisted: Optional[dict[str, Any]] = None) -> Dict[str, Any]:
+    settings: Dict[str, Any] = {"svm": svm, "volume": volume, "qos_enabled": False}
+    if isinstance(persisted, dict):
+        if persisted.get("device_id"):
+            settings["device_id"] = persisted["device_id"]
+        if persisted.get("cgroup_path"):
+            settings["cgroup_path"] = persisted["cgroup_path"]
+        settings.update(_qos_limits_from_settings(persisted))
+    return settings
 
 
 def _attach_ganesha_process(ctx: Any, svm: str, cgroup_path: Path) -> None:
@@ -181,43 +249,18 @@ def apply_qos_to_volume(
             {"fields": list(_QOS_LIMIT_FIELDS)},
         )
 
-    _ensure_cgroup_hierarchy()
-
-    cgroup_path = _get_cgroup_path(svm, volume)
-    if not cgroup_path.exists():
-        cgroup_path.mkdir(parents=True, exist_ok=True)
-    _attach_ganesha_process(ctx, svm, cgroup_path)
-
-    device_id = _get_device_id(lv_path)
-
-    limits = []
+    limits: dict[str, int] = {}
     if read_bps is not None:
-        limits.append(f"rbps={read_bps}")
+        limits["read_bps"] = read_bps
     if write_bps is not None:
-        limits.append(f"wbps={write_bps}")
+        limits["write_bps"] = write_bps
     if read_iops is not None:
-        limits.append(f"riops={read_iops}")
+        limits["read_iops"] = read_iops
     if write_iops is not None:
-        limits.append(f"wiops={write_iops}")
+        limits["write_iops"] = write_iops
 
-    io_max_content = f"{device_id} {' '.join(limits)}"
-    _write_io_max_limit(cgroup_path, device_id, io_max_content)
-
-    qos_settings: Dict[str, Any] = {
-        "svm": svm,
-        "volume": volume,
-        "device_id": device_id,
-        "cgroup_path": str(cgroup_path),
-    }
-    if read_iops is not None:
-        qos_settings["read_iops"] = read_iops
-    if write_iops is not None:
-        qos_settings["write_iops"] = write_iops
-    if read_bps is not None:
-        qos_settings["read_bps"] = read_bps
-    if write_bps is not None:
-        qos_settings["write_bps"] = write_bps
-
+    qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, limits)
+    ctx.db.set_volume_qos(svm, volume, qos_settings)
     return qos_settings
 
 
@@ -229,11 +272,10 @@ def remove_qos_from_volume(svm: str, volume: str) -> None:
     ctx = get_context()
     lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
     cgroup_path = _get_cgroup_path(svm, volume)
-    if not cgroup_path.exists():
-        return
-
-    device_id = _get_device_id(lv_path)
-    _clear_io_max_limit(cgroup_path, device_id)
+    if cgroup_path.exists():
+        device_id = _get_device_id(lv_path)
+        _clear_io_max_limit(cgroup_path, device_id)
+    ctx.db.set_volume_qos(svm, volume, None)
 
 
 def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
@@ -242,16 +284,27 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     validate_name(volume)
 
     ctx = get_context()
-    lv_path = _require_qos_volume_lv_path(ctx, svm, volume)
+    volume_info = _require_qos_volume_record(ctx, svm, volume)
+    lv_path = _qos_volume_lv_path(volume_info, svm, volume)
+    persisted = volume_info.get("status", {}).get("qos")
+    persisted_limits = _qos_limits_from_settings(persisted) if isinstance(persisted, dict) else {}
     cgroup_path = _get_cgroup_path(svm, volume)
     if not cgroup_path.exists():
-        return {"svm": svm, "volume": volume, "qos_enabled": False}
+        if persisted_limits:
+            qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
+            ctx.db.set_volume_qos(svm, volume, qos_settings)
+            return qos_settings
+        return _disabled_qos_settings(svm, volume, persisted)
 
     device_id = _get_device_id(lv_path)
     io_max_file = cgroup_path / "io.max"
 
     if not io_max_file.exists():
-        return {"svm": svm, "volume": volume, "qos_enabled": False}
+        if persisted_limits:
+            qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
+            ctx.db.set_volume_qos(svm, volume, qos_settings)
+            return qos_settings
+        return _disabled_qos_settings(svm, volume, persisted)
 
     settings: Dict[str, Any] = {
         "svm": svm,
@@ -280,4 +333,10 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
                 elif key == "wiops":
                     settings["write_iops"] = int(value)
 
+    if not settings["qos_enabled"] and persisted_limits:
+        qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
+        ctx.db.set_volume_qos(svm, volume, qos_settings)
+        return qos_settings
+    if settings["qos_enabled"]:
+        ctx.db.set_volume_qos(svm, volume, settings)
     return settings

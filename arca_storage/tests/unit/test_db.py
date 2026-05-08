@@ -417,6 +417,19 @@ class TestStateDB:
         assert record["status"].get("resize_lease_expires_at") is None
         assert db.reserve_volume_delete("svm1", "vol1")["status"]["phase"] == "Deleting"
 
+    def test_set_volume_qos_persists_and_clears_settings(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+
+        assert db.set_volume_qos("svm1", "vol1", {"qos_enabled": True, "read_iops": 1000}) is True
+        record = db.get_volume("svm1", "vol1")
+        assert record["status"]["qos"]["read_iops"] == 1000
+
+        assert db.set_volume_qos("svm1", "vol1", None) is True
+
+        assert "qos" not in db.get_volume("svm1", "vol1")["status"]
+
     def test_volume_resize_lease_blocks_guarded_dependents(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
         svm.status.phase = Phase.READY
@@ -469,6 +482,54 @@ class TestStateDB:
             )
         with pytest.raises(PreconditionFailedError):
             db.upsert_snapshot(snap, require_ready_volume=True)
+
+    def test_snapshot_clone_lease_blocks_snapshot_and_volume_delete(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        snap.status.phase = Phase.READY
+        snap.status.lv_created = True
+        db.insert_snapshot(snap)
+
+        reserved = db.reserve_snapshot_clone("svm1", "vol1", "snap1", "clone-owner")
+
+        assert reserved["status"]["clone_leases"]["clone-owner"]
+        with pytest.raises(ConflictError):
+            db.reserve_snapshot_delete("svm1", "vol1", "snap1")
+        with pytest.raises(ConflictError):
+            db.reserve_volume_delete("svm1", "vol1", force=True)
+        assert db.refresh_snapshot_clone_lease("svm1", "vol1", "snap1", "clone-owner") is True
+
+        db.release_snapshot_clone("svm1", "vol1", "snap1", "clone-owner")
+        record = db.reserve_snapshot_delete("svm1", "vol1", "snap1")
+
+        assert record["status"]["phase"] == "Deleting"
+        assert "clone_leases" not in record["status"]
+
+    def test_expired_snapshot_clone_lease_does_not_block_delete(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        snap.status.phase = Phase.READY
+        snap.status.lv_created = True
+        db.insert_snapshot(snap)
+        db.reserve_snapshot_clone("svm1", "vol1", "snap1", "clone-owner")
+        record = db.list_snapshots(svm="svm1", volume="vol1", name="snap1")[0]
+        status = record["status"]
+        status["clone_leases"]["clone-owner"] = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
+        conn = db._conn()
+        conn.execute(
+            "UPDATE snapshots SET status = ? WHERE svm = ? AND volume = ? AND name = ?",
+            (json.dumps(status), "svm1", "vol1", "snap1"),
+        )
+        conn.commit()
+
+        record = db.reserve_snapshot_delete("svm1", "vol1", "snap1")
+
+        assert record["status"]["phase"] == "Deleting"
+        assert "clone_leases" not in record["status"]
 
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):

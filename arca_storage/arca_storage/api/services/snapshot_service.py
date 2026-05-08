@@ -134,17 +134,15 @@ def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> No
     validate_name(volume)
 
     ctx = get_context()
-    records = ctx.db.list_snapshots(svm=svm, volume=volume, name=name)
-    if not records:
+    record = ctx.db.reserve_snapshot_delete(svm, volume, name, force=force)
+    if not record:
         raise NotFoundError("Snapshot", f"{svm}/{volume}/{name}")
 
-    record = records[0]
     snapshot = Snapshot(
         metadata=_meta_from_record(record),
         spec=SnapshotSpec.model_validate(record["spec"]),
         status=_parse_status(record),
     )
-    snapshot.status.phase = Phase.DELETING
     result = ctx.snapshot_reconciler.reconcile(snapshot)
     if result.status.phase == Phase.FAILED:
         raise InternalError(
@@ -163,7 +161,24 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
     snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
 
     ctx = get_context()
-    snapshot_size_gib = _clone_snapshot_size_gib(ctx, source_volume, clone_data)
+    owner = new_create_owner()
+    snapshot_record = ctx.db.reserve_snapshot_clone(clone_data.svm, source_volume, clone_data.snapshot, owner)
+    if not snapshot_record:
+        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
+    try:
+        snapshot_size_gib = _clone_snapshot_size_gib(ctx, source_volume, clone_data, snapshot_record=snapshot_record)
+        return _clone_volume_from_reserved_snapshot(ctx, source_volume, clone_data, snapshot_size_gib, owner)
+    finally:
+        ctx.db.release_snapshot_clone(clone_data.svm, source_volume, clone_data.snapshot, owner)
+
+
+def _clone_volume_from_reserved_snapshot(
+    ctx: Any,
+    source_volume: str,
+    clone_data: VolumeCloneCreate,
+    snapshot_size_gib: int,
+    owner: str,
+) -> Dict[str, Any]:
     target_size_gib = max(clone_data.size_gib or snapshot_size_gib, snapshot_size_gib)
     requested_spec = VolumeSpec(
         name=clone_data.name,
@@ -173,7 +188,6 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
         fs_type="xfs",
     )
     volume = Volume(spec=requested_spec)
-    owner = new_create_owner()
     assign_create_lease(volume.status, owner)
 
     try:
@@ -270,12 +284,18 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return SnapshotStatus.model_validate(record["status"])
 
 
-def _clone_snapshot_size_gib(ctx: Any, source_volume: str, clone_data: VolumeCloneCreate) -> int:
-    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
-    if not snapshots:
-        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
-
-    snapshot_record = snapshots[0]
+def _clone_snapshot_size_gib(
+    ctx: Any,
+    source_volume: str,
+    clone_data: VolumeCloneCreate,
+    *,
+    snapshot_record: Optional[Dict[str, Any]] = None,
+) -> int:
+    if snapshot_record is None:
+        snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
+        if not snapshots:
+            raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
+        snapshot_record = snapshots[0]
     _require_snapshot_ready_record(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
     if not source_record:
@@ -409,6 +429,13 @@ def _reconcile_clone_volume_from_snapshot(
     snapshot_size_gib: int,
 ) -> Volume:
     def refresh() -> bool:
+        if not ctx.db.refresh_snapshot_clone_lease(
+            volume.spec.svm,
+            source_volume,
+            snapshot_name,
+            owner,
+        ):
+            return False
         if not ctx.db.refresh_volume_create_lease(
             volume.spec.svm,
             volume.spec.name,
