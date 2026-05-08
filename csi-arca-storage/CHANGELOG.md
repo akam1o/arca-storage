@@ -43,7 +43,6 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   - ControllerUnpublishVolume (no-op for NFS)
   - ValidateVolumeCapabilities
   - ListVolumes
-  - GetCapacity
   - ControllerGetCapabilities
   - CreateSnapshot
   - DeleteSnapshot

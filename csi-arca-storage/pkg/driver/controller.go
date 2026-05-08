@@ -991,14 +991,17 @@ func (d *Driver) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (
 	}
 
 	namespace := req.GetParameters()[paramNamespace]
-	if namespace == "" || d.svmManager == nil || d.arcaClient == nil {
-		return &csi.GetCapacityResponse{}, nil
+	if namespace == "" {
+		return nil, status.Error(codes.InvalidArgument, "namespace parameter is required for capacity lookup")
+	}
+	if d.svmManager == nil || d.arcaClient == nil {
+		return nil, status.Error(codes.FailedPrecondition, "capacity lookup is not configured")
 	}
 
 	svm, err := d.svmManager.GetSVMForNamespace(ctx, namespace)
 	if err != nil {
 		if errors.Is(err, arca.ErrSVMNotFound) {
-			return &csi.GetCapacityResponse{}, nil
+			return nil, status.Errorf(codes.NotFound, "SVM for namespace %s not found", namespace)
 		}
 		return nil, status.Errorf(codes.Internal, "failed to get SVM capacity target for namespace %s: %v", namespace, err)
 	}
@@ -1006,7 +1009,7 @@ func (d *Driver) GetCapacity(ctx context.Context, req *csi.GetCapacityRequest) (
 	capacity, err := d.arcaClient.GetSVMCapacity(ctx, svm.Name)
 	if err != nil {
 		if errors.Is(err, arca.ErrSVMNotFound) {
-			return &csi.GetCapacityResponse{}, nil
+			return nil, status.Errorf(codes.NotFound, "SVM %s not found", svm.Name)
 		}
 		return nil, status.Errorf(codes.Internal, "failed to get capacity for SVM %s: %v", svm.Name, err)
 	}
@@ -1029,7 +1032,6 @@ func (d *Driver) ControllerGetCapabilities(ctx context.Context, req *csi.Control
 		csi.ControllerServiceCapability_RPC_CREATE_DELETE_SNAPSHOT,
 		csi.ControllerServiceCapability_RPC_CLONE_VOLUME,
 		csi.ControllerServiceCapability_RPC_EXPAND_VOLUME,
-		csi.ControllerServiceCapability_RPC_GET_CAPACITY,
 		csi.ControllerServiceCapability_RPC_LIST_VOLUMES,
 		csi.ControllerServiceCapability_RPC_LIST_SNAPSHOTS,
 	}

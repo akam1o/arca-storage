@@ -864,25 +864,19 @@ func TestGetCapacityReturnsNamespaceSVMCapacity(t *testing.T) {
 	}
 }
 
-func TestGetCapacityReturnsUnknownWithoutNamespace(t *testing.T) {
+func TestGetCapacityRejectsMissingNamespace(t *testing.T) {
 	driver := &Driver{
 		mode: "controller",
 	}
 
-	resp, err := driver.GetCapacity(context.Background(), &csi.GetCapacityRequest{})
-	if err != nil {
-		t.Fatalf("GetCapacity() error = %v", err)
-	}
-	if resp.GetAvailableCapacity() != 0 {
-		t.Fatalf("available capacity = %d, want 0", resp.GetAvailableCapacity())
+	_, err := driver.GetCapacity(context.Background(), &csi.GetCapacityRequest{})
+	if status.Code(err) != codes.InvalidArgument {
+		t.Fatalf("expected InvalidArgument error, got %v", err)
 	}
 }
 
-func TestControllerGetCapabilitiesAdvertisesGetCapacity(t *testing.T) {
-	driver := &Driver{
-		mode: "controller",
-	}
-
+func TestControllerGetCapabilitiesDoesNotAdvertiseGetCapacity(t *testing.T) {
+	driver := &Driver{mode: "controller"}
 	resp, err := driver.ControllerGetCapabilities(context.Background(), &csi.ControllerGetCapabilitiesRequest{})
 	if err != nil {
 		t.Fatalf("ControllerGetCapabilities() error = %v", err)
@@ -890,10 +884,9 @@ func TestControllerGetCapabilitiesAdvertisesGetCapacity(t *testing.T) {
 
 	for _, capability := range resp.GetCapabilities() {
 		if capability.GetRpc().GetType() == csi.ControllerServiceCapability_RPC_GET_CAPACITY {
-			return
+			t.Fatalf("GET_CAPACITY capability should not be advertised: %#v", resp.GetCapabilities())
 		}
 	}
-	t.Fatalf("GET_CAPACITY capability was not advertised: %#v", resp.GetCapabilities())
 }
 
 func TestValidateVolumeCapabilitiesRejectsPendingVolume(t *testing.T) {
