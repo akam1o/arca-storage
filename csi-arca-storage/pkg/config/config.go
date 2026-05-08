@@ -110,12 +110,35 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// Validate validates the configuration
+// Validate validates the configuration for controller mode.
 func (c *Config) Validate() error {
+	return c.ValidateForMode("controller")
+}
+
+// ValidateForMode validates the configuration required by the requested driver mode.
+func (c *Config) ValidateForMode(mode string) error {
 	if c.ARCA.BaseURL == "" {
 		return fmt.Errorf("arca.base_url is required")
 	}
 
+	switch mode {
+	case "controller":
+		if err := c.validateNetworkPools(); err != nil {
+			return err
+		}
+	case "node":
+	default:
+		return fmt.Errorf("invalid driver mode %q", mode)
+	}
+
+	if c.Driver.Endpoint == "" {
+		return fmt.Errorf("driver.endpoint is required")
+	}
+
+	return nil
+}
+
+func (c *Config) validateNetworkPools() error {
 	if len(c.Network.Pools) == 0 {
 		return fmt.Errorf("at least one network pool is required")
 	}
@@ -124,10 +147,6 @@ func (c *Config) Validate() error {
 		if pool.CIDR == "" {
 			return fmt.Errorf("network.pools[%d].cidr is required", i)
 		}
-	}
-
-	if c.Driver.Endpoint == "" {
-		return fmt.Errorf("driver.endpoint is required")
 	}
 
 	return nil
