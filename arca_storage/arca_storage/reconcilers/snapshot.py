@@ -169,22 +169,12 @@ class SnapshotReconciler:
                 name=snapshot.spec.name,
                 limit=1,
             )
-            volume_record = self.db.get_volume(snapshot.spec.svm, snapshot.spec.volume)
         except Exception as e:
             logger.warning("Skipping snapshot LV cleanup after lost lease for %s/%s: %s", vg_name, snap_lv, e)
             return
 
         if records:
             logger.info("Keeping snapshot LV %s/%s because the snapshot record is still tracked", vg_name, snap_lv)
-            return
-
-        volume_phase = str((volume_record or {}).get("status", {}).get("phase") or "")
-        if volume_phase == Phase.READY.value:
-            logger.warning(
-                "Skipping snapshot LV cleanup after lost lease for %s/%s because parent volume is ready",
-                vg_name,
-                snap_lv,
-            )
             return
 
         self._delete_created_snapshot_lv(vg_name, snap_lv)
