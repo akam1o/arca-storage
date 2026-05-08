@@ -320,6 +320,12 @@ class TestStateDB:
 
         assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner") is False
 
+    def test_upsert_snapshot_rejects_active_cleanup_reservation_for_new_record(self, db):
+        assert db.reserve_snapshot_cleanup("svm1", "vol1", "snap1", "cleanup-owner") is True
+
+        with pytest.raises(AlreadyExistsError):
+            db.upsert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1")))
+
     def test_upsert_and_list_exports(self, db):
         for client in ("10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"):
             export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client=client))

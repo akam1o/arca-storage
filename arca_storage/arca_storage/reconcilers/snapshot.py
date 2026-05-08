@@ -155,11 +155,13 @@ class SnapshotReconciler:
             logger.warning("Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e)
             return None
 
-    def _delete_created_snapshot_lv(self, vg_name: str, snap_lv: str) -> None:
+    def _delete_created_snapshot_lv(self, vg_name: str, snap_lv: str) -> bool:
         try:
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
+            return True
         except Exception as e:
             logger.warning("Failed to delete unrecorded snapshot LV %s/%s: %s", vg_name, snap_lv, e)
+            return False
 
     def _delete_created_snapshot_lv_if_untracked(self, snapshot: Snapshot, vg_name: str, snap_lv: str) -> None:
         cleanup_owner = snapshot.status.create_owner or snapshot.metadata.id
@@ -178,9 +180,7 @@ class SnapshotReconciler:
             logger.info("Keeping snapshot LV %s/%s because the snapshot record is tracked or cleanup is reserved", vg_name, snap_lv)
             return
 
-        try:
-            self._delete_created_snapshot_lv(vg_name, snap_lv)
-        finally:
+        if self._delete_created_snapshot_lv(vg_name, snap_lv):
             try:
                 self.db.release_snapshot_cleanup(
                     snapshot.spec.svm,

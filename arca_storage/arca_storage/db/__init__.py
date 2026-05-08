@@ -503,6 +503,16 @@ class StateDB:
                 return False
             if require_ready_volume:
                 self._require_ready_volume_conn(conn, snapshot.spec.svm, snapshot.spec.volume)
+            if self._get_resource_by_key_conn(conn, "snapshots", key) is None and self._snapshot_cleanup_reserved_conn(
+                conn,
+                snapshot.spec.svm,
+                snapshot.spec.volume,
+                snapshot.spec.name,
+            ):
+                raise AlreadyExistsError(
+                    "Snapshot",
+                    f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+                )
             self._upsert_snapshot_conn(conn, snapshot, now=now)
             return True
 

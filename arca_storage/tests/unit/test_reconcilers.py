@@ -572,6 +572,35 @@ class TestSnapshotReconciler:
         assert result.status.phase == Phase.READY
         assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
 
+    def test_create_snapshot_keeps_cleanup_reservation_when_untracked_lv_delete_fails(self, db, adapters, config):
+        _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap, require_ready_volume=True)
+        original_create_snapshot = adapters.lvm.create_snapshot
+
+        def delete_snapshot_record_after_snapshot(vg_name, source_lv, snap_lv):
+            result = original_create_snapshot(vg_name, source_lv, snap_lv)
+            db.delete_snapshot("svm1", "data", "snap1")
+            return result
+
+        def fail_delete_lv(_vg_name, _lv_name):
+            raise RuntimeError("lvremove failed")
+
+        adapters.lvm.create_snapshot = delete_snapshot_record_after_snapshot
+        adapters.lvm.delete_lv = fail_delete_lv
+
+        rec = SnapshotReconciler(db, adapters, config=config)
+        with pytest.raises(CreateLeaseLostError):
+            rec.reconcile(snap)
+
+        recreated = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
+        assign_create_lease(recreated.status, "owner-2")
+        with pytest.raises(AlreadyExistsError):
+            db.insert_snapshot(recreated, require_ready_volume=True)
+        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+
     def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
         rec = SnapshotReconciler(db, adapters, config=config)
         snap = Snapshot(
