@@ -12,7 +12,7 @@ resources:
   - ../../node.yaml
 
 images:
-  - name: csi-arca-storage
+  - name: ghcr.io/akam1o/csi-arca-storage
     newName: ghcr.io/akam1o/csi-arca-storage
     newTag: v1.0.0
 
