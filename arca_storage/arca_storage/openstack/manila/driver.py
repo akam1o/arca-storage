@@ -942,6 +942,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 return svm_name
 
         if strategy == "shared":
+            svm_name = self._get_svm_from_backend_volume(volume_name)
+            if svm_name:
+                self._warn_if_metadata_svm_ignored(
+                    metadata_svm,
+                    svm_name,
+                    "backend volume mapping",
+                )
+                return svm_name
+
             LOG.debug(
                 "snapshot['share'] not available for snapshot %s, "
                 "using shared strategy SVM",
