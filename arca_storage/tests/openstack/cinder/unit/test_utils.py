@@ -311,23 +311,38 @@ class TestUtilityFunctions(unittest.TestCase):
             with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to delete volume file"):
                 arca_utils.delete_volume_file("/mnt/test", "test-volume")
 
-    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
-    def test_extend_volume_file_success(self, mock_run):
+    def test_extend_volume_file_success(self):
         """Test volume file extension."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
-            arca_utils.extend_volume_file("/mnt/test", "test-volume", 20)
+        with tempfile.TemporaryDirectory() as temp_dir:
+            volume_path = os.path.join(temp_dir, "test-volume")
+            with open(volume_path, "wb"):
+                pass
 
-        mock_run.assert_called_once()
-        args = mock_run.call_args[0][0]
-        assert "truncate" in args
+            arca_utils.extend_volume_file(temp_dir, "test-volume", 1)
+
+            assert os.path.getsize(volume_path) == 1024**3
 
     def test_extend_volume_file_not_exists(self):
         """Test volume file extension when file doesn't exist."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=False):
+        with tempfile.TemporaryDirectory() as temp_dir:
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="does not exist"
             ):
-                arca_utils.extend_volume_file("/mnt/test", "test-volume", 20)
+                arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
+
+    def test_extend_volume_file_rejects_symlink(self):
+        """Volume extension must not follow symlinked volume paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_path = os.path.join(temp_dir, "target")
+            link_path = os.path.join(temp_dir, "test-volume")
+            with open(target_path, "wb"):
+                pass
+            os.symlink(target_path, link_path)
+
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException, match="not a regular file"
+            ):
+                arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
 
     def test_copy_sparse_file_hard_link_fallback_copies_without_overwrite(self):
         """Fallback copy installs the destination using exclusive creation."""

@@ -6,6 +6,7 @@ import hashlib
 import os
 import platform
 import subprocess
+import stat
 import sys
 from typing import Optional
 
@@ -470,27 +471,30 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
     """
     volume_file = os.path.join(mount_point, volume_name)
 
-    if not os.path.exists(volume_file):
-        raise ArcaStorageException(f"Volume file does not exist: {volume_file}")
-
     try:
-        # Extend sparse file
+        if not os.path.exists(volume_file):
+            raise ArcaStorageException(f"Volume file does not exist: {volume_file}")
+
+        if os.path.islink(volume_file) or not os.path.isfile(volume_file):
+            raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+
         size_bytes = new_size_gb * 1024 * 1024 * 1024
-        cmd = ["truncate", "-s", str(size_bytes), volume_file]
+        flags = os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
 
-        subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
+        fd = os.open(volume_file, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+            os.ftruncate(fd, size_bytes)
+        finally:
+            os.close(fd)
 
-    except subprocess.TimeoutExpired:
-        raise ArcaStorageException(f"Volume file extension timed out: {volume_file}")
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr or e.stdout or str(e)
-        raise ArcaStorageException(f"Failed to extend volume file: {error_msg}")
+    except ArcaStorageException:
+        raise
+    except OSError as e:
+        raise ArcaStorageException(f"Failed to extend volume file {volume_file}: {e}") from e
 
 
 def _rename_noreplace(source_path: str, dest_path: str) -> None:
