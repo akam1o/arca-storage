@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
 from arca_storage.api.services import export_service
+from arca_storage.cli.lib.validators import svm_root_lv_name
 from arca_storage.errors import NotFoundError
 
 
@@ -269,12 +270,13 @@ class TestDeleteSVM:
             },
         )
         assert response.status_code == 201
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a")
+        root_lv = svm_root_lv_name("tenant_a")
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", root_lv)
 
         response = client.delete("/v1/svms/tenant_a")
 
         assert response.status_code == 200
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a")
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", root_lv)
 
     @pytest.mark.integration
     def test_delete_svm_reports_reconciler_failure(self, fake_context):

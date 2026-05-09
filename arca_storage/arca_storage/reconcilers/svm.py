@@ -14,7 +14,12 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
-from arca_storage.cli.lib.validators import infer_gateway_from_ip_cidr, svm_root_lv_name, validate_svm_ip_cidr
+from arca_storage.cli.lib.validators import (
+    infer_gateway_from_ip_cidr,
+    legacy_svm_root_lv_name,
+    svm_root_lv_name,
+    validate_svm_ip_cidr,
+)
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
@@ -83,8 +88,10 @@ class SVMReconciler:
         )
 
         if spec.root_volume_size_gib:
-            lv_name = svm_root_lv_name(spec.name)
+            lv_name = svm.status.lv_name or svm_root_lv_name(spec.name)
+            svm.status.lv_name = lv_name
             lv_path = f"/dev/{vg_name}/{lv_name}"
+            svm.status.lv_path = lv_path
             self._reset_missing_root_lv(svm, vg_name, lv_name, create_owner)
             steps.append((
                 "lv_created",
@@ -127,6 +134,9 @@ class SVMReconciler:
             try:
                 action()
                 setattr(svm.status, field, True)
+                if spec.root_volume_size_gib and field in {"lv_created", "fs_formatted"}:
+                    svm.status.lv_name = lv_name
+                    svm.status.lv_path = lv_path
                 self._persist(svm, f"step '{field}' completed", expected_create_owner=create_owner)
             except CreateLeaseLostError:
                 raise
@@ -159,7 +169,7 @@ class SVMReconciler:
             if svm.status.namespace_created:
                 self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:
-                self.adapters.lvm.delete_lv(vg_name, f"vol_{spec.name}")
+                self.adapters.lvm.delete_lv(vg_name, svm.status.lv_name or legacy_svm_root_lv_name(spec.name))
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
         except Exception as e:

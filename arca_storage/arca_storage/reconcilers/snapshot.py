@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from math import ceil
 from typing import Optional
 
-from arca_storage.cli.lib.validators import snapshot_lv_name, volume_lv_name
+from arca_storage.cli.lib.validators import legacy_snapshot_lv_name, legacy_volume_lv_name, snapshot_lv_name
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError, PreconditionFailedError
@@ -47,8 +47,9 @@ class SnapshotReconciler:
         create_owner = snapshot.status.create_owner
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
-        source_lv = volume_lv_name(spec.svm, spec.volume)
-        snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        source_lv = self._source_volume_lv_name(spec.svm, spec.volume)
+        snap_lv = snapshot.status.lv_name or snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        snapshot.status.lv_name = snap_lv
 
         if not snapshot.status.lv_created:
             created_snap_lv = False
@@ -84,7 +85,6 @@ class SnapshotReconciler:
                     self._delete_created_snapshot_lv(vg_name, snap_lv)
                     snapshot.status.lv_created = False
                     snapshot.status.lv_path = None
-                    snapshot.status.lv_name = None
                     snapshot.status.size_gib = None
                 snapshot.status.phase = Phase.FAILED
                 expected_owner = create_owner
@@ -113,7 +113,7 @@ class SnapshotReconciler:
     def _reconcile_delete(self, snapshot: Snapshot) -> Snapshot:
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
-        snap_lv = snapshot.status.lv_name or f"vol_{spec.svm}_{spec.volume}_snap_{spec.name}"
+        snap_lv = snapshot.status.lv_name or legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
         try:
             snapshot.status.phase = Phase.DELETING
             self._persist(snapshot, "snapshot delete reserved")
@@ -155,6 +155,15 @@ class SnapshotReconciler:
         except Exception as e:
             logger.warning("Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e)
             return None
+
+    def _source_volume_lv_name(self, svm: str, volume: str) -> str:
+        record = self.db.get_volume(svm, volume)
+        if record is None:
+            raise PreconditionFailedError(
+                f"Volume '{svm}/{volume}' is not ready",
+                {"resource": "Volume", "name": f"{svm}/{volume}", "phase": ""},
+            )
+        return str(record.get("status", {}).get("lv_name") or legacy_volume_lv_name(svm, volume))
 
     def _delete_created_snapshot_lv(self, vg_name: str, snap_lv: str) -> bool:
         try:

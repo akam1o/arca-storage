@@ -33,6 +33,8 @@ class SVMStatus(BaseModel):
     vlan_ifname: Optional[str] = None
     ganesha_configured: bool = False
     lv_created: bool = False
+    lv_path: Optional[str] = None
+    lv_name: Optional[str] = None
     fs_formatted: bool = False
     pacemaker_group_created: bool = False
     message: str = ""

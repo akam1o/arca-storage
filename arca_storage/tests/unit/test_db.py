@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+from arca_storage.cli.lib.validators import legacy_volume_lv_name
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB, encode_cursor
 from arca_storage.errors import AlreadyExistsError, ConflictError, PreconditionFailedError
@@ -44,8 +45,42 @@ class TestStateDB:
         finally:
             state.close()
 
-        assert version == 2
+        assert version == 3
         assert {"svm", "volume", "name", "owner", "expires_at", "created_at"} <= columns
+
+    def test_state_db_migrates_version_two_backend_lv_names(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        state = StateDB(str(db_path))
+        try:
+            volume = Volume(spec=VolumeSpec(name="data", svm="svm1", size_gib=1))
+            state.insert_volume(volume)
+        finally:
+            state.close()
+
+        conn = sqlite3.connect(db_path)
+        try:
+            status = json.loads(conn.execute("SELECT status FROM volumes").fetchone()[0])
+            status.pop("lv_name", None)
+            conn.execute("UPDATE volumes SET status = ?", (json.dumps(status),))
+            conn.execute("UPDATE schema_version SET version = 2")
+            conn.execute("DELETE FROM backend_lvs")
+            conn.commit()
+        finally:
+            conn.close()
+
+        state = StateDB(str(db_path))
+        try:
+            record = state.get_volume("svm1", "data")
+            backend_lv = state._conn().execute("SELECT * FROM backend_lvs").fetchone()
+            version = state._conn().execute("SELECT version FROM schema_version").fetchone()[0]
+        finally:
+            state.close()
+
+        assert version == 3
+        assert record["status"]["lv_name"] == legacy_volume_lv_name("svm1", "data")
+        assert backend_lv["lv_name"] == legacy_volume_lv_name("svm1", "data")
+        assert backend_lv["resource_kind"] == "volume"
+        assert backend_lv["resource_key"] == "svm1/data"
 
     def test_state_db_rejects_current_schema_missing_columns(self, tmp_path):
         db_path = tmp_path / "bad.db"
@@ -226,6 +261,17 @@ class TestStateDB:
 
         result = db.get_volume("svm1", "vol1")
         assert result["spec"]["size_gib"] == 10
+
+    def test_insert_volume_rejects_backend_lv_name_collision(self, db):
+        first = Volume(spec=VolumeSpec(name="first", svm="svm1", size_gib=1))
+        first.status.lv_name = "shared-lv"
+        db.insert_volume(first)
+
+        second = Volume(spec=VolumeSpec(name="second", svm="svm1", size_gib=1))
+        second.status.lv_name = "shared-lv"
+
+        with pytest.raises(AlreadyExistsError):
+            db.insert_volume(second)
 
     def test_create_lease_requires_expiration_before_takeover(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))

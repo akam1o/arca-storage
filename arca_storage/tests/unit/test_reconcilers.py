@@ -20,6 +20,7 @@ from arca_storage.adapters.netns import FakeNetNSAdapter
 from arca_storage.adapters.pacemaker import FakePacemakerAdapter
 from arca_storage.adapters.systemd import FakeSystemdAdapter
 from arca_storage.adapters.xfs import FakeXFSAdapter
+from arca_storage.cli.lib.validators import snapshot_lv_name, svm_root_lv_name, volume_lv_name
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError, PreconditionFailedError
@@ -166,7 +167,7 @@ class TestSVMReconciler:
         )
         assign_create_lease(svm.status, "owner-1")
         db.insert_svm(svm)
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_root-resume", 10)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", svm.status.lv_name, 10)
 
         result = rec.reconcile(svm)
 
@@ -195,7 +196,7 @@ class TestSVMReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
         assert result.status.fs_formatted is True
-        assert adapters.lvm.lv_exists("vg_arca", "vol_root-missing")
+        assert adapters.lvm.lv_exists("vg_arca", svm_root_lv_name("root-missing"))
         assert db.get_svm("root-missing")["status"]["phase"] == Phase.READY.value
 
     def test_delete_svm(self, db, adapters, config):
@@ -244,12 +245,12 @@ class TestSVMReconciler:
 
         created = rec.reconcile(svm)
         assert created.status.phase == Phase.READY
-        assert adapters.lvm.lv_exists("vg_arca", "vol_rooted")
+        assert adapters.lvm.lv_exists("vg_arca", created.status.lv_name)
 
         created.status.phase = Phase.DELETING
         rec.reconcile(created)
 
-        assert not adapters.lvm.lv_exists("vg_arca", "vol_rooted")
+        assert not adapters.lvm.lv_exists("vg_arca", created.status.lv_name)
         assert len(db.list_svms(name="rooted")) == 0
 
 
@@ -273,7 +274,7 @@ class TestVolumeReconciler:
         assert result.status.mount_path is not None
 
         # Verify adapter state
-        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_vol1")
+        assert adapters.lvm.lv_exists("vg_arca", result.status.lv_name)
 
     def test_create_volume_regular_lv(self, db, adapters, config):
         rec = VolumeReconciler(db, adapters, config=config)
@@ -291,7 +292,7 @@ class TestVolumeReconciler:
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
         assign_create_lease(vol.status, "owner-1")
         db.insert_volume(vol)
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_vol1", 10)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", vol.status.lv_name, 10)
 
         result = rec.reconcile(vol)
 
@@ -375,7 +376,7 @@ class TestVolumeReconciler:
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
         assign_create_lease(vol.status, "owner-1")
         db.insert_volume(vol)
-        adapters.lvm.create_regular_lv("vg_arca", "vol_svm1_vol1", 10)
+        adapters.lvm.create_regular_lv("vg_arca", vol.status.lv_name, 10)
 
         result = rec.reconcile(vol)
 
@@ -429,7 +430,7 @@ class TestVolumeReconciler:
         created.status.phase = Phase.DELETING
         rec.reconcile(created)
 
-        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_to-delete")
+        assert not adapters.lvm.lv_exists("vg_arca", created.status.lv_name)
         assert len(db.list_volumes(svm="svm1", name="to-delete")) == 0
 
     def test_delete_volume_removes_oversized_legacy_record(self, db, adapters, config):
@@ -449,7 +450,7 @@ class TestVolumeReconciler:
 # ── Snapshot Reconciler ───────────────────────────────────────────
 
 
-def _insert_ready_volume(db: StateDB, svm: str, name: str) -> None:
+def _insert_ready_volume(db: StateDB, svm: str, name: str) -> str:
     if db.get_svm(svm) is None:
         octet = (sum(ord(char) for char in svm) % 200) + 1
         svm_record = SVM(spec=SVMSpec(name=svm, ip_cidr=f"10.250.{octet}.5/32"))
@@ -458,13 +459,14 @@ def _insert_ready_volume(db: StateDB, svm: str, name: str) -> None:
     volume = Volume(spec=VolumeSpec(name=name, svm=svm, size_gib=1))
     volume.status.phase = Phase.READY
     db.upsert_volume(volume)
+    return volume.status.lv_name or volume_lv_name(svm, name)
 
 
 class TestSnapshotReconciler:
     def test_create_snapshot(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
+        source_lv = _insert_ready_volume(db, "svm1", "data")
         # First create the source volume LV
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
 
         rec = SnapshotReconciler(db, adapters, config=config)
         snap = Snapshot(
@@ -478,27 +480,26 @@ class TestSnapshotReconciler:
         assert result.status.lv_path is not None
 
     def test_create_snapshot_accepts_matching_existing_lv(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
-        adapters.lvm.create_snapshot("vg_arca", "vol_svm1_data", "vol_svm1_data_snap_snap1")
-
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         rec = SnapshotReconciler(db, adapters, config=config)
         snap = Snapshot(
             spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"),
         )
         assign_create_lease(snap.status, "owner-1")
         db.insert_snapshot(snap)
+        adapters.lvm.create_snapshot("vg_arca", source_lv, snap.status.lv_name)
 
         result = rec.reconcile(snap)
 
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
-        assert result.status.lv_name == "vol_svm1_data_snap_snap1"
+        assert result.status.lv_name == snap.status.lv_name
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]["status"]["phase"] == Phase.READY.value
 
     def test_delete_snapshot(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
 
         rec = SnapshotReconciler(db, adapters, config=config)
         snap = Snapshot(
@@ -514,8 +515,8 @@ class TestSnapshotReconciler:
         assert len(db.list_snapshots(svm="svm1", name="snap-del")) == 0
 
     def test_create_snapshot_stops_when_volume_deleting_after_lv_create(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         original_create_snapshot = adapters.lvm.create_snapshot
 
         def delete_parent_after_snapshot(vg_name, source_lv, snap_lv):
@@ -531,23 +532,24 @@ class TestSnapshotReconciler:
 
         assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.DELETING.value
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
-        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert not adapters.lvm.lv_exists("vg_arca", snapshot_lv_name("svm1", "data", "snap1"))
 
     def test_create_snapshot_keeps_existing_lv_when_volume_deleting_after_accept(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
-        adapters.lvm.create_snapshot("vg_arca", "vol_svm1_data", "vol_svm1_data_snap_snap1")
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
+        snap_lv = snapshot_lv_name("svm1", "data", "snap1")
+        adapters.lvm.create_snapshot("vg_arca", source_lv, snap_lv)
         db.reserve_volume_delete("svm1", "data", force=True)
 
         rec = SnapshotReconciler(db, adapters, config=config)
         with pytest.raises(PreconditionFailedError):
             rec.reconcile(Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data")))
 
-        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert adapters.lvm.lv_exists("vg_arca", snap_lv)
 
     def test_create_snapshot_keeps_new_lv_when_lease_taken_over(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
         assign_create_lease(snap.status, "owner-1", now=datetime.now(timezone.utc) - timedelta(minutes=20))
         db.insert_snapshot(snap, require_ready_volume=True)
@@ -572,13 +574,13 @@ class TestSnapshotReconciler:
         with pytest.raises(CreateLeaseLostError):
             rec.reconcile(snap)
 
-        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert adapters.lvm.lv_exists("vg_arca", snap.status.lv_name)
         record = db.list_snapshots(svm="svm1", volume="data", name="snap1")[0]
         assert record["status"]["create_owner"] == "owner-2"
 
     def test_create_snapshot_cleans_new_lv_when_lost_lease_record_removed(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
         assign_create_lease(snap.status, "owner-1")
         db.insert_snapshot(snap, require_ready_volume=True)
@@ -598,11 +600,11 @@ class TestSnapshotReconciler:
 
         assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.DELETING.value
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
-        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert not adapters.lvm.lv_exists("vg_arca", snap.status.lv_name)
 
     def test_create_snapshot_cleans_new_lv_when_delete_removes_record(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
         assign_create_lease(snap.status, "owner-1")
         db.insert_snapshot(snap, require_ready_volume=True)
@@ -621,11 +623,11 @@ class TestSnapshotReconciler:
 
         assert db.get_volume("svm1", "data")["status"]["phase"] == Phase.READY.value
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
-        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert not adapters.lvm.lv_exists("vg_arca", snap.status.lv_name)
 
     def test_create_snapshot_cleanup_reservation_blocks_recreate_without_global_writer_lock(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
         assign_create_lease(snap.status, "owner-1")
         db.insert_snapshot(snap, require_ready_volume=True)
@@ -658,7 +660,7 @@ class TestSnapshotReconciler:
 
         assert db.get_volume("svm1", "side") is not None
         assert db.list_snapshots(svm="svm1", volume="data", name="snap1") == []
-        assert not adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert not adapters.lvm.lv_exists("vg_arca", snap.status.lv_name)
 
         adapters.lvm.create_snapshot = original_create_snapshot
         adapters.lvm.delete_lv = original_delete_lv
@@ -667,11 +669,11 @@ class TestSnapshotReconciler:
         result = rec.reconcile(recreated)
 
         assert result.status.phase == Phase.READY
-        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert adapters.lvm.lv_exists("vg_arca", result.status.lv_name)
 
     def test_create_snapshot_keeps_cleanup_reservation_when_untracked_lv_delete_fails(self, db, adapters, config):
-        _insert_ready_volume(db, "svm1", "data")
-        adapters.lvm.create_thin_lv("vg_arca", "thinpool", "vol_svm1_data", 10)
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
         snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="data"))
         assign_create_lease(snap.status, "owner-1")
         db.insert_snapshot(snap, require_ready_volume=True)
@@ -696,7 +698,7 @@ class TestSnapshotReconciler:
         assign_create_lease(recreated.status, "owner-2")
         with pytest.raises(AlreadyExistsError):
             db.insert_snapshot(recreated, require_ready_volume=True)
-        assert adapters.lvm.lv_exists("vg_arca", "vol_svm1_data_snap_snap1")
+        assert adapters.lvm.lv_exists("vg_arca", snap.status.lv_name)
 
     def test_delete_snapshot_removes_oversized_legacy_record(self, db, adapters, config):
         rec = SnapshotReconciler(db, adapters, config=config)

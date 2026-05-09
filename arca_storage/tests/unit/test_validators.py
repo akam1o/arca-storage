@@ -5,6 +5,7 @@ Unit tests for validators.
 import pytest
 
 from arca_storage.cli.lib.validators import (
+    legacy_svm_root_lv_name,
     snapshot_lv_name,
     svm_root_lv_name,
     validate_gateway_for_ip_cidr,
@@ -186,21 +187,27 @@ class TestLVMNameBuilders:
     """Tests for generated LVM object name length validation."""
 
     @pytest.mark.unit
-    def test_volume_lv_name_allows_lvm_limit_boundary(self):
-        name = volume_lv_name("s" * 64, "v" * 58)
+    def test_volume_lv_name_stays_within_lvm_limit(self):
+        name = volume_lv_name("s" * 64, "v" * 64)
 
-        assert len(name) == 127
-
-    @pytest.mark.unit
-    def test_volume_lv_name_rejects_lvm_limit_overflow(self):
-        with pytest.raises(ValueError, match="too long for LVM"):
-            volume_lv_name("s" * 64, "v" * 59)
+        assert name.startswith("vol-")
+        assert len(name) <= 127
 
     @pytest.mark.unit
-    def test_snapshot_lv_name_rejects_lvm_limit_overflow(self):
-        with pytest.raises(ValueError, match="too long for LVM"):
-            snapshot_lv_name("s" * 64, "v" * 64, "p" * 64)
+    def test_volume_lv_name_disambiguates_underscore_components(self):
+        assert volume_lv_name("a_b", "c") != volume_lv_name("a", "b_c")
+        assert volume_lv_name("a", "b") != svm_root_lv_name("a_b")
 
     @pytest.mark.unit
-    def test_svm_root_lv_name_uses_generated_name(self):
-        assert svm_root_lv_name("tenant") == "vol_tenant"
+    def test_snapshot_lv_name_stays_within_lvm_limit(self):
+        name = snapshot_lv_name("s" * 64, "v" * 64, "p" * 64)
+
+        assert name.startswith("snap-")
+        assert len(name) <= 127
+
+    @pytest.mark.unit
+    def test_svm_root_lv_name_uses_hash_suffix(self):
+        name = svm_root_lv_name("tenant")
+
+        assert name.startswith("svmroot-tenant-")
+        assert name != legacy_svm_root_lv_name("tenant")

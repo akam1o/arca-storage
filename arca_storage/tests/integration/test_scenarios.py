@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 
 from arca_storage.api.main import app as api_app
 from arca_storage.cli.cli import app as cli_app
+from arca_storage.cli.lib.validators import volume_lv_name
 from arca_storage.errors import NotFoundError
 from .helpers import cli_output
 
@@ -50,7 +51,7 @@ class TestSVMWorkflow:
 
         # Verify cleanup
         assert not fake_context.adapters.netns.namespace_exists("tenant_a")
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
 
 
 class TestAPIWorkflow:

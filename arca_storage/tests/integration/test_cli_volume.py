@@ -6,6 +6,7 @@ import pytest
 from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
+from arca_storage.cli.lib.validators import volume_lv_name
 
 
 def create_test_svm(runner: CliRunner) -> None:
@@ -28,7 +29,7 @@ class TestVolumeCreate:
 
         assert result.exit_code == 0
         assert "Creating volume: vol1" in result.stdout
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
 
     @pytest.mark.integration
     def test_create_volume_no_thin(self, fake_context):
@@ -38,7 +39,7 @@ class TestVolumeCreate:
         result = runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100", "--no-thin"])
 
         assert result.exit_code == 0
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
 
 
 class TestVolumeResize:
@@ -71,4 +72,4 @@ class TestVolumeDelete:
 
         assert result.exit_code == 0
         assert "Deleting volume: vol1" in result.stdout
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", "vol_tenant_a_vol1")
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))

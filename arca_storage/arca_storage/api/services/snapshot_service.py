@@ -31,7 +31,12 @@ from arca_storage.errors import (
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import snapshot_lv_name, validate_name, volume_lv_name
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    snapshot_lv_name,
+    validate_name,
+    volume_lv_name,
+)
 from arca_storage.api.services.volume_service import build_volume_export_path, require_volume_ready_record
 from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
 
@@ -118,6 +123,9 @@ def _cleanup_expired_snapshot_reservation(ctx: Any, spec: SnapshotSpec, owner: s
     snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
     try:
         ctx.adapters.lvm.delete_lv(vg_name, snap_lv)
+        legacy_snap_lv = legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        if legacy_snap_lv != snap_lv:
+            ctx.adapters.lvm.delete_lv(vg_name, legacy_snap_lv)
     except Exception as e:
         raise InternalError(
             f"Failed to clean pending Snapshot '{spec.svm}/{spec.volume}/{spec.name}'",
@@ -167,7 +175,8 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
         raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
     try:
         snapshot_size_gib = _clone_snapshot_size_gib(ctx, source_volume, clone_data, snapshot_record=snapshot_record)
-        return _clone_volume_from_reserved_snapshot(ctx, source_volume, clone_data, snapshot_size_gib, owner)
+        snapshot_lv = _snapshot_record_lv_name(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
+        return _clone_volume_from_reserved_snapshot(ctx, source_volume, clone_data, snapshot_size_gib, snapshot_lv, owner)
     finally:
         ctx.db.release_snapshot_clone(clone_data.svm, source_volume, clone_data.snapshot, owner)
 
@@ -177,6 +186,7 @@ def _clone_volume_from_reserved_snapshot(
     source_volume: str,
     clone_data: VolumeCloneCreate,
     snapshot_size_gib: int,
+    snapshot_lv: str,
     owner: str,
 ) -> Dict[str, Any]:
     target_size_gib = max(clone_data.size_gib or snapshot_size_gib, snapshot_size_gib)
@@ -211,6 +221,7 @@ def _clone_volume_from_reserved_snapshot(
                 source_volume,
                 clone_data.snapshot,
                 snapshot_size_gib,
+                snapshot_lv,
             )
         raise AlreadyExistsError("Volume", f"{clone_data.svm}/{clone_data.name}")
 
@@ -221,6 +232,7 @@ def _clone_volume_from_reserved_snapshot(
         source_volume,
         clone_data.snapshot,
         snapshot_size_gib,
+        snapshot_lv,
     )
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -314,11 +326,7 @@ def _clone_snapshot_size_gib(
 
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
-    snap_lv = snapshot_record.get("status", {}).get("lv_name") or snapshot_lv_name(
-        clone_data.svm,
-        source_volume,
-        clone_data.snapshot,
-    )
+    snap_lv = _snapshot_record_lv_name(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
     try:
         return int(ceil(float(ctx.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
     except Exception as e:
@@ -347,6 +355,10 @@ def _require_snapshot_ready_record(record: Dict[str, Any], svm: str, volume: str
             "lv_created": lv_created,
         },
     )
+
+
+def _snapshot_record_lv_name(record: Dict[str, Any], svm: str, volume: str, name: str) -> str:
+    return str(record.get("status", {}).get("lv_name") or legacy_snapshot_lv_name(svm, volume, name))
 
 
 def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
@@ -394,6 +406,7 @@ def _resume_clone_volume_from_snapshot(
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
+    snapshot_lv: str,
 ) -> Dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
@@ -409,6 +422,7 @@ def _resume_clone_volume_from_snapshot(
         source_volume,
         snapshot_name,
         snapshot_size_gib,
+        snapshot_lv,
     )
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -427,6 +441,7 @@ def _reconcile_clone_volume_from_snapshot(
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
+    snapshot_lv: str,
 ) -> Volume:
     def refresh() -> bool:
         if not ctx.db.refresh_snapshot_clone_lease(
@@ -446,7 +461,7 @@ def _reconcile_clone_volume_from_snapshot(
         return extend_create_lease(volume.status, owner)
 
     with create_lease_heartbeat(refresh):
-        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, snapshot_size_gib)
+        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, snapshot_size_gib, snapshot_lv)
 
 
 def _run_clone_volume_steps(
@@ -455,21 +470,21 @@ def _run_clone_volume_steps(
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
+    snapshot_lv: str,
 ) -> Volume:
     create_owner = volume.status.create_owner
     spec = volume.spec
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
     export_dir = cfg["export_dir"]
-    snap_lv = snapshot_lv_name(spec.svm, source_volume, snapshot_name)
-    new_lv = volume_lv_name(spec.svm, spec.name)
+    new_lv = volume.status.lv_name or volume_lv_name(spec.svm, spec.name)
+    volume.status.lv_name = new_lv
     clone_lv_path = f"/dev/{vg_name}/{new_lv}"
     mount_path = volume.status.mount_path or f"{export_dir}/{spec.svm}/{spec.name}"
 
     if volume.status.lv_created and not ctx.adapters.lvm.lv_exists(vg_name, new_lv):
         volume.status.lv_created = False
         volume.status.lv_path = None
-        volume.status.lv_name = None
         volume.status.fs_formatted = False
         volume.status.mounted = False
         volume.status.mount_path = None
@@ -480,7 +495,7 @@ def _run_clone_volume_steps(
             clone_lv_path = create_snapshot_lv_or_accept_existing(
                 ctx.adapters.lvm,
                 vg_name,
-                snap_lv,
+                snapshot_lv,
                 new_lv,
             )
             volume.status.lv_created = True

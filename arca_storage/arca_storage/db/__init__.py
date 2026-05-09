@@ -17,12 +17,20 @@ from ipaddress import IPv4Interface
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional, Union
 
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    legacy_svm_root_lv_name,
+    legacy_volume_lv_name,
+    snapshot_lv_name,
+    svm_root_lv_name,
+    volume_lv_name,
+)
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
 from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 
 
-_SCHEMA_VERSION = 2
+_SCHEMA_VERSION = 3
 _SNAPSHOT_CLEANUP_RESERVATION_DURATION = timedelta(minutes=5)
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
@@ -98,6 +106,14 @@ CREATE TABLE IF NOT EXISTS operation_log (
     detail      TEXT,
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS backend_lvs (
+    lv_name       TEXT PRIMARY KEY,
+    resource_kind TEXT NOT NULL,
+    resource_key  TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE(resource_kind, resource_key)
+);
 """
 
 
@@ -109,7 +125,53 @@ _REQUIRED_COLUMNS = {
     "snapshot_cleanup_reservations": {"svm", "volume", "name", "owner", "expires_at", "created_at"},
     "exports": {"id", "svm", "volume", "client", "spec", "status", "generation", "created_at", "updated_at"},
     "operation_log": {"id", "resource_type", "resource_id", "operation", "phase", "detail", "created_at"},
+    "backend_lvs": {"lv_name", "resource_kind", "resource_key", "created_at"},
 }
+
+
+def _register_backend_lv_conn(
+    conn: sqlite3.Connection,
+    lv_name: Optional[str],
+    resource_kind: str,
+    resource_key: str,
+    *,
+    now: Optional[str] = None,
+) -> None:
+    if not lv_name:
+        return
+    existing_lv = conn.execute(
+        "SELECT resource_kind, resource_key FROM backend_lvs WHERE lv_name = ?",
+        (lv_name,),
+    ).fetchone()
+    if existing_lv is not None:
+        if existing_lv["resource_kind"] == resource_kind and existing_lv["resource_key"] == resource_key:
+            return
+        raise sqlite3.IntegrityError(f"backend LV name '{lv_name}' is already reserved")
+    conn.execute(
+        """INSERT INTO backend_lvs (lv_name, resource_kind, resource_key, created_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(resource_kind, resource_key) DO UPDATE SET
+               lv_name=excluded.lv_name
+        """,
+        (lv_name, resource_kind, resource_key, now or datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def _backfill_status_lv_name_conn(
+    conn: sqlite3.Connection,
+    table: str,
+    key_where: str,
+    key_values: tuple[Any, ...],
+    status: dict[str, Any],
+    lv_name: str,
+) -> None:
+    if status.get("lv_name"):
+        return
+    status["lv_name"] = lv_name
+    conn.execute(
+        f"UPDATE {table} SET status = ? WHERE {key_where}",
+        (json.dumps(status), *key_values),
+    )
 
 
 def _migrate_to_v2(conn: sqlite3.Connection) -> None:
@@ -126,8 +188,69 @@ def _migrate_to_v2(conn: sqlite3.Connection) -> None:
     )
 
 
+def _migrate_to_v3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS backend_lvs (
+            lv_name       TEXT PRIMARY KEY,
+            resource_kind TEXT NOT NULL,
+            resource_key  TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            UNIQUE(resource_kind, resource_key)
+        )"""
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    for row in conn.execute("SELECT name, spec, status FROM svms").fetchall():
+        spec = json.loads(row["spec"])
+        status = json.loads(row["status"])
+        lv_name = status.get("lv_name")
+        if spec.get("root_volume_size_gib") or status.get("lv_created") or lv_name:
+            lv_name = str(lv_name or legacy_svm_root_lv_name(str(spec["name"])))
+            _backfill_status_lv_name_conn(conn, "svms", "name = ?", (row["name"],), status, lv_name)
+            _register_backend_lv_conn(conn, lv_name, "svm_root", str(spec["name"]), now=now)
+
+    for row in conn.execute("SELECT svm, name, spec, status FROM volumes").fetchall():
+        spec = json.loads(row["spec"])
+        status = json.loads(row["status"])
+        lv_name = str(status.get("lv_name") or legacy_volume_lv_name(str(spec["svm"]), str(spec["name"])))
+        _backfill_status_lv_name_conn(
+            conn,
+            "volumes",
+            "svm = ? AND name = ?",
+            (row["svm"], row["name"]),
+            status,
+            lv_name,
+        )
+        _register_backend_lv_conn(conn, lv_name, "volume", f"{spec['svm']}/{spec['name']}", now=now)
+
+    for row in conn.execute("SELECT svm, volume, name, spec, status FROM snapshots").fetchall():
+        spec = json.loads(row["spec"])
+        status = json.loads(row["status"])
+        lv_name = str(
+            status.get("lv_name")
+            or legacy_snapshot_lv_name(str(spec["svm"]), str(spec["volume"]), str(spec["name"]))
+        )
+        _backfill_status_lv_name_conn(
+            conn,
+            "snapshots",
+            "svm = ? AND volume = ? AND name = ?",
+            (row["svm"], row["volume"], row["name"]),
+            status,
+            lv_name,
+        )
+        _register_backend_lv_conn(
+            conn,
+            lv_name,
+            "snapshot",
+            f"{spec['svm']}/{spec['volume']}/{spec['name']}",
+            now=now,
+        )
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_to_v2,
+    3: _migrate_to_v3,
 }
 
 
@@ -254,11 +377,14 @@ class StateDB:
         now = _now_iso()
         try:
             with self.transaction(immediate=True) as conn:
+                lv_name = self._ensure_svm_backend_lv_name(svm)
                 self._raise_svm_network_conflict_conn(
                     conn,
                     svm.spec.model_dump(mode="json"),
                     exclude_name=svm.spec.name,
                 )
+                if lv_name:
+                    _register_backend_lv_conn(conn, lv_name, "svm_root", svm.spec.name, now=now)
                 conn.execute(
                     """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -287,11 +413,14 @@ class StateDB:
 
     def _upsert_svm_conn(self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        lv_name = self._ensure_svm_backend_lv_name(svm)
         self._raise_svm_network_conflict_conn(
             conn,
             svm.spec.model_dump(mode="json"),
             exclude_name=svm.spec.name,
         )
+        if lv_name:
+            _register_backend_lv_conn(conn, lv_name, "svm_root", svm.spec.name, now=now)
         conn.execute(
             """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -363,6 +492,8 @@ class StateDB:
     def delete_svm(self, name: str) -> bool:
         with self.transaction() as conn:
             cur = conn.execute("DELETE FROM svms WHERE name = ?", (name,))
+            if cur.rowcount > 0:
+                conn.execute("DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?", ("svm_root", name))
             return cur.rowcount > 0
 
     def reserve_svm_delete(
@@ -456,6 +587,8 @@ class StateDB:
             with self.transaction(immediate=True) as conn:
                 if require_ready_svm:
                     self._require_ready_svm_conn(conn, volume.spec.svm)
+                lv_name = self._ensure_volume_backend_lv_name(volume)
+                _register_backend_lv_conn(conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now)
                 conn.execute(
                     """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -485,6 +618,8 @@ class StateDB:
 
     def _upsert_volume_conn(self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        lv_name = self._ensure_volume_backend_lv_name(volume)
+        _register_backend_lv_conn(conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now)
         conn.execute(
             """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -729,6 +864,11 @@ class StateDB:
     def delete_volume(self, svm: str, name: str) -> bool:
         with self.transaction() as conn:
             cur = conn.execute("DELETE FROM volumes WHERE svm = ? AND name = ?", (svm, name))
+            if cur.rowcount > 0:
+                conn.execute(
+                    "DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?",
+                    ("volume", f"{svm}/{name}"),
+                )
             return cur.rowcount > 0
 
     def reserve_volume_delete(self, svm: str, name: str, *, force: bool = False) -> Optional[dict[str, Any]]:
@@ -807,6 +947,14 @@ class StateDB:
                         "Snapshot",
                         f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
                     )
+                lv_name = self._ensure_snapshot_backend_lv_name(snapshot)
+                _register_backend_lv_conn(
+                    conn,
+                    lv_name,
+                    "snapshot",
+                    f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+                    now=now,
+                )
                 conn.execute(
                     """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -866,6 +1014,14 @@ class StateDB:
 
     def _upsert_snapshot_conn(self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        lv_name = self._ensure_snapshot_backend_lv_name(snapshot)
+        _register_backend_lv_conn(
+            conn,
+            lv_name,
+            "snapshot",
+            f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+            now=now,
+        )
         conn.execute(
             """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -988,6 +1144,11 @@ class StateDB:
                 "DELETE FROM snapshots WHERE svm = ? AND volume = ? AND name = ?",
                 (svm, volume, name),
             )
+            if cur.rowcount > 0:
+                conn.execute(
+                    "DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?",
+                    ("snapshot", f"{svm}/{volume}/{name}"),
+                )
             return cur.rowcount > 0
 
     def reserve_snapshot_clone(
@@ -1359,6 +1520,30 @@ class StateDB:
         )
 
     # ---- helpers ----
+
+    @staticmethod
+    def _ensure_svm_backend_lv_name(svm: Any) -> Optional[str]:
+        has_root_lv = bool(getattr(svm.spec, "root_volume_size_gib", None)) or bool(
+            getattr(svm.status, "lv_created", False)
+        )
+        existing = getattr(svm.status, "lv_name", None)
+        if not has_root_lv and not existing:
+            return None
+        if not existing:
+            svm.status.lv_name = svm_root_lv_name(svm.spec.name)
+        return svm.status.lv_name
+
+    @staticmethod
+    def _ensure_volume_backend_lv_name(volume: Any) -> str:
+        if not getattr(volume.status, "lv_name", None):
+            volume.status.lv_name = volume_lv_name(volume.spec.svm, volume.spec.name)
+        return volume.status.lv_name
+
+    @staticmethod
+    def _ensure_snapshot_backend_lv_name(snapshot: Any) -> str:
+        if not getattr(snapshot.status, "lv_name", None):
+            snapshot.status.lv_name = snapshot_lv_name(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name)
+        return snapshot.status.lv_name
 
     def _acquire_create_lease(
         self,
