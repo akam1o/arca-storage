@@ -212,12 +212,23 @@ def test_apply_qos_restores_previous_limits_without_db_reads(monkeypatch, tmp_pa
     monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
     monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
     monkeypatch.setattr(qos_service, "_ensure_cgroup_hierarchy", lambda: None)
-    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+
+    ganesha_pid_calls = 0
+
+    def get_ganesha_pid_once(ctx_arg, svm):
+        nonlocal ganesha_pid_calls
+        ganesha_pid_calls += 1
+        if ganesha_pid_calls > 1:
+            raise AssertionError("restore should not reattach Ganesha through DB-backed lookup")
+        return 4242
+
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", get_ganesha_pid_once)
     monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
 
     with pytest.raises(RuntimeError, match="persist failed"):
         qos_service.apply_qos_to_volume("tenant-a", "test-vol", read_iops=2000)
 
+    assert ganesha_pid_calls == 1
     assert (cgroup_path / "io.max").read_text(encoding="utf-8").splitlines() == [
         "8:1 rbps=1024",
         "8:16 riops=1000",
