@@ -147,6 +147,19 @@ def _qos_limits_from_settings(settings: dict[str, Any]) -> dict[str, int]:
     return limits
 
 
+def _qos_io_max_line(device_id: str, limits: dict[str, int]) -> str:
+    io_limits = []
+    if "read_bps" in limits:
+        io_limits.append(f"rbps={limits['read_bps']}")
+    if "write_bps" in limits:
+        io_limits.append(f"wbps={limits['write_bps']}")
+    if "read_iops" in limits:
+        io_limits.append(f"riops={limits['read_iops']}")
+    if "write_iops" in limits:
+        io_limits.append(f"wiops={limits['write_iops']}")
+    return f"{device_id} {' '.join(io_limits)}"
+
+
 def _write_qos_limits(
     ctx: Any,
     svm: str,
@@ -162,18 +175,7 @@ def _write_qos_limits(
     _attach_ganesha_process(ctx, svm, cgroup_path)
 
     device_id = _get_device_id(lv_path)
-    io_limits = []
-    if "read_bps" in limits:
-        io_limits.append(f"rbps={limits['read_bps']}")
-    if "write_bps" in limits:
-        io_limits.append(f"wbps={limits['write_bps']}")
-    if "read_iops" in limits:
-        io_limits.append(f"riops={limits['read_iops']}")
-    if "write_iops" in limits:
-        io_limits.append(f"wiops={limits['write_iops']}")
-
-    io_max_content = f"{device_id} {' '.join(io_limits)}"
-    _write_io_max_limit(cgroup_path, device_id, io_max_content)
+    _write_io_max_limit(cgroup_path, device_id, _qos_io_max_line(device_id, limits))
 
     qos_settings: Dict[str, Any] = {
         "svm": svm,
@@ -219,6 +221,26 @@ def _clear_qos_limit_for_volume_best_effort(svm: str, volume: str, lv_path: str)
         pass
 
 
+def _restore_qos_limit_direct_best_effort(
+    svm: str,
+    volume: str,
+    lv_path: str,
+    settings: dict[str, Any],
+    limits: dict[str, int],
+) -> bool:
+    raw_cgroup_path = settings.get("cgroup_path")
+    raw_device_id = settings.get("device_id")
+    try:
+        cgroup_path = Path(str(raw_cgroup_path)) if raw_cgroup_path else _get_cgroup_path(svm, volume)
+        if not cgroup_path.exists():
+            return False
+        device_id = str(raw_device_id) if raw_device_id else _get_device_id(lv_path)
+        _write_io_max_limit(cgroup_path, device_id, _qos_io_max_line(device_id, limits))
+        return True
+    except Exception:
+        return False
+
+
 def _restore_qos_state_best_effort(
     ctx: Any,
     svm: str,
@@ -226,14 +248,18 @@ def _restore_qos_state_best_effort(
     lv_path: str,
     settings: Optional[dict[str, Any]],
 ) -> None:
+    limits = _qos_limits_from_settings(settings) if isinstance(settings, dict) else {}
+    if not limits:
+        _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
+        return
+
+    if _restore_qos_limit_direct_best_effort(svm, volume, lv_path, settings, limits):
+        return
+
     try:
-        limits = _qos_limits_from_settings(settings) if isinstance(settings, dict) else {}
-        if limits:
-            _write_qos_limits(ctx, svm, volume, lv_path, limits)
-            return
+        _write_qos_limits(ctx, svm, volume, lv_path, limits)
     except Exception:
         pass
-    _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
 
 
 def _persist_volume_qos(
