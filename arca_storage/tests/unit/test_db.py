@@ -495,7 +495,26 @@ class TestStateDB:
 
         assert "qos" not in db.get_volume("svm1", "vol1")["status"]
 
-    def test_complete_volume_resize_preserves_qos_settings(self, db):
+    def test_complete_volume_resize_preserves_qos_added_after_reservation(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        record = db.reserve_volume_resize("svm1", "vol1", "resize-owner", 20)
+        resized = Volume(
+            spec=VolumeSpec(name="vol1", svm="svm1", size_gib=20),
+            status=VolumeStatus.model_validate(record["status"]),
+        )
+        resized.status.phase = Phase.READY
+        db.set_volume_qos("svm1", "vol1", {"qos_enabled": True, "read_iops": 1000})
+
+        assert db.complete_volume_resize(resized, "resize-owner") is True
+
+        assert db.get_volume("svm1", "vol1")["status"]["qos"]["read_iops"] == 1000
+
+    def test_complete_volume_resize_preserves_qos_removed_after_reservation(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
         svm.status.phase = Phase.READY
         db.insert_svm(svm)
@@ -503,17 +522,17 @@ class TestStateDB:
         vol.status.phase = Phase.READY
         db.insert_volume(vol)
         db.set_volume_qos("svm1", "vol1", {"qos_enabled": True, "read_iops": 1000})
-        db.reserve_volume_resize("svm1", "vol1", "resize-owner", 20)
-        record = db.get_volume("svm1", "vol1")
+        record = db.reserve_volume_resize("svm1", "vol1", "resize-owner", 20)
         resized = Volume(
             spec=VolumeSpec(name="vol1", svm="svm1", size_gib=20),
             status=VolumeStatus.model_validate(record["status"]),
         )
         resized.status.phase = Phase.READY
+        db.set_volume_qos("svm1", "vol1", None)
 
         assert db.complete_volume_resize(resized, "resize-owner") is True
 
-        assert db.get_volume("svm1", "vol1")["status"]["qos"]["read_iops"] == 1000
+        assert "qos" not in db.get_volume("svm1", "vol1")["status"]
 
     def test_volume_resize_lease_blocks_guarded_dependents(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))

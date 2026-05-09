@@ -744,7 +744,7 @@ class StateDB:
             if current_status.get("resize_target_size_gib") != volume.spec.size_gib:
                 return False
 
-            status = json.loads(volume.status.model_dump_json())
+            status = dict(current_status)
             self._clear_resize_lease(status)
             cur = conn.execute(
                 """UPDATE volumes
