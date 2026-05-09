@@ -673,7 +673,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_id = snapshot.volume_id
         context = self._get_operation_context(snapshot=snapshot)
         volume = self.db.volume_get(context, volume_id)
-        svm_name = self._get_svm_for_volume(volume)
+        svm_name = self._get_existing_volume_svm(volume)
         return svm_name, export_path or self._get_export_path(svm_name)
 
     def _snapshot_model_update(self, svm_name: str, export_path: str) -> Dict[str, Any]:
