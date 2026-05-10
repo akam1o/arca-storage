@@ -1,0 +1,60 @@
+name: DEB Build
+
+on:
+  workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+        default: "0.0.0"
+  workflow_dispatch:
+    inputs:
+      version:
+        description: Package version
+        required: false
+        default: "0.0.0"
+
+permissions:
+  contents: read
+
+jobs:
+  deb:
+    name: ${{ matrix.name }} DEB
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - name: Debian
+            image: debian:bookworm
+            artifact: debian-debs
+          - name: Ubuntu
+            image: ubuntu:24.04
+            artifact: ubuntu-debs
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build debs (${{ matrix.name }})
+        run: |
+          docker run --rm \
+            -e "ARCA_VERSION=${{ inputs.version }}" \
+            -v "$GITHUB_WORKSPACE:/workspace" \
+            -w /workspace \
+            ${{ matrix.image }} \
+            bash -lc '
+              apt-get update &&
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates build-essential dpkg-dev debhelper git rsync \
+                python3 python3-venv &&
+              git config --global --add safe.directory /workspace &&
+              rm -rf packaging/wheelhouse packaging/out/deb &&
+              bash ./packaging/vendor-wheels.sh &&
+              bash ./packaging/build-deb.sh
+            '
+
+      - name: Upload deb artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: packaging/out/deb/*

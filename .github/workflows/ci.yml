@@ -22,5 +22,8 @@ jobs:
   csi-tests:
     uses: ./.github/workflows/csi-tests.yml
 
+  deb-build:
+    uses: ./.github/workflows/deb-build.yml
+
   rpm-build:
     uses: ./.github/workflows/rpm-build.yml
