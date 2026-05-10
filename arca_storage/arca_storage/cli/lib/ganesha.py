@@ -17,6 +17,9 @@ from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.config import ArcaSettings, load_settings
 
 TEMPLATE_VERSION = "1.1.0"
+_GANESHA_SEC_TYPES = {"sys", "krb5", "krb5i", "krb5p"}
+_GANESHA_ACCESS_TYPES = {"RW", "RO"}
+_GANESHA_SQUASH_TYPES = {"Root_Squash", "No_Root_Squash"}
 
 
 def _template_path() -> Path:
@@ -40,10 +43,34 @@ def _snapshot_meta_path(svm_name: str, config_version: str, snapshot_dir: Option
 def _render_sectype(value: object) -> str:
     # Ganesha expects SecType as tokens (e.g. "sys" or "sys, krb5").
     if isinstance(value, list):
-        tokens = [str(v).strip() for v in value if str(v).strip()]
-        return ", ".join(tokens) if tokens else "sys"
+        raw_tokens = [str(v).strip().lower() for v in value if str(v).strip()]
+    else:
+        raw_tokens = [token.strip().lower() for token in str(value).split(",") if token.strip()]
+
+    tokens = raw_tokens or ["sys"]
+    unsupported = [token for token in tokens if token not in _GANESHA_SEC_TYPES]
+    if unsupported:
+        raise ValueError(f"Unsupported Ganesha SecType value(s): {unsupported}")
+    return ", ".join(tokens)
+
+
+def _ganesha_quoted_string(value: object, field: str) -> str:
+    if value is None:
+        raise ValueError(f"Missing Ganesha {field}")
+    raw = str(value)
+    if not raw:
+        raise ValueError(f"Missing Ganesha {field}")
+    invalid = [ch for ch in raw if ch in {'"', "\\"} or ord(ch) < 0x20 or ord(ch) == 0x7F]
+    if invalid:
+        raise ValueError(f"Unsafe Ganesha {field}: contains unsupported characters")
+    return raw
+
+
+def _ganesha_token(value: object, field: str, allowed: set[str]) -> str:
     raw = str(value).strip()
-    return raw or "sys"
+    if raw not in allowed:
+        raise ValueError(f"Unsupported Ganesha {field}: {raw!r}")
+    return raw
 
 
 def _stable_config_version(
@@ -163,7 +190,17 @@ def render_config(
     exports_render: List[Dict] = []
     for e in exports_sorted:
         sec = e.get("sec", ["sys"])
-        exports_render.append({**e, "sec_render": _render_sectype(sec)})
+        exports_render.append(
+            {
+                **e,
+                "path": _ganesha_quoted_string(e.get("path"), "Path"),
+                "pseudo": _ganesha_quoted_string(e.get("pseudo"), "Pseudo"),
+                "client": _ganesha_quoted_string(e.get("client"), "Clients"),
+                "access": _ganesha_token(e.get("access", "RW"), "Access_Type", _GANESHA_ACCESS_TYPES),
+                "squash": _ganesha_token(e.get("squash", "Root_Squash"), "Squash", _GANESHA_SQUASH_TYPES),
+                "sec_render": _render_sectype(sec),
+            }
+        )
 
     config_version = _stable_config_version(
         svm_name=svm_name,

@@ -57,6 +57,42 @@ class TestRenderConfig:
         assert 'Clients = "10.0.0.0/24";' in content
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("field", ["path", "pseudo", "client"])
+    def test_render_config_rejects_unsafe_quoted_fields(self, field):
+        exports = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "pseudo": "/exports/tenant_a/vol1",
+                "access": "RW",
+                "squash": "Root_Squash",
+                "sec": ["sys"],
+                "client": "10.0.0.0/24",
+            }
+        ]
+        exports[0][field] = 'bad"\nvalue'
+
+        with pytest.raises(ValueError, match="Unsafe Ganesha"):
+            render_config("tenant_a", exports)
+
+    @pytest.mark.unit
+    def test_render_config_rejects_unsafe_tokens(self):
+        exports = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "pseudo": "/exports/tenant_a/vol1",
+                "access": "RW;\nCLIENT",
+                "squash": "Root_Squash",
+                "sec": ["sys"],
+                "client": "10.0.0.0/24",
+            }
+        ]
+
+        with pytest.raises(ValueError, match="Unsupported Ganesha Access_Type"):
+            render_config("tenant_a", exports)
+
+    @pytest.mark.unit
     def test_write_if_changed_keeps_existing_file_on_replace_failure(self, monkeypatch, tmp_path):
         target = tmp_path / "ganesha.conf"
         target.write_text("old config", encoding="utf-8")
