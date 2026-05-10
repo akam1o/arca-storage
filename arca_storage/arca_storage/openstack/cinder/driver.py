@@ -47,6 +47,15 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
     _clone_support = True  # Enabled in Phase 2
     _replication_support = False
     _multiattach_support = False
+    _qos_extra_spec_keys = frozenset(
+        (
+            "arca_storage:read_iops_sec",
+            "arca_storage:write_iops_sec",
+            "arca_storage:total_iops_sec",
+            "arca_storage:read_bytes_sec",
+            "arca_storage:write_bytes_sec",
+        )
+    )
 
     def __init__(self, *args, **kwargs):
         """Initialize the ARCA Storage driver.
@@ -170,6 +179,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         LOG.info("Creating volume: %s (size=%sGB)", volume_name, volume_size)
 
+        self._apply_qos_to_volume(volume)
+
         # Track cleanup state
         cleanup_state = {
             "svm_name": None,
@@ -211,9 +222,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             cleanup_state["volume_file_path"] = volume_file
 
             LOG.info("Created volume file: %s", volume_file)
-
-            # Apply QoS if specified in volume type
-            self._apply_qos_to_volume(volume)
 
             return self._volume_model_update(svm_name, export_path)
 
@@ -970,6 +978,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             snapshot_id,
         )
 
+        self._apply_qos_to_volume(volume)
+
         volume_file = None
         volume_file_created = False
         try:
@@ -1060,6 +1070,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         LOG.info("Creating cloned volume: %s (id=%s) from source: %s (id=%s)",
                  volume_name, volume_id, src_volume_name, src_volume_id)
 
+        self._apply_qos_to_volume(volume)
+
         volume_file = None
         volume_file_created = False
 
@@ -1116,6 +1128,56 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             raise exception.VolumeBackendAPIException(data=msg)
 
     # QoS operations
+
+    def _get_qos_extra_specs(self, volume) -> Dict[str, Any]:
+        """Return ARCA QoS extra_specs configured on the volume type."""
+        volume_type = getattr(volume, "volume_type", None)
+        if not volume_type:
+            return {}
+
+        extra_specs = self._get_volume_type_extra_specs(volume_type)
+        return {
+            key: extra_specs[key]
+            for key in self._qos_extra_spec_keys
+            if key in extra_specs
+        }
+
+    @staticmethod
+    def _qos_value_is_configured(value) -> bool:
+        """Return whether a Cinder QoS value represents configured QoS."""
+        if value is None or value == "" or value == {} or value == []:
+            return False
+        # Avoid treating dynamic mapping accessors as real QoS values.
+        return not callable(value)
+
+    def _get_cinder_qos_specs(self, volume_type):
+        """Return Cinder QoS specs associated with a volume type, if any."""
+        if not volume_type:
+            return None
+
+        qos_specs = getattr(volume_type, "qos_specs", None)
+        if self._qos_value_is_configured(qos_specs):
+            return qos_specs
+
+        qos_specs_id = getattr(volume_type, "qos_specs_id", None)
+        if self._qos_value_is_configured(qos_specs_id):
+            return qos_specs_id
+
+        if isinstance(volume_type, dict):
+            for key in ("qos_specs", "qos_specs_id"):
+                value = volume_type.get(key)
+                if self._qos_value_is_configured(value):
+                    return value
+            return None
+
+        get_method = getattr(volume_type, "get", None)
+        if callable(get_method):
+            for key in ("qos_specs", "qos_specs_id"):
+                value = get_method(key)
+                if self._qos_value_is_configured(value):
+                    return value
+
+        return None
 
     def _get_qos_specs(self, volume) -> Dict[str, Any]:
         """Extract QoS specifications from volume type extra_specs.
@@ -1191,35 +1253,31 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         return qos_specs
 
     def _apply_qos_to_volume(self, volume) -> None:
-        """Handle QoS settings from volume type for a file-backed Cinder volume.
+        """Reject QoS settings for file-backed Cinder volumes.
 
         Args:
             volume: Cinder volume object
         """
         volume_name = volume.name
 
-        try:
-            # Extract QoS specs from volume type
-            qos_specs = self._get_qos_specs(volume)
+        volume_type = getattr(volume, "volume_type", None)
+        qos_extra_specs = self._get_qos_extra_specs(volume)
+        cinder_qos_specs = self._get_cinder_qos_specs(volume_type)
+        if not qos_extra_specs and not cinder_qos_specs:
+            LOG.debug("No QoS specs found for volume: %s", volume_name)
+            return
 
-            if not qos_specs:
-                LOG.debug("No QoS specs found for volume: %s", volume_name)
-                return
+        details = []
+        if qos_extra_specs:
+            details.append("extra_specs: %s" % ", ".join(sorted(qos_extra_specs)))
+        if cinder_qos_specs:
+            details.append("qos_specs")
 
-            # Cinder volumes are sparse files in the shared SVM export, not
-            # DB-backed ARCA volumes. The ARCA volume QoS API cannot target
-            # these files by Cinder volume.name.
-            svm_name = self._get_svm_for_volume(volume)
-            LOG.warning(
-                "QoS specs for Cinder file-backed volume %s on SVM %s are not applied; "
-                "ARCA volume QoS only supports DB-backed ARCA volumes",
-                volume_name,
-                svm_name,
-            )
-
-        except Exception as e:
-            # QoS application is not critical, log warning and continue
-            LOG.warning("Failed to inspect QoS for volume %s: %s", volume_name, e)
+        msg = _("ARCA Cinder file-backed volumes do not support QoS: %(details)s") % {
+            "details": "; ".join(details)
+        }
+        LOG.error("%s (volume=%s)", msg, volume_name)
+        raise exception.VolumeBackendAPIException(data=msg)
 
     def retype(
         self,
@@ -1271,11 +1329,17 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 try:
                     # Create a mock volume type object
                     class MockVolumeType:
-                        def __init__(self, extra_specs):
+                        def __init__(self, extra_specs, qos_specs=None, qos_specs_id=None):
                             self.extra_specs = extra_specs
+                            self.qos_specs = qos_specs
+                            self.qos_specs_id = qos_specs_id
 
                     new_extra_specs = new_type.get("extra_specs", {})
-                    volume.volume_type = MockVolumeType(new_extra_specs)
+                    volume.volume_type = MockVolumeType(
+                        new_extra_specs,
+                        qos_specs=new_type.get("qos_specs"),
+                        qos_specs_id=new_type.get("qos_specs_id"),
+                    )
 
                     # Apply new QoS settings
                     self._apply_qos_to_volume(volume)
