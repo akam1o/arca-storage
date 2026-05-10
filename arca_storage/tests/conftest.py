@@ -2,12 +2,35 @@
 Pytest configuration and fixtures.
 """
 
+import os
 import shutil
 import tempfile
 from pathlib import Path
 from unittest.mock import patch
 
 import pytest
+
+
+def _repo_root_candidates() -> list[Path]:
+    candidates: list[Path] = []
+    if workspace := os.environ.get("GITHUB_WORKSPACE"):
+        candidates.append(Path(workspace).resolve())
+
+    cwd = Path.cwd().resolve()
+    candidates.append(cwd)
+    candidates.extend(cwd.parents)
+    candidates.extend(Path(__file__).resolve().parents)
+    return candidates
+
+
+@pytest.fixture
+def repo_root():
+    """Locate the repository root even when CI copies tests to /tmp."""
+    for candidate in _repo_root_candidates():
+        if (candidate / "ansible").is_dir() and (candidate / "arca_storage").is_dir():
+            return candidate
+
+    raise FileNotFoundError("could not locate repository root")
 
 
 @pytest.fixture
