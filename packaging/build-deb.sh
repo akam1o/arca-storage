@@ -10,6 +10,11 @@ if ! command -v dpkg-buildpackage >/dev/null 2>&1; then
   exit 1
 fi
 
+if ! command -v git >/dev/null 2>&1; then
+  echo "git not found" >&2
+  exit 1
+fi
+
 if [ ! -d "$ROOT/packaging/wheelhouse" ]; then
   echo "Missing packaging/wheelhouse; running ./packaging/vendor-wheels.sh" >&2
   bash "$ROOT/packaging/vendor-wheels.sh"
