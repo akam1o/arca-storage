@@ -67,11 +67,12 @@ def _get_arca_manila_opts():
         # API Authentication Configuration
         cfg.StrOpt(
             "arca_storage_api_auth_type",
-            default=None,
+            default="token",
             choices=["token", "none"],
             help=(
                 "API authentication type. Options: "
-                "'token' (Bearer token), 'none' (no auth)"
+                "'token' (Bearer token), 'none' (only for explicitly unauthenticated "
+                "loopback/development API servers)"
             ),
         ),
         cfg.StrOpt(

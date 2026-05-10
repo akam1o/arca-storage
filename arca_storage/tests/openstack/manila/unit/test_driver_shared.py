@@ -25,6 +25,36 @@ class TestArcaStorageManilaDriverSharedStrategy:
     def test_do_setup_checks_default_svm_exists(self, driver, mock_arca_client):
         mock_arca_client.get_svm.assert_called_with("test-svm")
 
+    def test_do_setup_passes_token_auth_to_api_client(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
+        with patch(
+            "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
+        ) as mock_client_class:
+            mock_client_class.return_value = mock_arca_client
+
+            drv = manila_driver.ArcaStorageManilaDriver()
+            drv.configuration = mock_manila_driver_config
+            drv.configuration.arca_storage_svm_strategy = "shared"
+            drv.configuration.arca_storage_default_svm = "test-svm"
+            drv.do_setup(Mock())
+
+        assert mock_client_class.call_args.kwargs["auth_type"] == "token"
+        assert mock_client_class.call_args.kwargs["api_token"] == "test-token"
+
+    def test_do_setup_rejects_token_auth_without_token(
+        self, mock_manila_driver_config
+    ):
+        drv = manila_driver.ArcaStorageManilaDriver()
+        drv.configuration = mock_manila_driver_config
+        drv.configuration.arca_storage_api_token = None
+
+        with pytest.raises(
+            manila_driver.manila_exception.ManilaException,
+            match="arca_storage_api_token",
+        ):
+            drv.do_setup(Mock())
+
     def test_update_share_stats_includes_pool_capabilities(self, driver):
         stats = driver._update_share_stats()
         assert stats["storage_protocol"] == "NFS"

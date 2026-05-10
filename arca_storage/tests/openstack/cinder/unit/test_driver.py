@@ -26,8 +26,8 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         config.arca_storage_api_timeout = 30
         config.arca_storage_api_retry_count = 3
         config.arca_storage_verify_ssl = False
-        config.arca_storage_api_auth_type = "none"
-        config.arca_storage_api_token = None
+        config.arca_storage_api_auth_type = "token"
+        config.arca_storage_api_token = "test-token"
         config.arca_storage_driver_ssl_cert_path = None
         config.arca_storage_svm_strategy = "shared"
         config.arca_storage_default_svm = "test-svm"
@@ -59,6 +59,18 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.do_setup(self.driver._context)
 
         assert mock_client.call_args.kwargs["ca_bundle"] == "/etc/ssl/certs/arca-ca.pem"
+        assert mock_client.call_args.kwargs["auth_type"] == "token"
+        assert mock_client.call_args.kwargs["api_token"] == "test-token"
+        mock_super_setup.assert_called_once_with(self.driver._context)
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    def test_do_setup_rejects_token_auth_without_token(self, mock_super_setup):
+        """API mode must fail during setup when token auth has no token."""
+        self.driver.configuration.arca_storage_api_token = None
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="arca_storage_api_token"):
+            self.driver.do_setup(self.driver._context)
+
         mock_super_setup.assert_called_once_with(self.driver._context)
 
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)

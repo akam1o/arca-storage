@@ -144,6 +144,22 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         self._pool_stats_cache_ttl: int = 300  # 5 minutes TTL
         self._pool_stats_lock = threading.Lock()
 
+    def _get_api_auth_config(self):
+        auth_type = self.configuration.arca_storage_api_auth_type or "token"
+        api_token = self.configuration.arca_storage_api_token
+
+        if auth_type not in ("token", "none"):
+            raise manila_exception.ManilaException(
+                "arca_storage_api_auth_type must be 'token' or 'none'"
+            )
+        if auth_type == "token" and not api_token:
+            raise manila_exception.ManilaException(
+                "arca_storage_api_token must be set when "
+                "arca_storage_api_auth_type is 'token'"
+            )
+
+        return auth_type, api_token
+
     @property
     def driver_handles_share_servers(self):
         """Driver does not manage share servers.
@@ -178,14 +194,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     "arca_storage_api_endpoint must be set"
                 )
 
+            auth_type, api_token = self._get_api_auth_config()
+
             # Initialize ARCA Storage API client
             self.arca_client = arca_client.ArcaManilaClient(
                 api_endpoint=self.configuration.arca_storage_api_endpoint,
                 timeout=self.configuration.arca_storage_api_timeout,
                 retry_count=self.configuration.arca_storage_api_retry_count,
                 verify_ssl=self.configuration.arca_storage_verify_ssl,
-                auth_type=self.configuration.arca_storage_api_auth_type,
-                api_token=self.configuration.arca_storage_api_token,
+                auth_type=auth_type,
+                api_token=api_token,
                 ca_bundle=self.configuration.arca_storage_api_ca_bundle,
                 client_cert=self.configuration.arca_storage_api_client_cert,
                 client_key=self.configuration.arca_storage_api_client_key,

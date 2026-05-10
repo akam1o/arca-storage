@@ -78,6 +78,27 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         # Best-effort context for snapshot operations (set in do_setup/retype)
         self._context = None
 
+    def _get_api_auth_config(self):
+        auth_type = (
+            getattr(self.configuration, "arca_storage_api_auth_type", "token")
+            or "token"
+        )
+        api_token = getattr(self.configuration, "arca_storage_api_token", None)
+
+        if auth_type not in ("token", "none"):
+            raise exception.VolumeBackendAPIException(
+                data=_("arca_storage_api_auth_type must be 'token' or 'none'")
+            )
+        if auth_type == "token" and not api_token:
+            raise exception.VolumeBackendAPIException(
+                data=_(
+                    "arca_storage_api_token must be set when "
+                    "arca_storage_api_auth_type is 'token'"
+                )
+            )
+
+        return auth_type, api_token
+
     def do_setup(self, context):
         """Perform driver setup and validation.
 
@@ -100,13 +121,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     raise exception.VolumeBackendAPIException(
                         data=_("arca_storage_api_endpoint must be set when arca_storage_use_api is True")
                     )
+                auth_type, api_token = self._get_api_auth_config()
                 self.arca_client = arca_client.ArcaStorageClient(
                     api_endpoint=self.configuration.arca_storage_api_endpoint,
                     timeout=self.configuration.arca_storage_api_timeout,
                     retry_count=self.configuration.arca_storage_api_retry_count,
                     verify_ssl=self.configuration.arca_storage_verify_ssl,
-                    auth_type=getattr(self.configuration, "arca_storage_api_auth_type", "none"),
-                    api_token=getattr(self.configuration, "arca_storage_api_token", None),
+                    auth_type=auth_type,
+                    api_token=api_token,
                     ca_bundle=getattr(self.configuration, "arca_storage_driver_ssl_cert_path", None),
                 )
 

@@ -19,6 +19,12 @@ def test_svm_strategy_choices():
     assert set(svm_opt.type.choices.keys()) == {"shared", "per_project", "manual"}
 
 
+def test_api_auth_defaults_to_token():
+    opts = configuration.get_arca_manila_opts()
+    auth_opt = next(opt for opt in opts if opt.name == "arca_storage_api_auth_type")
+    assert auth_opt.default == "token"
+
+
 def test_per_project_ip_pools_is_multistr():
     opts = configuration.get_arca_manila_opts()
     pools_opt = next(opt for opt in opts if opt.name == "arca_storage_per_project_ip_pools")
