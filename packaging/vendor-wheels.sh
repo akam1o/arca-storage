@@ -19,6 +19,7 @@ PKG_VERSION="$(bash "$ROOT/packaging/get-version.sh")"
 export SETUPTOOLS_SCM_PRETEND_VERSION="$PKG_VERSION"
 
 # Build arca-storage wheel
+rm -rf "$ROOT/arca_storage/dist"
 (cd "$ROOT/arca_storage" && "$VENV/bin/python" -m build --wheel)
 cp -f "$ROOT/arca_storage/dist/"*.whl "$WHEELHOUSE/"
 
