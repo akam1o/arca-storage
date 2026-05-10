@@ -563,6 +563,47 @@ def _rename_noreplace(source_path: str, dest_path: str) -> None:
         raise OSError(error_number, os.strerror(error_number), dest_path)
 
 
+def _open_regular_file_no_follow(path: str) -> int:
+    """Open a regular file without following a symlink and return its fd."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ArcaStorageException(
+            "Secure source file opening is not supported on this platform"
+        )
+
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow)
+    except FileNotFoundError as e:
+        raise ArcaStorageException(f"Source file does not exist: {path}") from e
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ArcaStorageException(
+                f"Source must be a regular file, not a symlink: {path}"
+            ) from e
+        raise
+
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ArcaStorageException(
+                f"Source must be a regular file, not a symlink: {path}"
+            )
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _source_path_for_fd(source_fd: int) -> str:
+    """Return a filesystem path that resolves to an already-open source fd."""
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        fd_path = os.path.join(fd_dir, str(source_fd))
+        if os.path.exists(fd_path):
+            return fd_path
+    raise ArcaStorageException(
+        "Secure fd source path is not available on this platform"
+    )
+
+
 def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> None:
     """Copy a file preserving sparseness using atomic operations.
 
@@ -582,16 +623,10 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
     """
     import secrets
 
-    if not os.path.exists(source_path):
-        raise ArcaStorageException(f"Source file does not exist: {source_path}")
-
-    # Security: Ensure source is a regular file, not a symlink
-    if os.path.islink(source_path) or not os.path.isfile(source_path):
-        raise ArcaStorageException(f"Source must be a regular file, not a symlink: {source_path}")
-
     if os.path.exists(dest_path):
         raise ArcaStorageException(f"Destination file already exists: {dest_path}")
 
+    source_fd = _open_regular_file_no_follow(source_path)
     # Create temporary file with random suffix to prevent prediction
     dest_dir = os.path.dirname(dest_path)
     dest_name = os.path.basename(dest_path)
@@ -617,7 +652,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
 
     try:
         # Copy to temporary file with -- to prevent filename attacks
-        cmd = ["cp", "--sparse=always", "--", source_path, temp_path]
+        cmd = ["cp", "--sparse=always", "--", _source_path_for_fd(source_fd), temp_path]
 
         subprocess.run(
             cmd,
@@ -692,3 +727,5 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
         cleanup_installed_dest()
         cleanup_temp_file()
         raise ArcaStorageException(f"Failed during file copy operation: {e}")
+    finally:
+        os.close(source_fd)

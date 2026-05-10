@@ -344,6 +344,46 @@ class TestUtilityFunctions(unittest.TestCase):
             ):
                 arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
 
+    def test_copy_sparse_file_rejects_symlink_source(self):
+        """Sparse copy must not follow a symlinked source path."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            target_path = os.path.join(temp_dir, "target")
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(target_path, "wb") as target:
+                target.write(b"target-data")
+            os.symlink(target_path, source_path)
+
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException, match="not a symlink"
+            ):
+                arca_utils.copy_sparse_file(source_path, dest_path)
+
+    def test_copy_sparse_file_reads_open_source_after_path_replacement(self):
+        """Sparse copy reads the validated fd even if the path is replaced later."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"original-data")
+
+            def replace_source_then_copy(command, **kwargs):
+                os.remove(source_path)
+                with open(source_path, "wb") as replacement:
+                    replacement.write(b"replacement-data")
+                return self._fake_sparse_cp(command, **kwargs)
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=replace_source_then_copy,
+            ):
+                arca_utils.copy_sparse_file(source_path, dest_path)
+
+            with open(dest_path, "rb") as dest:
+                assert dest.read() == b"original-data"
+            with open(source_path, "rb") as source:
+                assert source.read() == b"replacement-data"
+
     def test_copy_sparse_file_hard_link_fallback_copies_without_overwrite(self):
         """Fallback copy installs the destination using exclusive creation."""
         with tempfile.TemporaryDirectory() as temp_dir:
