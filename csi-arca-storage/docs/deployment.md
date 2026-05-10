@@ -208,17 +208,14 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ## Deployment Method 2: Kustomize
 
-Use Kustomize for production or repeatable environment-specific deployment. The Kustomize base uses `controller-statefulset.yaml`, which does not embed a ConfigMap or Secret. Those are generated from overlay files.
-
-The current Kustomize base reuses shared manifests from `deploy/`, outside the base directory. Use `kubectl kustomize --load-restrictor LoadRestrictionsNone ... | kubectl apply -f -`; plain `kubectl apply -k` rejects those out-of-root references.
+Use Kustomize for production or repeatable environment-specific deployment. The Kustomize base uses `controller-statefulset.yaml`, which does not embed a ConfigMap or Secret. The base generates a ConfigMap from `config.yaml`; environment overlays replace that ConfigMap and generate the Secret.
 
 ### Development Overlay
 
 Edit `deploy/kustomize/overlays/development/config.yaml`, then deploy:
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/development | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/development
 ```
 
 The development overlay:
@@ -238,8 +235,7 @@ cp secrets.env.example secrets.env
 printf 'auth-token=%s\n' '<your-production-token>' > secrets.env
 cd ../../../..
 
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 ```
 
 The production overlay:
@@ -438,8 +434,7 @@ kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 Kustomize:
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 kubectl rollout restart statefulset/csi-arca-storage-controller -n kube-system
 kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 ```

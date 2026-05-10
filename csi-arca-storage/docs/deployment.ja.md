@@ -208,17 +208,14 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ## 方法2: Kustomize
 
-本番や環境別の繰り返し可能なデプロイでは Kustomize を推奨します。Kustomize base は `controller-statefulset.yaml` を使い、ConfigMap / Secret は generator で作成します。
-
-現在の Kustomize base は `deploy/` 配下の共有 manifest を base ディレクトリ外から再利用しています。そのため plain `kubectl apply -k` では load restrictor により失敗します。`kubectl kustomize --load-restrictor LoadRestrictionsNone ... | kubectl apply -f -` を使ってください。
+本番や環境別の繰り返し可能なデプロイでは Kustomize を推奨します。Kustomize base は `controller-statefulset.yaml` を使います。base は `config.yaml` から ConfigMap を生成し、環境別 overlay がその ConfigMap を置き換えて Secret を生成します。
 
 ### Development overlay
 
 `deploy/kustomize/overlays/development/config.yaml` を編集してから適用します。
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/development | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/development
 ```
 
 Development overlay の特徴:
@@ -238,8 +235,7 @@ cp secrets.env.example secrets.env
 printf 'auth-token=%s\n' '<your-production-token>' > secrets.env
 cd ../../../..
 
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 ```
 
 Production overlay の特徴:
@@ -438,8 +434,7 @@ kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 Kustomize:
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 kubectl rollout restart statefulset/csi-arca-storage-controller -n kube-system
 kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 ```

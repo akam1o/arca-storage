@@ -117,13 +117,11 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ```bash
 # Development
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/development | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/development
 
 # Production
 # Create deploy/kustomize/overlays/production/secrets.env first.
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 ```
 
 See [docs/deployment.md](docs/deployment.md) for configuration details

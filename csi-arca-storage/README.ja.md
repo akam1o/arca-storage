@@ -110,13 +110,11 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ```bash
 # 開発用
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/development | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/development
 
 # 本番用
 # 先に deploy/kustomize/overlays/production/secrets.env を作成してください。
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 ```
 
 設定の詳細は `docs/deployment.ja.md` を参照してください。

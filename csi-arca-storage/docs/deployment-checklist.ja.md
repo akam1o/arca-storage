@@ -125,13 +125,11 @@ CSI ARCA Storage driver を安全にデプロイするためのチェックリ�
 
 - [ ] Development:
   ```bash
-  kubectl kustomize --load-restrictor LoadRestrictionsNone \
-    deploy/kustomize/overlays/development | kubectl apply -f -
+  kubectl apply -k deploy/kustomize/overlays/development
   ```
 - [ ] Production:
   ```bash
-  kubectl kustomize --load-restrictor LoadRestrictionsNone \
-    deploy/kustomize/overlays/production | kubectl apply -f -
+  kubectl apply -k deploy/kustomize/overlays/production
   ```
 - [ ] Production overlay の controller replica が `2` 以上であることを確認済み
 

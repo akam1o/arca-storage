@@ -1,0 +1,24 @@
+apiVersion: storage.k8s.io/v1
+kind: CSIDriver
+metadata:
+  name: csi.arca-storage.io
+spec:
+  # This driver supports persistent volumes
+  attachRequired: false
+  
+  # This driver supports volume ownership and permission changes
+  podInfoOnMount: true
+  
+  # This driver supports volume lifecycle (create/delete)
+  volumeLifecycleModes:
+    - Persistent
+  
+  # This driver uses the default fsgroup delegation policy
+  # (the driver does not modify volume ownership/permissions)
+  fsGroupPolicy: File
+  
+  # This driver requires the namespace as a parameter
+  requiresRepublish: false
+  
+  # This driver supports volume expansion
+  storageCapacity: false

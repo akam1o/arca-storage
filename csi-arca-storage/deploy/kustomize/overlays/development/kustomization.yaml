@@ -19,9 +19,11 @@ configMapGenerator:
 
 secretGenerator:
   - name: csi-arca-storage-secret
-    behavior: replace
     literals:
       - auth-token=dev-token
+
+generatorOptions:
+  disableNameSuffixHash: true
 
 labels:
   - includeSelectors: true

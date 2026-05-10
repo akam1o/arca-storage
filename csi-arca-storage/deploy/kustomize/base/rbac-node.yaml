@@ -1,0 +1,48 @@
+---
+# ServiceAccount for node plugin
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: csi-arca-storage-node
+  namespace: kube-system
+
+---
+# ClusterRole for node plugin
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: csi-arca-storage-node
+rules:
+  # Node plugin needs to read PVs and PVCs
+  - apiGroups: [""]
+    resources: ["persistentvolumes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["persistentvolumeclaims"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["nodes"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["list", "watch", "create", "update", "patch"]
+  
+  # Leases (for distributed locking)
+  - apiGroups: ["coordination.k8s.io"]
+    resources: ["leases"]
+    verbs: ["get", "watch", "list", "delete", "update", "create"]
+
+---
+# ClusterRoleBinding for node plugin
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: csi-arca-storage-node
+roleRef:
+  apiGroup: rbac.authorization.k8s.io
+  kind: ClusterRole
+  name: csi-arca-storage-node
+subjects:
+  - kind: ServiceAccount
+    name: csi-arca-storage-node
+    namespace: kube-system

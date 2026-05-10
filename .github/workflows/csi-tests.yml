@@ -73,9 +73,9 @@ jobs:
         working-directory: ./csi-arca-storage
         run: |
           mkdir -p /tmp/csi-manifests
-          kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/base > /tmp/csi-manifests/base.yaml
-          kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/overlays/development > /tmp/csi-manifests/development.yaml
-          kubectl kustomize --load-restrictor=LoadRestrictionsNone deploy/kustomize/overlays/production > /tmp/csi-manifests/production.yaml
+          kubectl kustomize deploy/kustomize/base > /tmp/csi-manifests/base.yaml
+          kubectl kustomize deploy/kustomize/overlays/development > /tmp/csi-manifests/development.yaml
+          kubectl kustomize deploy/kustomize/overlays/production > /tmp/csi-manifests/production.yaml
 
       - name: Validate rendered manifests
         run: |
