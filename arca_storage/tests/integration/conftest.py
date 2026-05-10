@@ -68,6 +68,7 @@ class FakeAppContext:
 @pytest.fixture(autouse=True)
 def default_testclient_base_url(monkeypatch):
     """Keep integration TestClient defaults on a loopback host."""
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
     original_init = TestClient.__init__
 
     def init_with_loopback_base_url(self, app, *args, **kwargs):

@@ -35,7 +35,12 @@ from arca_storage.api.models import (
     VolumeResponse,
 )
 from arca_storage.api.services import directory_service, export_service, qos_service, snapshot_service, svm_service, volume_service
-from arca_storage.api.auth import API_TOKEN_REQUIRED_MESSAGE, configured_api_token, non_loopback_request_server_host
+from arca_storage.api.auth import (
+    API_TOKEN_REQUIRED_MESSAGE,
+    configured_api_token,
+    non_loopback_request_server_host,
+    unauthenticated_loopback_allowed,
+)
 from arca_storage.errors import ArcaError, InvalidArgumentError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
@@ -47,21 +52,22 @@ async def require_bearer_token(request: Request, call_next):
     """Require a bearer token when ARCA_API_TOKEN/ARCA_AUTH_TOKEN is configured."""
     token = configured_api_token()
     if not token:
-        if host := non_loopback_request_server_host(request.scope):
-            request_id = str(uuid.uuid4())
-            return JSONResponse(
-                status_code=503,
-                content={
-                    "request_id": request_id,
-                    "status": "error",
-                    "error": {
-                        "code": "AUTH_TOKEN_REQUIRED",
-                        "message": API_TOKEN_REQUIRED_MESSAGE,
-                        "details": {"host": host},
-                    },
+        host = non_loopback_request_server_host(request.scope)
+        if host is None and unauthenticated_loopback_allowed():
+            return await call_next(request)
+        request_id = str(uuid.uuid4())
+        return JSONResponse(
+            status_code=503,
+            content={
+                "request_id": request_id,
+                "status": "error",
+                "error": {
+                    "code": "AUTH_TOKEN_REQUIRED",
+                    "message": API_TOKEN_REQUIRED_MESSAGE,
+                    "details": {"host": host or "loopback"},
                 },
-            )
-        return await call_next(request)
+            },
+        )
 
     auth_header = request.headers.get("authorization", "")
     scheme, _, supplied = auth_header.partition(" ")

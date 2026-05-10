@@ -24,10 +24,27 @@ def _settings(bind: str = "127.0.0.1", port: int = 8080):
     return SimpleNamespace(api=SimpleNamespace(bind=bind, port=port))
 
 
-def test_loopback_bind_does_not_require_token(monkeypatch):
+def test_loopback_bind_requires_token_without_opt_out(monkeypatch):
+    def fail_run(*args, **kwargs):
+        raise AssertionError("uvicorn.run should not be called without an API token")
+
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
+    monkeypatch.setattr(server, "load_settings", lambda: _settings())
+    monkeypatch.setattr(server.uvicorn, "run", fail_run)
+
+    with pytest.raises(SystemExit) as exc:
+        server.main([])
+
+    assert exc.value.code == 2
+
+
+def test_loopback_bind_allows_explicit_unauthenticated_opt_out(monkeypatch):
     calls = []
     monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
     monkeypatch.setattr(server, "load_settings", lambda: _settings())
     monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
 
@@ -42,6 +59,7 @@ def test_non_loopback_bind_requires_token(monkeypatch, capsys):
 
     monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
     monkeypatch.setattr(server, "load_settings", lambda: _settings(bind="0.0.0.0"))
     monkeypatch.setattr(server.uvicorn, "run", fail_run)
 
@@ -55,6 +73,7 @@ def test_non_loopback_bind_requires_token(monkeypatch, capsys):
 def test_host_override_requires_token(monkeypatch):
     monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
     monkeypatch.setattr(server, "load_settings", lambda: _settings())
 
     with pytest.raises(SystemExit) as exc:

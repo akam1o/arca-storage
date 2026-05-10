@@ -9,7 +9,12 @@ from typing import Optional
 
 import uvicorn
 
-from arca_storage.api.auth import API_TOKEN_REQUIRED_MESSAGE, configured_api_token, is_loopback_bind_host
+from arca_storage.api.auth import (
+    API_TOKEN_REQUIRED_MESSAGE,
+    configured_api_token,
+    is_loopback_bind_host,
+    unauthenticated_loopback_allowed,
+)
 from arca_storage.config import load_settings
 
 
@@ -22,9 +27,9 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def _validate_auth_for_bind(parser: argparse.ArgumentParser, host: str) -> None:
-    if is_loopback_bind_host(host):
-        return
     if configured_api_token():
+        return
+    if is_loopback_bind_host(host) and unauthenticated_loopback_allowed():
         return
     parser.error(API_TOKEN_REQUIRED_MESSAGE)
 

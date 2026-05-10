@@ -52,7 +52,14 @@ arca_storage_api_endpoint = http://127.0.0.1:8080
 arca_storage_api_timeout = 30
 arca_storage_api_retry_count = 3
 arca_storage_verify_ssl = true
+arca_storage_api_auth_type = token
+arca_storage_api_token = <token>
 ```
+
+The ARCA REST API requires a bearer token by default. For loopback-only
+development, the API service can explicitly set
+`ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK=true`, but do not use that setting when
+exposing the listener through a reverse proxy, tunnel, or port-forward.
 
 ## SVM mapping strategies
 

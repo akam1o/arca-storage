@@ -7,13 +7,23 @@ import os
 from typing import Any
 
 
-API_TOKEN_REQUIRED_MESSAGE = "ARCA_API_TOKEN or ARCA_AUTH_TOKEN is required when binding to a non-loopback host"
+ALLOW_UNAUTHENTICATED_LOOPBACK_ENV = "ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK"
+API_TOKEN_REQUIRED_MESSAGE = (
+    "ARCA_API_TOKEN or ARCA_AUTH_TOKEN is required unless "
+    f"{ALLOW_UNAUTHENTICATED_LOOPBACK_ENV}=true is set for loopback-only development"
+)
 UNKNOWN_SERVER_HOST = "<unknown>"
+_TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 
 def configured_api_token() -> str:
     """Return the configured bearer token, if any."""
     return os.environ.get("ARCA_API_TOKEN", "") or os.environ.get("ARCA_AUTH_TOKEN", "")
+
+
+def unauthenticated_loopback_allowed() -> bool:
+    """Return whether loopback-only unauthenticated access is explicitly enabled."""
+    return os.environ.get(ALLOW_UNAUTHENTICATED_LOOPBACK_ENV, "").strip().lower() in _TRUTHY_ENV_VALUES
 
 
 def is_loopback_bind_host(host: str) -> bool:
