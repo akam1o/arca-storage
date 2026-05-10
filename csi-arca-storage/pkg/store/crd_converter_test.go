@@ -8,13 +8,19 @@ import (
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
 )
 
+const (
+	testVolumeID               = "pvc-0123456789abcdef0123456789abcdef"
+	testSnapshotID             = "0123456789abcdef0123456789abcdef"
+	testTemporaryCloneSnapshot = "clone-" + testVolumeID + "-0123456789abcdef"
+)
+
 func TestArcaVolumeReadinessAnnotationRoundTrip(t *testing.T) {
 	volume := volumeInfoToArcaVolume(&VolumeInfo{
-		VolumeID:      "pvc-0123456789abcdef",
+		VolumeID:      testVolumeID,
 		Name:          "pvc-a",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
-		Path:          "pvc-0123456789abcdef",
+		Path:          testVolumeID,
 		CapacityBytes: 1 << 30,
 		CreatedAt:     time.Now(),
 		ReadyToUse:    VolumeReadyState(false),
@@ -29,14 +35,39 @@ func TestArcaVolumeReadinessAnnotationRoundTrip(t *testing.T) {
 	}
 }
 
+func TestArcaVolumeTemporaryCloneAnnotationRoundTrip(t *testing.T) {
+	volume := volumeInfoToArcaVolume(&VolumeInfo{
+		VolumeID:                       testVolumeID,
+		Name:                           "pvc-a",
+		SVMName:                        "svm-a",
+		VIP:                            "10.0.0.10",
+		Path:                           testVolumeID,
+		CapacityBytes:                  1 << 30,
+		CreatedAt:                      time.Now(),
+		TemporaryCloneSnapshot:         testTemporaryCloneSnapshot,
+		TemporaryCloneSourceVolumePath: "source-path",
+	})
+
+	if got := volume.Annotations[temporaryCloneSnapshotAnnotation]; got != testTemporaryCloneSnapshot {
+		t.Fatalf("temporary clone snapshot annotation = %q", got)
+	}
+	if got := volume.Annotations[temporaryCloneSourceVolumePathAnnotation]; got != "source-path" {
+		t.Fatalf("temporary clone source path annotation = %q", got)
+	}
+	info := arcaVolumeToVolumeInfo(volume)
+	if info.TemporaryCloneSnapshot != testTemporaryCloneSnapshot || info.TemporaryCloneSourceVolumePath != "source-path" {
+		t.Fatalf("temporary clone metadata = (%q, %q)", info.TemporaryCloneSnapshot, info.TemporaryCloneSourceVolumePath)
+	}
+}
+
 func TestArcaVolumeMissingReadinessAnnotationIsReady(t *testing.T) {
 	info := arcaVolumeToVolumeInfo(&v1alpha1.ArcaVolume{
 		Spec: v1alpha1.ArcaVolumeSpec{
-			VolumeID:      "pvc-0123456789abcdef",
+			VolumeID:      testVolumeID,
 			Name:          "pvc-a",
 			SVMName:       "svm-a",
 			VIP:           "10.0.0.10",
-			Path:          "pvc-0123456789abcdef",
+			Path:          testVolumeID,
 			CapacityBytes: 1 << 30,
 			CreatedAt:     metav1.NewTime(time.Now()),
 		},
@@ -49,22 +80,22 @@ func TestArcaVolumeMissingReadinessAnnotationIsReady(t *testing.T) {
 
 func TestArcaSnapshotSourceVolumePathRoundTrip(t *testing.T) {
 	snapshot := snapshotInfoToArcaSnapshot(&SnapshotInfo{
-		SnapshotID:       "0123456789abcdef",
+		SnapshotID:       testSnapshotID,
 		Name:             "snap-a",
-		SourceVolumeID:   "pvc-0123456789abcdef",
-		SourceVolumePath: "pvc-0123456789abcdef",
+		SourceVolumeID:   testVolumeID,
+		SourceVolumePath: testVolumeID,
 		SVMName:          "svm-a",
-		Path:             "0123456789abcdef",
+		Path:             testSnapshotID,
 		SizeBytes:        1 << 30,
 		CreatedAt:        time.Now(),
 		ReadyToUse:       true,
 	})
 
-	if got := snapshot.Spec.SourceVolumePath; got != "pvc-0123456789abcdef" {
+	if got := snapshot.Spec.SourceVolumePath; got != testVolumeID {
 		t.Fatalf("source volume path = %q", got)
 	}
 	info := arcaSnapshotToSnapshotInfo(snapshot)
-	if info.SourceVolumePath != "pvc-0123456789abcdef" {
+	if info.SourceVolumePath != testVolumeID {
 		t.Fatalf("round-tripped source volume path = %q", info.SourceVolumePath)
 	}
 }

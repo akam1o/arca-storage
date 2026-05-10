@@ -58,7 +58,7 @@ The controller uses `ArcaVolume` and `ArcaSnapshot` cluster-scoped CRDs as its p
 
 ### 1. Choose an Image
 
-The raw manifests use `csi-arca-storage:latest`. The production Kustomize overlay uses `ghcr.io/akam1o/csi-arca-storage:v1.0.0`.
+The raw manifests and production Kustomize overlay use `ghcr.io/akam1o/csi-arca-storage:v1.0.0`.
 
 For a custom image:
 
@@ -82,6 +82,7 @@ Current configuration schema:
 arca:
   base_url: "https://arca-api.example.com"
   timeout: "30s"
+  auth_type: "token"
   auth_token: ""  # Prefer ARCA_AUTH_TOKEN from Secret
   tls:
     ca_cert_path: ""
@@ -107,6 +108,7 @@ Notes:
 
 - `arca.base_url`, at least one `network.pools[].cidr`, and `driver.endpoint` are required.
 - `arca.timeout` defaults to `30s` if omitted.
+- `arca.auth_type` defaults to `token`; `arca.auth_token` is required unless `auth_type` is explicitly set to `none`.
 - `network.mtu` defaults to `1500` if omitted.
 - `ARCA_AUTH_TOKEN` overrides `arca.auth_token` when set.
 - `CSI_ENDPOINT` overrides `driver.endpoint` when set by the manifests.
@@ -158,6 +160,7 @@ data:
     arca:
       base_url: "https://arca-api.example.com"
       timeout: "30s"
+      auth_type: "token"
       auth_token: ""
       tls:
         ca_cert_path: ""
@@ -208,17 +211,14 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ## Deployment Method 2: Kustomize
 
-Use Kustomize for production or repeatable environment-specific deployment. The Kustomize base uses `controller-statefulset.yaml`, which does not embed a ConfigMap or Secret. Those are generated from overlay files.
-
-The current Kustomize base reuses shared manifests from `deploy/`, outside the base directory. Use `kubectl kustomize --load-restrictor LoadRestrictionsNone ... | kubectl apply -f -`; plain `kubectl apply -k` rejects those out-of-root references.
+Use Kustomize for production or repeatable environment-specific deployment. The Kustomize base uses `controller-statefulset.yaml`, which does not embed a ConfigMap or Secret. The base generates a ConfigMap from `config.yaml`; environment overlays replace that ConfigMap and generate the Secret.
 
 ### Development Overlay
 
 Edit `deploy/kustomize/overlays/development/config.yaml`, then deploy:
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/development | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/development
 ```
 
 The development overlay:
@@ -238,8 +238,7 @@ cp secrets.env.example secrets.env
 printf 'auth-token=%s\n' '<your-production-token>' > secrets.env
 cd ../../../..
 
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 ```
 
 The production overlay:
@@ -438,8 +437,7 @@ kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 Kustomize:
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 kubectl rollout restart statefulset/csi-arca-storage-controller -n kube-system
 kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 ```

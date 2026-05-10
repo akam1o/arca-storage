@@ -50,6 +50,7 @@ func main() {
 		klog.Fatalf("Invalid mode '%s': must be 'controller' or 'node'", *mode)
 	}
 	klog.Infof("Running in %s mode", *mode)
+	isControllerMode := (*mode == "controller")
 
 	// Load configuration
 	cfg, err := config.LoadConfig(*configPath)
@@ -57,18 +58,22 @@ func main() {
 		klog.Fatalf("Failed to load configuration: %v", err)
 	}
 
-	// Validate configuration
-	if err := cfg.Validate(); err != nil {
-		klog.Fatalf("Invalid configuration: %v", err)
-	}
-
 	// Override node ID from command line if specified
 	if *nodeID != "" {
 		cfg.Driver.NodeID = *nodeID
 	}
 
+	// Override CSI endpoint from environment if set (useful for deployment manifests)
+	if envEndpoint := os.Getenv("CSI_ENDPOINT"); envEndpoint != "" {
+		cfg.Driver.Endpoint = envEndpoint
+	}
+
+	// Validate configuration after applying command-line and environment overrides.
+	if err := cfg.ValidateForMode(*mode); err != nil {
+		klog.Fatalf("Invalid configuration: %v", err)
+	}
+
 	// Validate mode consistency with node-id flag
-	isControllerMode := (*mode == "controller")
 	hasNodeID := (*nodeID != "" || cfg.Driver.NodeID != "")
 
 	if isControllerMode && hasNodeID {
@@ -76,11 +81,6 @@ func main() {
 	}
 	if !isControllerMode && !hasNodeID {
 		klog.Fatal("Inconsistent configuration: node mode requires --node-id flag")
-	}
-
-	// Override CSI endpoint from environment if set (useful for deployment manifests)
-	if envEndpoint := os.Getenv("CSI_ENDPOINT"); envEndpoint != "" {
-		cfg.Driver.Endpoint = envEndpoint
 	}
 
 	klog.Infof("Configuration loaded successfully")
@@ -102,11 +102,13 @@ func main() {
 		klog.Fatalf("Failed to create ARCA client: %v", err)
 	}
 
-	// Create network allocator
-	poolConfigs := cfg.ToArcaPoolConfigs()
-	allocator, err := arca.NewStandaloneAllocator(poolConfigs, arcaClient)
-	if err != nil {
-		klog.Fatalf("Failed to create network allocator: %v", err)
+	var allocator *arca.StandaloneAllocator
+	if isControllerMode {
+		poolConfigs := cfg.ToArcaPoolConfigs()
+		allocator, err = arca.NewStandaloneAllocator(poolConfigs, arcaClient)
+		if err != nil {
+			klog.Fatalf("Failed to create network allocator: %v", err)
+		}
 	}
 
 	// Create lock manager
@@ -126,8 +128,10 @@ func main() {
 	}
 	lockManager := lock.NewManager(k8sClient, "kube-system", lockIdentity)
 
-	// Create SVM manager
-	svmManager := arca.NewSVMManager(arcaClient, allocator, lockManager, cfg.Network.MTU)
+	var svmManager *arca.SVMManager
+	if isControllerMode {
+		svmManager = arca.NewSVMManager(arcaClient, allocator, lockManager, cfg.Network.MTU)
+	}
 
 	// Create metadata store (CRD-based with caching)
 	var metadataStore store.Store

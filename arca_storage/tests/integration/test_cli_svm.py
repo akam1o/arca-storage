@@ -2,12 +2,13 @@
 Integration tests for CLI SVM commands.
 """
 
-from unittest.mock import MagicMock, patch
 
 import pytest
 from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
+from arca_storage.models.base import Phase
+from arca_storage.models.svm import SVM, SVMSpec
 from .helpers import cli_output
 
 
@@ -24,7 +25,8 @@ class TestSVMCreate:
 
         assert result.exit_code == 0
         assert "Creating SVM: tenant_a" in result.stdout
-        assert fake_context.adapters.netns.namespace_exists("tenant_a")
+        assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
+        assert fake_context.adapters.pacemaker.resource_exists("netns_tenant_a")
         assert fake_context.adapters.pacemaker.resource_exists("g_svm_tenant_a")
 
     @pytest.mark.integration
@@ -111,3 +113,19 @@ class TestSVMList:
         result = runner.invoke(app, ["svm", "list"])
 
         assert result.exit_code == 0
+
+    @pytest.mark.integration
+    def test_list_svms_paginates_all_records(self, fake_context):
+        """List all SVMs, not only the DB default first page."""
+        for i in range(105):
+            svm = SVM(spec=SVMSpec(name=f"tenant_{i:03d}", ip_cidr=f"10.0.0.{i + 1}/32"))
+            svm.status.phase = Phase.READY
+            fake_context.db.insert_svm(svm)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["svm", "list"])
+
+        assert result.exit_code == 0
+        assert "tenant_000" in result.stdout
+        assert "tenant_104" in result.stdout
+        assert result.stdout.count("tenant_") == 105

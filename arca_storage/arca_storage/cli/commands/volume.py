@@ -10,6 +10,7 @@ import typer
 
 from arca_storage.api.models import VolumeCreate
 from arca_storage.api.services import volume_service
+from arca_storage.cli.commands._pagination import list_all_volumes
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
 
@@ -98,7 +99,7 @@ def list(
     """List volumes."""
     try:
         ctx = get_context()
-        volumes = ctx.db.list_volumes(svm=svm, name=name)
+        volumes = list_all_volumes(ctx.db, svm=svm, name=name)
         if not volumes:
             typer.echo("No volumes found")
             return

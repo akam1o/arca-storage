@@ -137,13 +137,11 @@ Choose your deployment method:
 
 - [ ] For development:
   ```bash
-  kubectl kustomize --load-restrictor LoadRestrictionsNone \
-    deploy/kustomize/overlays/development | kubectl apply -f -
+  kubectl apply -k deploy/kustomize/overlays/development
   ```
 - [ ] For production:
   ```bash
-  kubectl kustomize --load-restrictor LoadRestrictionsNone \
-    deploy/kustomize/overlays/production | kubectl apply -f -
+  kubectl apply -k deploy/kustomize/overlays/production
   ```
 
 ### Deploy Storage Classes

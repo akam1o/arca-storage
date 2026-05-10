@@ -31,7 +31,12 @@ from arca_storage.errors import (
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import snapshot_lv_name, validate_name, volume_lv_name
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    snapshot_lv_name,
+    validate_name,
+    volume_lv_name,
+)
 from arca_storage.api.services.volume_service import build_volume_export_path, require_volume_ready_record
 from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
 
@@ -66,9 +71,19 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     snapshot.status.size_gib = int(source_record.get("spec", {}).get("size_gib") or 10)
     owner = new_create_owner()
     assign_create_lease(snapshot.status, owner)
+    inserted = False
     try:
-        ctx.db.insert_snapshot(snapshot)
+        ctx.db.insert_snapshot(snapshot, require_ready_volume=True, require_ready_svm=True)
+        inserted = True
     except AlreadyExistsError:
+        if _cleanup_expired_snapshot_reservation(ctx, requested_spec, owner):
+            try:
+                ctx.db.insert_snapshot(snapshot, require_ready_volume=True, require_ready_svm=True)
+                inserted = True
+            except AlreadyExistsError:
+                pass
+
+    if not inserted:
         existing = ctx.db.list_snapshots(
             svm=snapshot_data.svm,
             volume=snapshot_data.volume,
@@ -84,6 +99,8 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
             owner,
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
+            require_ready_volume=True,
+            require_ready_svm=True,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_snapshot_create(ctx, acquired, owner)
@@ -97,6 +114,27 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     return _snapshot_to_dict(snapshot)
 
 
+def _cleanup_expired_snapshot_reservation(ctx: Any, spec: SnapshotSpec, owner: str) -> bool:
+    if not ctx.db.reserve_snapshot_cleanup(spec.svm, spec.volume, spec.name, owner):
+        return False
+
+    cfg = ctx.settings.to_reconciler_config()
+    vg_name = cfg.get("vg_name", "vg_pool_01")
+    snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
+    try:
+        ctx.adapters.lvm.delete_lv(vg_name, snap_lv)
+        legacy_snap_lv = legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        if legacy_snap_lv != snap_lv:
+            ctx.adapters.lvm.delete_lv(vg_name, legacy_snap_lv)
+    except Exception as e:
+        raise InternalError(
+            f"Failed to clean pending Snapshot '{spec.svm}/{spec.volume}/{spec.name}'",
+            {"resource": "Snapshot", "name": f"{spec.svm}/{spec.volume}/{spec.name}", "lv_name": snap_lv},
+        ) from e
+    ctx.db.release_snapshot_cleanup(spec.svm, spec.volume, spec.name, owner)
+    return True
+
+
 def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> None:
     """Delete a snapshot via the reconciler."""
     validate_name(name)
@@ -104,17 +142,15 @@ def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> No
     validate_name(volume)
 
     ctx = get_context()
-    records = ctx.db.list_snapshots(svm=svm, volume=volume, name=name)
-    if not records:
+    record = ctx.db.reserve_snapshot_delete(svm, volume, name, force=force)
+    if not record:
         raise NotFoundError("Snapshot", f"{svm}/{volume}/{name}")
 
-    record = records[0]
     snapshot = Snapshot(
         metadata=_meta_from_record(record),
         spec=SnapshotSpec.model_validate(record["spec"]),
         status=_parse_status(record),
     )
-    snapshot.status.phase = Phase.DELETING
     result = ctx.snapshot_reconciler.reconcile(snapshot)
     if result.status.phase == Phase.FAILED:
         raise InternalError(
@@ -133,7 +169,26 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
     snapshot_lv_name(clone_data.svm, source_volume, clone_data.snapshot)
 
     ctx = get_context()
-    snapshot_size_gib = _clone_snapshot_size_gib(ctx, source_volume, clone_data)
+    owner = new_create_owner()
+    snapshot_record = ctx.db.reserve_snapshot_clone(clone_data.svm, source_volume, clone_data.snapshot, owner)
+    if not snapshot_record:
+        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
+    try:
+        snapshot_size_gib = _clone_snapshot_size_gib(ctx, source_volume, clone_data, snapshot_record=snapshot_record)
+        snapshot_lv = _snapshot_record_lv_name(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
+        return _clone_volume_from_reserved_snapshot(ctx, source_volume, clone_data, snapshot_size_gib, snapshot_lv, owner)
+    finally:
+        ctx.db.release_snapshot_clone(clone_data.svm, source_volume, clone_data.snapshot, owner)
+
+
+def _clone_volume_from_reserved_snapshot(
+    ctx: Any,
+    source_volume: str,
+    clone_data: VolumeCloneCreate,
+    snapshot_size_gib: int,
+    snapshot_lv: str,
+    owner: str,
+) -> Dict[str, Any]:
     target_size_gib = max(clone_data.size_gib or snapshot_size_gib, snapshot_size_gib)
     requested_spec = VolumeSpec(
         name=clone_data.name,
@@ -143,11 +198,10 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
         fs_type="xfs",
     )
     volume = Volume(spec=requested_spec)
-    owner = new_create_owner()
     assign_create_lease(volume.status, owner)
 
     try:
-        ctx.db.insert_volume(volume)
+        ctx.db.insert_volume(volume, require_ready_svm=True)
     except AlreadyExistsError:
         existing = ctx.db.get_volume(clone_data.svm, clone_data.name)
         allow_failed_resume = _can_resume_clone_volume(existing, requested_spec)
@@ -157,6 +211,7 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
             owner,
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
+            require_ready_svm=True,
         )
         if _can_resume_clone_volume(acquired, requested_spec, owner=owner):
             return _resume_clone_volume_from_snapshot(
@@ -166,6 +221,7 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
                 source_volume,
                 clone_data.snapshot,
                 snapshot_size_gib,
+                snapshot_lv,
             )
         raise AlreadyExistsError("Volume", f"{clone_data.svm}/{clone_data.name}")
 
@@ -176,6 +232,7 @@ def clone_volume_from_snapshot(source_volume: str, clone_data: VolumeCloneCreate
         source_volume,
         clone_data.snapshot,
         snapshot_size_gib,
+        snapshot_lv,
     )
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -239,12 +296,18 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return SnapshotStatus.model_validate(record["status"])
 
 
-def _clone_snapshot_size_gib(ctx: Any, source_volume: str, clone_data: VolumeCloneCreate) -> int:
-    snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
-    if not snapshots:
-        raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
-
-    snapshot_record = snapshots[0]
+def _clone_snapshot_size_gib(
+    ctx: Any,
+    source_volume: str,
+    clone_data: VolumeCloneCreate,
+    *,
+    snapshot_record: Optional[Dict[str, Any]] = None,
+) -> int:
+    if snapshot_record is None:
+        snapshots = ctx.db.list_snapshots(svm=clone_data.svm, volume=source_volume, name=clone_data.snapshot)
+        if not snapshots:
+            raise NotFoundError("Snapshot", f"{clone_data.svm}/{source_volume}/{clone_data.snapshot}")
+        snapshot_record = snapshots[0]
     _require_snapshot_ready_record(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
     source_record = ctx.db.get_volume(clone_data.svm, source_volume)
     if not source_record:
@@ -263,11 +326,7 @@ def _clone_snapshot_size_gib(ctx: Any, source_volume: str, clone_data: VolumeClo
 
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
-    snap_lv = snapshot_record.get("status", {}).get("lv_name") or snapshot_lv_name(
-        clone_data.svm,
-        source_volume,
-        clone_data.snapshot,
-    )
+    snap_lv = _snapshot_record_lv_name(snapshot_record, clone_data.svm, source_volume, clone_data.snapshot)
     try:
         return int(ceil(float(ctx.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
     except Exception as e:
@@ -296,6 +355,10 @@ def _require_snapshot_ready_record(record: Dict[str, Any], svm: str, volume: str
             "lv_created": lv_created,
         },
     )
+
+
+def _snapshot_record_lv_name(record: Dict[str, Any], svm: str, volume: str, name: str) -> str:
+    return str(record.get("status", {}).get("lv_name") or legacy_snapshot_lv_name(svm, volume, name))
 
 
 def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
@@ -343,6 +406,7 @@ def _resume_clone_volume_from_snapshot(
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
+    snapshot_lv: str,
 ) -> Dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
@@ -358,6 +422,7 @@ def _resume_clone_volume_from_snapshot(
         source_volume,
         snapshot_name,
         snapshot_size_gib,
+        snapshot_lv,
     )
     if volume.status.phase == Phase.FAILED:
         raise RuntimeError(volume.status.message)
@@ -376,14 +441,27 @@ def _reconcile_clone_volume_from_snapshot(
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
+    snapshot_lv: str,
 ) -> Volume:
     def refresh() -> bool:
-        if not ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner):
+        if not ctx.db.refresh_snapshot_clone_lease(
+            volume.spec.svm,
+            source_volume,
+            snapshot_name,
+            owner,
+        ):
+            return False
+        if not ctx.db.refresh_volume_create_lease(
+            volume.spec.svm,
+            volume.spec.name,
+            owner,
+            require_ready_svm=True,
+        ):
             return False
         return extend_create_lease(volume.status, owner)
 
     with create_lease_heartbeat(refresh):
-        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, snapshot_size_gib)
+        return _run_clone_volume_steps(ctx, volume, source_volume, snapshot_name, snapshot_size_gib, snapshot_lv)
 
 
 def _run_clone_volume_steps(
@@ -392,21 +470,21 @@ def _run_clone_volume_steps(
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
+    snapshot_lv: str,
 ) -> Volume:
     create_owner = volume.status.create_owner
     spec = volume.spec
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
     export_dir = cfg["export_dir"]
-    snap_lv = snapshot_lv_name(spec.svm, source_volume, snapshot_name)
-    new_lv = volume_lv_name(spec.svm, spec.name)
+    new_lv = volume.status.lv_name or volume_lv_name(spec.svm, spec.name)
+    volume.status.lv_name = new_lv
     clone_lv_path = f"/dev/{vg_name}/{new_lv}"
     mount_path = volume.status.mount_path or f"{export_dir}/{spec.svm}/{spec.name}"
 
     if volume.status.lv_created and not ctx.adapters.lvm.lv_exists(vg_name, new_lv):
         volume.status.lv_created = False
         volume.status.lv_path = None
-        volume.status.lv_name = None
         volume.status.fs_formatted = False
         volume.status.mounted = False
         volume.status.mount_path = None
@@ -417,7 +495,7 @@ def _run_clone_volume_steps(
             clone_lv_path = create_snapshot_lv_or_accept_existing(
                 ctx.adapters.lvm,
                 vg_name,
-                snap_lv,
+                snapshot_lv,
                 new_lv,
             )
             volume.status.lv_created = True
@@ -528,7 +606,14 @@ def _resume_snapshot_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dic
 
 def _reconcile_snapshot_create(ctx: Any, snapshot: Snapshot, owner: str) -> Snapshot:
     def refresh() -> bool:
-        if not ctx.db.refresh_snapshot_create_lease(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name, owner):
+        if not ctx.db.refresh_snapshot_create_lease(
+            snapshot.spec.svm,
+            snapshot.spec.volume,
+            snapshot.spec.name,
+            owner,
+            require_ready_volume=True,
+            require_ready_svm=True,
+        ):
             return False
         return extend_create_lease(snapshot.status, owner)
 

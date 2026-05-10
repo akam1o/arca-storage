@@ -144,6 +144,22 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         self._pool_stats_cache_ttl: int = 300  # 5 minutes TTL
         self._pool_stats_lock = threading.Lock()
 
+    def _get_api_auth_config(self):
+        auth_type = self.configuration.arca_storage_api_auth_type or "token"
+        api_token = self.configuration.arca_storage_api_token
+
+        if auth_type not in ("token", "none"):
+            raise manila_exception.ManilaException(
+                "arca_storage_api_auth_type must be 'token' or 'none'"
+            )
+        if auth_type == "token" and not api_token:
+            raise manila_exception.ManilaException(
+                "arca_storage_api_token must be set when "
+                "arca_storage_api_auth_type is 'token'"
+            )
+
+        return auth_type, api_token
+
     @property
     def driver_handles_share_servers(self):
         """Driver does not manage share servers.
@@ -178,14 +194,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     "arca_storage_api_endpoint must be set"
                 )
 
+            auth_type, api_token = self._get_api_auth_config()
+
             # Initialize ARCA Storage API client
             self.arca_client = arca_client.ArcaManilaClient(
                 api_endpoint=self.configuration.arca_storage_api_endpoint,
                 timeout=self.configuration.arca_storage_api_timeout,
                 retry_count=self.configuration.arca_storage_api_retry_count,
                 verify_ssl=self.configuration.arca_storage_verify_ssl,
-                auth_type=self.configuration.arca_storage_api_auth_type,
-                api_token=self.configuration.arca_storage_api_token,
+                auth_type=auth_type,
+                api_token=api_token,
                 ca_bundle=self.configuration.arca_storage_api_ca_bundle,
                 client_cert=self.configuration.arca_storage_api_client_cert,
                 client_key=self.configuration.arca_storage_api_client_key,
@@ -942,6 +960,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 return svm_name
 
         if strategy == "shared":
+            svm_name = self._get_svm_from_backend_volume(volume_name)
+            if svm_name:
+                self._warn_if_metadata_svm_ignored(
+                    metadata_svm,
+                    svm_name,
+                    "backend volume mapping",
+                )
+                return svm_name
+
             LOG.debug(
                 "snapshot['share'] not available for snapshot %s, "
                 "using shared strategy SVM",
@@ -1586,17 +1613,18 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         )
 
         try:
-            # Get parent share to determine SVM
+            strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
             if not parent_share:
                 parent_share = snapshot.get("share")
-            if not parent_share:
-                raise manila_exception.ShareBackendException(
-                    f"Parent share not found for snapshot {snapshot_id}"
-                )
 
             # For per_project strategy, verify new share is in same project as parent
-            strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
             if strategy == "per_project":
+                if not parent_share:
+                    raise manila_exception.ManilaException(
+                        f"Cannot verify project isolation for per_project strategy: "
+                        f"parent share not found for snapshot {snapshot_id}."
+                    )
+
                 parent_project_id = parent_share.get("project_id")
                 new_project_id = share.get("project_id")
 
@@ -1616,7 +1644,17 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                         f"Create share from snapshot only within the same project."
                     )
 
-            svm_name = self._get_svm_for_share(parent_share)
+                svm_name = self._get_svm_for_share(parent_share)
+            elif parent_share:
+                try:
+                    svm_name = self._get_svm_for_share(parent_share)
+                except Exception:
+                    if strategy != "manual":
+                        raise
+                    svm_name = self._get_svm_for_snapshot(snapshot, parent_volume_name)
+            else:
+                svm_name = self._get_svm_for_snapshot(snapshot, parent_volume_name)
+
             if strategy == "manual":
                 target_svm_name = self._get_svm_for_share(share)
                 if target_svm_name != svm_name:

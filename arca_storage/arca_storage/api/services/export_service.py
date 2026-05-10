@@ -22,6 +22,7 @@ from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgume
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
+from arca_storage.api.services.svm_service import require_svm_ready_record
 from arca_storage.api.services.volume_service import require_volume_ready_record
 
 
@@ -32,8 +33,10 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     client = normalize_ip_cidr(export_data.client)
 
     ctx = get_context()
-    if not ctx.db.get_svm(export_data.svm):
+    svm_record = ctx.db.get_svm(export_data.svm)
+    if not svm_record:
         raise NotFoundError("SVM", export_data.svm)
+    require_svm_ready_record(svm_record, export_data.svm)
     volume_record = ctx.db.get_volume(export_data.svm, export_data.volume)
     if not volume_record:
         raise NotFoundError("Volume", f"{export_data.svm}/{export_data.volume}")
@@ -57,6 +60,7 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
             owner,
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
+            require_ready_svm=True,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_export_create(ctx, acquired, owner)
@@ -128,7 +132,7 @@ def remove_internal_export(svm: str, volume: str, client: str) -> None:
 
 def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
     ctx = get_context()
-    record = ctx.db.get_export(svm, volume, client)
+    record = ctx.db.reserve_export_delete(svm, volume, client)
     if not record:
         raise NotFoundError("Export", f"{svm}/{volume}/{client}")
 
@@ -137,7 +141,6 @@ def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
         spec=ExportSpec.model_validate(record["spec"]),
         status=ExportStatus.model_validate(record["status"]),
     )
-    export.status.phase = Phase.DELETING
     result = ctx.export_reconciler.reconcile(export)
     if result.status.phase == Phase.FAILED:
         raise InternalError(
@@ -246,7 +249,13 @@ def _resume_export_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
 
 def _reconcile_export_create(ctx: Any, export: Export, owner: str) -> Export:
     def refresh() -> bool:
-        if not ctx.db.refresh_export_create_lease(export.spec.svm, export.spec.volume, export.spec.client, owner):
+        if not ctx.db.refresh_export_create_lease(
+            export.spec.svm,
+            export.spec.volume,
+            export.spec.client,
+            owner,
+            require_ready_svm=True,
+        ):
             return False
         return extend_create_lease(export.status, owner)
 

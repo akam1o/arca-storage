@@ -4,10 +4,15 @@ Pacemaker resource management adapter.
 
 from __future__ import annotations
 
+import re
 from typing import Optional, Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.cli.lib.netns import make_vlan_ifname
+
+_RESOURCE_ATTR_RE = re.compile(
+    r"""(?:^|\s)(?P<name>[\w-]+)=(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>\S+))"""
+)
 
 
 @runtime_checkable
@@ -27,6 +32,7 @@ class PacemakerAdapter(Protocol):
         mtu: int,
         parent_if: str,
         vg_name: str,
+        filesystem_lv_name: Optional[str],
         create_filesystem: bool,
         drbd_resource_name: str,
         enforce_drbd_constraints: bool,
@@ -58,6 +64,7 @@ class SubprocessPacemakerAdapter:
         mtu: int = 1500,
         parent_if: str = "bond0",
         vg_name: str = "vg_pool_01",
+        filesystem_lv_name: Optional[str] = None,
         create_filesystem: bool = True,
         drbd_resource_name: str = "r0",
         enforce_drbd_constraints: bool = True,
@@ -73,18 +80,20 @@ class SubprocessPacemakerAdapter:
 
         # Filesystem resource
         fs_resource = f"fs_{svm_name}"
-        if create_filesystem and not self.resource_exists(fs_resource):
-            device = f"/dev/{vg_name}/vol_{svm_name}"
-            run_cmd(
-                [
-                    "pcs", "resource", "create", fs_resource,
-                    "ocf:heartbeat:Filesystem",
-                    f"device={device}", f"directory={mount_path}", "fstype=xfs",
-                    "op", "monitor", "interval=10s",
-                ],
-                timeout=self._timeout,
-            )
         if create_filesystem:
+            device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
+            if not self.resource_exists(fs_resource):
+                run_cmd(
+                    [
+                        "pcs", "resource", "create", fs_resource,
+                        "ocf:heartbeat:Filesystem",
+                        f"device={device}", f"directory={mount_path}", "fstype=xfs",
+                        "op", "monitor", "interval=10s",
+                    ],
+                    timeout=self._timeout,
+                )
+            elif filesystem_lv_name:
+                self._ensure_resource_attribute(fs_resource, "device", device)
             resources.append(fs_resource)
 
         if vlan_id is None:
@@ -188,6 +197,17 @@ class SubprocessPacemakerAdapter:
             result = run_cmd(["pcs", "resource", "show", group_name], timeout=self._timeout, check=False)
         return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
 
+    def _resource_text(self, name: str) -> str:
+        result = run_cmd(["pcs", "resource", "config", name], timeout=self._timeout, check=False)
+        if result.returncode != 0:
+            result = run_cmd(["pcs", "resource", "show", name], timeout=self._timeout, check=False)
+        return (result.stdout or "") + "\n" + (result.stderr or "")
+
+    def _ensure_resource_attribute(self, resource: str, name: str, value: str) -> None:
+        if _parse_resource_attribute(self._resource_text(resource), name) == value:
+            return
+        run_cmd(["pcs", "resource", "update", resource, f"{name}={value}"], timeout=self._timeout)
+
     def _ensure_group_members(self, group_name: str, resources: list[str]) -> None:
         members = self._group_members(group_name)
         for index, resource in enumerate(resources):
@@ -239,6 +259,7 @@ class FakePacemakerAdapter:
         mtu: int = 1500,
         parent_if: str = "bond0",
         vg_name: str = "vg_pool_01",
+        filesystem_lv_name: Optional[str] = None,
         create_filesystem: bool = True,
         drbd_resource_name: str = "r0",
         enforce_drbd_constraints: bool = True,
@@ -248,7 +269,16 @@ class FakePacemakerAdapter:
         resources = []
         if create_filesystem:
             fs = f"fs_{svm_name}"
-            self.resources.setdefault(fs, {"type": "Filesystem"})
+            device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
+            resource = self.resources.setdefault(
+                fs,
+                {
+                    "type": "Filesystem",
+                    "device": device,
+                },
+            )
+            if filesystem_lv_name:
+                resource["device"] = device
             resources.append(fs)
         if vlan_id is None:
             ip_res = f"ip_{svm_name}"
@@ -304,6 +334,13 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
         if in_target_group and "(" in line:
             _append_unique(members, line.split()[0])
     return members
+
+
+def _parse_resource_attribute(text: str, name: str) -> Optional[str]:
+    for match in _RESOURCE_ATTR_RE.finditer(text):
+        if match.group("name") == name:
+            return match.group("double") or match.group("single") or match.group("bare") or ""
+    return None
 
 
 def _append_unique(members: list[str], resource: str) -> None:

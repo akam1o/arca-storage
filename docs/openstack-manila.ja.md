@@ -41,9 +41,9 @@ arca_storage_api_timeout = 30
 arca_storage_api_retry_count = 3
 arca_storage_verify_ssl = true
 
-# 認証（任意）
-# arca_storage_api_auth_type = token
-# arca_storage_api_token = <token>
+# 認証
+arca_storage_api_auth_type = token
+arca_storage_api_token = <token>
 #
 # （任意）TLS 設定
 # arca_storage_api_ca_bundle = /etc/ssl/certs/ca-bundle.crt
@@ -179,6 +179,9 @@ Manila 側から差分（add_rules/delete_rules）が渡されないケースに
 ## 運用メモ
 
 - `manila-share` から ARCA REST API に到達できる必要があります。
+- ARCA REST API はデフォルトで bearer token を要求します。loopback のみの開発用途では
+  API サービス側で `ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK=true` を明示できますが、
+  reverse proxy、tunnel、port-forward などで listener を外部公開する場合は使わないでください。
 - NFS クライアント（ユーザー/計算ノード）が SVM VIP と export パスに到達できる必要があります。
 - `per_project` のアドレス設計: 各プールが扱える project 数は `(end_ip - start_ip + 1)`、総容量はプールの合計です。
 

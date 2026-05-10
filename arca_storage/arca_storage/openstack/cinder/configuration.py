@@ -65,11 +65,12 @@ def _get_arca_storage_opts():
         ),
         cfg.StrOpt(
             "arca_storage_api_auth_type",
-            default="none",
+            default="token",
             choices=["token", "none"],
             help=(
                 "Authentication type for ARCA Storage API: "
-                "'token' (Bearer token), 'none' (no auth)"
+                "'token' (Bearer token), 'none' (only for explicitly unauthenticated "
+                "loopback/development API servers)"
             ),
         ),
         cfg.StrOpt(

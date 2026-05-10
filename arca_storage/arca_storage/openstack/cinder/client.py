@@ -16,8 +16,6 @@ from .exceptions import (
     ArcaAPIError,
     ArcaAPITimeout,
     ArcaExportError,
-    ArcaSnapshotAlreadyExists,
-    ArcaSnapshotNotFound,
     ArcaSVMNotFound,
     ArcaVolumeAlreadyExists,
     ArcaVolumeNotFound,
@@ -463,6 +461,11 @@ class ArcaStorageClient:
         if not svms:
             raise ArcaSVMNotFound(f"SVM {name} not found")
         return svms[0]
+
+    def get_svm_capacity(self, svm: str) -> Dict[str, Any]:
+        """Get SVM capacity statistics."""
+        response = self._make_request("GET", f"/v1/svms/{svm}/capacity")
+        return response.get("data", {}).get("capacity", {})
 
     # QoS operations
 

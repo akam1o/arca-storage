@@ -24,25 +24,25 @@ type ArcaContentSource struct {
 
 	// SourceVolumeID is required when type=Volume.
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Pattern=`^pvc-[a-f0-9]{16}$`
-	// +kubebuilder:validation:MinLength=20
-	// +kubebuilder:validation:MaxLength=20
+	// +kubebuilder:validation:Pattern=`^pvc-[a-f0-9]{32}$`
+	// +kubebuilder:validation:MinLength=36
+	// +kubebuilder:validation:MaxLength=36
 	SourceVolumeID *string `json:"sourceVolumeID,omitempty"`
 
 	// SourceSnapshotID is required when type=Snapshot.
 	// +kubebuilder:validation:Optional
-	// +kubebuilder:validation:Pattern=`^[a-f0-9]{16}$`
-	// +kubebuilder:validation:MinLength=16
-	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{32}$`
+	// +kubebuilder:validation:MinLength=32
+	// +kubebuilder:validation:MaxLength=32
 	SourceSnapshotID *string `json:"sourceSnapshotID,omitempty"`
 }
 
 type ArcaVolumeSpec struct {
 	// VolumeID is the ARCA backend identifier for this volume.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^pvc-[a-f0-9]{16}$`
-	// +kubebuilder:validation:MinLength=20
-	// +kubebuilder:validation:MaxLength=20
+	// +kubebuilder:validation:Pattern=`^pvc-[a-f0-9]{32}$`
+	// +kubebuilder:validation:MinLength=36
+	// +kubebuilder:validation:MaxLength=36
 	VolumeID string `json:"volumeID"`
 
 	// Name is a human-friendly name for the volume (distinct from metadata.name).
@@ -133,9 +133,9 @@ type ArcaVolumeList struct {
 type ArcaSnapshotSpec struct {
 	// SnapshotID is the ARCA backend identifier for this snapshot.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^[a-f0-9]{16}$`
-	// +kubebuilder:validation:MinLength=16
-	// +kubebuilder:validation:MaxLength=16
+	// +kubebuilder:validation:Pattern=`^[a-f0-9]{32}$`
+	// +kubebuilder:validation:MinLength=32
+	// +kubebuilder:validation:MaxLength=32
 	SnapshotID string `json:"snapshotID"`
 
 	// Name is a human-friendly name for the snapshot (distinct from metadata.name).
@@ -147,9 +147,9 @@ type ArcaSnapshotSpec struct {
 
 	// SourceVolumeID is the backend identifier of the volume this snapshot was taken from.
 	// +kubebuilder:validation:Required
-	// +kubebuilder:validation:Pattern=`^pvc-[a-f0-9]{16}$`
-	// +kubebuilder:validation:MinLength=20
-	// +kubebuilder:validation:MaxLength=20
+	// +kubebuilder:validation:Pattern=`^pvc-[a-f0-9]{32}$`
+	// +kubebuilder:validation:MinLength=36
+	// +kubebuilder:validation:MaxLength=36
 	SourceVolumeID string `json:"sourceVolumeID"`
 
 	// SourceVolumePath is the backend path of the volume this snapshot was taken from.

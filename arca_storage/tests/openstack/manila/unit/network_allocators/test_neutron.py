@@ -1,6 +1,6 @@
 """Unit tests for NeutronAllocator."""
 
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
 

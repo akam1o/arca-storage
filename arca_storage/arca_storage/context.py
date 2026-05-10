@@ -8,7 +8,6 @@ manually everywhere.
 
 from __future__ import annotations
 
-from pathlib import Path
 from typing import Optional
 
 from arca_storage.adapters.ganesha import SubprocessGaneshaAdapter
@@ -39,7 +38,7 @@ class AppContext:
             xfs=SubprocessXFSAdapter(timeout=t.subprocess_default),
             netns=SubprocessNetNSAdapter(timeout=t.subprocess_default),
             pacemaker=SubprocessPacemakerAdapter(timeout=t.pacemaker_operation),
-            ganesha=SubprocessGaneshaAdapter(timeout=t.subprocess_default),
+            ganesha=SubprocessGaneshaAdapter(timeout=t.subprocess_default, settings=self.settings),
             systemd=SubprocessSystemdAdapter(timeout=t.subprocess_default),
         )
 

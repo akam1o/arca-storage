@@ -58,7 +58,7 @@ Controller は `ArcaVolume` と `ArcaSnapshot` を永続メタデータストア
 
 ### 1. Image を決める
 
-素のマニフェストは `csi-arca-storage:latest` を使います。production Kustomize overlay は `ghcr.io/akam1o/csi-arca-storage:v1.0.0` を使います。
+素のマニフェストと production Kustomize overlay は `ghcr.io/akam1o/csi-arca-storage:v1.0.0` を使います。
 
 独自 image を使う場合:
 
@@ -82,6 +82,7 @@ Driver は Pod 内の `/etc/csi-arca-storage/config.yaml` を読みます。Kube
 arca:
   base_url: "https://arca-api.example.com"
   timeout: "30s"
+  auth_type: "token"
   auth_token: ""  # Secret 由来の ARCA_AUTH_TOKEN を推奨
   tls:
     ca_cert_path: ""
@@ -107,6 +108,7 @@ driver:
 
 - `arca.base_url`、少なくとも 1 つの `network.pools[].cidr`、`driver.endpoint` は必須です。
 - `arca.timeout` は省略時 `30s` です。
+- `arca.auth_type` は省略時 `token` です。`auth_type` を明示的に `none` にしない限り、`arca.auth_token` が必須です。
 - `network.mtu` は省略時 `1500` です。
 - `ARCA_AUTH_TOKEN` が設定されている場合、`arca.auth_token` を上書きします。
 - `CSI_ENDPOINT` が設定されている場合、`driver.endpoint` を上書きします。
@@ -158,6 +160,7 @@ data:
     arca:
       base_url: "https://arca-api.example.com"
       timeout: "30s"
+      auth_type: "token"
       auth_token: ""
       tls:
         ca_cert_path: ""
@@ -208,17 +211,14 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ## 方法2: Kustomize
 
-本番や環境別の繰り返し可能なデプロイでは Kustomize を推奨します。Kustomize base は `controller-statefulset.yaml` を使い、ConfigMap / Secret は generator で作成します。
-
-現在の Kustomize base は `deploy/` 配下の共有 manifest を base ディレクトリ外から再利用しています。そのため plain `kubectl apply -k` では load restrictor により失敗します。`kubectl kustomize --load-restrictor LoadRestrictionsNone ... | kubectl apply -f -` を使ってください。
+本番や環境別の繰り返し可能なデプロイでは Kustomize を推奨します。Kustomize base は `controller-statefulset.yaml` を使います。base は `config.yaml` から ConfigMap を生成し、環境別 overlay がその ConfigMap を置き換えて Secret を生成します。
 
 ### Development overlay
 
 `deploy/kustomize/overlays/development/config.yaml` を編集してから適用します。
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/development | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/development
 ```
 
 Development overlay の特徴:
@@ -238,8 +238,7 @@ cp secrets.env.example secrets.env
 printf 'auth-token=%s\n' '<your-production-token>' > secrets.env
 cd ../../../..
 
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 ```
 
 Production overlay の特徴:
@@ -438,8 +437,7 @@ kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 Kustomize:
 
 ```bash
-kubectl kustomize --load-restrictor LoadRestrictionsNone \
-  deploy/kustomize/overlays/production | kubectl apply -f -
+kubectl apply -k deploy/kustomize/overlays/production
 kubectl rollout restart statefulset/csi-arca-storage-controller -n kube-system
 kubectl rollout restart daemonset/csi-arca-storage-node -n kube-system
 ```

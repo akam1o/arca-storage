@@ -25,6 +25,36 @@ class TestArcaStorageManilaDriverSharedStrategy:
     def test_do_setup_checks_default_svm_exists(self, driver, mock_arca_client):
         mock_arca_client.get_svm.assert_called_with("test-svm")
 
+    def test_do_setup_passes_token_auth_to_api_client(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
+        with patch(
+            "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
+        ) as mock_client_class:
+            mock_client_class.return_value = mock_arca_client
+
+            drv = manila_driver.ArcaStorageManilaDriver()
+            drv.configuration = mock_manila_driver_config
+            drv.configuration.arca_storage_svm_strategy = "shared"
+            drv.configuration.arca_storage_default_svm = "test-svm"
+            drv.do_setup(Mock())
+
+        assert mock_client_class.call_args.kwargs["auth_type"] == "token"
+        assert mock_client_class.call_args.kwargs["api_token"] == "test-token"
+
+    def test_do_setup_rejects_token_auth_without_token(
+        self, mock_manila_driver_config
+    ):
+        drv = manila_driver.ArcaStorageManilaDriver()
+        drv.configuration = mock_manila_driver_config
+        drv.configuration.arca_storage_api_token = None
+
+        with pytest.raises(
+            manila_driver.manila_exception.ManilaException,
+            match="arca_storage_api_token",
+        ):
+            drv.do_setup(Mock())
+
     def test_update_share_stats_includes_pool_capabilities(self, driver):
         stats = driver._update_share_stats()
         assert stats["storage_protocol"] == "NFS"
@@ -112,6 +142,40 @@ class TestArcaStorageManilaDriverSharedStrategy:
             svm="test-svm",
             volume="share-share-123",
         )
+
+    def test_delete_snapshot_without_share_uses_backend_svm(self, driver, mock_arca_client):
+        driver.configuration.arca_storage_default_svm = "target-svm"
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "source-svm"},
+        ]
+        snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {"arca_svm_name": "target-svm"}}
+
+        driver.delete_snapshot(Mock(), snapshot, None)
+
+        mock_arca_client.delete_snapshot.assert_called_once_with(
+            name="snapshot-snapshot-123",
+            svm="source-svm",
+            volume="share-share-123",
+        )
+
+    def test_create_share_from_snapshot_without_share_uses_backend_svm(self, driver, mock_arca_client):
+        driver.configuration.arca_storage_default_svm = "target-svm"
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "source-svm"},
+        ]
+        snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {"arca_svm_name": "target-svm"}}
+        new_share = {"id": "share-456", "size": 10, "project_id": "test-project-id", "metadata": {}}
+
+        driver.create_share_from_snapshot(Mock(), new_share, snapshot, None)
+
+        mock_arca_client.clone_volume_from_snapshot.assert_called_once_with(
+            name="share-share-456",
+            svm="source-svm",
+            source_volume="share-share-123",
+            snapshot_name="snapshot-snapshot-123",
+            size_gib=10,
+        )
+        assert new_share["metadata"]["arca_svm_name"] == "source-svm"
 
     def test_create_share_from_snapshot_persists_svm_metadata(self, driver, mock_arca_client, mock_manila_snapshot):
         new_share = {"id": "share-456", "size": 10, "project_id": "test-project-id", "metadata": {}}

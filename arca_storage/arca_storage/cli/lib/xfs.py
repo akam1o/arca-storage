@@ -7,6 +7,14 @@ import subprocess
 from typing import List, Optional
 
 
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+
+
+def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    return subprocess.run(cmd, **kwargs)
+
+
 def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
     """
     Format a device with XFS filesystem.
@@ -23,7 +31,7 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
         raise RuntimeError(f"Device {device} does not exist")
     
     # Check if already formatted
-    result = subprocess.run(
+    result = _run(
         ["blkid", device],
         capture_output=True,
         text=True,
@@ -52,7 +60,7 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
     
     cmd.append(device)
     
-    result = subprocess.run(
+    result = _run(
         cmd,
         capture_output=True,
         text=True,
@@ -78,7 +86,7 @@ def mount_xfs(device: str, mount_point: str) -> None:
     os.makedirs(mount_point, exist_ok=True)
     
     # Check if already mounted
-    result = subprocess.run(
+    result = _run(
         ["mountpoint", "-q", mount_point],
         capture_output=True,
         text=True,
@@ -98,7 +106,7 @@ def mount_xfs(device: str, mount_point: str) -> None:
         "inode64"
     ]
     
-    result = subprocess.run(
+    result = _run(
         ["mount", "-o", ",".join(mount_options), device, mount_point],
         capture_output=True,
         text=True,
@@ -120,7 +128,7 @@ def umount_xfs(mount_point: str) -> None:
         RuntimeError: If unmounting fails
     """
     # Check if mounted
-    result = subprocess.run(
+    result = _run(
         ["mountpoint", "-q", mount_point],
         capture_output=True,
         text=True,
@@ -131,7 +139,7 @@ def umount_xfs(mount_point: str) -> None:
         # Not mounted, skip
         return
     
-    result = subprocess.run(
+    result = _run(
         ["umount", mount_point],
         capture_output=True,
         text=True,
@@ -153,7 +161,7 @@ def grow_xfs(mount_point: str) -> None:
         RuntimeError: If growing fails
     """
     # Check if mounted
-    result = subprocess.run(
+    result = _run(
         ["mountpoint", "-q", mount_point],
         capture_output=True,
         text=True,
@@ -164,7 +172,7 @@ def grow_xfs(mount_point: str) -> None:
         raise RuntimeError(f"Mount point {mount_point} is not mounted")
     
     # Grow filesystem
-    result = subprocess.run(
+    result = _run(
         ["xfs_growfs", mount_point],
         capture_output=True,
         text=True,

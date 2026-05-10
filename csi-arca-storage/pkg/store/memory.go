@@ -22,6 +22,9 @@ type VolumeInfo struct {
 	CreatedAt     time.Time
 	ContentSource *csi.VolumeContentSource
 	ReadyToUse    *bool
+
+	TemporaryCloneSnapshot         string
+	TemporaryCloneSourceVolumePath string
 }
 
 // SnapshotInfo represents snapshot metadata
@@ -139,7 +142,7 @@ func (s *MemoryStore) ListVolumes(startingToken string, maxEntries int) ([]*Volu
 	}
 
 	for _, volumeID := range volumeIDs[start:end] {
-		result = append(result, s.volumes[volumeID])
+		result = append(result, deepCopyVolumeInfo(s.volumes[volumeID]))
 	}
 
 	return result, nextToken, nil
@@ -157,7 +160,7 @@ func (s *MemoryStore) CreateSnapshot(info *SnapshotInfo) error {
 	if info.CreatedAt.IsZero() {
 		info.CreatedAt = time.Now()
 	}
-	s.snapshots[info.SnapshotID] = info
+	s.snapshots[info.SnapshotID] = deepCopySnapshotInfo(info)
 	return nil
 }
 
@@ -185,7 +188,7 @@ func (s *MemoryStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 		return nil, fmt.Errorf("%w: snapshot %s", ErrNotFound, snapshotID)
 	}
 
-	return info, nil
+	return deepCopySnapshotInfo(info), nil
 }
 
 // DeleteSnapshot removes snapshot metadata
@@ -230,7 +233,7 @@ func (s *MemoryStore) ListSnapshots(sourceVolumeID, startingToken string, maxEnt
 	}
 
 	for _, snapshotID := range snapshotIDs[start:end] {
-		result = append(result, s.snapshots[snapshotID])
+		result = append(result, deepCopySnapshotInfo(s.snapshots[snapshotID]))
 	}
 
 	return result, nextToken, nil

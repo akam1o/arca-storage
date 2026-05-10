@@ -199,8 +199,8 @@ class StandaloneAllocator(NetworkAllocator):
                 # IP range is mandatory (must contain "|")
                 if "|" not in ip_part:
                     raise ValueError(
-                        f"IP range is required. Use format '<ip_cidr>|<start_ip>-<end_ip>:<vlan_id>'. "
-                        f"Example: '192.168.100.0/24|192.168.100.10-192.168.100.200:100'"
+                        "IP range is required. Use format '<ip_cidr>|<start_ip>-<end_ip>:<vlan_id>'. "
+                        "Example: '192.168.100.0/24|192.168.100.10-192.168.100.200:100'"
                     )
 
                 # Parse "ip_cidr|start_ip-end_ip"
@@ -240,7 +240,7 @@ class StandaloneAllocator(NetworkAllocator):
                 # Validate IPs are IPv4
                 if start_ip.version != 4 or end_ip.version != 4:
                     raise ValueError(
-                        f"Only IPv4 addresses are supported in range"
+                        "Only IPv4 addresses are supported in range"
                     )
 
                 # Validate IPs are within CIDR
@@ -265,7 +265,7 @@ class StandaloneAllocator(NetworkAllocator):
 
                 if num_hosts <= 0:
                     raise ValueError(
-                        f"IP pool has no usable host addresses"
+                        "IP pool has no usable host addresses"
                     )
 
                 # Infer gateway from CIDR (typically first IP in subnet)

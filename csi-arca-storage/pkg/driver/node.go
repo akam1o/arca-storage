@@ -301,6 +301,9 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
 	}
+	if err := d.validateVolumeCapabilities([]*csi.VolumeCapability{req.GetVolumeCapability()}); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capability: %v", err)
+	}
 
 	// Extract volume context
 	volumeContext := req.GetVolumeContext()
@@ -431,7 +434,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	klog.V(4).Infof("Unstaging volume %s from %s", volumeID, stagingTargetPath)
 
 	// Get SVM name from NodeState
-	svmName, err := d.nodeState.GetSVMForVolume(volumeID)
+	svmName, err := d.nodeState.GetSVMForVolumeFresh(volumeID)
 	if err != nil {
 		klog.Warningf("Volume %s not found in node state: %v", volumeID, err)
 		// Continue with unmount attempt
@@ -449,6 +452,9 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 			// Clean up NodeState
 			if err := d.nodeState.RemoveVolumeStaging(volumeID); err != nil {
 				klog.Warningf("Failed to remove volume staging from node state: %v", err)
+			}
+			if svmName != "" {
+				d.cleanupUnusedSVMMount(ctx, svmName)
 			}
 			return &csi.NodeUnstageVolumeResponse{}, nil
 		}
@@ -508,6 +514,9 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
+	}
+	if err := d.validateVolumeCapabilities([]*csi.VolumeCapability{req.GetVolumeCapability()}); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capability: %v", err)
 	}
 
 	klog.V(4).Infof("Publishing volume %s from %s to %s", volumeID, stagingTargetPath, targetPath)

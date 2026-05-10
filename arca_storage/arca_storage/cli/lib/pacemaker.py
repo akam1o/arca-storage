@@ -2,14 +2,26 @@
 Pacemaker resource management functions.
 """
 
+import re
 import subprocess
 from typing import Optional, Sequence
 
 from arca_storage.cli.lib.netns import make_vlan_ifname
 
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+_RESOURCE_ATTR_RE = re.compile(
+    r"""(?:^|\s)(?P<name>[\w-]+)=(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>\S+))"""
+)
+
 
 def _run(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(cmd), capture_output=True, text=True, check=False)
+    return subprocess.run(
+        list(cmd),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 def _resource_exists(name: str) -> bool:
@@ -54,6 +66,13 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
     return members
 
 
+def _parse_resource_attribute(text: str, name: str) -> Optional[str]:
+    for match in _RESOURCE_ATTR_RE.finditer(text):
+        if match.group("name") == name:
+            return match.group("double") or match.group("single") or match.group("bare") or ""
+    return None
+
+
 def _append_unique(members: list[str], resource: str) -> None:
     resource = resource.strip().rstrip(":")
     if resource and resource not in members:
@@ -75,6 +94,21 @@ def _group_members(group_name: str) -> list[str]:
     if result.returncode != 0:
         result = _run(["pcs", "resource", "show", group_name])
     return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+
+
+def _resource_text(name: str) -> str:
+    result = _run(["pcs", "resource", "config", name])
+    if result.returncode != 0:
+        result = _run(["pcs", "resource", "show", name])
+    return (result.stdout or "") + "\n" + (result.stderr or "")
+
+
+def _ensure_resource_attribute(resource: str, name: str, value: str) -> None:
+    if _parse_resource_attribute(_resource_text(resource), name) == value:
+        return
+    result = _run(["pcs", "resource", "update", resource, f"{name}={value}"])
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to update {resource} {name}: {result.stderr.strip()}")
 
 
 def _ensure_group_members(group_name: str, resources: list[str]) -> None:
@@ -236,6 +270,7 @@ def create_group(
     mtu: int = 1500,
     parent_if: str = "bond0",
     vg_name: str = "vg_pool_01",
+    filesystem_lv_name: Optional[str] = None,
     create_filesystem: bool = True,
     drbd_resource_name: str = "r0",
     enforce_drbd_constraints: bool = True,
@@ -254,6 +289,7 @@ def create_group(
         mtu: MTU size
         parent_if: Parent interface (default: bond0)
         vg_name: Volume group name for Filesystem resource device path
+        filesystem_lv_name: Optional logical volume name for the Filesystem resource.
         create_filesystem: Whether to create Filesystem resource (default: True)
         
     Raises:
@@ -270,26 +306,28 @@ def create_group(
 
     # Create Filesystem resource (optional)
     fs_resource = f"fs_{svm_name}"
-    if create_filesystem and not _resource_exists(fs_resource):
-        device = f"/dev/{vg_name}/vol_{svm_name}"
-        result = _run(
-            [
-                "pcs",
-                "resource",
-                "create",
-                fs_resource,
-                "ocf:heartbeat:Filesystem",
-                f"device={device}",
-                f"directory={mount_path}",
-                "fstype=xfs",
-                "op",
-                "monitor",
-                "interval=10s",
-            ]
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
     if create_filesystem:
+        device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
+        if not _resource_exists(fs_resource):
+            result = _run(
+                [
+                    "pcs",
+                    "resource",
+                    "create",
+                    fs_resource,
+                    "ocf:heartbeat:Filesystem",
+                    f"device={device}",
+                    f"directory={mount_path}",
+                    "fstype=xfs",
+                    "op",
+                    "monitor",
+                    "interval=10s",
+                ]
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
+        elif filesystem_lv_name:
+            _ensure_resource_attribute(fs_resource, "device", device)
         resources.append(fs_resource)
 
     if vlan_id is None:

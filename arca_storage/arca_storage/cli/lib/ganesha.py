@@ -13,35 +13,65 @@ from typing import Dict, List, Optional, Sequence
 
 from jinja2 import Template
 
-from arca_storage.config import load_settings
 from arca_storage.cli.lib.state import get_state_dir
+from arca_storage.config import ArcaSettings, load_settings
 
 TEMPLATE_VERSION = "1.1.0"
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+_GANESHA_SEC_TYPES = {"sys", "krb5", "krb5i", "krb5p"}
+_GANESHA_ACCESS_TYPES = {"RW", "RO"}
+_GANESHA_SQUASH_TYPES = {"Root_Squash", "No_Root_Squash"}
 
 
 def _template_path() -> Path:
     # arca_storage/cli/lib/ganesha.py -> arca_storage/templates/ganesha.conf.j2
     return Path(__file__).resolve().parents[2] / "templates" / "ganesha.conf.j2"
 
-def _config_snapshot_dir() -> Path:
+def _config_snapshot_dir(settings: Optional[ArcaSettings] = None) -> Path:
     # Keep snapshots under the same persistent state directory as exports.*.json.
+    if settings is not None:
+        return Path(settings.state.runtime_dir) / "config"
     return get_state_dir() / "config"
 
 
-def _snapshot_path(svm_name: str, config_version: str) -> Path:
-    return _config_snapshot_dir() / f"ganesha.{svm_name}.{config_version}.conf"
+def _snapshot_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+    return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.conf"
 
-def _snapshot_meta_path(svm_name: str, config_version: str) -> Path:
-    return _config_snapshot_dir() / f"ganesha.{svm_name}.{config_version}.json"
+def _snapshot_meta_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+    return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.json"
 
 
 def _render_sectype(value: object) -> str:
     # Ganesha expects SecType as tokens (e.g. "sys" or "sys, krb5").
     if isinstance(value, list):
-        tokens = [str(v).strip() for v in value if str(v).strip()]
-        return ", ".join(tokens) if tokens else "sys"
+        raw_tokens = [str(v).strip().lower() for v in value if str(v).strip()]
+    else:
+        raw_tokens = [token.strip().lower() for token in str(value).split(",") if token.strip()]
+
+    tokens = raw_tokens or ["sys"]
+    unsupported = [token for token in tokens if token not in _GANESHA_SEC_TYPES]
+    if unsupported:
+        raise ValueError(f"Unsupported Ganesha SecType value(s): {unsupported}")
+    return ", ".join(tokens)
+
+
+def _ganesha_quoted_string(value: object, field: str) -> str:
+    if value is None:
+        raise ValueError(f"Missing Ganesha {field}")
+    raw = str(value)
+    if not raw:
+        raise ValueError(f"Missing Ganesha {field}")
+    invalid = [ch for ch in raw if ch in {'"', "\\"} or ord(ch) < 0x20 or ord(ch) == 0x7F]
+    if invalid:
+        raise ValueError(f"Unsafe Ganesha {field}: contains unsupported characters")
+    return raw
+
+
+def _ganesha_token(value: object, field: str, allowed: set[str]) -> str:
     raw = str(value).strip()
-    return raw or "sys"
+    if raw not in allowed:
+        raise ValueError(f"Unsupported Ganesha {field}: {raw!r}")
+    return raw
 
 
 def _stable_config_version(
@@ -118,7 +148,13 @@ def _write_json_if_changed(path: Path, data: object) -> None:
     _write_if_changed(path, content)
 
 
-def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str] = None) -> str:
+def render_config(
+    svm_name: str,
+    exports: List[Dict],
+    *,
+    bind_addr: Optional[str] = None,
+    settings: Optional[ArcaSettings] = None,
+) -> str:
     """
     Render ganesha.conf configuration file.
     
@@ -129,7 +165,7 @@ def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str
     Returns:
         Path to the generated config file
     """
-    cfg = load_settings()
+    cfg = settings or load_settings()
     config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
     
@@ -155,7 +191,17 @@ def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str
     exports_render: List[Dict] = []
     for e in exports_sorted:
         sec = e.get("sec", ["sys"])
-        exports_render.append({**e, "sec_render": _render_sectype(sec)})
+        exports_render.append(
+            {
+                **e,
+                "path": _ganesha_quoted_string(e.get("path"), "Path"),
+                "pseudo": _ganesha_quoted_string(e.get("pseudo"), "Pseudo"),
+                "client": _ganesha_quoted_string(e.get("client"), "Clients"),
+                "access": _ganesha_token(e.get("access", "RW"), "Access_Type", _GANESHA_ACCESS_TYPES),
+                "squash": _ganesha_token(e.get("squash", "Root_Squash"), "Squash", _GANESHA_SQUASH_TYPES),
+                "sec_render": _render_sectype(sec),
+            }
+        )
 
     config_version = _stable_config_version(
         svm_name=svm_name,
@@ -197,11 +243,11 @@ def render_config(svm_name: str, exports: List[Dict], *, bind_addr: Optional[str
     )
 
     # Save snapshots for rollback purposes.
-    snapshot_dir = _config_snapshot_dir()
+    snapshot_dir = _config_snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    _write_if_changed(_snapshot_path(svm_name, config_version), config_content)
+    _write_if_changed(_snapshot_path(svm_name, config_version, snapshot_dir), config_content)
     _write_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.conf", config_content)
-    _write_json_if_changed(_snapshot_meta_path(svm_name, config_version), meta)
+    _write_json_if_changed(_snapshot_meta_path(svm_name, config_version, snapshot_dir), meta)
     _write_json_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.json", meta)
 
     _write_if_changed(config_path, config_content)
@@ -227,7 +273,8 @@ def reload(svm_name: str, *, host_network: bool = False) -> None:
         ["systemctl", "reload", f"{unit}@{svm_name}"],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        timeout=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
     )
     
     if result.returncode != 0:

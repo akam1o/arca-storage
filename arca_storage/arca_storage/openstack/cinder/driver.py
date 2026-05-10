@@ -5,6 +5,7 @@ using NFS as the transport protocol.
 """
 
 import os
+import posixpath
 from typing import Any, Dict, Optional
 
 from oslo_log import log as logging
@@ -46,6 +47,15 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
     _clone_support = True  # Enabled in Phase 2
     _replication_support = False
     _multiattach_support = False
+    _qos_extra_spec_keys = frozenset(
+        (
+            "arca_storage:read_iops_sec",
+            "arca_storage:write_iops_sec",
+            "arca_storage:total_iops_sec",
+            "arca_storage:read_bytes_sec",
+            "arca_storage:write_bytes_sec",
+        )
+    )
 
     def __init__(self, *args, **kwargs):
         """Initialize the ARCA Storage driver.
@@ -68,6 +78,27 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         # Best-effort context for snapshot operations (set in do_setup/retype)
         self._context = None
 
+    def _get_api_auth_config(self):
+        auth_type = (
+            getattr(self.configuration, "arca_storage_api_auth_type", "token")
+            or "token"
+        )
+        api_token = getattr(self.configuration, "arca_storage_api_token", None)
+
+        if auth_type not in ("token", "none"):
+            raise exception.VolumeBackendAPIException(
+                data=_("arca_storage_api_auth_type must be 'token' or 'none'")
+            )
+        if auth_type == "token" and not api_token:
+            raise exception.VolumeBackendAPIException(
+                data=_(
+                    "arca_storage_api_token must be set when "
+                    "arca_storage_api_auth_type is 'token'"
+                )
+            )
+
+        return auth_type, api_token
+
     def do_setup(self, context):
         """Perform driver setup and validation.
 
@@ -79,24 +110,30 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         Raises:
             exception.VolumeBackendAPIException: If setup fails
         """
+        self._validate_supported_svm_strategy()
+
+        auth_type = None
+        api_token = None
+        if self.configuration.arca_storage_use_api:
+            if not self.configuration.arca_storage_api_endpoint:
+                raise exception.VolumeBackendAPIException(
+                    data=_("arca_storage_api_endpoint must be set when arca_storage_use_api is True")
+                )
+            auth_type, api_token = self._get_api_auth_config()
+
         super(ArcaStorageNFSDriver, self).do_setup(context)
         self._context = context
-        self._validate_supported_svm_strategy()
 
         try:
             # Initialize ARCA Storage API client if enabled
             if self.configuration.arca_storage_use_api:
-                if not self.configuration.arca_storage_api_endpoint:
-                    raise exception.VolumeBackendAPIException(
-                        data=_("arca_storage_api_endpoint must be set when arca_storage_use_api is True")
-                    )
                 self.arca_client = arca_client.ArcaStorageClient(
                     api_endpoint=self.configuration.arca_storage_api_endpoint,
                     timeout=self.configuration.arca_storage_api_timeout,
                     retry_count=self.configuration.arca_storage_api_retry_count,
                     verify_ssl=self.configuration.arca_storage_verify_ssl,
-                    auth_type=getattr(self.configuration, "arca_storage_api_auth_type", "none"),
-                    api_token=getattr(self.configuration, "arca_storage_api_token", None),
+                    auth_type=auth_type,
+                    api_token=api_token,
                     ca_bundle=getattr(self.configuration, "arca_storage_driver_ssl_cert_path", None),
                 )
 
@@ -169,6 +206,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         LOG.info("Creating volume: %s (size=%sGB)", volume_name, volume_size)
 
+        self._apply_qos_to_volume(volume)
+
         # Track cleanup state
         cleanup_state = {
             "svm_name": None,
@@ -177,7 +216,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         }
 
         try:
-            # Determine SVM for this volume
+            # Determine SVM placement for this new volume.
             svm_name = self._get_svm_for_volume(volume)
             cleanup_state["svm_name"] = svm_name
 
@@ -199,25 +238,19 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             LOG.info("Mounted SVM export at: %s", mount_point)
 
-            # Create volume file (raw sparse file) using volume ID for unique naming
-            volume_file = arca_utils.create_volume_file(
+            # Create or adopt the raw sparse file using volume ID for unique naming.
+            volume_file, volume_file_created = arca_utils.ensure_volume_file(
                 mount_point=mount_point,
                 volume_name=f"volume-{volume_id}",  # Use volume ID, not name
                 size_gb=volume_size,
+                adopt_existing=True,
             )
-            cleanup_state["volume_file_created"] = True
+            cleanup_state["volume_file_created"] = volume_file_created
             cleanup_state["volume_file_path"] = volume_file
 
             LOG.info("Created volume file: %s", volume_file)
 
-            # Apply QoS if specified in volume type
-            self._apply_qos_to_volume(volume)
-
-            # Store provider location (per-SVM export path)
-            # Note: All volumes in same SVM share this export
-            provider_location = export_path
-
-            return {"provider_location": provider_location}
+            return self._volume_model_update(svm_name, export_path)
 
         except arca_exceptions.ArcaStorageException as e:
             msg = _("Failed to create volume %s: %s") % (volume_name, e)
@@ -246,8 +279,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         LOG.info("Deleting volume: %s (ID: %s)", volume_name, volume_id)
 
         try:
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
+            # Use the SVM recorded when the volume was created.
+            svm_name = self._get_existing_volume_svm(volume)
 
             # Get SVM-level mount point (per-SVM export architecture)
             mount_point = arca_utils.get_mount_point_for_svm(
@@ -308,8 +341,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         )
 
         try:
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
+            # Use the SVM recorded when the volume was created.
+            svm_name = self._get_existing_volume_svm(volume)
 
             # Get SVM-level mount point (per-SVM export architecture)
             mount_point = arca_utils.get_mount_point_for_svm(
@@ -375,7 +408,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             else:
                 # Fallback: regenerate per-SVM export path
                 # (for volumes created before per-SVM export architecture)
-                svm_name = self._get_svm_for_volume(volume)
+                svm_name = self._get_existing_volume_svm(volume)
                 # Use per-SVM export path, NOT per-volume export path
                 export_path = self._get_export_path(svm_name)
                 LOG.warning(
@@ -439,14 +472,37 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             "clone_support": self._clone_support,
             "replication_enabled": self._replication_support,
             "multiattach": self._multiattach_support,
-            # Capacity (these would need real values from ARCA Storage)
+            # Capacity falls back to unknown when the ARCA API is unavailable.
             "total_capacity_gb": "unknown",
             "free_capacity_gb": "unknown",
             "reserved_percentage": self.configuration.reserved_percentage,
             "max_over_subscription_ratio": self.configuration.arca_storage_max_over_subscription_ratio,
         }
 
+        capacity = self._get_backend_capacity()
+        if capacity is not None:
+            data.update(capacity)
+
         self._stats = data
+
+    def _get_backend_capacity(self) -> Optional[Dict[str, float]]:
+        """Return scheduler capacity stats when the backend SVM is unambiguous."""
+        if not self.configuration.arca_storage_use_api or not self.arca_client:
+            return None
+        if self.configuration.arca_storage_svm_strategy != "shared":
+            return None
+
+        svm_name = self.configuration.arca_storage_default_svm
+        try:
+            capacity = self.arca_client.get_svm_capacity(svm_name)
+            return {
+                "total_capacity_gb": float(capacity["total_gb"]),
+                "free_capacity_gb": float(capacity["free_gb"]),
+                "provisioned_capacity_gb": float(capacity.get("provisioned_gb", 0)),
+            }
+        except Exception as e:
+            LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+            return None
 
     def _get_svm_for_volume(self, volume) -> str:
         """Determine which SVM to use for a volume.
@@ -493,11 +549,57 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
-    def _get_svm_info(self, svm_name: str) -> Dict[str, Any]:
-        """Get SVM information with caching.
+    def _volume_provider_svm(self, volume) -> Optional[str]:
+        """Return the driver-managed SVM persisted on a Cinder volume."""
+        provider_id = getattr(volume, "provider_id", None)
+        if isinstance(provider_id, str):
+            provider_id = provider_id.strip()
+            if provider_id:
+                return provider_id
+        return None
+
+    def _svm_from_volume_provider_location(self, volume) -> Optional[str]:
+        """Best-effort SVM inference for legacy volumes without provider_id."""
+        provider_location = getattr(volume, "provider_location", None)
+        if not isinstance(provider_location, str):
+            return None
+
+        provider_location = provider_location.strip()
+        if not provider_location:
+            return None
+
+        _server, separator, export_root = provider_location.rpartition(":")
+        if not separator or not export_root.startswith("/"):
+            return None
+
+        svm_name = posixpath.basename(export_root.rstrip("/"))
+        if svm_name and svm_name not in (".", "/"):
+            return svm_name
+        return None
+
+    def _get_existing_volume_svm(self, volume) -> str:
+        """Resolve the SVM that owns an already-created volume."""
+        svm_name = self._volume_provider_svm(volume)
+        if svm_name:
+            return svm_name
+
+        svm_name = self._svm_from_volume_provider_location(volume)
+        if svm_name:
+            LOG.warning(
+                "Volume %s has no provider_id; inferred SVM %s from provider_location",
+                getattr(volume, "name", getattr(volume, "id", "<unknown>")),
+                svm_name,
+            )
+            return svm_name
+
+        return self._get_svm_for_volume(volume)
+
+    def _get_svm_info(self, svm_name: str, refresh: bool = False) -> Dict[str, Any]:
+        """Get SVM information, optionally using the last cached response.
 
         Args:
             svm_name: SVM name
+            refresh: Fetch from the API even when a cached response exists.
 
         Returns:
             SVM information dictionary
@@ -505,8 +607,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         Raises:
             arca_exceptions.ArcaSVMNotFound: If SVM not found
         """
-        # Check cache first
-        if svm_name in self._svm_cache:
+        if not refresh and svm_name in self._svm_cache:
             return self._svm_cache[svm_name]
 
         # Fetch from API
@@ -549,7 +650,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return f"{self.configuration.arca_storage_nfs_server}:{export_root}"
 
         if self.configuration.arca_storage_use_api:
-            svm_info = self._get_svm_info(svm_name)
+            svm_info = self._get_svm_info(svm_name, refresh=True)
             svm_vip = svm_info["vip"]
             export_root = svm_info.get("export_root") or self._configured_svm_export_root(svm_name)
             return f"{svm_vip}:{export_root}"
@@ -564,6 +665,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
     def _mount_svm_export(self, svm_name: str) -> tuple[str, str]:
         """Mount an SVM export and return (export_path, mount_point)."""
         export_path = self._get_export_path(svm_name)
+        return self._mount_svm_export_path(svm_name, export_path)
+
+    def _mount_svm_export_path(self, svm_name: str, export_path: str) -> tuple[str, str]:
+        """Mount the provided export path for an SVM."""
         mount_point = arca_utils.get_mount_point_for_svm(
             self.configuration.arca_storage_nfs_mount_point_base,
             svm_name,
@@ -574,6 +679,72 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             mount_options=self.configuration.arca_storage_nfs_mount_options,
         )
         return export_path, mount_point
+
+    def _snapshot_provider_location(self, snapshot) -> Optional[str]:
+        """Return a persisted snapshot provider_location when present."""
+        provider_location = getattr(snapshot, "provider_location", None)
+        if isinstance(provider_location, str):
+            provider_location = provider_location.strip()
+            if provider_location:
+                return provider_location
+        return None
+
+    def _snapshot_provider_svm(self, snapshot) -> Optional[str]:
+        """Return a driver-managed snapshot SVM when present."""
+        provider_id = getattr(snapshot, "provider_id", None)
+        if isinstance(provider_id, str):
+            provider_id = provider_id.strip()
+            if provider_id:
+                return provider_id
+        return None
+
+    def _get_snapshot_storage(self, snapshot) -> tuple[str, str]:
+        """Resolve the SVM and export path where a snapshot file is stored."""
+        svm_name = self._snapshot_provider_svm(snapshot)
+        export_path = self._snapshot_provider_location(snapshot)
+        if svm_name:
+            return svm_name, export_path or self._get_export_path(svm_name)
+
+        volume_id = snapshot.volume_id
+        context = self._get_operation_context(snapshot=snapshot)
+        volume = self.db.volume_get(context, volume_id)
+        svm_name = self._get_existing_volume_svm(volume)
+        return svm_name, export_path or self._get_export_path(svm_name)
+
+    def _snapshot_model_update(self, svm_name: str, export_path: str) -> Dict[str, Any]:
+        """Return driver-managed snapshot storage fields for future cleanup."""
+        return {
+            "provider_location": export_path,
+            "provider_id": svm_name,
+        }
+
+    def _volume_model_update(self, svm_name: str, export_path: str) -> Dict[str, Any]:
+        """Return driver-managed volume storage fields for future operations."""
+        return {
+            "provider_location": export_path,
+            "provider_id": svm_name,
+        }
+
+    def _ensure_copy_stays_within_svm(
+        self,
+        operation: str,
+        source_svm_name: str,
+        target_svm_name: str,
+    ) -> None:
+        """Reject copy-style operations that would cross SVM boundaries."""
+        if source_svm_name == target_svm_name:
+            return
+
+        msg = _(
+            "Cross-SVM %(operation)s is not supported: "
+            "source SVM %(source)s differs from target SVM %(target)s"
+        ) % {
+            "operation": operation,
+            "source": source_svm_name,
+            "target": target_svm_name,
+        }
+        LOG.error(msg)
+        raise exception.VolumeBackendAPIException(data=msg)
 
     def _get_volume_type_extra_specs(self, volume_type) -> Dict[str, Any]:
         """Return extra_specs dict from either an object or a dict-like."""
@@ -631,6 +802,38 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             current_svm,
             requested_svm,
         )
+        return False
+
+    def _assert_file_snapshot_source_available(self, volume):
+        """Reject file-copy snapshots when Cinder reports active attachments."""
+        if not self._volume_has_active_attachments(volume):
+            return
+        volume_id = getattr(volume, "id", "<unknown>")
+        msg = _(
+            "Cannot create a file-backed snapshot for attached volume %s; "
+            "detach the volume before snapshotting"
+        ) % volume_id
+        LOG.error(msg)
+        raise exception.VolumeBackendAPIException(data=msg)
+
+    @staticmethod
+    def _volume_has_active_attachments(volume) -> bool:
+        status = getattr(volume, "status", None)
+        if isinstance(status, str) and status.lower() == "in-use":
+            return True
+
+        attach_status = getattr(volume, "attach_status", None)
+        if isinstance(attach_status, str):
+            normalized = attach_status.strip().lower()
+            if normalized and normalized != "detached":
+                return True
+
+        for attr_name in ("volume_attachment", "attachments"):
+            attachments = getattr(volume, attr_name, None)
+            if isinstance(attachments, dict) and attachments:
+                return True
+            if isinstance(attachments, (list, tuple, set)) and len(attachments) > 0:
+                return True
         return False
 
     def _cleanup_failed_volume(self, volume_name: str, cleanup_state: dict):
@@ -696,24 +899,12 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # We use get_volume to fetch it explicitly
             context = self._get_operation_context(snapshot=snapshot)
             volume = self.db.volume_get(context, volume_id)
+            self._assert_file_snapshot_source_available(volume)
 
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
+            # Use the SVM recorded when the source volume was created.
+            svm_name = self._get_existing_volume_svm(volume)
 
-            # Get NFS export path (per-SVM, not per-volume)
-            export_path = self._get_export_path(svm_name)
-
-            # Mount SVM's NFS export (idempotent - won't remount if already mounted)
-            mount_point = arca_utils.get_mount_point_for_svm(
-                self.configuration.arca_storage_nfs_mount_point_base,
-                svm_name,
-            )
-
-            arca_utils.mount_nfs(
-                export_path=export_path,
-                mount_point=mount_point,
-                mount_options=self.configuration.arca_storage_nfs_mount_options,
-            )
+            export_path, mount_point = self._mount_svm_export(svm_name)
 
             # Source volume file path
             source_file = os.path.join(mount_point, f"volume-{volume_id}")
@@ -732,8 +923,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Note: We do NOT unmount to avoid concurrency issues
             # The SVM export remains mounted for subsequent operations
 
-            return {}  # Cinder expects empty dict for snapshot creation
+            return self._snapshot_model_update(svm_name, export_path)
 
+        except exception.VolumeBackendAPIException:
+            raise
         except Exception as e:
             msg = _("Failed to create snapshot %s: %s") % (snapshot_name, e)
             LOG.error(msg)
@@ -760,27 +953,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         mount_point = None
         try:
-            # Get source volume to determine SVM
-            context = self._get_operation_context(snapshot=snapshot)
-            volume = self.db.volume_get(context, volume_id)
-
-            # Determine SVM for this volume
-            svm_name = self._get_svm_for_volume(volume)
-
-            # Get NFS export path (per-SVM, not per-volume)
-            export_path = self._get_export_path(svm_name)
-
-            # Mount SVM's NFS export (idempotent - won't remount if already mounted)
-            mount_point = arca_utils.get_mount_point_for_svm(
-                self.configuration.arca_storage_nfs_mount_point_base,
-                svm_name,
-            )
-
-            arca_utils.mount_nfs(
-                export_path=export_path,
-                mount_point=mount_point,
-                mount_options=self.configuration.arca_storage_nfs_mount_options,
-            )
+            svm_name, export_path = self._get_snapshot_storage(snapshot)
+            _, mount_point = self._mount_svm_export_path(svm_name, export_path)
 
             # Snapshot file path (using snapshot ID)
             snapshot_file = os.path.join(mount_point, f"snapshot-{snapshot_id}")
@@ -821,7 +995,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         snapshot_name = snapshot.name
         snapshot_id = snapshot.id
-        source_volume_id = snapshot.volume_id
 
         LOG.info(
             "Creating volume: %s (id=%s, size=%sGB) from snapshot: %s (id=%s)",
@@ -832,24 +1005,24 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             snapshot_id,
         )
 
+        self._apply_qos_to_volume(volume)
+
         volume_file = None
         volume_file_created = False
         try:
-            # Get source volume to determine SVM
-            # IMPORTANT: Use snapshot's volume, not the new volume
-            context = self._get_operation_context(volume=volume, snapshot=snapshot)
-            source_volume = self.db.volume_get(context, source_volume_id)
-
-            # Snapshot data lives in the source SVM, while the new volume must
-            # be placed according to the target volume's SVM mapping.
-            source_svm_name = self._get_svm_for_volume(source_volume)
+            source_svm_name, source_export_path = self._get_snapshot_storage(snapshot)
             target_svm_name = self._get_svm_for_volume(volume)
-            source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
-            if target_svm_name == source_svm_name:
-                target_export_path = source_export_path
-                target_mount_point = source_mount_point
-            else:
-                target_export_path, target_mount_point = self._mount_svm_export(target_svm_name)
+            self._ensure_copy_stays_within_svm(
+                "create volume from snapshot",
+                source_svm_name,
+                target_svm_name,
+            )
+            source_export_path, source_mount_point = self._mount_svm_export_path(
+                source_svm_name,
+                source_export_path,
+            )
+            target_export_path = source_export_path
+            target_mount_point = source_mount_point
 
             # Snapshot file path (using snapshot ID)
             snapshot_file = os.path.join(source_mount_point, f"snapshot-{snapshot_id}")
@@ -880,12 +1053,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 )
                 LOG.info("Extended volume file to %sGB", volume_size)
 
-            # Store provider location (export path)
-            provider_location = target_export_path
-
             # Note: We do NOT unmount to avoid concurrency issues
 
-            return {"provider_location": provider_location}
+            return self._volume_model_update(target_svm_name, target_export_path)
 
         except Exception as e:
             if volume_file_created and volume_file:
@@ -927,18 +1097,22 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         LOG.info("Creating cloned volume: %s (id=%s) from source: %s (id=%s)",
                  volume_name, volume_id, src_volume_name, src_volume_id)
 
+        self._apply_qos_to_volume(volume)
+
         volume_file = None
         volume_file_created = False
 
         try:
-            source_svm_name = self._get_svm_for_volume(src_vref)
+            source_svm_name = self._get_existing_volume_svm(src_vref)
             target_svm_name = self._get_svm_for_volume(volume)
+            self._ensure_copy_stays_within_svm(
+                "clone",
+                source_svm_name,
+                target_svm_name,
+            )
             source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
-            if target_svm_name == source_svm_name:
-                target_export_path = source_export_path
-                target_mount_point = source_mount_point
-            else:
-                target_export_path, target_mount_point = self._mount_svm_export(target_svm_name)
+            target_export_path = source_export_path
+            target_mount_point = source_mount_point
 
             # Source volume file path
             source_file = os.path.join(source_mount_point, f"volume-{src_volume_id}")
@@ -963,12 +1137,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 )
                 LOG.info("Extended cloned volume file to %sGB", volume_size)
 
-            # Store provider location (export path)
-            provider_location = target_export_path
-
             # Note: We do NOT unmount to avoid concurrency issues
 
-            return {"provider_location": provider_location}
+            return self._volume_model_update(target_svm_name, target_export_path)
 
         except Exception as e:
             if volume_file_created and volume_file:
@@ -984,6 +1155,56 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             raise exception.VolumeBackendAPIException(data=msg)
 
     # QoS operations
+
+    def _get_qos_extra_specs(self, volume) -> Dict[str, Any]:
+        """Return ARCA QoS extra_specs configured on the volume type."""
+        volume_type = getattr(volume, "volume_type", None)
+        if not volume_type:
+            return {}
+
+        extra_specs = self._get_volume_type_extra_specs(volume_type)
+        return {
+            key: extra_specs[key]
+            for key in self._qos_extra_spec_keys
+            if key in extra_specs
+        }
+
+    @staticmethod
+    def _qos_value_is_configured(value) -> bool:
+        """Return whether a Cinder QoS value represents configured QoS."""
+        if value is None or value == "" or value == {} or value == []:
+            return False
+        # Avoid treating dynamic mapping accessors as real QoS values.
+        return not callable(value)
+
+    def _get_cinder_qos_specs(self, volume_type):
+        """Return Cinder QoS specs associated with a volume type, if any."""
+        if not volume_type:
+            return None
+
+        qos_specs = getattr(volume_type, "qos_specs", None)
+        if self._qos_value_is_configured(qos_specs):
+            return qos_specs
+
+        qos_specs_id = getattr(volume_type, "qos_specs_id", None)
+        if self._qos_value_is_configured(qos_specs_id):
+            return qos_specs_id
+
+        if isinstance(volume_type, dict):
+            for key in ("qos_specs", "qos_specs_id"):
+                value = volume_type.get(key)
+                if self._qos_value_is_configured(value):
+                    return value
+            return None
+
+        get_method = getattr(volume_type, "get", None)
+        if callable(get_method):
+            for key in ("qos_specs", "qos_specs_id"):
+                value = get_method(key)
+                if self._qos_value_is_configured(value):
+                    return value
+
+        return None
 
     def _get_qos_specs(self, volume) -> Dict[str, Any]:
         """Extract QoS specifications from volume type extra_specs.
@@ -1059,35 +1280,31 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         return qos_specs
 
     def _apply_qos_to_volume(self, volume) -> None:
-        """Handle QoS settings from volume type for a file-backed Cinder volume.
+        """Reject QoS settings for file-backed Cinder volumes.
 
         Args:
             volume: Cinder volume object
         """
         volume_name = volume.name
 
-        try:
-            # Extract QoS specs from volume type
-            qos_specs = self._get_qos_specs(volume)
+        volume_type = getattr(volume, "volume_type", None)
+        qos_extra_specs = self._get_qos_extra_specs(volume)
+        cinder_qos_specs = self._get_cinder_qos_specs(volume_type)
+        if not qos_extra_specs and not cinder_qos_specs:
+            LOG.debug("No QoS specs found for volume: %s", volume_name)
+            return
 
-            if not qos_specs:
-                LOG.debug("No QoS specs found for volume: %s", volume_name)
-                return
+        details = []
+        if qos_extra_specs:
+            details.append("extra_specs: %s" % ", ".join(sorted(qos_extra_specs)))
+        if cinder_qos_specs:
+            details.append("qos_specs")
 
-            # Cinder volumes are sparse files in the shared SVM export, not
-            # DB-backed ARCA volumes. The ARCA volume QoS API cannot target
-            # these files by Cinder volume.name.
-            svm_name = self._get_svm_for_volume(volume)
-            LOG.warning(
-                "QoS specs for Cinder file-backed volume %s on SVM %s are not applied; "
-                "ARCA volume QoS only supports DB-backed ARCA volumes",
-                volume_name,
-                svm_name,
-            )
-
-        except Exception as e:
-            # QoS application is not critical, log warning and continue
-            LOG.warning("Failed to inspect QoS for volume %s: %s", volume_name, e)
+        msg = _("ARCA Cinder file-backed volumes do not support QoS: %(details)s") % {
+            "details": "; ".join(details)
+        }
+        LOG.error("%s (volume=%s)", msg, volume_name)
+        raise exception.VolumeBackendAPIException(data=msg)
 
     def retype(
         self,
@@ -1139,11 +1356,17 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 try:
                     # Create a mock volume type object
                     class MockVolumeType:
-                        def __init__(self, extra_specs):
+                        def __init__(self, extra_specs, qos_specs=None, qos_specs_id=None):
                             self.extra_specs = extra_specs
+                            self.qos_specs = qos_specs
+                            self.qos_specs_id = qos_specs_id
 
                     new_extra_specs = new_type.get("extra_specs", {})
-                    volume.volume_type = MockVolumeType(new_extra_specs)
+                    volume.volume_type = MockVolumeType(
+                        new_extra_specs,
+                        qos_specs=new_type.get("qos_specs"),
+                        qos_specs_id=new_type.get("qos_specs_id"),
+                    )
 
                     # Apply new QoS settings
                     self._apply_qos_to_volume(volume)

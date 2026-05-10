@@ -2,7 +2,7 @@
 
 import os
 import unittest
-from unittest.mock import Mock, call, patch
+from unittest.mock import Mock, patch
 
 import pytest
 from cinder import exception
@@ -26,8 +26,8 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         config.arca_storage_api_timeout = 30
         config.arca_storage_api_retry_count = 3
         config.arca_storage_verify_ssl = False
-        config.arca_storage_api_auth_type = "none"
-        config.arca_storage_api_token = None
+        config.arca_storage_api_auth_type = "token"
+        config.arca_storage_api_token = "test-token"
         config.arca_storage_driver_ssl_cert_path = None
         config.arca_storage_svm_strategy = "shared"
         config.arca_storage_default_svm = "test-svm"
@@ -59,7 +59,19 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.do_setup(self.driver._context)
 
         assert mock_client.call_args.kwargs["ca_bundle"] == "/etc/ssl/certs/arca-ca.pem"
+        assert mock_client.call_args.kwargs["auth_type"] == "token"
+        assert mock_client.call_args.kwargs["api_token"] == "test-token"
         mock_super_setup.assert_called_once_with(self.driver._context)
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    def test_do_setup_rejects_token_auth_without_token(self, mock_super_setup):
+        """API mode must fail during setup when token auth has no token."""
+        self.driver.configuration.arca_storage_api_token = None
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="arca_storage_api_token"):
+            self.driver.do_setup(self.driver._context)
+
+        mock_super_setup.assert_not_called()
 
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
     def test_do_setup_rejects_unimplemented_per_project_strategy(self, mock_super_setup):
@@ -69,7 +81,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         with pytest.raises(exception.VolumeBackendAPIException, match="per_project"):
             self.driver.do_setup(self.driver._context)
 
-        mock_super_setup.assert_called_once_with(self.driver._context)
+        mock_super_setup.assert_not_called()
 
     def _create_mock_volume(self, volume_id="test-vol-id", name="test-volume", size=10):
         """Create a mock Cinder volume object."""
@@ -79,6 +91,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         volume.size = size
         volume.project_id = "test-project"
         volume.provider_location = None
+        volume.provider_id = None
         volume.volume_type = None
         volume.context = Mock(name=f"context-{volume_id}")
         return volume
@@ -89,6 +102,9 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         snapshot.id = snapshot_id
         snapshot.name = "test-snapshot"
         snapshot.volume_id = volume_id
+        snapshot.provider_location = None
+        snapshot.provider_id = None
+        snapshot.metadata = {}
         snapshot.context = Mock(name=f"context-{snapshot_id}")
         return snapshot
 
@@ -100,35 +116,73 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         export_path = "192.168.100.5:/exports/test-svm"
 
         mock_utils.get_mount_point_for_svm.return_value = mount_point
-        mock_utils.create_volume_file.return_value = os.path.join(
-            mount_point, "volume-test-vol-id"
-        )
+        mock_utils.ensure_volume_file.return_value = (os.path.join(mount_point, "volume-test-vol-id"), True)
 
         result = self.driver.create_volume(volume)
 
-        assert result == {"provider_location": export_path}
+        assert result == {
+            "provider_location": export_path,
+            "provider_id": "test-svm",
+        }
         mock_utils.mount_nfs.assert_called_once_with(
             export_path=export_path,
             mount_point=mount_point,
             mount_options="rw,noatime,vers=4.1",
         )
-        mock_utils.create_volume_file.assert_called_once_with(
+        mock_utils.ensure_volume_file.assert_called_once_with(
             mount_point=mount_point,
             volume_name="volume-test-vol-id",
             size_gb=10,
+            adopt_existing=True,
         )
         self.driver.arca_client.create_volume.assert_not_called()
         self.driver.arca_client.create_export.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_rejects_qos_before_file_creation(self, mock_utils):
+        """Create volume fails closed before provisioning files when QoS is requested."""
+        volume = self._create_mock_volume()
+        volume.volume_type = {
+            "extra_specs": {
+                "arca_storage:total_iops_sec": "4000",
+            }
+        }
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="QoS"):
+            self.driver.create_volume(volume)
+
+        mock_utils.mount_nfs.assert_not_called()
+        mock_utils.ensure_volume_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_volume_failure_raises_backend_exception(self, mock_utils):
         """Create volume wraps file creation failures in Cinder's backend exception."""
         volume = self._create_mock_volume()
         mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_test-svm"
-        mock_utils.create_volume_file.side_effect = RuntimeError("file creation failed")
+        mock_utils.ensure_volume_file.side_effect = RuntimeError("file creation failed")
 
         with pytest.raises(exception.VolumeBackendAPIException):
             self.driver.create_volume(volume)
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_does_not_cleanup_adopted_file_after_later_failure(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """Retry adoption must not delete a pre-existing backend file on later failure."""
+        volume = self._create_mock_volume()
+        mount_point = "/var/lib/cinder/mnt/svm_test-svm"
+        volume_path = os.path.join(mount_point, "volume-test-vol-id")
+        mock_utils.get_mount_point_for_svm.return_value = mount_point
+        mock_utils.ensure_volume_file.return_value = (volume_path, False)
+        self.driver._volume_model_update = Mock(side_effect=RuntimeError("model update failed"))
+
+        with pytest.raises(exception.VolumeBackendAPIException):
+            self.driver.create_volume(volume)
+
+        mock_exists.assert_not_called()
+        mock_remove.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_delete_volume_removes_file_without_export_api(self, mock_utils):
@@ -165,6 +219,46 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         )
         mock_utils.delete_volume_file.assert_called_once_with(
             mount_point, "volume-test-vol-id"
+        )
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_volume_uses_persisted_provider_svm(self, mock_utils):
+        """Delete volume ignores later default-SVM config drift."""
+        volume = self._create_mock_volume()
+        volume.provider_id = "source-svm"
+        self.driver.configuration.arca_storage_default_svm = "target-svm"
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        mock_utils.is_mounted.return_value = True
+
+        self.driver.delete_volume(volume)
+
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
+        mock_utils.delete_volume_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm",
+            "volume-test-vol-id",
+        )
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_volume_infers_legacy_svm_from_provider_location(self, mock_utils):
+        """Legacy volumes without provider_id still use their persisted export."""
+        volume = self._create_mock_volume()
+        volume.provider_location = "192.168.100.5:/exports/source-svm"
+        self.driver.configuration.arca_storage_default_svm = "target-svm"
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        mock_utils.is_mounted.return_value = True
+
+        self.driver.delete_volume(volume)
+
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
+        mock_utils.delete_volume_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm",
+            "volume-test-vol-id",
         )
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
@@ -256,6 +350,29 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert export_path == "192.168.100.9:/srv/arca/exports/test-svm"
         self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
 
+    def test_get_export_path_refreshes_api_svm_info(self):
+        """API-backed export resolution does not keep using stale SVM data."""
+        self.driver.configuration.arca_storage_nfs_server = None
+        self.driver.arca_client.get_svm.side_effect = [
+            {
+                "name": "test-svm",
+                "vip": "192.168.100.9",
+                "export_root": "/srv/arca/exports/test-svm",
+            },
+            {
+                "name": "test-svm",
+                "vip": "192.168.100.10",
+                "export_root": "/srv/arca/exports/test-svm",
+            },
+        ]
+
+        first_export_path = self.driver._get_export_path("test-svm")
+        second_export_path = self.driver._get_export_path("test-svm")
+
+        assert first_export_path == "192.168.100.9:/srv/arca/exports/test-svm"
+        assert second_export_path == "192.168.100.10:/srv/arca/exports/test-svm"
+        assert self.driver.arca_client.get_svm.call_count == 2
+
     def test_get_export_path_falls_back_to_configured_root_without_api_export_root(self):
         """Older ARCA API responses still work through the configured root fallback."""
         self.driver.configuration.arca_storage_nfs_server = None
@@ -288,6 +405,31 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert self.driver._stats["clone_support"] is True
         assert self.driver._stats["thick_provisioning_support"] is False
 
+    def test_update_volume_stats_reports_shared_svm_capacity(self):
+        """Shared-SVM stats include scheduler capacity from the ARCA API."""
+        self.driver.arca_client.get_svm_capacity.return_value = {
+            "total_gb": 1000,
+            "free_gb": 750,
+            "provisioned_gb": 125,
+        }
+
+        self.driver._update_volume_stats()
+
+        assert self.driver._stats["total_capacity_gb"] == 1000.0
+        assert self.driver._stats["free_capacity_gb"] == 750.0
+        assert self.driver._stats["provisioned_capacity_gb"] == 125.0
+        self.driver.arca_client.get_svm_capacity.assert_called_once_with("test-svm")
+
+    def test_update_volume_stats_keeps_unknown_capacity_for_manual_strategy(self):
+        """Manual SVM mapping cannot safely aggregate capacity without pool membership."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+
+        self.driver._update_volume_stats()
+
+        assert self.driver._stats["total_capacity_gb"] == "unknown"
+        assert self.driver._stats["free_capacity_gb"] == "unknown"
+        self.driver.arca_client.get_svm_capacity.assert_not_called()
+
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_snapshot_copies_volume_file(self, mock_utils):
         """Snapshots are file copies from volume-id to snapshot-id paths."""
@@ -299,13 +441,57 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         result = self.driver.create_snapshot(snapshot)
 
-        assert result == {}
+        assert result == {
+            "provider_location": "192.168.100.5:/exports/test-svm",
+            "provider_id": "test-svm",
+        }
         mock_utils.copy_sparse_file.assert_called_once_with(
             os.path.join(mount_point, "volume-source-vol-id"),
             os.path.join(mount_point, "snapshot-snap-id"),
             timeout=600,
         )
         self.driver.arca_client.create_snapshot.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_snapshot_uses_persisted_volume_svm(self, mock_utils):
+        """Snapshot creation ignores later default-SVM config drift."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        source_volume.provider_id = "source-svm"
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        self.driver.configuration.arca_storage_default_svm = "target-svm"
+        self.driver.db.volume_get.return_value = source_volume
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+
+        result = self.driver.create_snapshot(snapshot)
+
+        assert result == {
+            "provider_location": "192.168.100.5:/exports/source-svm",
+            "provider_id": "source-svm",
+        }
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
+        mock_utils.copy_sparse_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm/volume-source-vol-id",
+            "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
+            timeout=600,
+        )
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_snapshot_rejects_attached_source_volume(self, mock_utils):
+        """File-backed snapshots avoid copying a live attached volume file."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        source_volume.status = "in-use"
+        source_volume.attach_status = "attached"
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        self.driver.db.volume_get.return_value = source_volume
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="attached volume"):
+            self.driver.create_snapshot(snapshot)
+
+        mock_utils.mount_nfs.assert_not_called()
+        mock_utils.copy_sparse_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
@@ -325,6 +511,88 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_remove.assert_called_once_with(os.path.join(mount_point, "snapshot-snap-id"))
         self.driver.arca_client.delete_snapshot.assert_not_called()
 
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_snapshot_uses_provider_fields_without_source_volume(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """Driver-managed provider fields are enough to remove a snapshot file."""
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
+
+        self.driver.delete_snapshot(snapshot)
+
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.mount_nfs.assert_called_once_with(
+            export_path="192.168.100.5:/exports/source-svm",
+            mount_point="/var/lib/cinder/mnt/svm_source-svm",
+            mount_options="rw,noatime,vers=4.1",
+        )
+        mock_remove.assert_called_once_with("/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id")
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_snapshot_without_provider_uses_source_volume_provider(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """Snapshot cleanup follows the source volume's persisted SVM."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        source_volume.provider_location = "192.168.100.5:/exports/source-svm"
+        source_volume.provider_id = "source-svm"
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        self.driver.configuration.arca_storage_default_svm = "target-svm"
+        self.driver.db.volume_get.return_value = source_volume
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+
+        self.driver.delete_snapshot(snapshot)
+
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
+        mock_utils.mount_nfs.assert_called_once_with(
+            export_path="192.168.100.5:/exports/source-svm",
+            mount_point="/var/lib/cinder/mnt/svm_source-svm",
+            mount_options="rw,noatime,vers=4.1",
+        )
+        mock_remove.assert_called_once_with("/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id")
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_snapshot_ignores_user_metadata_for_storage_routing(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """User-facing metadata must not control snapshot storage routing."""
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
+        snapshot.metadata = {
+            "arca_storage:svm_name": "target-svm",
+            "arca_storage:export_path": "192.168.100.5:/exports/target-svm",
+        }
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
+
+        self.driver.delete_snapshot(snapshot)
+
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
+        )
+        mock_utils.mount_nfs.assert_called_once_with(
+            export_path="192.168.100.5:/exports/source-svm",
+            mount_point="/var/lib/cinder/mnt/svm_source-svm",
+            mount_options="rw,noatime,vers=4.1",
+        )
+        mock_remove.assert_called_once_with("/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id")
+
     @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_volume_from_snapshot_copies_snapshot_file(self, mock_utils, mock_getsize):
@@ -339,7 +607,10 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         result = self.driver.create_volume_from_snapshot(new_volume, snapshot)
 
-        assert result == {"provider_location": "192.168.100.5:/exports/test-svm"}
+        assert result == {
+            "provider_location": "192.168.100.5:/exports/test-svm",
+            "provider_id": "test-svm",
+        }
         mock_utils.copy_sparse_file.assert_called_once_with(
             os.path.join(mount_point, "snapshot-snap-id"),
             os.path.join(mount_point, "volume-new-vol-id"),
@@ -354,8 +625,8 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
     @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
-    def test_create_volume_from_snapshot_places_file_on_target_svm(self, mock_utils, mock_getsize):
-        """Manual strategy copies from the source SVM snapshot to the target SVM volume file."""
+    def test_create_volume_from_snapshot_rejects_cross_svm_copy(self, mock_utils, mock_getsize):
+        """Manual strategy does not copy snapshot data across SVM boundaries."""
         self.driver.configuration.arca_storage_svm_strategy = "manual"
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         source_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
@@ -366,26 +637,98 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_utils.get_mount_point_for_svm.side_effect = lambda base, svm: f"{base}/svm_{svm}"
         mock_getsize.return_value = 10 * 1024**3
 
+        with pytest.raises(exception.VolumeBackendAPIException, match="Cross-SVM"):
+            self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        mock_utils.mount_nfs.assert_not_called()
+        mock_utils.copy_sparse_file.assert_not_called()
+        mock_utils.extend_volume_file.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_without_provider_rejects_source_provider_drift(
+        self, mock_utils, mock_getsize
+    ):
+        """Fallback snapshot routing must use the source volume's persisted SVM."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        source_volume.provider_location = "192.168.100.5:/exports/source-svm"
+        source_volume.provider_id = "source-svm"
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        self.driver.configuration.arca_storage_default_svm = "target-svm"
+        self.driver.db.volume_get.return_value = source_volume
+        mock_utils.get_mount_point_for_svm.side_effect = lambda base, svm: f"{base}/svm_{svm}"
+        mock_getsize.return_value = 10 * 1024**3
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="Cross-SVM"):
+            self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        mock_utils.copy_sparse_file.assert_not_called()
+        mock_utils.extend_volume_file.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_uses_provider_fields_without_source_volume(
+        self, mock_utils, mock_getsize
+    ):
+        """Driver-managed provider fields are enough to restore a snapshot."""
+        self.driver.configuration.arca_storage_default_svm = "source-svm"
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        mock_getsize.return_value = 10 * 1024**3
+        self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
+
         result = self.driver.create_volume_from_snapshot(new_volume, snapshot)
 
-        assert result == {"provider_location": "192.168.100.5:/exports/target-svm"}
-        mock_utils.mount_nfs.assert_has_calls(
-            [
-                call(
-                    export_path="192.168.100.5:/exports/source-svm",
-                    mount_point="/var/lib/cinder/mnt/svm_source-svm",
-                    mount_options="rw,noatime,vers=4.1",
-                ),
-                call(
-                    export_path="192.168.100.5:/exports/target-svm",
-                    mount_point="/var/lib/cinder/mnt/svm_target-svm",
-                    mount_options="rw,noatime,vers=4.1",
-                ),
-            ]
+        assert result == {
+            "provider_location": "192.168.100.5:/exports/source-svm",
+            "provider_id": "source-svm",
+        }
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.copy_sparse_file.assert_called_once_with(
+            "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
+            "/var/lib/cinder/mnt/svm_source-svm/volume-new-vol-id",
+            timeout=600,
+        )
+        mock_utils.extend_volume_file.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_ignores_user_metadata_for_storage_routing(
+        self, mock_utils, mock_getsize
+    ):
+        """User-facing metadata must not bypass cross-SVM restore protection."""
+        self.driver.configuration.arca_storage_svm_strategy = "manual"
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
+        new_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/source-svm"
+        snapshot.provider_id = "source-svm"
+        snapshot.metadata = {
+            "arca_storage:svm_name": "target-svm",
+            "arca_storage:export_path": "192.168.100.5:/exports/target-svm",
+        }
+        mock_utils.get_mount_point_for_svm.return_value = "/var/lib/cinder/mnt/svm_source-svm"
+        mock_getsize.return_value = 10 * 1024**3
+        self.driver.db.volume_get.side_effect = RuntimeError("source volume is gone")
+
+        result = self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        assert result == {
+            "provider_location": "192.168.100.5:/exports/source-svm",
+            "provider_id": "source-svm",
+        }
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.get_mount_point_for_svm.assert_called_once_with(
+            "/var/lib/cinder/mnt",
+            "source-svm",
         )
         mock_utils.copy_sparse_file.assert_called_once_with(
             "/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id",
-            "/var/lib/cinder/mnt/svm_target-svm/volume-new-vol-id",
+            "/var/lib/cinder/mnt/svm_source-svm/volume-new-vol-id",
             timeout=600,
         )
         mock_utils.extend_volume_file.assert_not_called()
@@ -421,7 +764,10 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         result = self.driver.create_cloned_volume(new_volume, source_volume)
 
-        assert result == {"provider_location": "192.168.100.5:/exports/test-svm"}
+        assert result == {
+            "provider_location": "192.168.100.5:/exports/test-svm",
+            "provider_id": "test-svm",
+        }
         mock_utils.copy_sparse_file.assert_called_once_with(
             os.path.join(mount_point, "volume-source-vol-id"),
             os.path.join(mount_point, "volume-clone-vol-id"),
@@ -435,8 +781,8 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.arca_client.create_snapshot.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
-    def test_create_cloned_volume_places_file_on_target_svm(self, mock_utils):
-        """Manual strategy clones from the source SVM into the target volume's SVM."""
+    def test_create_cloned_volume_rejects_cross_svm_copy(self, mock_utils):
+        """Manual strategy does not clone volume data across SVM boundaries."""
         self.driver.configuration.arca_storage_svm_strategy = "manual"
         source_volume = self._create_mock_volume(volume_id="source-vol-id", size=10)
         source_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
@@ -444,28 +790,11 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         new_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "target-svm"}}
         mock_utils.get_mount_point_for_svm.side_effect = lambda base, svm: f"{base}/svm_{svm}"
 
-        result = self.driver.create_cloned_volume(new_volume, source_volume)
+        with pytest.raises(exception.VolumeBackendAPIException, match="Cross-SVM"):
+            self.driver.create_cloned_volume(new_volume, source_volume)
 
-        assert result == {"provider_location": "192.168.100.5:/exports/target-svm"}
-        mock_utils.mount_nfs.assert_has_calls(
-            [
-                call(
-                    export_path="192.168.100.5:/exports/source-svm",
-                    mount_point="/var/lib/cinder/mnt/svm_source-svm",
-                    mount_options="rw,noatime,vers=4.1",
-                ),
-                call(
-                    export_path="192.168.100.5:/exports/target-svm",
-                    mount_point="/var/lib/cinder/mnt/svm_target-svm",
-                    mount_options="rw,noatime,vers=4.1",
-                ),
-            ]
-        )
-        mock_utils.copy_sparse_file.assert_called_once_with(
-            "/var/lib/cinder/mnt/svm_source-svm/volume-source-vol-id",
-            "/var/lib/cinder/mnt/svm_target-svm/volume-clone-vol-id",
-            timeout=600,
-        )
+        mock_utils.mount_nfs.assert_not_called()
+        mock_utils.copy_sparse_file.assert_not_called()
         mock_utils.extend_volume_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.os.remove")
@@ -527,7 +856,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.arca_client.apply_qos.assert_not_called()
 
     def test_apply_qos_to_volume_with_specs(self):
-        """QoS specs are not sent to ARCA API for file-backed Cinder volumes."""
+        """QoS specs are rejected for file-backed Cinder volumes."""
         volume = self._create_mock_volume()
         volume.volume_type = {
             "extra_specs": {
@@ -536,12 +865,27 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             }
         }
 
-        self.driver._apply_qos_to_volume(volume)
+        with pytest.raises(exception.VolumeBackendAPIException, match="QoS"):
+            self.driver._apply_qos_to_volume(volume)
 
         self.driver.arca_client.apply_qos.assert_not_called()
 
-    def test_retype_skips_file_backed_qos_changes(self):
-        """Retype accepts QoS specs but cannot apply them to file-backed volumes."""
+    def test_apply_qos_to_volume_with_cinder_qos_specs(self):
+        """Cinder QoS specs associations are rejected for file-backed volumes."""
+        volume = self._create_mock_volume()
+        volume.volume_type = {
+            "qos_specs": {
+                "total_iops_sec": "5000",
+            }
+        }
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="QoS"):
+            self.driver._apply_qos_to_volume(volume)
+
+        self.driver.arca_client.apply_qos.assert_not_called()
+
+    def test_retype_rejects_file_backed_qos_changes(self):
+        """Retype rejects QoS specs for file-backed volumes."""
         volume = self._create_mock_volume()
         volume.volume_type = {"extra_specs": {"arca_storage:read_iops_sec": "3000"}}
         new_type = {
@@ -555,7 +899,26 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         changed, updates = self.driver.retype(None, volume, new_type, diff, None)
 
-        assert changed is True
+        assert changed is False
+        assert updates == {}
+        self.driver.arca_client.apply_qos.assert_not_called()
+
+    def test_retype_rejects_cinder_qos_specs_changes(self):
+        """Retype rejects Cinder QoS specs for file-backed volumes."""
+        volume = self._create_mock_volume()
+        volume.volume_type = {"extra_specs": {}}
+        new_type = {
+            "name": "gold",
+            "extra_specs": {},
+            "qos_specs": {
+                "total_iops_sec": "5000",
+            },
+        }
+        diff = {"qos_specs": {"total_iops_sec": (None, "5000")}}
+
+        changed, updates = self.driver.retype(None, volume, new_type, diff, None)
+
+        assert changed is False
         assert updates == {}
         self.driver.arca_client.apply_qos.assert_not_called()
 
@@ -599,8 +962,8 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert updates == {}
         self.driver.arca_client.apply_qos.assert_not_called()
 
-    def test_retype_allows_manual_qos_change_when_svm_preserved(self):
-        """Manual retype can update non-placement specs when SVM stays stable."""
+    def test_retype_rejects_manual_qos_change_when_svm_preserved(self):
+        """Manual retype still rejects unsupported QoS specs when SVM is stable."""
         self.driver.configuration.arca_storage_svm_strategy = "manual"
         volume = self._create_mock_volume()
         volume.volume_type = {
@@ -620,7 +983,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         changed, updates = self.driver.retype(None, volume, new_type, diff, None)
 
-        assert changed is True
+        assert changed is False
         assert updates == {}
         self.driver.arca_client.apply_qos.assert_not_called()
 

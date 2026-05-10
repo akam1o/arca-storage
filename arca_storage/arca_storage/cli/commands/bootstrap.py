@@ -4,10 +4,12 @@ Bootstrap commands for initial setup without Ansible.
 
 from __future__ import annotations
 
+import ipaddress
 import os
+import re
 import shutil
 import subprocess
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import typer
@@ -16,18 +18,33 @@ from arca_storage.config import DEFAULT_CONFIG_PATH, load_settings
 
 app = typer.Typer(help="Bootstrap initial system/cluster configuration")
 
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+_DEVICE_PATH_RE = re.compile(r"/dev/[A-Za-z0-9._/+:-]+")
+_HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+
 
 def _run(
     cmd: list[str],
     *,
     check: bool = True,
     input: Optional[str] = None,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(cmd, input=input, capture_output=True, text=True, check=check)
+    try:
+        return subprocess.run(
+            cmd,
+            input=input,
+            capture_output=True,
+            text=True,
+            check=check,
+            timeout=timeout,
+        )
+    except subprocess.TimeoutExpired as e:
+        raise RuntimeError(f"{' '.join(cmd)} timed out after {timeout}s") from e
 
 
 def _run_shell(command: str) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(["bash", "-lc", command], capture_output=True, text=True, check=True)
+    return _run(["bash", "-lc", command])
 
 
 def _resource_path(*parts: str) -> Path:
@@ -39,11 +56,146 @@ def _render_env(cfg) -> str:
     return cfg.to_systemd_env()
 
 
-def _pcs_host_auth(nodes: list[str], hacluster_password: str) -> subprocess.CompletedProcess[str]:
+def _pcs_host_auth(
+    nodes: list[str],
+    hacluster_password: str,
+    *,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
     return _run(
         ["pcs", "host", "auth", *nodes, "-u", "hacluster"],
         input=f"{hacluster_password}\n",
         check=False,
+        timeout=timeout,
+    )
+
+
+def _completed_successfully(cmd: list[str], *, timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS) -> bool:
+    return _run(cmd, check=False, timeout=timeout).returncode == 0
+
+
+def _run_required(
+    cmd: list[str],
+    *,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    result = _run(cmd, check=False, timeout=timeout)
+    if result.returncode != 0:
+        output = (result.stderr or result.stdout or "").strip()
+        detail = output or f"exit status {result.returncode}"
+        raise RuntimeError(f"{' '.join(cmd)} failed: {detail}")
+    return result
+
+
+def _apply_drbd_config(
+    resource: str,
+    *,
+    primary: bool = False,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> None:
+    if not _completed_successfully(["drbdadm", "dump-md", resource], timeout=timeout):
+        _run_required(["drbdadm", "create-md", resource], timeout=timeout)
+    if not _completed_successfully(["drbdadm", "status", resource], timeout=timeout):
+        _run_required(["drbdadm", "up", resource], timeout=timeout)
+    if primary:
+        _run_required(["drbdadm", "primary", "--force", resource], timeout=timeout)
+
+
+def _validate_drbd_resource_name(resource: str) -> str:
+    if not resource:
+        raise ValueError("resource cannot be empty")
+    if len(resource) > 64:
+        raise ValueError("resource must be 64 characters or less")
+    if not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9._-]*", resource):
+        raise ValueError(
+            "resource must start with alphanumeric and contain only "
+            "alphanumeric, dots, underscores, or hyphens"
+        )
+    return resource
+
+
+def _validate_host_name(host: str, *, field: str) -> str:
+    if not host:
+        raise ValueError(f"{field} cannot be empty")
+    if len(host) > 253:
+        raise ValueError(f"{field} must be 253 characters or less")
+    labels = host.split(".")
+    if any(not _HOST_LABEL_RE.fullmatch(label) for label in labels):
+        raise ValueError(
+            f"{field} must contain DNS hostname labels with only "
+            "alphanumeric characters and hyphens"
+        )
+    return host
+
+
+def _validate_device_path(path: str, *, field: str) -> str:
+    if not path:
+        raise ValueError(f"{field} cannot be empty")
+    parsed = PurePosixPath(path)
+    if parsed.parts[:2] != ("/", "dev") or len(parsed.parts) < 3:
+        raise ValueError(f"{field} must be an absolute /dev path")
+    if any(part in {"", ".", ".."} for part in parsed.parts[2:]):
+        raise ValueError(f"{field} must not contain empty or relative path segments")
+    if not _DEVICE_PATH_RE.fullmatch(path):
+        raise ValueError(f"{field} contains unsupported characters")
+    return path
+
+
+def _validate_replication_ip(value: str, *, field: str) -> str:
+    try:
+        address = ipaddress.ip_address(value)
+    except ValueError as e:
+        raise ValueError(f"{field} must be a valid IP address") from e
+    if address.version != 4:
+        raise ValueError(f"{field} must be an IPv4 address")
+    return str(address)
+
+
+def _validate_drbd_port(port: int) -> int:
+    if port < 1 or port > 65535:
+        raise ValueError("port must be between 1 and 65535")
+    return port
+
+
+def _render_drbd_config(
+    *,
+    resource: str,
+    device: str,
+    disk: str,
+    node1: str,
+    node1_ip: str,
+    node2: str,
+    node2_ip: str,
+    port: int,
+) -> str:
+    resource = _validate_drbd_resource_name(resource)
+    device = _validate_device_path(device, field="device")
+    disk = _validate_device_path(disk, field="disk")
+    node1 = _validate_host_name(node1, field="node1")
+    node2 = _validate_host_name(node2, field="node2")
+    if node1 == node2:
+        raise ValueError("node1 and node2 must be different")
+    node1_ip = _validate_replication_ip(node1_ip, field="node1_ip")
+    node2_ip = _validate_replication_ip(node2_ip, field="node2_ip")
+    if node1_ip == node2_ip:
+        raise ValueError("node1_ip and node2_ip must be different")
+    port = _validate_drbd_port(port)
+
+    return (
+        f"resource {resource} {{\n"
+        f"  protocol C;\n"
+        f"  meta-disk internal;\n\n"
+        f"  on {node1} {{\n"
+        f"    device {device};\n"
+        f"    disk {disk};\n"
+        f"    address {node1_ip}:{port};\n"
+        f"  }}\n"
+        f"  on {node2} {{\n"
+        f"    device {device};\n"
+        f"    disk {disk};\n"
+        f"    address {node2_ip}:{port};\n"
+        f"  }}\n"
+        f"}}\n"
     )
 
 
@@ -120,7 +272,7 @@ def install(
         # systemd environment file (used by nfs-ganesha@.service)
         _write_env_file(cfg)
 
-        _run(["systemctl", "daemon-reload"])
+        _run(["systemctl", "daemon-reload"], timeout=cfg.timeouts.subprocess_default)
         typer.echo("Installed bootstrap resources successfully")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
@@ -138,7 +290,7 @@ def render_env():
         cfg = load_settings()
         env_path = _write_env_file(cfg)
         typer.echo(f"Wrote {env_path}")
-        _run(["systemctl", "daemon-reload"], check=False)
+        _run(["systemctl", "daemon-reload"], check=False, timeout=cfg.timeouts.subprocess_default)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -155,6 +307,8 @@ def verify(
     This command is non-destructive.
     """
     cfg = load_settings()
+    default_timeout = cfg.timeouts.subprocess_default
+    pacemaker_timeout = cfg.timeouts.pacemaker_operation
     issues: list[str] = []
 
     def check(cond: bool, ok: str, bad: str) -> None:
@@ -210,25 +364,25 @@ def verify(
         # systemd health (only if systemctl exists)
         if shutil.which("systemctl"):
             for unit in ["pcsd", "corosync", "pacemaker"]:
-                res = _run(["systemctl", "is-active", unit], check=False)
+                res = _run(["systemctl", "is-active", unit], check=False, timeout=default_timeout)
                 check(res.returncode == 0, f"systemd {unit} is active", f"systemd {unit} is not active")
         else:
             check(False, "systemctl available", "systemctl not found; cannot verify services")
 
         # Pacemaker cluster health
         if shutil.which("pcs"):
-            res = _run(["pcs", "status"], check=False)
+            res = _run(["pcs", "status"], check=False, timeout=pacemaker_timeout)
             check(res.returncode == 0, "pcs status ok", f"pcs status failed: {(res.stderr or res.stdout).strip()}")
 
             master = f"ms_drbd_{cfg.cluster.drbd_resource}"
-            res = _run(["pcs", "resource", "show", master], check=False)
+            res = _run(["pcs", "resource", "show", master], check=False, timeout=pacemaker_timeout)
             check(res.returncode == 0, f"Pacemaker DRBD master present: {master}", f"missing Pacemaker DRBD master: {master}")
         else:
             check(False, "pcs available", "pcs not found; cannot verify cluster resources")
 
         # DRBD status
         if shutil.which("drbdadm"):
-            res = _run(["drbdadm", "status", cfg.cluster.drbd_resource], check=False)
+            res = _run(["drbdadm", "status", cfg.cluster.drbd_resource], check=False, timeout=default_timeout)
             check(
                 res.returncode == 0,
                 f"drbdadm status ok: {cfg.cluster.drbd_resource}",
@@ -239,9 +393,13 @@ def verify(
 
         # LVM status
         if shutil.which("vgs") and shutil.which("lvs"):
-            res = _run(["vgs", cfg.storage.vg_name], check=False)
+            res = _run(["vgs", cfg.storage.vg_name], check=False, timeout=default_timeout)
             check(res.returncode == 0, f"VG present: {cfg.storage.vg_name}", f"missing VG: {cfg.storage.vg_name}")
-            res = _run(["lvs", f"{cfg.storage.vg_name}/{cfg.storage.thinpool_name}"], check=False)
+            res = _run(
+                ["lvs", f"{cfg.storage.vg_name}/{cfg.storage.thinpool_name}"],
+                check=False,
+                timeout=default_timeout,
+            )
             check(
                 res.returncode == 0,
                 f"Thin pool present: {cfg.storage.vg_name}/{cfg.storage.thinpool_name}",
@@ -279,37 +437,42 @@ def pacemaker_cluster(
     This runs locally and configures the cluster across the provided nodes.
     """
     try:
+        cfg = load_settings(require_file=False)
+        default_timeout = cfg.timeouts.subprocess_default
+        pacemaker_timeout = cfg.timeouts.pacemaker_operation
         node_list = [n for n in nodes.split() if n]
         if len(node_list) < 2:
             raise ValueError("Provide at least 2 nodes")
 
         # Ensure pcsd is running
-        _run(["systemctl", "enable", "--now", "pcsd"])
+        _run(["systemctl", "enable", "--now", "pcsd"], timeout=default_timeout)
 
         # Ensure hacluster password
-        subprocess.run(
+        _run(
             ["chpasswd"],
             input=f"hacluster:{hacluster_password}\n",
-            capture_output=True,
-            text=True,
-            check=True,
+            timeout=default_timeout,
         )
 
         # Authenticate and setup
-        auth = _pcs_host_auth(node_list, hacluster_password)
+        auth = _pcs_host_auth(node_list, hacluster_password, timeout=pacemaker_timeout)
         if auth.returncode != 0 and "Authorized" not in (auth.stdout or ""):
             raise RuntimeError(f"pcs host auth failed: {auth.stderr.strip()}")
 
         if not Path("/etc/corosync/authkey").exists():
-            setup = _run(["pcs", "cluster", "setup", "--name", cluster_name, *node_list], check=False)
+            setup = _run(
+                ["pcs", "cluster", "setup", "--name", cluster_name, *node_list],
+                check=False,
+                timeout=pacemaker_timeout,
+            )
             if setup.returncode != 0 and "already exists" not in (setup.stderr or "").lower():
                 raise RuntimeError(f"pcs cluster setup failed: {setup.stderr.strip()}")
 
-        _run(["pcs", "cluster", "start", "--all"])
-        _run(["pcs", "cluster", "enable", "--all"])
+        _run(["pcs", "cluster", "start", "--all"], timeout=pacemaker_timeout)
+        _run(["pcs", "cluster", "enable", "--all"], timeout=pacemaker_timeout)
 
         stonith_value = "true" if stonith_enabled else "false"
-        _run(["pcs", "property", "set", f"stonith-enabled={stonith_value}"])
+        _run(["pcs", "property", "set", f"stonith-enabled={stonith_value}"], timeout=pacemaker_timeout)
 
         typer.echo("Pacemaker cluster bootstrap completed")
     except Exception as e:
@@ -334,33 +497,25 @@ def drbd_config(
     Write DRBD resource configuration to /etc/drbd.d/<resource>.res.
     """
     try:
+        cfg = load_settings(require_file=False)
+        res_content = _render_drbd_config(
+            resource=resource,
+            device=device,
+            disk=disk,
+            node1=node1,
+            node1_ip=node1_ip,
+            node2=node2,
+            node2_ip=node2_ip,
+            port=port,
+        )
         dest_dir = Path("/etc/drbd.d")
         dest_dir.mkdir(parents=True, exist_ok=True)
         res_path = dest_dir / f"{resource}.res"
-        res_content = (
-            f"resource {resource} {{\n"
-            f"  protocol C;\n"
-            f"  meta-disk internal;\n\n"
-            f"  on {node1} {{\n"
-            f"    device {device};\n"
-            f"    disk {disk};\n"
-            f"    address {node1_ip}:{port};\n"
-            f"  }}\n"
-            f"  on {node2} {{\n"
-            f"    device {device};\n"
-            f"    disk {disk};\n"
-            f"    address {node2_ip}:{port};\n"
-            f"  }}\n"
-            f"}}\n"
-        )
         res_path.write_text(res_content, encoding="utf-8")
         typer.echo(f"Wrote DRBD resource config: {res_path}")
 
         if apply:
-            _run(["drbdadm", "create-md", resource], check=False)
-            _run(["drbdadm", "up", resource], check=False)
-            if primary:
-                _run(["drbdadm", "primary", "--force", resource], check=False)
+            _apply_drbd_config(resource, primary=primary, timeout=cfg.timeouts.subprocess_default)
             typer.echo("Applied DRBD configuration")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
@@ -381,22 +536,23 @@ def lvm_thinpool(
     """
     try:
         cfg = load_settings()
+        timeout = cfg.timeouts.subprocess_default
         vg = vg or cfg.storage.vg_name
         thinpool = thinpool or cfg.storage.thinpool_name
 
         # PV
-        pv_check = _run(["pvs", pv], check=False)
+        pv_check = _run(["pvs", pv], check=False, timeout=timeout)
         if pv_check.returncode != 0:
-            _run(["pvcreate", pv])
+            _run(["pvcreate", pv], timeout=timeout)
 
         # VG
-        vg_check = _run(["vgs", vg], check=False)
+        vg_check = _run(["vgs", vg], check=False, timeout=timeout)
         if vg_check.returncode != 0:
-            _run(["vgcreate", vg, pv])
+            _run(["vgcreate", vg, pv], timeout=timeout)
 
         # Thinpool
         lv_path = f"{vg}/{thinpool}"
-        lv_check = _run(["lvs", lv_path], check=False)
+        lv_check = _run(["lvs", lv_path], check=False, timeout=timeout)
         if lv_check.returncode != 0:
             _run(
                 [
@@ -411,10 +567,11 @@ def lvm_thinpool(
                     metadata_size,
                     "-Z",
                     "y",
-                ]
+                ],
+                timeout=timeout,
             )
 
-        _run(["systemctl", "enable", "--now", "lvm2-monitor"], check=False)
+        _run(["systemctl", "enable", "--now", "lvm2-monitor"], check=False, timeout=timeout)
         typer.echo("LVM thin pool bootstrap completed")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)

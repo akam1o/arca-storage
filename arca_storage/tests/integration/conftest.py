@@ -8,6 +8,7 @@ replacing the old approach of patching individual module-level functions.
 from types import SimpleNamespace
 
 import pytest
+from fastapi.testclient import TestClient
 
 from arca_storage.adapters.ganesha import FakeGaneshaAdapter
 from arca_storage.adapters.lvm import FakeLVMAdapter
@@ -62,6 +63,19 @@ class FakeAppContext:
 
     def close(self) -> None:
         self.db.close()
+
+
+@pytest.fixture(autouse=True)
+def default_testclient_base_url(monkeypatch):
+    """Keep integration TestClient defaults on a loopback host."""
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
+    original_init = TestClient.__init__
+
+    def init_with_loopback_base_url(self, app, *args, **kwargs):
+        kwargs.setdefault("base_url", "http://127.0.0.1:8080")
+        original_init(self, app, *args, **kwargs)
+
+    monkeypatch.setattr(TestClient, "__init__", init_with_loopback_base_url)
 
 
 @pytest.fixture

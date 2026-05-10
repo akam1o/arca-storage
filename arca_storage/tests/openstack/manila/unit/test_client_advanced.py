@@ -6,7 +6,6 @@ These tests cover error mapping edge cases and resource ID extraction logic.
 from unittest.mock import Mock, patch
 
 import pytest
-import requests
 
 from arca_storage.openstack.manila import client as manila_client
 from arca_storage.openstack.manila import exceptions

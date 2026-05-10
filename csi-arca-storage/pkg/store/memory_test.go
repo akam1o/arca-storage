@@ -54,6 +54,27 @@ func TestMemoryStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
 	}
 }
 
+func TestMemoryStoreListVolumesReturnsCopies(t *testing.T) {
+	st := NewMemoryStore()
+	if err := st.CreateVolume(&VolumeInfo{VolumeID: "vol-a", CapacityBytes: 20 << 30}); err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+
+	volumes, _, err := st.ListVolumes("", 0)
+	if err != nil {
+		t.Fatalf("ListVolumes() error = %v", err)
+	}
+	volumes[0].CapacityBytes = 10 << 30
+
+	stored, err := st.GetVolume("vol-a")
+	if err != nil {
+		t.Fatalf("GetVolume() error = %v", err)
+	}
+	if stored.CapacityBytes != 20<<30 {
+		t.Fatalf("capacity = %d, want %d", stored.CapacityBytes, int64(20<<30))
+	}
+}
+
 func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 	st := NewMemoryStore()
 	for _, snapshot := range []*SnapshotInfo{
@@ -82,6 +103,49 @@ func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 	assertSnapshotIDs(t, page, []string{"snap-b"})
 	if nextToken != "" {
 		t.Fatalf("second nextToken = %q, want empty", nextToken)
+	}
+}
+
+func TestMemoryStoreSnapshotsReturnCopies(t *testing.T) {
+	st := NewMemoryStore()
+	snapshot := &SnapshotInfo{
+		SnapshotID:     "snap-a",
+		SourceVolumeID: "vol-a",
+		SizeBytes:      20 << 30,
+	}
+	if err := st.CreateSnapshot(snapshot); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	snapshot.SizeBytes = 10 << 30
+
+	stored, err := st.GetSnapshot("snap-a")
+	if err != nil {
+		t.Fatalf("GetSnapshot() error = %v", err)
+	}
+	if stored.SizeBytes != 20<<30 {
+		t.Fatalf("stored size after input mutation = %d, want %d", stored.SizeBytes, int64(20<<30))
+	}
+
+	stored.SizeBytes = 5 << 30
+	storedAgain, err := st.GetSnapshot("snap-a")
+	if err != nil {
+		t.Fatalf("GetSnapshot(second) error = %v", err)
+	}
+	if storedAgain.SizeBytes != 20<<30 {
+		t.Fatalf("stored size after get mutation = %d, want %d", storedAgain.SizeBytes, int64(20<<30))
+	}
+
+	snapshots, _, err := st.ListSnapshots("", "", 0)
+	if err != nil {
+		t.Fatalf("ListSnapshots() error = %v", err)
+	}
+	snapshots[0].SizeBytes = 1 << 30
+	storedAgain, err = st.GetSnapshot("snap-a")
+	if err != nil {
+		t.Fatalf("GetSnapshot(after list) error = %v", err)
+	}
+	if storedAgain.SizeBytes != 20<<30 {
+		t.Fatalf("stored size after list mutation = %d, want %d", storedAgain.SizeBytes, int64(20<<30))
 	}
 }
 

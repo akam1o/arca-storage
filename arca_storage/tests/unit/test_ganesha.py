@@ -7,8 +7,10 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arca_storage.adapters.ganesha import SubprocessGaneshaAdapter
 from arca_storage.cli.lib import ganesha
 from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config, sync
+from arca_storage.config import ArcaSettings, GaneshaConfig, StateConfig
 
 
 @pytest.fixture(autouse=True)
@@ -55,6 +57,42 @@ class TestRenderConfig:
         assert 'Clients = "10.0.0.0/24";' in content
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("field", ["path", "pseudo", "client"])
+    def test_render_config_rejects_unsafe_quoted_fields(self, field):
+        exports = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "pseudo": "/exports/tenant_a/vol1",
+                "access": "RW",
+                "squash": "Root_Squash",
+                "sec": ["sys"],
+                "client": "10.0.0.0/24",
+            }
+        ]
+        exports[0][field] = 'bad"\nvalue'
+
+        with pytest.raises(ValueError, match="Unsafe Ganesha"):
+            render_config("tenant_a", exports)
+
+    @pytest.mark.unit
+    def test_render_config_rejects_unsafe_tokens(self):
+        exports = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "pseudo": "/exports/tenant_a/vol1",
+                "access": "RW;\nCLIENT",
+                "squash": "Root_Squash",
+                "sec": ["sys"],
+                "client": "10.0.0.0/24",
+            }
+        ]
+
+        with pytest.raises(ValueError, match="Unsupported Ganesha Access_Type"):
+            render_config("tenant_a", exports)
+
+    @pytest.mark.unit
     def test_write_if_changed_keeps_existing_file_on_replace_failure(self, monkeypatch, tmp_path):
         target = tmp_path / "ganesha.conf"
         target.write_text("old config", encoding="utf-8")
@@ -86,6 +124,20 @@ class TestRenderConfig:
         content = Path(result).read_text(encoding="utf-8")
         assert "Bind_addr = 192.168.10.5;" in content
 
+    @pytest.mark.unit
+    def test_subprocess_adapter_uses_injected_settings(self, monkeypatch, tmp_path):
+        monkeypatch.delenv("ARCA_CONFIG_PATH", raising=False)
+        settings = ArcaSettings(
+            state=StateConfig(runtime_dir=str(tmp_path / "state")),
+            ganesha=GaneshaConfig(config_dir=str(tmp_path / "custom-ganesha")),
+        )
+        adapter = SubprocessGaneshaAdapter(settings=settings)
+
+        result = adapter.render_config("tenant_injected", [])
+
+        assert result == str(tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf")
+        assert (tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf").exists()
+
 
 class TestReload:
     """Tests for reload function."""
@@ -98,7 +150,11 @@ class TestReload:
         reload("tenant_a")
 
         mock_subprocess.assert_called_once_with(
-            ["systemctl", "reload", "nfs-ganesha@tenant_a"], capture_output=True, text=True, check=False
+            ["systemctl", "reload", "nfs-ganesha@tenant_a"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=ganesha._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -109,7 +165,11 @@ class TestReload:
         reload("tenant_a", host_network=True)
 
         mock_subprocess.assert_called_once_with(
-            ["systemctl", "reload", "nfs-ganesha-host@tenant_a"], capture_output=True, text=True, check=False
+            ["systemctl", "reload", "nfs-ganesha-host@tenant_a"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=ganesha._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit

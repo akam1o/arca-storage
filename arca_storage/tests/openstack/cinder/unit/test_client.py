@@ -1,7 +1,7 @@
 """Unit tests for ARCA Storage API client."""
 
 import unittest
-from unittest.mock import MagicMock, Mock, patch
+from unittest.mock import Mock, patch
 
 import pytest
 import requests
@@ -431,6 +431,33 @@ class TestArcaStorageClient(unittest.TestCase):
 
         with pytest.raises(arca_exceptions.ArcaSVMNotFound):
             client.get_svm(name="nonexistent-svm")
+
+    @patch("arca_storage.openstack.cinder.client.requests")
+    def test_get_svm_capacity_success(self, mock_requests):
+        """Test successful SVM capacity retrieval."""
+        mock_response = Mock()
+        mock_response.status_code = 200
+        mock_response.json.return_value = {
+            "data": {
+                "capacity": {
+                    "svm": "test-svm",
+                    "total_gb": 1000,
+                    "free_gb": 750,
+                    "provisioned_gb": 125,
+                }
+            }
+        }
+
+        mock_session = Mock()
+        mock_session.request.return_value = mock_response
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+        result = client.get_svm_capacity("test-svm")
+
+        assert result["total_gb"] == 1000
+        assert result["free_gb"] == 750
+        assert mock_session.request.call_args.kwargs["url"].endswith("/v1/svms/test-svm/capacity")
 
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_context_manager(self, mock_requests):

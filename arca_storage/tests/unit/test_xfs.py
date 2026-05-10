@@ -2,11 +2,11 @@
 Unit tests for xfs module.
 """
 
-from pathlib import Path
 from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arca_storage.cli.lib import xfs as legacy_xfs
 from arca_storage.cli.lib.xfs import format_xfs, grow_xfs, mount_xfs, umount_xfs
 
 
@@ -40,6 +40,7 @@ class TestFormatXfs:
             capture_output=True,
             text=True,
             check=False,
+            timeout=legacy_xfs._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -65,6 +66,7 @@ class TestFormatXfs:
             capture_output=True,
             text=True,
             check=False,
+            timeout=legacy_xfs._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -114,6 +116,7 @@ class TestMountXfs:
             capture_output=True,
             text=True,
             check=False,
+            timeout=legacy_xfs._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -152,7 +155,11 @@ class TestUmountXfs:
         umount_xfs("/exports/tenant_a/vol1")
 
         mock_subprocess.assert_any_call(
-            ["umount", "/exports/tenant_a/vol1"], capture_output=True, text=True, check=False
+            ["umount", "/exports/tenant_a/vol1"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_xfs._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -189,7 +196,11 @@ class TestGrowXfs:
         grow_xfs("/exports/tenant_a/vol1")
 
         mock_subprocess.assert_any_call(
-            ["xfs_growfs", "/exports/tenant_a/vol1"], capture_output=True, text=True, check=False
+            ["xfs_growfs", "/exports/tenant_a/vol1"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_xfs._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit

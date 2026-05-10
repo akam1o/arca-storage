@@ -17,7 +17,7 @@
 - name: Create SVMs via arca
   ansible.builtin.command: >-
     {{ arca_cli_bin_path | default('/usr/bin/arca') }} svm create {{ item.name }}
-    --vlan {{ item.vlan_id }}
+    {% if item.vlan_id is defined and item.vlan_id is not none %}--vlan {{ item.vlan_id }}{% endif %}
     --ip {{ item.ip_cidr }}
     {% if item.gateway is defined and item.gateway %}--gateway {{ item.gateway }}{% endif %}
     {% if item.mtu is defined and item.mtu %}--mtu {{ item.mtu }}{% endif %}
@@ -51,7 +51,7 @@
     --svm {{ item.svm }}
     --volume {{ item.volume }}
     --client {{ item.client }}
-    {% if item.access is defined and item.access %}{% if item.access == 'ro' %}--ro{% else %}--rw{% endif %}{% endif %}
+    {% if item.access is defined and item.access %}--access {{ item.access }}{% endif %}
     {% if item.root_squash is defined %}{% if item.root_squash | bool %}--root-squash{% else %}--no-root-squash{% endif %}{% endif %}
   register: arca_runtime_export_add
   changed_when: arca_runtime_export_add.rc == 0

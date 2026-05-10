@@ -4,15 +4,35 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from arca_storage.api.auth import (
+    UNKNOWN_SERVER_HOST,
+    non_loopback_request_server_host,
+    unauthenticated_loopback_allowed,
+)
 from arca_storage.api.main import app
 
 
-def test_api_auth_is_disabled_without_token(monkeypatch):
+def test_api_auth_requires_token_without_loopback_opt_out(monkeypatch):
     monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
+
+    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
+        response = client.get("/v1/svms")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "AUTH_TOKEN_REQUIRED"
+    assert payload["error"]["details"]["host"] == "loopback"
+
+
+def test_api_auth_allows_loopback_without_token_when_explicitly_enabled(monkeypatch):
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
 
     with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
-        with TestClient(app) as client:
+        with TestClient(app, base_url="http://127.0.0.1:8080") as client:
             response = client.get("/v1/svms")
 
     assert response.status_code == 200
@@ -38,10 +58,59 @@ def test_api_auth_accepts_configured_bearer_token(monkeypatch):
     assert response.status_code == 200
 
 
-def test_api_auth_leaves_docs_open(monkeypatch):
+def test_api_auth_protects_openapi_schema(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
     with TestClient(app) as client:
         response = client.get("/openapi.json")
 
+    assert response.status_code == 401
+
+
+def test_api_auth_accepts_openapi_schema_with_bearer_token(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+
+    with TestClient(app) as client:
+        response = client.get("/openapi.json", headers={"Authorization": "Bearer secret-token"})
+
     assert response.status_code == 200
+
+
+def test_api_auth_rejects_non_loopback_request_without_token(monkeypatch):
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
+
+    with TestClient(app, base_url="http://192.0.2.10:8080") as client:
+        response = client.get("/v1/svms")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "AUTH_TOKEN_REQUIRED"
+    assert payload["error"]["details"]["host"] == "192.0.2.10"
+
+
+def test_api_auth_rejects_unknown_request_host_without_token(monkeypatch):
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
+
+    with TestClient(app, base_url="http://testserver") as client:
+        response = client.get("/v1/svms")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "AUTH_TOKEN_REQUIRED"
+    assert payload["error"]["details"]["host"] == "testserver"
+
+
+def test_non_loopback_request_server_host_fails_closed_for_missing_scope():
+    assert non_loopback_request_server_host({}) == UNKNOWN_SERVER_HOST
+
+
+def test_unauthenticated_loopback_allowed_requires_truthy_opt_in(monkeypatch):
+    monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
+    assert unauthenticated_loopback_allowed() is False
+
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
+    assert unauthenticated_loopback_allowed() is True

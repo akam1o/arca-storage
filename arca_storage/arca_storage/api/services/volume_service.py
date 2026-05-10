@@ -19,7 +19,14 @@ from arca_storage.create_resume import (
     new_create_owner,
 )
 from arca_storage.db import encode_cursor
-from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    ConflictError,
+    InternalError,
+    InvalidArgumentError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name, volume_lv_name
@@ -51,7 +58,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     owner = new_create_owner()
     assign_create_lease(volume.status, owner)
     try:
-        ctx.db.insert_volume(volume)
+        ctx.db.insert_volume(volume, require_ready_svm=True)
     except AlreadyExistsError:
         existing = ctx.db.get_volume(volume_data.svm, volume_data.name)
         allow_failed_resume = _can_resume_create(existing, requested_spec)
@@ -61,6 +68,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
             owner,
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
+            require_ready_svm=True,
         )
         if _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_volume_create(ctx, acquired, owner)
@@ -80,48 +88,64 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
     validate_name(svm)
 
     ctx = get_context()
-    record = ctx.db.get_volume(svm, name)
+    owner = new_create_owner()
+    record = ctx.db.reserve_volume_resize(svm, name, owner, new_size_gib)
     if not record:
         raise NotFoundError("Volume", f"{svm}/{name}")
-    require_volume_ready_record(record, svm, name)
+    completed = False
+    try:
+        require_volume_ready_record(record, svm, name)
+        current_size = int(record.get("spec", {}).get("size_gib") or 0)
+        if new_size_gib < current_size:
+            raise PreconditionFailedError(
+                f"Volume '{svm}/{name}' cannot be shrunk",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "current_size_gib": current_size,
+                    "requested_size_gib": new_size_gib,
+                },
+            )
 
-    current_size = int(record.get("spec", {}).get("size_gib") or 0)
-    if new_size_gib < current_size:
-        raise PreconditionFailedError(
-            f"Volume '{svm}/{name}' cannot be shrunk",
-            {
-                "resource": "Volume",
-                "name": f"{svm}/{name}",
-                "current_size_gib": current_size,
-                "requested_size_gib": new_size_gib,
-            },
-        )
-    if new_size_gib == current_size:
         vol = Volume(
             metadata=_meta_from_record(record),
             spec=VolumeSpec.model_validate(record["spec"]),
             status=_parse_status(record),
         )
+        if new_size_gib == current_size:
+            ctx.db.release_volume_resize(svm, name, owner)
+            completed = True
+            return _volume_to_dict(vol, ctx)
+
+        cfg = ctx.settings.to_reconciler_config()
+        vg_name = cfg["vg_name"]
+        export_dir = cfg["export_dir"]
+        lv_name = vol.status.lv_name or volume_lv_name(svm, name)
+        mount_path = vol.status.mount_path or f"{export_dir}/{svm}/{name}"
+
+        def refresh() -> bool:
+            return ctx.db.refresh_volume_resize_lease(svm, name, owner)
+
+        with create_lease_heartbeat(refresh):
+            ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
+            ctx.adapters.xfs.grow(mount_path)
+
+        vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
+        vol.metadata.bump()
+        if not ctx.db.complete_volume_resize(vol, owner):
+            raise ConflictError(
+                f"Volume '{svm}/{name}' changed during resize",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "requested_size_gib": new_size_gib,
+                },
+            )
+        completed = True
         return _volume_to_dict(vol, ctx)
-
-    vol = Volume(
-        metadata=_meta_from_record(record),
-        spec=VolumeSpec.model_validate(record["spec"]),
-        status=_parse_status(record),
-    )
-    cfg = ctx.settings.to_reconciler_config()
-    vg_name = cfg["vg_name"]
-    export_dir = cfg["export_dir"]
-    lv_name = vol.status.lv_name or volume_lv_name(svm, name)
-    mount_path = vol.status.mount_path or f"{export_dir}/{svm}/{name}"
-
-    ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
-    ctx.adapters.xfs.grow(mount_path)
-
-    vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
-    vol.metadata.bump()
-    ctx.db.upsert_volume(vol)
-    return _volume_to_dict(vol, ctx)
+    finally:
+        if not completed:
+            ctx.db.release_volume_resize(svm, name, owner)
 
 
 def delete_volume(name: str, svm: str, force: bool = False) -> None:
@@ -130,30 +154,23 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
     validate_name(svm)
 
     ctx = get_context()
-    record = ctx.db.get_volume(svm, name)
+    record = ctx.db.reserve_volume_delete(svm, name, force=force)
     if not record:
         raise NotFoundError("Volume", f"{svm}/{name}")
 
-    snapshots = ctx.db.list_snapshots(svm=svm, volume=name, limit=_LIST_ALL_LIMIT)
-    if snapshots and not force:
-        raise PreconditionFailedError(
-            f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
-            {
-                "resource": "Volume",
-                "name": f"{svm}/{name}",
-                "snapshot_count": len(snapshots),
-                "snapshots": [_snapshot_ref(s) for s in snapshots],
-            },
-        )
+    try:
+        snapshots = ctx.db.list_snapshots(svm=svm, volume=name, limit=_LIST_ALL_LIMIT)
+        _delete_exports_for_volume(ctx, svm, name)
 
-    _delete_exports_for_volume(ctx, svm, name)
+        if snapshots:
+            from arca_storage.api.services import snapshot_service
 
-    if snapshots:
-        from arca_storage.api.services import snapshot_service
-
-        for snapshot in snapshots:
-            spec = snapshot["spec"]
-            snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+            for snapshot in snapshots:
+                spec = snapshot["spec"]
+                snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+    except Exception as e:
+        _mark_volume_delete_failed(ctx, record, f"Delete failed: {e}")
+        raise
 
     volume = Volume(
         metadata=_meta_from_record(record),
@@ -307,7 +324,12 @@ def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
 
 def _reconcile_volume_create(ctx: Any, volume: Volume, owner: str) -> Volume:
     def refresh() -> bool:
-        if not ctx.db.refresh_volume_create_lease(volume.spec.svm, volume.spec.name, owner):
+        if not ctx.db.refresh_volume_create_lease(
+            volume.spec.svm,
+            volume.spec.name,
+            owner,
+            require_ready_svm=True,
+        ):
             return False
         return extend_create_lease(volume.status, owner)
 
@@ -340,6 +362,17 @@ def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
             spec = export.get("spec", {})
             if spec.get("owner") == "csi":
                 export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, spec["client"])
+
+
+def _mark_volume_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:
+    volume = Volume(
+        metadata=_meta_from_record(record),
+        spec=VolumeSpec.model_validate(record["spec"]),
+        status=_parse_status(record),
+    )
+    volume.status.phase = Phase.FAILED
+    volume.status.message = message
+    ctx.db.upsert_volume(volume)
 
 
 def _snapshot_ref(snapshot: Dict[str, Any]) -> str:

@@ -7,7 +7,7 @@ resources:
 namespace: kube-system
 
 images:
-  - name: csi-arca-storage
+  - name: ghcr.io/akam1o/csi-arca-storage
     newName: ghcr.io/akam1o/csi-arca-storage
     newTag: v1.0.0  # Use stable version tag
 
@@ -26,9 +26,11 @@ configMapGenerator:
 
 secretGenerator:
   - name: csi-arca-storage-secret
-    behavior: replace
     envs:
       - secrets.env
+
+generatorOptions:
+  disableNameSuffixHash: true
 
 labels:
   - includeSelectors: true

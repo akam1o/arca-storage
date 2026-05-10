@@ -41,9 +41,9 @@ arca_storage_api_timeout = 30
 arca_storage_api_retry_count = 3
 arca_storage_verify_ssl = true
 
-# Optional authentication
-# arca_storage_api_auth_type = token
-# arca_storage_api_token = <token>
+# Authentication
+arca_storage_api_auth_type = token
+arca_storage_api_token = <token>
 #
 # (Optional) TLS settings
 # arca_storage_api_ca_bundle = /etc/ssl/certs/ca-bundle.crt
@@ -179,6 +179,10 @@ For `per_project` strategy, creating a share from snapshot is restricted to the 
 ## Operational notes
 
 - The ARCA REST API must be reachable from `manila-share`.
+- The ARCA REST API requires a bearer token by default. For loopback-only
+  development, the API service can explicitly set
+  `ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK=true`, but do not use that setting when
+  exposing the listener through a reverse proxy, tunnel, or port-forward.
 - NFS clients (compute nodes/users) must be able to reach the SVM VIP and mount the exported path.
 - Plan address space for `per_project` pools: each pool supports `(end_ip - start_ip + 1)` projects; total capacity is the sum of all pools.
 

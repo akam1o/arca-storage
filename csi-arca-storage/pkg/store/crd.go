@@ -150,6 +150,12 @@ func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 			existing.Annotations[key] = value
 		}
 	}
+	if info.TemporaryCloneSnapshot == "" && existing.Annotations != nil {
+		delete(existing.Annotations, temporaryCloneSnapshotAnnotation)
+	}
+	if info.TemporaryCloneSourceVolumePath == "" && existing.Annotations != nil {
+		delete(existing.Annotations, temporaryCloneSourceVolumePathAnnotation)
+	}
 
 	if err := s.client.Update(ctx, existing); err != nil {
 		return fmt.Errorf("failed to update ArcaVolume: %w", err)

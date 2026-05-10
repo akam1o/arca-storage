@@ -243,3 +243,37 @@ func TestHasVolumePublishRequiresRecordedTarget(t *testing.T) {
 		t.Fatal("readonly mismatch should be rejected")
 	}
 }
+
+func TestShouldUnmountSVMRefreshesNodeState(t *testing.T) {
+	stateFile := filepath.Join(t.TempDir(), "state.json")
+	writer, err := NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("NewNodeState(writer) failed: %v", err)
+	}
+	reader, err := NewNodeState(stateFile)
+	if err != nil {
+		t.Fatalf("NewNodeState(reader) failed: %v", err)
+	}
+	manager := newTestMountManager(t)
+	manager.nodeState = reader
+
+	if err := writer.RecordVolumeStaging(
+		"volume-a",
+		"tenant-a",
+		"192.0.2.10",
+		"",
+		"pvc-a",
+		"/stage/volume-a",
+		nil,
+	); err != nil {
+		t.Fatalf("RecordVolumeStaging(writer) failed: %v", err)
+	}
+
+	shouldUnmount, err := manager.ShouldUnmountSVM(context.Background(), "tenant-a")
+	if err != nil {
+		t.Fatalf("ShouldUnmountSVM failed: %v", err)
+	}
+	if shouldUnmount {
+		t.Fatal("SVM should not be unmounted when another process has staged a volume")
+	}
+}

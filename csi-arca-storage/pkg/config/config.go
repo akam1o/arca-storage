@@ -10,6 +10,11 @@ import (
 	"github.com/akam1o/csi-arca-storage/pkg/arca"
 )
 
+const (
+	AuthTypeToken = "token"
+	AuthTypeNone  = "none"
+)
+
 // Config represents the CSI driver configuration
 type Config struct {
 	// ARCA API configuration
@@ -26,6 +31,7 @@ type Config struct {
 type ArcaConfig struct {
 	BaseURL   string    `yaml:"base_url"`
 	Timeout   Duration  `yaml:"timeout"`
+	AuthType  string    `yaml:"auth_type"`
 	AuthToken string    `yaml:"auth_token"`
 	TLS       TLSConfig `yaml:"tls"`
 }
@@ -101,6 +107,9 @@ func LoadConfig(path string) (*Config, error) {
 	if config.Network.MTU == 0 {
 		config.Network.MTU = 1500
 	}
+	if config.ARCA.AuthType == "" {
+		config.ARCA.AuthType = AuthTypeToken
+	}
 
 	// Override auth token from environment if set
 	if envToken := os.Getenv("ARCA_AUTH_TOKEN"); envToken != "" {
@@ -110,12 +119,52 @@ func LoadConfig(path string) (*Config, error) {
 	return &config, nil
 }
 
-// Validate validates the configuration
+// Validate validates the configuration for controller mode.
 func (c *Config) Validate() error {
+	return c.ValidateForMode("controller")
+}
+
+// ValidateForMode validates the configuration required by the requested driver mode.
+func (c *Config) ValidateForMode(mode string) error {
 	if c.ARCA.BaseURL == "" {
 		return fmt.Errorf("arca.base_url is required")
 	}
+	authType := normalizedAuthType(c.ARCA.AuthType)
+	switch authType {
+	case AuthTypeToken:
+		if c.ARCA.AuthToken == "" {
+			return fmt.Errorf("arca.auth_token is required when arca.auth_type is %q", AuthTypeToken)
+		}
+	case AuthTypeNone:
+	default:
+		return fmt.Errorf("arca.auth_type must be %q or %q", AuthTypeToken, AuthTypeNone)
+	}
 
+	switch mode {
+	case "controller":
+		if err := c.validateNetworkPools(); err != nil {
+			return err
+		}
+	case "node":
+	default:
+		return fmt.Errorf("invalid driver mode %q", mode)
+	}
+
+	if c.Driver.Endpoint == "" {
+		return fmt.Errorf("driver.endpoint is required")
+	}
+
+	return nil
+}
+
+func normalizedAuthType(authType string) string {
+	if authType == "" {
+		return AuthTypeToken
+	}
+	return authType
+}
+
+func (c *Config) validateNetworkPools() error {
 	if len(c.Network.Pools) == 0 {
 		return fmt.Errorf("at least one network pool is required")
 	}
@@ -126,20 +175,20 @@ func (c *Config) Validate() error {
 		}
 	}
 
-	if c.Driver.Endpoint == "" {
-		return fmt.Errorf("driver.endpoint is required")
-	}
-
 	return nil
 }
 
 // ToArcaClientConfig converts to ARCA client configuration
 func (c *Config) ToArcaClientConfig() *arca.ClientConfig {
+	authToken := c.ARCA.AuthToken
+	if normalizedAuthType(c.ARCA.AuthType) == AuthTypeNone {
+		authToken = ""
+	}
 	return &arca.ClientConfig{
 		BaseURL:    c.ARCA.BaseURL,
 		Timeout:    c.ARCA.Timeout.Duration,
 		RetryCount: 3,
-		AuthToken:  c.ARCA.AuthToken,
+		AuthToken:  authToken,
 		TLSConfig: &arca.TLSConfig{
 			CACertPath:     c.ARCA.TLS.CACertPath,
 			ClientCertPath: c.ARCA.TLS.ClientCertPath,

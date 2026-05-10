@@ -4,27 +4,22 @@ kind: Kustomization
 namespace: kube-system
 
 resources:
-  - ../../crds  # CRDs must be installed before controller starts
-  - ../../csidriver.yaml
-  - ../../rbac-controller.yaml
-  - ../../rbac-node.yaml
-  - ../../controller-statefulset.yaml
-  - ../../node.yaml
+  - crds  # CRDs must be installed before controller starts
+  - csidriver.yaml
+  - rbac-controller.yaml
+  - rbac-node.yaml
+  - controller-statefulset.yaml
+  - node.yaml
 
 images:
-  - name: csi-arca-storage
+  - name: ghcr.io/akam1o/csi-arca-storage
     newName: ghcr.io/akam1o/csi-arca-storage
-    newTag: latest
+    newTag: v1.0.0
 
 configMapGenerator:
   - name: csi-arca-storage-config
     files:
       - config.yaml
-
-secretGenerator:
-  - name: csi-arca-storage-secret
-    literals:
-      - auth-token=REPLACE_ME
 
 generatorOptions:
   disableNameSuffixHash: true

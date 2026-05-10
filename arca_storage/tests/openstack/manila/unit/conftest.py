@@ -34,9 +34,9 @@ def mock_manila_driver_config():
     config.arca_storage_api_retry_count = 3
     config.arca_storage_verify_ssl = False
 
-    # API auth (optional)
-    config.arca_storage_api_auth_type = "none"
-    config.arca_storage_api_token = None
+    # API auth (required by the default secured API server)
+    config.arca_storage_api_auth_type = "token"
+    config.arca_storage_api_token = "test-token"
     config.arca_storage_api_ca_bundle = None
     config.arca_storage_api_client_cert = None
     config.arca_storage_api_client_key = None

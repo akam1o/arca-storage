@@ -6,6 +6,7 @@ import hashlib
 import os
 import platform
 import subprocess
+import stat
 import sys
 from typing import Optional
 
@@ -331,7 +332,13 @@ def get_volume_usage(mount_point: str) -> Optional[dict]:
         return None
 
 
-def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
+def create_volume_file(
+    mount_point: str,
+    volume_name: str,
+    size_gb: int,
+    *,
+    adopt_existing: bool = False,
+) -> str:
     """Create a raw volume file for Cinder (atomic, concurrency-safe).
 
     This creates a sparse file that will be used as the actual volume backing store.
@@ -341,6 +348,7 @@ def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
         mount_point: NFS mount point
         volume_name: Volume name (used as filename)
         size_gb: Volume size in GB
+        adopt_existing: Return an existing file when it already has the requested size
 
     Returns:
         Path to created volume file
@@ -348,13 +356,32 @@ def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
     Raises:
         ArcaStorageException: If file creation fails
     """
+    volume_file, _created = ensure_volume_file(
+        mount_point,
+        volume_name,
+        size_gb,
+        adopt_existing=adopt_existing,
+    )
+    return volume_file
+
+
+def ensure_volume_file(
+    mount_point: str,
+    volume_name: str,
+    size_gb: int,
+    *,
+    adopt_existing: bool = False,
+) -> tuple[str, bool]:
+    """Create a raw volume file and report whether this process created it."""
     # Volume file path (use volume_name for compatibility with RemoteFSDriver)
     volume_file = os.path.join(mount_point, volume_name)
+    created = False
 
     try:
         # Atomic file creation using O_CREAT | O_EXCL to prevent race conditions
         # This will fail if the file already exists (another worker created it)
         fd = os.open(volume_file, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+        created = True
 
         try:
             # Extend file to desired size using ftruncate (sparse file)
@@ -363,12 +390,41 @@ def create_volume_file(mount_point: str, volume_name: str, size_gb: int) -> str:
         finally:
             os.close(fd)
 
-        return volume_file
+        return volume_file, True
 
     except FileExistsError:
+        if adopt_existing:
+            return _adopt_existing_volume_file(volume_file, size_gb), False
         raise ArcaStorageException(f"Volume file already exists: {volume_file}")
     except OSError as e:
+        if created:
+            try:
+                os.remove(volume_file)
+            except OSError as cleanup_error:
+                raise ArcaStorageException(
+                    f"Failed to create volume file {volume_file}: {e}; "
+                    f"failed to remove partial file: {cleanup_error}"
+                ) from e
         raise ArcaStorageException(f"Failed to create volume file {volume_file}: {e}")
+
+
+def _adopt_existing_volume_file(volume_file: str, size_gb: int) -> str:
+    """Return an existing volume file only when it matches the requested shape."""
+    expected_size = size_gb * 1024 * 1024 * 1024
+    try:
+        if os.path.islink(volume_file) or not os.path.isfile(volume_file):
+            raise ArcaStorageException(f"Existing volume path is not a regular file: {volume_file}")
+        actual_size = os.path.getsize(volume_file)
+    except ArcaStorageException:
+        raise
+    except OSError as e:
+        raise ArcaStorageException(f"Failed to inspect existing volume file {volume_file}: {e}") from e
+
+    if actual_size != expected_size:
+        raise ArcaStorageException(
+            f"Existing volume file has size {actual_size} bytes, expected {expected_size}: {volume_file}"
+        )
+    return volume_file
 
 
 def delete_volume_file(mount_point: str, volume_name: str) -> None:
@@ -415,27 +471,30 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
     """
     volume_file = os.path.join(mount_point, volume_name)
 
-    if not os.path.exists(volume_file):
-        raise ArcaStorageException(f"Volume file does not exist: {volume_file}")
-
     try:
-        # Extend sparse file
+        if not os.path.exists(volume_file):
+            raise ArcaStorageException(f"Volume file does not exist: {volume_file}")
+
+        if os.path.islink(volume_file) or not os.path.isfile(volume_file):
+            raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+
         size_bytes = new_size_gb * 1024 * 1024 * 1024
-        cmd = ["truncate", "-s", str(size_bytes), volume_file]
+        flags = os.O_WRONLY
+        if hasattr(os, "O_NOFOLLOW"):
+            flags |= os.O_NOFOLLOW
 
-        subprocess.run(
-            cmd,
-            capture_output=True,
-            text=True,
-            check=True,
-            timeout=10,
-        )
+        fd = os.open(volume_file, flags)
+        try:
+            if not stat.S_ISREG(os.fstat(fd).st_mode):
+                raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+            os.ftruncate(fd, size_bytes)
+        finally:
+            os.close(fd)
 
-    except subprocess.TimeoutExpired:
-        raise ArcaStorageException(f"Volume file extension timed out: {volume_file}")
-    except subprocess.CalledProcessError as e:
-        error_msg = e.stderr or e.stdout or str(e)
-        raise ArcaStorageException(f"Failed to extend volume file: {error_msg}")
+    except ArcaStorageException:
+        raise
+    except OSError as e:
+        raise ArcaStorageException(f"Failed to extend volume file {volume_file}: {e}") from e
 
 
 def _rename_noreplace(source_path: str, dest_path: str) -> None:
@@ -504,6 +563,47 @@ def _rename_noreplace(source_path: str, dest_path: str) -> None:
         raise OSError(error_number, os.strerror(error_number), dest_path)
 
 
+def _open_regular_file_no_follow(path: str) -> int:
+    """Open a regular file without following a symlink and return its fd."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ArcaStorageException(
+            "Secure source file opening is not supported on this platform"
+        )
+
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow)
+    except FileNotFoundError as e:
+        raise ArcaStorageException(f"Source file does not exist: {path}") from e
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ArcaStorageException(
+                f"Source must be a regular file, not a symlink: {path}"
+            ) from e
+        raise
+
+    try:
+        if not stat.S_ISREG(os.fstat(fd).st_mode):
+            raise ArcaStorageException(
+                f"Source must be a regular file, not a symlink: {path}"
+            )
+    except Exception:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _source_path_for_fd(source_fd: int) -> str:
+    """Return a filesystem path that resolves to an already-open source fd."""
+    for fd_dir in ("/proc/self/fd", "/dev/fd"):
+        fd_path = os.path.join(fd_dir, str(source_fd))
+        if os.path.exists(fd_path):
+            return fd_path
+    raise ArcaStorageException(
+        "Secure fd source path is not available on this platform"
+    )
+
+
 def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> None:
     """Copy a file preserving sparseness using atomic operations.
 
@@ -523,31 +623,43 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
     """
     import secrets
 
-    if not os.path.exists(source_path):
-        raise ArcaStorageException(f"Source file does not exist: {source_path}")
-
-    # Security: Ensure source is a regular file, not a symlink
-    if os.path.islink(source_path) or not os.path.isfile(source_path):
-        raise ArcaStorageException(f"Source must be a regular file, not a symlink: {source_path}")
-
     if os.path.exists(dest_path):
         raise ArcaStorageException(f"Destination file already exists: {dest_path}")
 
+    source_fd = _open_regular_file_no_follow(source_path)
     # Create temporary file with random suffix to prevent prediction
     dest_dir = os.path.dirname(dest_path)
     dest_name = os.path.basename(dest_path)
     random_suffix = secrets.token_hex(8)  # 16 character random hex
     temp_path = os.path.join(dest_dir, f".{dest_name}.tmp.{random_suffix}")
+    dest_installed = False
+
+    def cleanup_temp_file() -> None:
+        try:
+            if os.path.exists(temp_path):
+                os.remove(temp_path)
+        except OSError:
+            pass
+
+    def cleanup_installed_dest() -> None:
+        if not dest_installed:
+            return
+        try:
+            if os.path.exists(dest_path):
+                os.remove(dest_path)
+        except OSError:
+            pass
 
     try:
         # Copy to temporary file with -- to prevent filename attacks
-        cmd = ["cp", "--sparse=always", "--", source_path, temp_path]
+        cmd = ["cp", "--sparse=always", "--", _source_path_for_fd(source_fd), temp_path]
 
         subprocess.run(
             cmd,
             capture_output=True,
             text=True,
             check=True,
+            pass_fds=(source_fd,),
             timeout=timeout,
         )
 
@@ -563,6 +675,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
         try:
             # Try to create hard link at destination (fails if dest exists)
             os.link(temp_path, dest_path)
+            dest_installed = True
             # If successful, remove the temp file
             os.unlink(temp_path)
         except FileExistsError:
@@ -575,6 +688,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             # install the completed temp file with a no-overwrite atomic rename.
             try:
                 _rename_noreplace(temp_path, dest_path)
+                dest_installed = True
             except FileExistsError:
                 raise ArcaStorageException(
                     f"Destination file was created by another worker: {dest_path}"
@@ -593,36 +707,26 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             os.close(dir_fd)
 
     except ArcaStorageException:
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         raise
     except subprocess.TimeoutExpired:
         # Clean up temp file on timeout
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         raise ArcaStorageException(
             f"File copy timed out after {timeout}s: {source_path} -> {dest_path}"
         )
     except subprocess.CalledProcessError as e:
         # Clean up temp file on copy failure
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         error_msg = e.stderr or e.stdout or str(e)
         raise ArcaStorageException(f"Failed to copy file: {error_msg}")
     except OSError as e:
         # Clean up temp file on any OS error
-        try:
-            if os.path.exists(temp_path):
-                os.remove(temp_path)
-        except OSError:
-            pass
+        cleanup_installed_dest()
+        cleanup_temp_file()
         raise ArcaStorageException(f"Failed during file copy operation: {e}")
+    finally:
+        os.close(source_fd)

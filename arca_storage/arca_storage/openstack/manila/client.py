@@ -1,7 +1,6 @@
 """REST API client for ARCA Storage Manila Driver."""
 
 from typing import Any, Dict, List, Optional
-from urllib.parse import urljoin
 
 try:
     import requests
@@ -24,7 +23,6 @@ except ImportError:
 from .exceptions import (
     ArcaAPIConnectionError,
     ArcaAPITimeout,
-    ArcaAccessRuleError,
     ArcaManilaAPIError,
     ArcaShareAlreadyExists,
     ArcaShareNotFound,
@@ -335,7 +333,7 @@ class ArcaManilaClient:
             # Parse JSON response
             return response.json()
 
-        except requests.exceptions.Timeout as e:
+        except requests.exceptions.Timeout:
             LOG.error(f"Request timeout after {self.timeout}s: {path}")
             raise ArcaAPITimeout(timeout=self.timeout)
         except requests.exceptions.ConnectionError as e:

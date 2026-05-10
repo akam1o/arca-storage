@@ -9,7 +9,7 @@ from datetime import datetime, timezone
 from typing import Optional
 
 from arca_storage.create_resume import clear_create_lease
-from arca_storage.cli.lib.validators import volume_lv_name
+from arca_storage.cli.lib.validators import legacy_volume_lv_name, volume_lv_name
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
@@ -49,9 +49,13 @@ class VolumeReconciler:
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         thinpool = self._cfg.get("thinpool_name", "pool")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = volume_lv_name(spec.svm, spec.name)
+        lv_name = volume.status.lv_name or volume_lv_name(spec.svm, spec.name)
+        volume.status.lv_name = lv_name
         lv_path = f"/dev/{vg_name}/{lv_name}"
-        mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        default_mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
+        mount_path = volume.status.mount_path or default_mount_path
+        self._reset_missing_create_resources(volume, vg_name, lv_name, mount_path, create_owner)
+        mount_path = volume.status.mount_path or default_mount_path
 
         steps = [
             (
@@ -99,11 +103,40 @@ class VolumeReconciler:
         self._persist(volume, "Volume ready", expected_create_owner=expected_owner)
         return volume
 
+    def _reset_missing_create_resources(
+        self,
+        volume: Volume,
+        vg_name: str,
+        lv_name: str,
+        mount_path: str,
+        create_owner: Optional[str],
+    ) -> None:
+        changed = False
+        if volume.status.lv_created and not self.adapters.lvm.lv_exists(vg_name, lv_name):
+            volume.status.lv_created = False
+            volume.status.lv_path = None
+            volume.status.fs_formatted = False
+            volume.status.mounted = False
+            volume.status.mount_path = None
+            changed = True
+
+        if volume.status.mounted:
+            try:
+                mounted = self.adapters.xfs.is_mounted(mount_path)
+            except Exception:
+                mounted = True
+            if not mounted:
+                volume.status.mounted = False
+                changed = True
+
+        if changed:
+            self._persist(volume, "Volume create state reset", expected_create_owner=create_owner)
+
     def _reconcile_delete(self, volume: Volume) -> Volume:
         spec = volume.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         export_dir = self._cfg.get("export_dir", "/exports")
-        lv_name = volume.status.lv_name or f"vol_{spec.svm}_{spec.name}"
+        lv_name = volume.status.lv_name or legacy_volume_lv_name(spec.svm, spec.name)
         mount_path = volume.status.mount_path or f"{export_dir}/{spec.svm}/{spec.name}"
 
         try:

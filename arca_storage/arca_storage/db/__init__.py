@@ -12,17 +12,27 @@ import json
 import sqlite3
 import threading
 from contextlib import contextmanager
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from ipaddress import IPv4Interface
 from pathlib import Path
-from typing import Any, Generator, Optional, Union
+from typing import Any, Callable, Generator, Optional, Union
 
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    legacy_svm_root_lv_name,
+    legacy_volume_lv_name,
+    snapshot_lv_name,
+    svm_root_lv_name,
+    volume_lv_name,
+)
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
-from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError
+from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError, PreconditionFailedError
 from arca_storage.models.base import Phase
 
 
-_SCHEMA_VERSION = 1
+_SCHEMA_VERSION = 3
+_SNAPSHOT_CLEANUP_RESERVATION_DURATION = timedelta(minutes=5)
+_CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -64,6 +74,16 @@ CREATE TABLE IF NOT EXISTS snapshots (
     UNIQUE(svm, volume, name)
 );
 
+CREATE TABLE IF NOT EXISTS snapshot_cleanup_reservations (
+    svm         TEXT NOT NULL,
+    volume      TEXT NOT NULL,
+    name        TEXT NOT NULL,
+    owner       TEXT NOT NULL,
+    expires_at  TEXT NOT NULL,
+    created_at  TEXT NOT NULL,
+    PRIMARY KEY(svm, volume, name)
+);
+
 CREATE TABLE IF NOT EXISTS exports (
     id          TEXT PRIMARY KEY,
     svm         TEXT NOT NULL,
@@ -86,7 +106,161 @@ CREATE TABLE IF NOT EXISTS operation_log (
     detail      TEXT,
     created_at  TEXT NOT NULL
 );
+
+CREATE TABLE IF NOT EXISTS backend_lvs (
+    lv_name       TEXT PRIMARY KEY,
+    resource_kind TEXT NOT NULL,
+    resource_key  TEXT NOT NULL,
+    created_at    TEXT NOT NULL,
+    UNIQUE(resource_kind, resource_key)
+);
 """
+
+
+_REQUIRED_COLUMNS = {
+    "schema_version": {"version"},
+    "svms": {"id", "name", "spec", "status", "generation", "created_at", "updated_at"},
+    "volumes": {"id", "name", "svm", "spec", "status", "generation", "created_at", "updated_at"},
+    "snapshots": {"id", "name", "svm", "volume", "spec", "status", "generation", "created_at", "updated_at"},
+    "snapshot_cleanup_reservations": {"svm", "volume", "name", "owner", "expires_at", "created_at"},
+    "exports": {"id", "svm", "volume", "client", "spec", "status", "generation", "created_at", "updated_at"},
+    "operation_log": {"id", "resource_type", "resource_id", "operation", "phase", "detail", "created_at"},
+    "backend_lvs": {"lv_name", "resource_kind", "resource_key", "created_at"},
+}
+
+
+def _register_backend_lv_conn(
+    conn: sqlite3.Connection,
+    lv_name: Optional[str],
+    resource_kind: str,
+    resource_key: str,
+    *,
+    now: Optional[str] = None,
+) -> None:
+    if not lv_name:
+        return
+    existing_lv = conn.execute(
+        "SELECT resource_kind, resource_key FROM backend_lvs WHERE lv_name = ?",
+        (lv_name,),
+    ).fetchone()
+    if existing_lv is not None:
+        if existing_lv["resource_kind"] == resource_kind and existing_lv["resource_key"] == resource_key:
+            return
+        raise sqlite3.IntegrityError(f"backend LV name '{lv_name}' is already reserved")
+    conn.execute(
+        """INSERT INTO backend_lvs (lv_name, resource_kind, resource_key, created_at)
+           VALUES (?, ?, ?, ?)
+           ON CONFLICT(resource_kind, resource_key) DO UPDATE SET
+               lv_name=excluded.lv_name
+        """,
+        (lv_name, resource_kind, resource_key, now or datetime.now(timezone.utc).isoformat()),
+    )
+
+
+def _backfill_status_lv_name_conn(
+    conn: sqlite3.Connection,
+    table: str,
+    key_where: str,
+    key_values: tuple[Any, ...],
+    status: dict[str, Any],
+    lv_name: str,
+) -> None:
+    if status.get("lv_name"):
+        return
+    status["lv_name"] = lv_name
+    conn.execute(
+        f"UPDATE {table} SET status = ? WHERE {key_where}",
+        (json.dumps(status), *key_values),
+    )
+
+
+def _migrate_to_v2(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS snapshot_cleanup_reservations (
+            svm         TEXT NOT NULL,
+            volume      TEXT NOT NULL,
+            name        TEXT NOT NULL,
+            owner       TEXT NOT NULL,
+            expires_at  TEXT NOT NULL,
+            created_at  TEXT NOT NULL,
+            PRIMARY KEY(svm, volume, name)
+        )"""
+    )
+
+
+def _migrate_to_v3(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS backend_lvs (
+            lv_name       TEXT PRIMARY KEY,
+            resource_kind TEXT NOT NULL,
+            resource_key  TEXT NOT NULL,
+            created_at    TEXT NOT NULL,
+            UNIQUE(resource_kind, resource_key)
+        )"""
+    )
+
+    now = datetime.now(timezone.utc).isoformat()
+
+    for row in conn.execute("SELECT name, spec, status FROM svms").fetchall():
+        spec = json.loads(row["spec"])
+        status = json.loads(row["status"])
+        lv_name = status.get("lv_name")
+        if spec.get("root_volume_size_gib") or status.get("lv_created") or lv_name:
+            lv_name = str(lv_name or legacy_svm_root_lv_name(str(spec["name"])))
+            _backfill_status_lv_name_conn(conn, "svms", "name = ?", (row["name"],), status, lv_name)
+            _register_backend_lv_conn(conn, lv_name, "svm_root", str(spec["name"]), now=now)
+
+    for row in conn.execute("SELECT svm, name, spec, status FROM volumes").fetchall():
+        spec = json.loads(row["spec"])
+        status = json.loads(row["status"])
+        lv_name = str(status.get("lv_name") or legacy_volume_lv_name(str(spec["svm"]), str(spec["name"])))
+        _backfill_status_lv_name_conn(
+            conn,
+            "volumes",
+            "svm = ? AND name = ?",
+            (row["svm"], row["name"]),
+            status,
+            lv_name,
+        )
+        _register_backend_lv_conn(conn, lv_name, "volume", f"{spec['svm']}/{spec['name']}", now=now)
+
+    for row in conn.execute("SELECT svm, volume, name, spec, status FROM snapshots").fetchall():
+        spec = json.loads(row["spec"])
+        status = json.loads(row["status"])
+        lv_name = str(
+            status.get("lv_name")
+            or legacy_snapshot_lv_name(str(spec["svm"]), str(spec["volume"]), str(spec["name"]))
+        )
+        _backfill_status_lv_name_conn(
+            conn,
+            "snapshots",
+            "svm = ? AND volume = ? AND name = ?",
+            (row["svm"], row["volume"], row["name"]),
+            status,
+            lv_name,
+        )
+        _register_backend_lv_conn(
+            conn,
+            lv_name,
+            "snapshot",
+            f"{spec['svm']}/{spec['volume']}/{spec['name']}",
+            now=now,
+        )
+
+
+_MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
+    2: _migrate_to_v2,
+    3: _migrate_to_v3,
+}
+
+
+def _validate_schema(conn: sqlite3.Connection) -> None:
+    for table, required_columns in _REQUIRED_COLUMNS.items():
+        rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+        actual_columns = {str(row["name"]) for row in rows}
+        missing = sorted(required_columns - actual_columns)
+        if missing:
+            raise RuntimeError(f"State DB schema for table '{table}' is missing columns: {', '.join(missing)}")
 
 
 def _now_iso() -> str:
@@ -143,12 +317,29 @@ class StateDB:
         self._connections: dict[int, sqlite3.Connection] = {}
         self._connections_lock = threading.Lock()
         # Initialise schema on first connection
-        with self.transaction() as conn:
-            conn.executescript(_SCHEMA_SQL)
-            cur = conn.execute("SELECT version FROM schema_version")
-            row = cur.fetchone()
-            if row is None:
-                conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+        try:
+            with self.transaction() as conn:
+                conn.executescript(_SCHEMA_SQL)
+                cur = conn.execute("SELECT version FROM schema_version")
+                row = cur.fetchone()
+                if row is None:
+                    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+                else:
+                    current_version = int(row["version"])
+                    if current_version > _SCHEMA_VERSION:
+                        raise RuntimeError(
+                            f"State DB schema version {current_version} is newer than supported version {_SCHEMA_VERSION}"
+                        )
+                    for version in range(current_version + 1, _SCHEMA_VERSION + 1):
+                        migration = _MIGRATIONS.get(version)
+                        if migration is None:
+                            raise RuntimeError(f"No State DB migration registered for version {version}")
+                        migration(conn)
+                        conn.execute("UPDATE schema_version SET version = ?", (version,))
+                _validate_schema(conn)
+        except Exception:
+            self.close()
+            raise
 
     def _conn(self) -> sqlite3.Connection:
         conn = getattr(self._local, "conn", None)
@@ -186,11 +377,14 @@ class StateDB:
         now = _now_iso()
         try:
             with self.transaction(immediate=True) as conn:
+                lv_name = self._ensure_svm_backend_lv_name(svm)
                 self._raise_svm_network_conflict_conn(
                     conn,
                     svm.spec.model_dump(mode="json"),
                     exclude_name=svm.spec.name,
                 )
+                if lv_name:
+                    _register_backend_lv_conn(conn, lv_name, "svm_root", svm.spec.name, now=now)
                 conn.execute(
                     """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -219,11 +413,14 @@ class StateDB:
 
     def _upsert_svm_conn(self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        lv_name = self._ensure_svm_backend_lv_name(svm)
         self._raise_svm_network_conflict_conn(
             conn,
             svm.spec.model_dump(mode="json"),
             exclude_name=svm.spec.name,
         )
+        if lv_name:
+            _register_backend_lv_conn(conn, lv_name, "svm_root", svm.spec.name, now=now)
         conn.execute(
             """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?)
@@ -246,11 +443,7 @@ class StateDB:
 
     def get_svm(self, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
-        cur = conn.execute("SELECT * FROM svms WHERE name = ?", (name,))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return self._row_to_resource(row)
+        return self._get_svm_conn(conn, name)
 
     def acquire_svm_create_lease(
         self,
@@ -299,15 +492,139 @@ class StateDB:
     def delete_svm(self, name: str) -> bool:
         with self.transaction() as conn:
             cur = conn.execute("DELETE FROM svms WHERE name = ?", (name,))
+            if cur.rowcount > 0:
+                conn.execute("DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?", ("svm_root", name))
             return cur.rowcount > 0
+
+    def reserve_svm_delete(
+        self,
+        name: str,
+        *,
+        force: bool = False,
+        delete_volumes: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """Atomically mark an SVM deleting after validating dependent resources."""
+        cascade_volumes = delete_volumes or force
+        with self.transaction(immediate=True) as conn:
+            record = self._get_svm_conn(conn, name)
+            if record is None:
+                return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "SVM", name)
+
+            volumes = self._list_volumes_conn(conn, svm=name, limit=1_000_000)
+            creating_volumes = [volume for volume in volumes if self._create_lease_active(volume)]
+            if creating_volumes:
+                raise ConflictError(
+                    f"SVM '{name}' has volumes being created; retry after create completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "volume_count": len(creating_volumes),
+                        "volumes": [self._volume_ref(volume) for volume in creating_volumes],
+                    },
+                )
+            resizing_volumes = [volume for volume in volumes if self._resize_lease_active(volume)]
+            if resizing_volumes:
+                raise ConflictError(
+                    f"SVM '{name}' has volumes being resized; retry after resize completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "volume_count": len(resizing_volumes),
+                        "volumes": [self._volume_ref(volume) for volume in resizing_volumes],
+                    },
+                )
+            if volumes and not cascade_volumes:
+                raise PreconditionFailedError(
+                    f"SVM '{name}' has volumes; delete volumes first or retry with delete_volumes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "volume_count": len(volumes),
+                        "volumes": [self._volume_ref(volume) for volume in volumes],
+                    },
+                )
+
+            snapshots = self._list_snapshots_conn(conn, svm=name, limit=1_000_000)
+            creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
+            if creating_snapshots:
+                raise ConflictError(
+                    f"SVM '{name}' has snapshots being created; retry after create completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "snapshot_count": len(creating_snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in creating_snapshots],
+                    },
+                )
+            if snapshots and not force:
+                raise PreconditionFailedError(
+                    f"SVM '{name}' has snapshots; delete snapshots first or retry with force",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "snapshot_count": len(snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in snapshots],
+                    },
+                )
+            active_clone_snapshots = [
+                self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
+            ]
+            if active_clone_snapshots:
+                raise ConflictError(
+                    f"SVM '{name}' has snapshots that are being cloned; retry after clone completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "snapshots": active_clone_snapshots,
+                    },
+                )
+
+            all_exports = self._list_exports_conn(conn, svm=name, limit=1_000_000)
+            creating_exports = [export for export in all_exports if self._create_lease_active(export)]
+            if creating_exports:
+                raise ConflictError(
+                    f"SVM '{name}' has exports being created; retry after create completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "export_count": len(creating_exports),
+                        "exports": [self._export_ref(export) for export in creating_exports],
+                    },
+                )
+            exports = self._blocking_exports_for_svm_delete(conn, name, volumes, force=force)
+            if exports:
+                raise PreconditionFailedError(
+                    f"SVM '{name}' has exports; delete exports first or retry with force",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "export_count": len(exports),
+                        "exports": [self._export_ref(export) for export in exports],
+                    },
+                )
+
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            self._update_status_by_key_conn(conn, "svms", {"name": name}, status)
+            record["status"] = status
+            return record
 
     # ---- Volume operations ----
 
-    def insert_volume(self, volume: Any) -> None:
+    def insert_volume(self, volume: Any, *, require_ready_svm: bool = False) -> None:
         """Insert a new volume record without overwriting an existing one."""
         now = _now_iso()
         try:
             with self.transaction(immediate=True) as conn:
+                if require_ready_svm:
+                    self._require_ready_svm_conn(conn, volume.spec.svm)
+                lv_name = self._ensure_volume_backend_lv_name(volume)
+                _register_backend_lv_conn(conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now)
                 conn.execute(
                     """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -337,6 +654,8 @@ class StateDB:
 
     def _upsert_volume_conn(self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        lv_name = self._ensure_volume_backend_lv_name(volume)
+        _register_backend_lv_conn(conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now)
         conn.execute(
             """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -358,13 +677,155 @@ class StateDB:
             ),
         )
 
+    def update_ready_volume(self, volume: Any) -> bool:
+        """Update an existing READY volume without inserting a missing row."""
+        now = _now_iso()
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, volume.spec.svm, volume.spec.name)
+            if record is None:
+                return False
+            if str(record.get("status", {}).get("phase") or "") != Phase.READY.value:
+                return False
+            if self._resize_lease_active(record):
+                return False
+            cur = conn.execute(
+                """UPDATE volumes
+                   SET spec = ?, status = ?, generation = ?, updated_at = ?
+                   WHERE svm = ? AND name = ?
+                """,
+                (
+                    volume.spec.model_dump_json(),
+                    volume.status.model_dump_json(),
+                    volume.metadata.generation,
+                    now,
+                    volume.spec.svm,
+                    volume.spec.name,
+                ),
+            )
+            return cur.rowcount > 0
+
+    def reserve_volume_resize(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        target_size_gib: int,
+    ) -> Optional[dict[str, Any]]:
+        """Atomically reserve a READY volume for resize."""
+        with self.transaction(immediate=True) as conn:
+            if self._get_volume_conn(conn, svm, name) is None:
+                return None
+            self._require_ready_svm_conn(conn, svm)
+            record = self._require_ready_volume_conn(conn, svm, name)
+            if self._resize_lease_active(record):
+                status = record.get("status", {})
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' is already being resized",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "resize_target_size_gib": status.get("resize_target_size_gib"),
+                    },
+                )
+
+            current_size = int(record.get("spec", {}).get("size_gib") or 0)
+            if target_size_gib < current_size:
+                raise PreconditionFailedError(
+                    f"Volume '{svm}/{name}' cannot be shrunk",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "current_size_gib": current_size,
+                        "requested_size_gib": target_size_gib,
+                    },
+                )
+            if target_size_gib == current_size:
+                return record
+
+            status = dict(record["status"])
+            status["resize_owner"] = owner
+            status["resize_lease_expires_at"] = lease_expiration().isoformat()
+            status["resize_target_size_gib"] = target_size_gib
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            record["status"] = status
+            return record
+
+    def refresh_volume_resize_lease(self, svm: str, name: str, owner: str) -> bool:
+        with self.transaction(immediate=True) as conn:
+            self._require_ready_svm_conn(conn, svm)
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return False
+            status = dict(record["status"])
+            if str(status.get("phase") or "") != Phase.READY.value:
+                return False
+            if status.get("resize_owner") != owner:
+                return False
+            status["resize_lease_expires_at"] = lease_expiration().isoformat()
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            return True
+
+    def complete_volume_resize(self, volume: Any, owner: str) -> bool:
+        now = _now_iso()
+        with self.transaction(immediate=True) as conn:
+            self._require_ready_svm_conn(conn, volume.spec.svm)
+            record = self._get_volume_conn(conn, volume.spec.svm, volume.spec.name)
+            if record is None:
+                return False
+            current_status = record["status"]
+            if str(current_status.get("phase") or "") != Phase.READY.value:
+                return False
+            if current_status.get("resize_owner") != owner:
+                return False
+            if current_status.get("resize_target_size_gib") != volume.spec.size_gib:
+                return False
+
+            status = dict(current_status)
+            self._clear_resize_lease(status)
+            cur = conn.execute(
+                """UPDATE volumes
+                   SET spec = ?, status = ?, generation = ?, updated_at = ?
+                   WHERE svm = ? AND name = ?
+                """,
+                (
+                    volume.spec.model_dump_json(),
+                    json.dumps(status),
+                    volume.metadata.generation,
+                    now,
+                    volume.spec.svm,
+                    volume.spec.name,
+                ),
+            )
+            return cur.rowcount > 0
+
+    def release_volume_resize(self, svm: str, name: str, owner: str) -> None:
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return
+            status = dict(record["status"])
+            if status.get("resize_owner") != owner:
+                return
+            self._clear_resize_lease(status)
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+
+    def set_volume_qos(self, svm: str, name: str, qos: Optional[dict[str, Any]]) -> bool:
+        """Persist or clear QoS settings in the volume status."""
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return False
+            status = dict(record["status"])
+            if qos:
+                status["qos"] = dict(qos)
+            else:
+                status.pop("qos", None)
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            return True
+
     def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
-        cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
-        row = cur.fetchone()
-        if row is None:
-            return None
-        return self._row_to_resource(row)
+        return self._get_volume_conn(conn, svm, name)
 
     def acquire_volume_create_lease(
         self,
@@ -374,6 +835,7 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
+        require_ready_svm: bool = False,
     ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "volumes",
@@ -381,10 +843,23 @@ class StateDB:
             owner,
             expected_spec=expected_spec,
             allow_failed=allow_failed,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
         )
 
-    def refresh_volume_create_lease(self, svm: str, name: str, owner: str) -> bool:
-        return self._refresh_create_lease("volumes", {"svm": svm, "name": name}, owner)
+    def refresh_volume_create_lease(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        *,
+        require_ready_svm: bool = False,
+    ) -> bool:
+        return self._refresh_create_lease(
+            "volumes",
+            {"svm": svm, "name": name},
+            owner,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
+        )
 
     def list_volumes(
         self,
@@ -394,6 +869,16 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
+        return self._list_volumes_conn(conn, svm=svm, name=name, limit=limit, cursor=cursor)
+
+    def _list_volumes_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM volumes WHERE 1=1"
         params: list[Any] = []
         if svm:
@@ -415,15 +900,122 @@ class StateDB:
     def delete_volume(self, svm: str, name: str) -> bool:
         with self.transaction() as conn:
             cur = conn.execute("DELETE FROM volumes WHERE svm = ? AND name = ?", (svm, name))
+            if cur.rowcount > 0:
+                conn.execute(
+                    "DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?",
+                    ("volume", f"{svm}/{name}"),
+                )
             return cur.rowcount > 0
+
+    def reserve_volume_delete(self, svm: str, name: str, *, force: bool = False) -> Optional[dict[str, Any]]:
+        """Atomically mark a volume deleting after validating snapshot preconditions."""
+        with self.transaction(immediate=True) as conn:
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "Volume", f"{svm}/{name}")
+            if self._resize_lease_active(record):
+                status = record.get("status", {})
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' is being resized; retry after resize completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "resize_target_size_gib": status.get("resize_target_size_gib"),
+                    },
+                )
+            snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
+            creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
+            if creating_snapshots:
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' has snapshots being created; retry after create completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "snapshot_count": len(creating_snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in creating_snapshots],
+                    },
+                )
+            active_clone_snapshots = [
+                self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
+            ]
+            if active_clone_snapshots:
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' has snapshots that are being cloned; retry after clone completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "snapshots": active_clone_snapshots,
+                    },
+                )
+            exports = self._exports_removed_by_volume_delete_conn(conn, svm, name)
+            creating_exports = [export for export in exports if self._create_lease_active(export)]
+            if creating_exports:
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' has exports being created; retry after create completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "export_count": len(creating_exports),
+                        "exports": [self._export_ref(export) for export in creating_exports],
+                    },
+                )
+            if snapshots and not force:
+                raise PreconditionFailedError(
+                    f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "snapshot_count": len(snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in snapshots],
+                    },
+                )
+
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            record["status"] = status
+            return record
 
     # ---- Snapshot operations ----
 
-    def insert_snapshot(self, snapshot: Any) -> None:
+    def insert_snapshot(
+        self,
+        snapshot: Any,
+        *,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
+    ) -> None:
         """Insert a new snapshot record without overwriting an existing one."""
         now = _now_iso()
         try:
             with self.transaction(immediate=True) as conn:
+                if require_ready_volume:
+                    self._require_ready_volume_conn(
+                        conn,
+                        snapshot.spec.svm,
+                        snapshot.spec.volume,
+                        require_ready_svm=require_ready_svm,
+                    )
+                elif require_ready_svm:
+                    self._require_ready_svm_conn(conn, snapshot.spec.svm)
+                if self._snapshot_cleanup_reserved_conn(conn, snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name):
+                    raise AlreadyExistsError(
+                        "Snapshot",
+                        f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+                    )
+                lv_name = self._ensure_snapshot_backend_lv_name(snapshot)
+                _register_backend_lv_conn(
+                    conn,
+                    lv_name,
+                    "snapshot",
+                    f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+                    now=now,
+                )
                 conn.execute(
                     """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -446,17 +1038,51 @@ class StateDB:
                 f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
             ) from e
 
-    def upsert_snapshot(self, snapshot: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+    def upsert_snapshot(
+        self,
+        snapshot: Any,
+        *,
+        expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
+    ) -> bool:
         now = _now_iso()
         key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
-        with self.transaction(immediate=expected_create_owner is not None) as conn:
+        with self.transaction(immediate=True) as conn:
             if not self._create_owner_matches_conn(conn, "snapshots", key, expected_create_owner):
                 return False
+            if require_ready_volume:
+                self._require_ready_volume_conn(
+                    conn,
+                    snapshot.spec.svm,
+                    snapshot.spec.volume,
+                    require_ready_svm=require_ready_svm,
+                )
+            elif require_ready_svm:
+                self._require_ready_svm_conn(conn, snapshot.spec.svm)
+            if self._get_resource_by_key_conn(conn, "snapshots", key) is None and self._snapshot_cleanup_reserved_conn(
+                conn,
+                snapshot.spec.svm,
+                snapshot.spec.volume,
+                snapshot.spec.name,
+            ):
+                raise AlreadyExistsError(
+                    "Snapshot",
+                    f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+                )
             self._upsert_snapshot_conn(conn, snapshot, now=now)
             return True
 
     def _upsert_snapshot_conn(self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None) -> None:
         now = now or _now_iso()
+        lv_name = self._ensure_snapshot_backend_lv_name(snapshot)
+        _register_backend_lv_conn(
+            conn,
+            lv_name,
+            "snapshot",
+            f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+            now=now,
+        )
         conn.execute(
             """INSERT INTO snapshots (id, name, svm, volume, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -488,6 +1114,8 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
     ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "snapshots",
@@ -495,10 +1123,37 @@ class StateDB:
             owner,
             expected_spec=expected_spec,
             allow_failed=allow_failed,
+            precondition=(
+                (lambda conn: self._require_ready_volume_conn(conn, svm, volume, require_ready_svm=require_ready_svm))
+                if require_ready_volume
+                else (lambda conn: self._require_ready_svm_conn(conn, svm))
+                if require_ready_svm
+                else None
+            ),
         )
 
-    def refresh_snapshot_create_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
-        return self._refresh_create_lease("snapshots", {"svm": svm, "volume": volume, "name": name}, owner)
+    def refresh_snapshot_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        owner: str,
+        *,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
+    ) -> bool:
+        return self._refresh_create_lease(
+            "snapshots",
+            {"svm": svm, "volume": volume, "name": name},
+            owner,
+            precondition=(
+                (lambda conn: self._require_ready_volume_conn(conn, svm, volume, require_ready_svm=require_ready_svm))
+                if require_ready_volume
+                else (lambda conn: self._require_ready_svm_conn(conn, svm))
+                if require_ready_svm
+                else None
+            ),
+        )
 
     def list_snapshots(
         self,
@@ -509,6 +1164,17 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
+        return self._list_snapshots_conn(conn, svm=svm, volume=volume, name=name, limit=limit, cursor=cursor)
+
+    def _list_snapshots_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        name: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM snapshots WHERE 1=1"
         params: list[Any] = []
         if svm:
@@ -539,14 +1205,190 @@ class StateDB:
                 "DELETE FROM snapshots WHERE svm = ? AND volume = ? AND name = ?",
                 (svm, volume, name),
             )
+            if cur.rowcount > 0:
+                conn.execute(
+                    "DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?",
+                    ("snapshot", f"{svm}/{volume}/{name}"),
+                )
             return cur.rowcount > 0
+
+    def reserve_snapshot_clone(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        owner: str,
+    ) -> Optional[dict[str, Any]]:
+        """Reserve a READY snapshot so delete cannot remove it during clone."""
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return None
+            status = dict(record["status"])
+            phase = status.get("phase")
+            if phase != Phase.READY.value or not status.get("lv_created"):
+                raise PreconditionFailedError(
+                    f"Snapshot '{svm}/{volume}/{name}' is not ready",
+                    {
+                        "resource": "Snapshot",
+                        "name": f"{svm}/{volume}/{name}",
+                        "phase": phase,
+                    },
+                )
+            leases = self._pruned_snapshot_clone_leases(status)
+            leases[owner] = lease_expiration().isoformat()
+            status["clone_leases"] = leases
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+            record["status"] = status
+            return record
+
+    def refresh_snapshot_clone_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return False
+            status = dict(record["status"])
+            if status.get("phase") != Phase.READY.value or not status.get("lv_created"):
+                return False
+            leases = self._pruned_snapshot_clone_leases(status)
+            if owner not in leases:
+                return False
+            leases[owner] = lease_expiration().isoformat()
+            status["clone_leases"] = leases
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+            return True
+
+    def release_snapshot_clone(self, svm: str, volume: str, name: str, owner: str) -> None:
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return
+            status = dict(record["status"])
+            leases = self._pruned_snapshot_clone_leases(status)
+            leases.pop(owner, None)
+            if leases:
+                status["clone_leases"] = leases
+            else:
+                status.pop("clone_leases", None)
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+
+    def reserve_snapshot_delete(
+        self,
+        svm: str,
+        volume: str,
+        name: str,
+        *,
+        force: bool = False,
+    ) -> Optional[dict[str, Any]]:
+        """Atomically mark a snapshot deleting after validating clone preconditions."""
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "snapshots", key)
+            if record is None:
+                return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "Snapshot", f"{svm}/{volume}/{name}")
+            active_leases = self._active_snapshot_clone_leases(record)
+            if active_leases:
+                raise ConflictError(
+                    f"Snapshot '{svm}/{volume}/{name}' is being cloned; retry after clone completes",
+                    {
+                        "resource": "Snapshot",
+                        "name": f"{svm}/{volume}/{name}",
+                        "clone_owners": sorted(active_leases),
+                    },
+                )
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            status.pop("clone_leases", None)
+            self._update_status_by_key_conn(conn, "snapshots", key, status)
+            record["status"] = status
+            return record
+
+    def reserve_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> bool:
+        now = datetime.now(timezone.utc)
+        now_iso = now.isoformat()
+        expires_at = (now + _SNAPSHOT_CLEANUP_RESERVATION_DURATION).isoformat()
+        key = {"svm": svm, "volume": volume, "name": name}
+        with self.transaction(immediate=True) as conn:
+            if self._get_resource_by_key_conn(conn, "snapshots", key) is not None:
+                return False
+            cur = conn.execute(
+                """SELECT expires_at FROM snapshot_cleanup_reservations
+                   WHERE svm = ? AND volume = ? AND name = ?
+                """,
+                (svm, volume, name),
+            )
+            reservation = cur.fetchone()
+            if reservation is not None:
+                if str(reservation["expires_at"]) > now_iso:
+                    return False
+                conn.execute(
+                    """UPDATE snapshot_cleanup_reservations
+                       SET owner = ?, expires_at = ?, created_at = ?
+                       WHERE svm = ? AND volume = ? AND name = ?
+                    """,
+                    (owner, expires_at, now_iso, svm, volume, name),
+                )
+                return True
+            try:
+                conn.execute(
+                    """INSERT INTO snapshot_cleanup_reservations (svm, volume, name, owner, expires_at, created_at)
+                       VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    (svm, volume, name, owner, expires_at, now_iso),
+                )
+            except sqlite3.IntegrityError:
+                return False
+            return True
+
+    def release_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> None:
+        with self.transaction(immediate=True) as conn:
+            conn.execute(
+                """DELETE FROM snapshot_cleanup_reservations
+                   WHERE svm = ? AND volume = ? AND name = ? AND owner = ?
+                """,
+                (svm, volume, name, owner),
+            )
+
+    def _snapshot_cleanup_reserved_conn(self, conn: sqlite3.Connection, svm: str, volume: str, name: str) -> bool:
+        cur = conn.execute(
+            """SELECT 1 FROM snapshot_cleanup_reservations
+               WHERE svm = ? AND volume = ? AND name = ?
+               LIMIT 1
+            """,
+            (svm, volume, name),
+        )
+        return cur.fetchone() is not None
 
     # ---- Export operations ----
 
-    def upsert_export(self, export: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+    def upsert_export(
+        self,
+        export: Any,
+        *,
+        expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
+        allow_missing_create_owner: bool = True,
+    ) -> bool:
         now = _now_iso()
         with self.transaction(immediate=expected_create_owner is not None) as conn:
-            return self._upsert_export_conn(conn, export, now=now, expected_create_owner=expected_create_owner)
+            return self._upsert_export_conn(
+                conn,
+                export,
+                now=now,
+                expected_create_owner=expected_create_owner,
+                require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
+                allow_missing_create_owner=allow_missing_create_owner,
+            )
 
     def _upsert_export_conn(
         self,
@@ -555,11 +1397,29 @@ class StateDB:
         *,
         now: Optional[str] = None,
         expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
+        allow_missing_create_owner: bool = True,
     ) -> bool:
         now = now or _now_iso()
         key = {"svm": export.spec.svm, "volume": export.spec.volume, "client": export.spec.client}
-        if not self._create_owner_matches_conn(conn, "exports", key, expected_create_owner, allow_missing=True):
+        if not self._create_owner_matches_conn(
+            conn,
+            "exports",
+            key,
+            expected_create_owner,
+            allow_missing=allow_missing_create_owner,
+        ):
             return False
+        if require_ready_volume:
+            self._require_ready_volume_conn(
+                conn,
+                export.spec.svm,
+                export.spec.volume,
+                require_ready_svm=require_ready_svm,
+            )
+        elif require_ready_svm:
+            self._require_ready_svm_conn(conn, export.spec.svm)
         conn.execute(
             """INSERT INTO exports (id, svm, volume, client, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
@@ -598,6 +1458,25 @@ class StateDB:
         conn = self._conn()
         return self._get_export_conn(conn, svm, volume, client)
 
+    def reserve_export_delete(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
+        """Atomically mark an export deleting after validating create state."""
+        key = {"svm": svm, "volume": volume, "client": client}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "exports", key)
+            if record is None:
+                return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "Export", f"{svm}/{volume}/{client}")
+
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            self._update_status_by_key_conn(conn, "exports", key, status)
+            record["status"] = status
+            return record
+
     def acquire_export_create_lease(
         self,
         svm: str,
@@ -607,6 +1486,7 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
+        require_ready_svm: bool = False,
     ) -> Optional[dict[str, Any]]:
         return self._acquire_create_lease(
             "exports",
@@ -614,10 +1494,24 @@ class StateDB:
             owner,
             expected_spec=expected_spec,
             allow_failed=allow_failed,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
         )
 
-    def refresh_export_create_lease(self, svm: str, volume: str, client: str, owner: str) -> bool:
-        return self._refresh_create_lease("exports", {"svm": svm, "volume": volume, "client": client}, owner)
+    def refresh_export_create_lease(
+        self,
+        svm: str,
+        volume: str,
+        client: str,
+        owner: str,
+        *,
+        require_ready_svm: bool = False,
+    ) -> bool:
+        return self._refresh_create_lease(
+            "exports",
+            {"svm": svm, "volume": volume, "client": client},
+            owner,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
+        )
 
     def _get_export_conn(
         self,
@@ -709,6 +1603,30 @@ class StateDB:
 
     # ---- helpers ----
 
+    @staticmethod
+    def _ensure_svm_backend_lv_name(svm: Any) -> Optional[str]:
+        has_root_lv = bool(getattr(svm.spec, "root_volume_size_gib", None)) or bool(
+            getattr(svm.status, "lv_created", False)
+        )
+        existing = getattr(svm.status, "lv_name", None)
+        if not has_root_lv and not existing:
+            return None
+        if not existing:
+            svm.status.lv_name = svm_root_lv_name(svm.spec.name)
+        return svm.status.lv_name
+
+    @staticmethod
+    def _ensure_volume_backend_lv_name(volume: Any) -> str:
+        if not getattr(volume.status, "lv_name", None):
+            volume.status.lv_name = volume_lv_name(volume.spec.svm, volume.spec.name)
+        return volume.status.lv_name
+
+    @staticmethod
+    def _ensure_snapshot_backend_lv_name(snapshot: Any) -> str:
+        if not getattr(snapshot.status, "lv_name", None):
+            snapshot.status.lv_name = snapshot_lv_name(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name)
+        return snapshot.status.lv_name
+
     def _acquire_create_lease(
         self,
         table: str,
@@ -717,8 +1635,11 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
+        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
     ) -> Optional[dict[str, Any]]:
         with self.transaction(immediate=True) as conn:
+            if precondition is not None:
+                precondition(conn)
             record = self._get_resource_by_key_conn(conn, table, key)
             if record is None:
                 return None
@@ -754,8 +1675,17 @@ class StateDB:
             return allow_missing
         return record["status"].get("create_owner") == expected_owner
 
-    def _refresh_create_lease(self, table: str, key: dict[str, str], owner: str) -> bool:
+    def _refresh_create_lease(
+        self,
+        table: str,
+        key: dict[str, str],
+        owner: str,
+        *,
+        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
+    ) -> bool:
         with self.transaction(immediate=True) as conn:
+            if precondition is not None:
+                precondition(conn)
             record = self._get_resource_by_key_conn(conn, table, key)
             if record is None:
                 return False
@@ -765,6 +1695,28 @@ class StateDB:
             status["create_lease_expires_at"] = lease_expiration().isoformat()
             self._update_status_by_key_conn(conn, table, key, status)
             return True
+
+    @staticmethod
+    def _create_lease_active(record: dict[str, Any]) -> bool:
+        status = record.get("status", {})
+        if status.get("phase") not in ACTIVE_CREATE_PHASES:
+            return False
+        if not status.get("create_owner"):
+            return False
+        return not create_lease_expired(record)
+
+    @staticmethod
+    def _raise_active_create_conflict(record: dict[str, Any], resource: str, name: str) -> None:
+        status = record.get("status", {})
+        raise ConflictError(
+            f"{resource} '{name}' is being created; retry after create completes",
+            {
+                "resource": resource,
+                "name": name,
+                "phase": status.get("phase"),
+                "create_owner": status.get("create_owner"),
+            },
+        )
 
     def _get_resource_by_key_conn(
         self,
@@ -778,6 +1730,71 @@ class StateDB:
         if row is None:
             return None
         return self._row_to_resource(row)
+
+    def _get_svm_conn(self, conn: sqlite3.Connection, name: str) -> Optional[dict[str, Any]]:
+        cur = conn.execute("SELECT * FROM svms WHERE name = ?", (name,))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_resource(row)
+
+    def _get_volume_conn(self, conn: sqlite3.Connection, svm: str, name: str) -> Optional[dict[str, Any]]:
+        cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
+        row = cur.fetchone()
+        if row is None:
+            return None
+        return self._row_to_resource(row)
+
+    def _require_ready_svm_conn(self, conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+        record = self._get_svm_conn(conn, name)
+        if record is None:
+            raise NotFoundError("SVM", name)
+        phase = str(record.get("status", {}).get("phase") or "")
+        if phase != Phase.READY.value:
+            raise PreconditionFailedError(
+                f"SVM '{name}' is not ready",
+                {
+                    "resource": "SVM",
+                    "name": name,
+                    "phase": phase,
+                },
+            )
+        return record
+
+    def _require_ready_volume_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: str,
+        name: str,
+        *,
+        require_ready_svm: bool = False,
+    ) -> dict[str, Any]:
+        if require_ready_svm:
+            self._require_ready_svm_conn(conn, svm)
+        record = self._get_volume_conn(conn, svm, name)
+        if record is None:
+            raise NotFoundError("Volume", f"{svm}/{name}")
+        phase = str(record.get("status", {}).get("phase") or "")
+        if phase != Phase.READY.value:
+            raise PreconditionFailedError(
+                f"Volume '{svm}/{name}' is not ready",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "phase": phase,
+                },
+            )
+        if self._resize_lease_active(record):
+            status = record.get("status", {})
+            raise ConflictError(
+                f"Volume '{svm}/{name}' is being resized",
+                {
+                    "resource": "Volume",
+                    "name": f"{svm}/{name}",
+                    "resize_target_size_gib": status.get("resize_target_size_gib"),
+                },
+            )
+        return record
 
     def _update_status_by_key_conn(
         self,
@@ -821,6 +1838,117 @@ class StateDB:
                         "conflicting_svm": existing_name,
                     },
                 )
+
+    def _exports_removed_by_volume_delete_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: str,
+        volume: str,
+    ) -> list[dict[str, Any]]:
+        exports = self._list_exports_conn(conn, svm=svm, volume=volume, limit=1_000_000)
+        has_other_csi_volume = any(
+            export.get("spec", {}).get("owner") == "csi"
+            and export.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
+            for export in self._list_exports_conn(conn, svm=svm, limit=1_000_000)
+        )
+        if not has_other_csi_volume:
+            exports.extend(
+                self._list_exports_conn(conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME, limit=1_000_000)
+            )
+        return exports
+
+    def _blocking_exports_for_svm_delete(
+        self,
+        conn: sqlite3.Connection,
+        svm: str,
+        volumes: list[dict[str, Any]],
+        *,
+        force: bool,
+    ) -> list[dict[str, Any]]:
+        if force:
+            return []
+
+        exports = self._list_exports_conn(conn, svm=svm, limit=1_000_000)
+        volume_names = {str(volume.get("spec", {}).get("name") or "") for volume in volumes}
+        if not volume_names:
+            return exports
+
+        blocking: list[dict[str, Any]] = []
+        for export in exports:
+            spec = export.get("spec", {})
+            volume_name = spec.get("volume")
+            if volume_name in volume_names:
+                continue
+            if spec.get("owner", "api") == "csi" and volume_name == _CSI_ROOT_EXPORT_VOLUME:
+                continue
+            blocking.append(export)
+        return blocking
+
+    @staticmethod
+    def _resize_lease_active(record: dict[str, Any]) -> bool:
+        status = record.get("status", {})
+        if not status.get("resize_owner"):
+            return False
+        raw_expires_at = status.get("resize_lease_expires_at")
+        if not raw_expires_at:
+            return True
+        try:
+            expires_at = datetime.fromisoformat(str(raw_expires_at).replace("Z", "+00:00"))
+        except ValueError:
+            return True
+        if expires_at.tzinfo is None:
+            expires_at = expires_at.replace(tzinfo=timezone.utc)
+        return expires_at.astimezone(timezone.utc) > datetime.now(timezone.utc)
+
+    @classmethod
+    def _active_snapshot_clone_leases(cls, record: dict[str, Any]) -> dict[str, str]:
+        status = dict(record.get("status", {}))
+        return cls._pruned_snapshot_clone_leases(status)
+
+    @staticmethod
+    def _pruned_snapshot_clone_leases(status: dict[str, Any]) -> dict[str, str]:
+        raw_leases = status.get("clone_leases")
+        if not isinstance(raw_leases, dict):
+            return {}
+        now = datetime.now(timezone.utc)
+        active: dict[str, str] = {}
+        for owner, raw_expires_at in raw_leases.items():
+            if not owner:
+                continue
+            if not raw_expires_at:
+                active[str(owner)] = ""
+                continue
+            try:
+                expires_at = datetime.fromisoformat(str(raw_expires_at).replace("Z", "+00:00"))
+            except ValueError:
+                active[str(owner)] = str(raw_expires_at)
+                continue
+            if expires_at.tzinfo is None:
+                expires_at = expires_at.replace(tzinfo=timezone.utc)
+            if expires_at.astimezone(timezone.utc) > now:
+                active[str(owner)] = str(raw_expires_at)
+        return active
+
+    @staticmethod
+    def _clear_resize_lease(status: dict[str, Any]) -> None:
+        status["resize_owner"] = None
+        status["resize_lease_expires_at"] = None
+        status["resize_target_size_gib"] = None
+
+    @staticmethod
+    def _volume_ref(volume: dict[str, Any]) -> str:
+        spec = volume.get("spec", {})
+        return f"{spec.get('svm')}/{spec.get('name')}"
+
+    @staticmethod
+    def _snapshot_ref(snapshot: dict[str, Any]) -> str:
+        spec = snapshot.get("spec", {})
+        return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('name')}"
+
+    @staticmethod
+    def _export_ref(export: dict[str, Any]) -> str:
+        spec = export.get("spec", {})
+        return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('client')}"
 
     @staticmethod
     def _row_to_resource(row: sqlite3.Row) -> dict[str, Any]:

@@ -12,6 +12,7 @@ import typer
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.api.services import export_service
+from arca_storage.cli.commands._pagination import list_all_exports
 from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
 from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
@@ -90,7 +91,7 @@ def list(
     """List NFS exports from the database."""
     try:
         ctx = get_context()
-        exports = ctx.db.list_exports(svm=svm, volume=volume)
+        exports = list_all_exports(ctx.db, svm=svm, volume=volume)
         if not exports:
             typer.echo("No exports found")
             return

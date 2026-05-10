@@ -2,12 +2,14 @@
 Input validation functions.
 """
 
+import hashlib
 import ipaddress
 import re
 from typing import Tuple
 
 
 LVM_NAME_MAX_LENGTH = 127
+_LVM_HASH_BYTES = 8
 _RESOURCE_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*")
 
 
@@ -41,22 +43,47 @@ def validate_lvm_name(name: str, *, resource: str = "Logical volume") -> None:
         )
 
 
-def svm_root_lv_name(svm: str) -> str:
-    name = f"vol_{svm}"
-    validate_lvm_name(name, resource="SVM root logical volume")
+def _hash_lvm_name(kind: str, components: tuple[str, ...]) -> str:
+    payload = "\0".join((kind, *components)).encode("utf-8")
+    return hashlib.blake2b(payload, digest_size=_LVM_HASH_BYTES).hexdigest()
+
+
+def _hashed_lvm_name(prefix: str, kind: str, *components: str) -> str:
+    suffix = _hash_lvm_name(kind, components)
+    readable = "-".join((prefix, *components))
+    max_readable_len = LVM_NAME_MAX_LENGTH - len(suffix) - 1
+    if len(readable) > max_readable_len:
+        readable = readable[:max_readable_len].rstrip("-._")
+    name = f"{readable}-{suffix}"
+    validate_lvm_name(name, resource=f"{kind} logical volume")
     return name
+
+
+def svm_root_lv_name(svm: str) -> str:
+    return _hashed_lvm_name("svmroot", "SVM root", svm)
 
 
 def volume_lv_name(svm: str, volume: str) -> str:
-    name = f"vol_{svm}_{volume}"
-    validate_lvm_name(name, resource="Volume logical volume")
-    return name
+    return _hashed_lvm_name("vol", "Volume", svm, volume)
 
 
 def snapshot_lv_name(svm: str, volume: str, snapshot: str) -> str:
-    name = f"vol_{svm}_{volume}_snap_{snapshot}"
-    validate_lvm_name(name, resource="Snapshot logical volume")
-    return name
+    return _hashed_lvm_name("snap", "Snapshot", svm, volume, snapshot)
+
+
+def legacy_svm_root_lv_name(svm: str) -> str:
+    """Return the pre-hash SVM root LV name for existing records."""
+    return f"vol_{svm}"
+
+
+def legacy_volume_lv_name(svm: str, volume: str) -> str:
+    """Return the pre-hash volume LV name for existing records."""
+    return f"vol_{svm}_{volume}"
+
+
+def legacy_snapshot_lv_name(svm: str, volume: str, snapshot: str) -> str:
+    """Return the pre-hash snapshot LV name for existing records."""
+    return f"vol_{svm}_{volume}_snap_{snapshot}"
 
 
 def validate_vlan(vlan_id: int) -> None:

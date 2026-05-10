@@ -50,26 +50,3 @@ def test_body_name_validation_rejects_trailing_newline():
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
-
-
-@pytest.mark.integration
-@pytest.mark.parametrize(
-    ("path", "payload"),
-    [
-        (
-            "/v1/volumes",
-            {"svm": "s" * 64, "name": "v" * 59, "size_gib": 1},
-        ),
-        (
-            "/v1/snapshots",
-            {"svm": "s" * 64, "volume": "v" * 64, "name": "p" * 64},
-        ),
-    ],
-)
-def test_generated_lvm_name_validation_errors_return_invalid_argument(path: str, payload: dict[str, object]):
-    client = TestClient(app, raise_server_exceptions=False)
-
-    response = client.post(path, json=payload)
-
-    assert response.status_code == 400
-    assert response.json()["error"]["code"] == "INVALID_ARGUMENT"

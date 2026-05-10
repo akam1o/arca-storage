@@ -15,7 +15,7 @@ from typing import Optional
 
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
 from arca_storage.db import StateDB
-from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError
+from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError, PreconditionFailedError
 from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
@@ -50,6 +50,8 @@ class ExportReconciler:
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
         previous_ready_export: Optional[Export] = None
+        require_ready_volume = _requires_ready_volume(export)
+        require_ready_svm = True
 
         with self.db.transaction(immediate=True) as conn:
             existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
@@ -72,7 +74,15 @@ class ExportReconciler:
             export.status.ganesha_configured = False
             export.status.service_reloaded = False
             export.status.message = ""
-            self._persist_conn(conn, export, "export state reserved", expected_create_owner=create_owner)
+            self._persist_conn(
+                conn,
+                export,
+                "export state reserved",
+                expected_create_owner=create_owner,
+                require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
+                allow_missing_create_owner=True,
+            )
 
         with self._svm_config_lock(spec.svm):
             config_entries, bind_addr, host_network = self._config_snapshot_for_svm(
@@ -88,8 +98,17 @@ class ExportReconciler:
                     host_network=host_network,
                 )
                 export.status.ganesha_configured = True
-                self._persist(export, "ganesha config rendered", expected_create_owner=create_owner)
+                self._persist(
+                    export,
+                    "ganesha config rendered",
+                    expected_create_owner=create_owner,
+                    require_ready_volume=require_ready_volume,
+                    require_ready_svm=require_ready_svm,
+                )
             except CreateLeaseLostError:
+                raise
+            except PreconditionFailedError:
+                self._rollback_svm_config(spec.svm, export_dir, host_network=host_network)
                 raise
             except Exception as e:
                 return self._fail_create(
@@ -104,8 +123,17 @@ class ExportReconciler:
             try:
                 self.adapters.ganesha.reload(spec.svm, host_network=host_network)
                 export.status.service_reloaded = True
-                self._persist(export, "ganesha reloaded", expected_create_owner=create_owner)
+                self._persist(
+                    export,
+                    "ganesha reloaded",
+                    expected_create_owner=create_owner,
+                    require_ready_volume=require_ready_volume,
+                    require_ready_svm=require_ready_svm,
+                )
             except CreateLeaseLostError:
+                raise
+            except PreconditionFailedError:
+                self._rollback_svm_config(spec.svm, export_dir, host_network=host_network)
                 raise
             except Exception as e:
                 return self._fail_create(
@@ -122,7 +150,13 @@ class ExportReconciler:
             clear_create_lease(export.status)
             export.status.message = ""
             export.status.last_reconciled = datetime.now(timezone.utc)
-            self._persist(export, "Export ready", expected_create_owner=expected_owner)
+            self._persist(
+                export,
+                "Export ready",
+                expected_create_owner=expected_owner,
+                require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
+            )
         return export
 
     def _fail_create(
@@ -200,9 +234,18 @@ class ExportReconciler:
         detail: str,
         *,
         expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
     ) -> None:
         with self.db.transaction(immediate=True) as conn:
-            self._persist_conn(conn, export, detail, expected_create_owner=expected_create_owner)
+            self._persist_conn(
+                conn,
+                export,
+                detail,
+                expected_create_owner=expected_create_owner,
+                require_ready_volume=require_ready_volume,
+                require_ready_svm=require_ready_svm,
+            )
 
     def _persist_conn(
         self,
@@ -211,8 +254,18 @@ class ExportReconciler:
         detail: str,
         *,
         expected_create_owner: Optional[str] = None,
+        require_ready_volume: bool = False,
+        require_ready_svm: bool = False,
+        allow_missing_create_owner: bool = False,
     ) -> None:
-        if not self.db._upsert_export_conn(conn, export, expected_create_owner=expected_create_owner):
+        if not self.db._upsert_export_conn(
+            conn,
+            export,
+            expected_create_owner=expected_create_owner,
+            require_ready_volume=require_ready_volume,
+            require_ready_svm=require_ready_svm,
+            allow_missing_create_owner=allow_missing_create_owner,
+        ):
             raise CreateLeaseLostError("Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}")
         self.db._log_operation_conn(
             conn, "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
@@ -383,6 +436,10 @@ def _can_resume_create_record(record: dict, requested_export: Export) -> bool:
     if str(status.get("message") or "").startswith("Delete failed:"):
         return False
     return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
+
+
+def _requires_ready_volume(export: Export) -> bool:
+    return not (export.spec.owner == "csi" and export.spec.volume == "__csi_root__")
 
 
 def _export_path(spec: ExportSpec, export_dir: str) -> str:

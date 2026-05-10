@@ -1,6 +1,6 @@
 """Integration tests for driver with NetworkAllocator modes."""
 
-from unittest.mock import Mock, patch, MagicMock
+from unittest.mock import Mock, patch
 
 import pytest
 from oslo_config import cfg
@@ -39,8 +39,8 @@ class TestDriverNetworkAllocators:
         config.arca_storage_api_timeout = 30
         config.arca_storage_api_retry_count = 3
         config.arca_storage_verify_ssl = True
-        config.arca_storage_api_auth_type = "none"
-        config.arca_storage_api_token = None
+        config.arca_storage_api_auth_type = "token"
+        config.arca_storage_api_token = "test-token"
         config.arca_storage_api_ca_bundle = None
         config.arca_storage_api_client_cert = None
         config.arca_storage_api_client_key = None

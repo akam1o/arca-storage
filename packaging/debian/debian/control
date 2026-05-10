@@ -7,7 +7,7 @@ Standards-Version: 4.6.2
 Rules-Requires-Root: no
 
 Package: arca-storage
-Architecture: all
+Architecture: any
 Depends: python3, ${misc:Depends}
 Description: Arca Storage (CLI/API) with embedded venv
  Software-defined storage control-plane with Pacemaker/DRBD/NFS-Ganesha integration.

@@ -59,5 +59,13 @@ bash ./packaging/build-rpm.sh
 - If `packaging/wheelhouse/` is missing, the build scripts will run `./packaging/vendor-wheels.sh` automatically.
 - Package versions are derived from the release tag (e.g. `v0.2.2`). Override with `ARCA_VERSION=0.2.2`.
 - deb builds append a distro suffix (e.g. `0.2.2-1.debian12`, `0.2.2-1.ubuntu24.04`) so Debian/Ubuntu artifacts don't overwrite each other.
-- Packages do not auto-enable services by default; enable explicitly:
-  - `systemctl enable --now arca-storage-api`
+- Packages do not auto-enable services by default. Configure the API token
+  before enabling the service:
+
+  ```bash
+  API_TOKEN="$(openssl rand -hex 32)"
+  sudo install -m 0600 /dev/null /etc/arca-storage/api.env
+  printf 'ARCA_API_TOKEN=%s\n' "$API_TOKEN" | sudo tee /etc/arca-storage/api.env >/dev/null
+  unset API_TOKEN
+  sudo systemctl enable --now arca-storage-api
+  ```

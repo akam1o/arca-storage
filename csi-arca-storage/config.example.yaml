@@ -8,6 +8,9 @@ arca:
   # Request timeout
   timeout: "30s"
 
+  # Authentication mode: "token" (default) or "none" for explicitly unauthenticated API servers
+  auth_type: "token"
+
   # Authentication token for ARCA API
   auth_token: "your-auth-token-here"
 
