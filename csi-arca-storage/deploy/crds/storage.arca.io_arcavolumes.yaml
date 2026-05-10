@@ -62,14 +62,14 @@ spec:
               contentSource:
                 properties:
                   sourceSnapshotID:
-                    maxLength: 16
-                    minLength: 16
-                    pattern: ^[a-f0-9]{16}$
+                    maxLength: 32
+                    minLength: 32
+                    pattern: ^[a-f0-9]{32}$
                     type: string
                   sourceVolumeID:
-                    maxLength: 20
-                    minLength: 20
-                    pattern: ^pvc-[a-f0-9]{16}$
+                    maxLength: 36
+                    minLength: 36
+                    pattern: ^pvc-[a-f0-9]{32}$
                     type: string
                   type:
                     enum:
@@ -110,9 +110,9 @@ spec:
                 maxLength: 45
                 type: string
               volumeID:
-                maxLength: 20
-                minLength: 20
-                pattern: ^pvc-[a-f0-9]{16}$
+                maxLength: 36
+                minLength: 36
+                pattern: ^pvc-[a-f0-9]{32}$
                 type: string
             required:
             - capacityBytes
