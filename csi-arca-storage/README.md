@@ -46,6 +46,7 @@ Create a configuration file at `/etc/csi-arca-storage/config.yaml`:
 arca:
   base_url: "https://arca-api.example.com"
   timeout: "30s"
+  auth_type: "token"
   auth_token: "your-auth-token"
   tls:
     ca_cert_path: "/etc/csi-arca-storage/ca.crt"
@@ -66,7 +67,7 @@ driver:
   base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
 ```
 
-In Kubernetes deployments, pass the API token from a Secret as `ARCA_AUTH_TOKEN`. The driver uses that environment variable to override `arca.auth_token` from the ConfigMap.
+In Kubernetes deployments, pass the API token from a Secret as `ARCA_AUTH_TOKEN`. The driver uses that environment variable to override `arca.auth_token` from the ConfigMap. Set `arca.auth_type: "none"` only when the ARCA API server is explicitly configured for unauthenticated access.
 
 ## Deployment
 

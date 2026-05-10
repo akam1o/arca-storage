@@ -46,6 +46,7 @@ data:
     arca:
       base_url: "https://your-arca-api.example.com"  # Update this
       timeout: "30s"
+      auth_type: "token"
       auth_token: ""
     
     network:

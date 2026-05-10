@@ -82,6 +82,7 @@ Driver は Pod 内の `/etc/csi-arca-storage/config.yaml` を読みます。Kube
 arca:
   base_url: "https://arca-api.example.com"
   timeout: "30s"
+  auth_type: "token"
   auth_token: ""  # Secret 由来の ARCA_AUTH_TOKEN を推奨
   tls:
     ca_cert_path: ""
@@ -107,6 +108,7 @@ driver:
 
 - `arca.base_url`、少なくとも 1 つの `network.pools[].cidr`、`driver.endpoint` は必須です。
 - `arca.timeout` は省略時 `30s` です。
+- `arca.auth_type` は省略時 `token` です。`auth_type` を明示的に `none` にしない限り、`arca.auth_token` が必須です。
 - `network.mtu` は省略時 `1500` です。
 - `ARCA_AUTH_TOKEN` が設定されている場合、`arca.auth_token` を上書きします。
 - `CSI_ENDPOINT` が設定されている場合、`driver.endpoint` を上書きします。
@@ -158,6 +160,7 @@ data:
     arca:
       base_url: "https://arca-api.example.com"
       timeout: "30s"
+      auth_type: "token"
       auth_token: ""
       tls:
         ca_cert_path: ""

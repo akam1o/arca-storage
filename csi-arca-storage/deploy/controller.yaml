@@ -10,6 +10,7 @@ data:
     arca:
       base_url: "https://arca-api.example.com"
       timeout: "30s"
+      auth_type: "token"
       auth_token: ""  # Set via Secret
       tls:
         ca_cert_path: ""  # Optional: Set to cert path if custom CA is needed (system CA bundle used if empty)

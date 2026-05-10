@@ -46,6 +46,7 @@ go build -o bin/csi-driver ./cmd/csi-driver
 arca:
   base_url: "https://arca-api.example.com"
   timeout: "30s"
+  auth_type: "token"
   auth_token: ""
   tls:
     ca_cert_path: "/etc/csi-arca-storage/ca.crt"
@@ -66,7 +67,7 @@ driver:
   base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
 ```
 
-認証トークンは Secret から環境変数 `ARCA_AUTH_TOKEN` として渡し、設定ファイル側の `auth_token` を上書きする想定です（マニフェスト例もその構成です）。
+認証トークンは Secret から環境変数 `ARCA_AUTH_TOKEN` として渡し、設定ファイル側の `auth_token` を上書きする想定です（マニフェスト例もその構成です）。`arca.auth_type: "none"` は、ARCA API サーバー側で明示的に無認証アクセスを許可している場合だけ使用してください。
 
 ## デプロイ
 

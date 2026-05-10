@@ -82,6 +82,7 @@ Current configuration schema:
 arca:
   base_url: "https://arca-api.example.com"
   timeout: "30s"
+  auth_type: "token"
   auth_token: ""  # Prefer ARCA_AUTH_TOKEN from Secret
   tls:
     ca_cert_path: ""
@@ -107,6 +108,7 @@ Notes:
 
 - `arca.base_url`, at least one `network.pools[].cidr`, and `driver.endpoint` are required.
 - `arca.timeout` defaults to `30s` if omitted.
+- `arca.auth_type` defaults to `token`; `arca.auth_token` is required unless `auth_type` is explicitly set to `none`.
 - `network.mtu` defaults to `1500` if omitted.
 - `ARCA_AUTH_TOKEN` overrides `arca.auth_token` when set.
 - `CSI_ENDPOINT` overrides `driver.endpoint` when set by the manifests.
@@ -158,6 +160,7 @@ data:
     arca:
       base_url: "https://arca-api.example.com"
       timeout: "30s"
+      auth_type: "token"
       auth_token: ""
       tls:
         ca_cert_path: ""
