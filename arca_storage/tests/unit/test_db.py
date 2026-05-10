@@ -415,6 +415,38 @@ class TestStateDB:
         assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
         assert db.list_snapshots(svm="svm1", volume="vol1", name="snap1")[0]["status"]["phase"] == "Creating"
 
+    def test_reserve_volume_delete_blocks_active_export_create_before_marking(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24"))
+        assign_create_lease(export.status, "owner-1")
+        db.upsert_export(export)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1")
+
+        assert exc_info.value.details["exports"] == ["svm1/vol1/10.0.0.0/24"]
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
+        assert db.get_export("svm1", "vol1", "10.0.0.0/24")["status"]["phase"] == "Creating"
+
+    def test_reserve_volume_delete_blocks_active_csi_root_export_create_before_marking(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        export = Export(
+            spec=ExportSpec(svm="svm1", volume="__csi_root__", client="10.0.0.0/24", owner="csi")
+        )
+        assign_create_lease(export.status, "owner-1")
+        db.upsert_export(export)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1")
+
+        assert exc_info.value.details["exports"] == ["svm1/__csi_root__/10.0.0.0/24"]
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
+        assert db.get_export("svm1", "__csi_root__", "10.0.0.0/24")["status"]["phase"] == "Creating"
+
     def test_reserve_volume_delete_rejects_snapshots_without_marking_deleting(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
         vol.status.phase = Phase.READY

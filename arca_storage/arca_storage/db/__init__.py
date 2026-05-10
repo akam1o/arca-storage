@@ -949,6 +949,18 @@ class StateDB:
                         "snapshots": active_clone_snapshots,
                     },
                 )
+            exports = self._exports_removed_by_volume_delete_conn(conn, svm, name)
+            creating_exports = [export for export in exports if self._create_lease_active(export)]
+            if creating_exports:
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' has exports being created; retry after create completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "export_count": len(creating_exports),
+                        "exports": [self._export_ref(export) for export in creating_exports],
+                    },
+                )
             if snapshots and not force:
                 raise PreconditionFailedError(
                     f"Volume '{svm}/{name}' has snapshots; delete snapshots first or retry with force",
@@ -1826,6 +1838,24 @@ class StateDB:
                         "conflicting_svm": existing_name,
                     },
                 )
+
+    def _exports_removed_by_volume_delete_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: str,
+        volume: str,
+    ) -> list[dict[str, Any]]:
+        exports = self._list_exports_conn(conn, svm=svm, volume=volume, limit=1_000_000)
+        has_other_csi_volume = any(
+            export.get("spec", {}).get("owner") == "csi"
+            and export.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
+            for export in self._list_exports_conn(conn, svm=svm, limit=1_000_000)
+        )
+        if not has_other_csi_volume:
+            exports.extend(
+                self._list_exports_conn(conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME, limit=1_000_000)
+            )
+        return exports
 
     def _blocking_exports_for_svm_delete(
         self,
