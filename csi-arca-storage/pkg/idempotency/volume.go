@@ -14,24 +14,30 @@ func NewVolumeIDGenerator() *VolumeIDGenerator {
 	return &VolumeIDGenerator{}
 }
 
-// GenerateVolumeID creates a deterministic volume ID from request name
-// Format: pvc-{hash(name)[:16]} (64-bit hash to reduce collision risk)
+// GenerateVolumeID creates a deterministic volume ID from request name.
+// Format: pvc-{hash(name)[:32]} (128-bit hash to reduce collision risk)
 func (g *VolumeIDGenerator) GenerateVolumeID(name string) string {
 	h := sha256.Sum256([]byte(name))
-	return fmt.Sprintf("pvc-%s", hex.EncodeToString(h[:8]))
+	return fmt.Sprintf("pvc-%s", hex.EncodeToString(h[:16]))
 }
 
 // ValidateVolumeID checks if a volume ID has the correct format
 func (g *VolumeIDGenerator) ValidateVolumeID(volumeID string) bool {
-	// Format: pvc-{16 hex chars}
-	if len(volumeID) != 20 { // "pvc-" (4) + 16 hex chars
+	if len(volumeID) < 4 {
 		return false
 	}
 	if volumeID[:4] != "pvc-" {
 		return false
 	}
+
+	// Accept legacy 64-bit IDs and new 128-bit IDs.
+	hexLen := len(volumeID) - 4
+	if hexLen != 16 && hexLen != 32 {
+		return false
+	}
+
 	// Check if remaining chars are valid hex
-	for i := 4; i < 20; i++ {
+	for i := 4; i < len(volumeID); i++ {
 		if !isLowerHex(volumeID[i]) {
 			return false
 		}
