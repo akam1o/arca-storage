@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 from fastapi.testclient import TestClient
 
+from arca_storage.api.auth import UNKNOWN_SERVER_HOST, non_loopback_request_server_host
 from arca_storage.api.main import app
 
 
@@ -12,7 +13,7 @@ def test_api_auth_is_disabled_without_token(monkeypatch):
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
 
     with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
-        with TestClient(app) as client:
+        with TestClient(app, base_url="http://127.0.0.1:8080") as client:
             response = client.get("/v1/svms")
 
     assert response.status_code == 200
@@ -67,3 +68,20 @@ def test_api_auth_rejects_non_loopback_request_without_token(monkeypatch):
     payload = response.json()
     assert payload["error"]["code"] == "AUTH_TOKEN_REQUIRED"
     assert payload["error"]["details"]["host"] == "192.0.2.10"
+
+
+def test_api_auth_rejects_unknown_request_host_without_token(monkeypatch):
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+
+    with TestClient(app, base_url="http://testserver") as client:
+        response = client.get("/v1/svms")
+
+    assert response.status_code == 503
+    payload = response.json()
+    assert payload["error"]["code"] == "AUTH_TOKEN_REQUIRED"
+    assert payload["error"]["details"]["host"] == "testserver"
+
+
+def test_non_loopback_request_server_host_fails_closed_for_missing_scope():
+    assert non_loopback_request_server_host({}) == UNKNOWN_SERVER_HOST

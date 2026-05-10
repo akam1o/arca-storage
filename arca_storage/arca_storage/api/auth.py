@@ -8,6 +8,7 @@ from typing import Any
 
 
 API_TOKEN_REQUIRED_MESSAGE = "ARCA_API_TOKEN or ARCA_AUTH_TOKEN is required when binding to a non-loopback host"
+UNKNOWN_SERVER_HOST = "<unknown>"
 
 
 def configured_api_token() -> str:
@@ -27,16 +28,18 @@ def is_loopback_bind_host(host: str) -> bool:
 
 
 def non_loopback_request_server_host(scope: dict[str, Any]) -> str | None:
-    """Return the request server host when ASGI exposes a non-loopback literal IP."""
+    """Return the request server host unless ASGI confirms it is loopback."""
     server = scope.get("server")
     if not isinstance(server, (tuple, list)) or not server:
-        return None
+        return UNKNOWN_SERVER_HOST
+
+    if server[0] is None:
+        return UNKNOWN_SERVER_HOST
 
     host = str(server[0]).strip().strip("[]")
-    try:
-        ip = ipaddress.ip_address(host)
-    except ValueError:
-        return None
-    if ip.is_loopback:
+    if not host:
+        return UNKNOWN_SERVER_HOST
+
+    if is_loopback_bind_host(host):
         return None
     return host
