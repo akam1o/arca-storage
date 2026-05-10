@@ -29,7 +29,7 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
-  
+
   # Attacher
   - apiGroups: ["storage.k8s.io"]
     resources: ["volumeattachments"]
@@ -37,7 +37,7 @@ rules:
   - apiGroups: ["storage.k8s.io"]
     resources: ["volumeattachments/status"]
     verbs: ["patch"]
-  
+
   # Snapshotter
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshotclasses"]
@@ -54,7 +54,7 @@ rules:
   - apiGroups: ["snapshot.storage.k8s.io"]
     resources: ["volumesnapshots/status"]
     verbs: ["update"]
-  
+
   # Resizer
   - apiGroups: [""]
     resources: ["persistentvolumes"]
@@ -68,7 +68,7 @@ rules:
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  
+
   # Leases (for leader election and distributed locking)
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]

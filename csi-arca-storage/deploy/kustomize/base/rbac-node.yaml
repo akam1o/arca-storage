@@ -26,7 +26,7 @@ rules:
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["list", "watch", "create", "update", "patch"]
-  
+
   # Leases (for distributed locking)
   - apiGroups: ["coordination.k8s.io"]
     resources: ["leases"]
