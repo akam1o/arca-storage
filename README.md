@@ -167,16 +167,34 @@ arca svm list
 
 ### REST API
 
-Start the API server:
+Start the API server with bearer-token authentication:
 
 ```bash
+export ARCA_API_TOKEN="$(openssl rand -hex 32)"
 arca-storage-api --host 127.0.0.1 --port 8080
+```
+
+Use the same token for client requests:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8080/v1/svms
 ```
 
 Or run it as a systemd service (when installed via package):
 
 ```bash
+API_TOKEN="$(openssl rand -hex 32)"
+sudo install -m 0600 /dev/null /etc/arca-storage/api.env
+printf 'ARCA_API_TOKEN=%s\n' "$API_TOKEN" | sudo tee /etc/arca-storage/api.env >/dev/null
+unset API_TOKEN
 sudo systemctl enable --now arca-storage-api
+```
+
+For loopback-only development, you may explicitly allow unauthenticated access:
+
+```bash
+unset ARCA_API_TOKEN ARCA_AUTH_TOKEN
+ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK=true arca-storage-api --host 127.0.0.1 --port 8080
 ```
 
 API endpoints:

@@ -167,16 +167,34 @@ arca svm list
 
 ### REST API
 
-APIサーバーの起動:
+Bearer token 認証を有効にして API サーバーを起動します:
 
 ```bash
+export ARCA_API_TOKEN="$(openssl rand -hex 32)"
 arca-storage-api --host 127.0.0.1 --port 8080
+```
+
+クライアントからのリクエストでは同じ token を使用します:
+
+```bash
+curl -H "Authorization: Bearer <token>" http://localhost:8080/v1/svms
 ```
 
 または systemd サービスとして起動します（パッケージインストール時）:
 
 ```bash
+API_TOKEN="$(openssl rand -hex 32)"
+sudo install -m 0600 /dev/null /etc/arca-storage/api.env
+printf 'ARCA_API_TOKEN=%s\n' "$API_TOKEN" | sudo tee /etc/arca-storage/api.env >/dev/null
+unset API_TOKEN
 sudo systemctl enable --now arca-storage-api
+```
+
+loopback のみの開発用途では、明示的に無認証アクセスを許可できます:
+
+```bash
+unset ARCA_API_TOKEN ARCA_AUTH_TOKEN
+ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK=true arca-storage-api --host 127.0.0.1 --port 8080
 ```
 
 APIエンドポイント:
@@ -206,6 +224,8 @@ APIエンドポイント:
 - `DELETE /v1/snapshots/{name}` - Snapshot 削除
 
 サーバー起動時に `http://localhost:8080/docs` でAPIドキュメントを参照できます。
+token 認証が有効な場合、このエンドポイントも API と同じように保護されます。
+Swagger UI をブラウザで開く開発用途では、loopback のみの明示的な無認証モードを使用してください。
 
 ### OpenStack (Cinder)
 
