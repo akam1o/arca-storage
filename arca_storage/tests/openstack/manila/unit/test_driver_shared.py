@@ -128,6 +128,25 @@ class TestArcaStorageManilaDriverSharedStrategy:
             volume="share-share-123",
         )
 
+    def test_create_share_from_snapshot_without_share_uses_backend_svm(self, driver, mock_arca_client):
+        driver.configuration.arca_storage_default_svm = "target-svm"
+        mock_arca_client.list_volumes.return_value = [
+            {"name": "share-share-123", "svm": "source-svm"},
+        ]
+        snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {"arca_svm_name": "target-svm"}}
+        new_share = {"id": "share-456", "size": 10, "project_id": "test-project-id", "metadata": {}}
+
+        driver.create_share_from_snapshot(Mock(), new_share, snapshot, None)
+
+        mock_arca_client.clone_volume_from_snapshot.assert_called_once_with(
+            name="share-share-456",
+            svm="source-svm",
+            source_volume="share-share-123",
+            snapshot_name="snapshot-snapshot-123",
+            size_gib=10,
+        )
+        assert new_share["metadata"]["arca_svm_name"] == "source-svm"
+
     def test_create_share_from_snapshot_persists_svm_metadata(self, driver, mock_arca_client, mock_manila_snapshot):
         new_share = {"id": "share-456", "size": 10, "project_id": "test-project-id", "metadata": {}}
         driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)

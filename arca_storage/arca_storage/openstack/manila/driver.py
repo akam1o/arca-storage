@@ -1595,17 +1595,18 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         )
 
         try:
-            # Get parent share to determine SVM
+            strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
             if not parent_share:
                 parent_share = snapshot.get("share")
-            if not parent_share:
-                raise manila_exception.ShareBackendException(
-                    f"Parent share not found for snapshot {snapshot_id}"
-                )
 
             # For per_project strategy, verify new share is in same project as parent
-            strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
             if strategy == "per_project":
+                if not parent_share:
+                    raise manila_exception.ManilaException(
+                        f"Cannot verify project isolation for per_project strategy: "
+                        f"parent share not found for snapshot {snapshot_id}."
+                    )
+
                 parent_project_id = parent_share.get("project_id")
                 new_project_id = share.get("project_id")
 
@@ -1625,7 +1626,17 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                         f"Create share from snapshot only within the same project."
                     )
 
-            svm_name = self._get_svm_for_share(parent_share)
+                svm_name = self._get_svm_for_share(parent_share)
+            elif parent_share:
+                try:
+                    svm_name = self._get_svm_for_share(parent_share)
+                except Exception:
+                    if strategy != "manual":
+                        raise
+                    svm_name = self._get_svm_for_snapshot(snapshot, parent_volume_name)
+            else:
+                svm_name = self._get_svm_for_snapshot(snapshot, parent_volume_name)
+
             if strategy == "manual":
                 target_svm_name = self._get_svm_for_share(share)
                 if target_svm_name != svm_name:

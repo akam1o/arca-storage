@@ -327,6 +327,21 @@ class TestPerProjectCrossProjectRestrictions:
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
             driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
 
+    def test_missing_parent_share_fails_closed(self, driver, mock_arca_client):
+        """Test that missing parent share fails closed for project isolation."""
+        snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {}}
+        new_share = {
+            "id": "share-456",
+            "size": 10,
+            "project_id": "test-project-id",
+            "metadata": {},
+        }
+
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="project isolation"):
+            driver.create_share_from_snapshot(Mock(), new_share, snapshot, None)
+
+        mock_arca_client.clone_volume_from_snapshot.assert_not_called()
+
 
 class TestPerProjectPoolExhaustion:
     """Test behavior when IP/VLAN pools are exhausted."""
