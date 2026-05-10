@@ -589,7 +589,15 @@ class TestSnapshotReconciler:
 
         def remove_record_after_snapshot(vg_name, source_lv, snap_lv):
             result = original_create_snapshot(vg_name, source_lv, snap_lv)
-            db.reserve_volume_delete("svm1", "data", force=True)
+            record = db.get_volume("svm1", "data")
+            status = record["status"]
+            status["phase"] = Phase.DELETING.value
+            conn = db._conn()
+            conn.execute(
+                "UPDATE volumes SET status = ? WHERE svm = ? AND name = ?",
+                (json.dumps(status), "svm1", "data"),
+            )
+            conn.commit()
             db.delete_snapshot("svm1", "data", "snap1")
             return result
 

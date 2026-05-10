@@ -132,7 +132,7 @@ def remove_internal_export(svm: str, volume: str, client: str) -> None:
 
 def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
     ctx = get_context()
-    record = ctx.db.get_export(svm, volume, client)
+    record = ctx.db.reserve_export_delete(svm, volume, client)
     if not record:
         raise NotFoundError("Export", f"{svm}/{volume}/{client}")
 
@@ -141,7 +141,6 @@ def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
         spec=ExportSpec.model_validate(record["spec"]),
         status=ExportStatus.model_validate(record["status"]),
     )
-    export.status.phase = Phase.DELETING
     result = ctx.export_reconciler.reconcile(export)
     if result.status.phase == Phase.FAILED:
         raise InternalError(

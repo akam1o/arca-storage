@@ -219,6 +219,32 @@ class TestStateDB:
                 require_ready_svm=True,
             )
 
+    def test_reserve_svm_delete_blocks_active_create_lease(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        assign_create_lease(svm.status, "owner-1")
+        db.insert_svm(svm)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_svm_delete("svm1", force=True)
+
+        assert exc_info.value.details["create_owner"] == "owner-1"
+        assert db.get_svm("svm1")["status"]["phase"] == "Creating"
+
+    def test_reserve_svm_delete_blocks_active_volume_create_before_marking(self, db):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_svm_delete("svm1", delete_volumes=True)
+
+        assert exc_info.value.details["volumes"] == ["svm1/vol1"]
+        assert db.get_svm("svm1")["status"]["phase"] == "Ready"
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Creating"
+
     def test_reserve_svm_delete_blocks_active_snapshot_clone_lease(self, db):
         svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
         svm.status.phase = Phase.READY
@@ -362,6 +388,32 @@ class TestStateDB:
         record = db.get_volume("svm1", "vol1")
         assert record["status"]["create_owner"] == "owner-2"
         assert record["status"]["lv_created"] is False
+
+    def test_reserve_volume_delete_blocks_active_create_lease(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        assign_create_lease(vol.status, "owner-1")
+        db.insert_volume(vol)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1")
+
+        assert exc_info.value.details["create_owner"] == "owner-1"
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Creating"
+
+    def test_reserve_volume_delete_blocks_active_snapshot_create_before_marking(self, db):
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1", force=True)
+
+        assert exc_info.value.details["snapshots"] == ["svm1/vol1/snap1"]
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
+        assert db.list_snapshots(svm="svm1", volume="vol1", name="snap1")[0]["status"]["phase"] == "Creating"
 
     def test_reserve_volume_delete_rejects_snapshots_without_marking_deleting(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
@@ -635,6 +687,17 @@ class TestStateDB:
         assert record["status"]["phase"] == "Deleting"
         assert "clone_leases" not in record["status"]
 
+    def test_reserve_snapshot_delete_blocks_active_create_lease(self, db):
+        snap = Snapshot(spec=SnapshotSpec(name="snap1", svm="svm1", volume="vol1"))
+        assign_create_lease(snap.status, "owner-1")
+        db.insert_snapshot(snap)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_snapshot_delete("svm1", "vol1", "snap1")
+
+        assert exc_info.value.details["create_owner"] == "owner-1"
+        assert db.list_snapshots(svm="svm1", volume="vol1", name="snap1")[0]["status"]["phase"] == "Creating"
+
     def test_upsert_and_list_snapshots(self, db):
         for name in ("snap1", "snap2", "snap3"):
             snap = Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1"))
@@ -718,6 +781,17 @@ class TestStateDB:
             allow_missing_create_owner=False,
         )
         assert db.get_export("svm1", "vol1", "10.0.0.0/24") is None
+
+    def test_reserve_export_delete_blocks_active_create_lease(self, db):
+        export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.0.0/24"))
+        assign_create_lease(export.status, "owner-1")
+        db.upsert_export(export)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_export_delete("svm1", "vol1", "10.0.0.0/24")
+
+        assert exc_info.value.details["create_owner"] == "owner-1"
+        assert db.get_export("svm1", "vol1", "10.0.0.0/24")["status"]["phase"] == "Creating"
 
     def test_invalid_cursor_is_rejected(self, db):
         with pytest.raises(ValueError, match="Invalid pagination cursor"):

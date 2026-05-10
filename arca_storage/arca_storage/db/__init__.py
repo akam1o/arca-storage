@@ -509,8 +509,21 @@ class StateDB:
             record = self._get_svm_conn(conn, name)
             if record is None:
                 return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "SVM", name)
 
             volumes = self._list_volumes_conn(conn, svm=name, limit=1_000_000)
+            creating_volumes = [volume for volume in volumes if self._create_lease_active(volume)]
+            if creating_volumes:
+                raise ConflictError(
+                    f"SVM '{name}' has volumes being created; retry after create completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "volume_count": len(creating_volumes),
+                        "volumes": [self._volume_ref(volume) for volume in creating_volumes],
+                    },
+                )
             resizing_volumes = [volume for volume in volumes if self._resize_lease_active(volume)]
             if resizing_volumes:
                 raise ConflictError(
@@ -534,6 +547,17 @@ class StateDB:
                 )
 
             snapshots = self._list_snapshots_conn(conn, svm=name, limit=1_000_000)
+            creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
+            if creating_snapshots:
+                raise ConflictError(
+                    f"SVM '{name}' has snapshots being created; retry after create completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "snapshot_count": len(creating_snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in creating_snapshots],
+                    },
+                )
             if snapshots and not force:
                 raise PreconditionFailedError(
                     f"SVM '{name}' has snapshots; delete snapshots first or retry with force",
@@ -557,6 +581,18 @@ class StateDB:
                     },
                 )
 
+            all_exports = self._list_exports_conn(conn, svm=name, limit=1_000_000)
+            creating_exports = [export for export in all_exports if self._create_lease_active(export)]
+            if creating_exports:
+                raise ConflictError(
+                    f"SVM '{name}' has exports being created; retry after create completes",
+                    {
+                        "resource": "SVM",
+                        "name": name,
+                        "export_count": len(creating_exports),
+                        "exports": [self._export_ref(export) for export in creating_exports],
+                    },
+                )
             exports = self._blocking_exports_for_svm_delete(conn, name, volumes, force=force)
             if exports:
                 raise PreconditionFailedError(
@@ -877,6 +913,8 @@ class StateDB:
             record = self._get_volume_conn(conn, svm, name)
             if record is None:
                 return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "Volume", f"{svm}/{name}")
             if self._resize_lease_active(record):
                 status = record.get("status", {})
                 raise ConflictError(
@@ -888,6 +926,17 @@ class StateDB:
                     },
                 )
             snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
+            creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
+            if creating_snapshots:
+                raise ConflictError(
+                    f"Volume '{svm}/{name}' has snapshots being created; retry after create completes",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "snapshot_count": len(creating_snapshots),
+                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in creating_snapshots],
+                    },
+                )
             active_clone_snapshots = [
                 self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
             ]
@@ -1228,6 +1277,8 @@ class StateDB:
             record = self._get_resource_by_key_conn(conn, "snapshots", key)
             if record is None:
                 return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "Snapshot", f"{svm}/{volume}/{name}")
             active_leases = self._active_snapshot_clone_leases(record)
             if active_leases:
                 raise ConflictError(
@@ -1394,6 +1445,25 @@ class StateDB:
     def get_export(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         return self._get_export_conn(conn, svm, volume, client)
+
+    def reserve_export_delete(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
+        """Atomically mark an export deleting after validating create state."""
+        key = {"svm": svm, "volume": volume, "client": client}
+        with self.transaction(immediate=True) as conn:
+            record = self._get_resource_by_key_conn(conn, "exports", key)
+            if record is None:
+                return None
+            if self._create_lease_active(record):
+                self._raise_active_create_conflict(record, "Export", f"{svm}/{volume}/{client}")
+
+            status = dict(record["status"])
+            status["phase"] = Phase.DELETING.value
+            status["message"] = ""
+            status["create_owner"] = None
+            status["create_lease_expires_at"] = None
+            self._update_status_by_key_conn(conn, "exports", key, status)
+            record["status"] = status
+            return record
 
     def acquire_export_create_lease(
         self,
@@ -1613,6 +1683,28 @@ class StateDB:
             status["create_lease_expires_at"] = lease_expiration().isoformat()
             self._update_status_by_key_conn(conn, table, key, status)
             return True
+
+    @staticmethod
+    def _create_lease_active(record: dict[str, Any]) -> bool:
+        status = record.get("status", {})
+        if status.get("phase") not in ACTIVE_CREATE_PHASES:
+            return False
+        if not status.get("create_owner"):
+            return False
+        return not create_lease_expired(record)
+
+    @staticmethod
+    def _raise_active_create_conflict(record: dict[str, Any], resource: str, name: str) -> None:
+        status = record.get("status", {})
+        raise ConflictError(
+            f"{resource} '{name}' is being created; retry after create completes",
+            {
+                "resource": resource,
+                "name": name,
+                "phase": status.get("phase"),
+                "create_owner": status.get("create_owner"),
+            },
+        )
 
     def _get_resource_by_key_conn(
         self,
