@@ -6,6 +6,8 @@ import pytest
 from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
+from arca_storage.models.base import Phase
+from arca_storage.models.export import Export, ExportSpec
 from .helpers import cli_output
 
 
@@ -64,3 +66,30 @@ class TestExportRemove:
 
         assert result.exit_code == 0
         assert "Removing export" in result.stdout
+
+
+class TestExportList:
+    """Tests for export list command."""
+
+    @pytest.mark.integration
+    def test_list_exports_paginates_all_records(self, fake_context):
+        """List all exports, not only the DB default first page."""
+        for i in range(105):
+            export = Export(
+                spec=ExportSpec(
+                    svm="tenant_a",
+                    volume="vol1",
+                    client=f"10.0.0.{i + 1}/32",
+                    access="rw",
+                )
+            )
+            export.status.phase = Phase.READY
+            fake_context.db.upsert_export(export)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["export", "list", "--svm", "tenant_a", "--volume", "vol1"])
+
+        assert result.exit_code == 0
+        assert "client=10.0.0.1/32" in result.stdout
+        assert "client=10.0.0.105/32" in result.stdout
+        assert result.stdout.count("tenant_a/vol1") == 105

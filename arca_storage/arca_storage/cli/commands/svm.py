@@ -17,6 +17,7 @@ from arca_storage.cli.lib.validators import (
     validate_svm_ip_cidr,
     validate_vlan,
 )
+from arca_storage.cli.commands._pagination import list_all_svms
 from arca_storage.context import get_context
 
 app = typer.Typer(help="SVM management commands")
@@ -91,7 +92,7 @@ def list():
     """List all SVMs."""
     try:
         ctx = get_context()
-        svms = ctx.db.list_svms()
+        svms = list_all_svms(ctx.db)
         if not svms:
             typer.echo("No SVMs found")
             return

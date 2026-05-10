@@ -7,6 +7,8 @@ from typer.testing import CliRunner
 
 from arca_storage.cli.cli import app
 from arca_storage.cli.lib.validators import volume_lv_name
+from arca_storage.models.base import Phase
+from arca_storage.models.volume import Volume, VolumeSpec
 
 
 def create_test_svm(runner: CliRunner) -> None:
@@ -73,3 +75,23 @@ class TestVolumeDelete:
         assert result.exit_code == 0
         assert "Deleting volume: vol1" in result.stdout
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
+
+
+class TestVolumeList:
+    """Tests for volume list command."""
+
+    @pytest.mark.integration
+    def test_list_volumes_paginates_all_records(self, fake_context):
+        """List all volumes, not only the DB default first page."""
+        for i in range(105):
+            volume = Volume(spec=VolumeSpec(name=f"vol_{i:03d}", svm="tenant_a", size_gib=1))
+            volume.status.phase = Phase.READY
+            fake_context.db.insert_volume(volume)
+
+        runner = CliRunner()
+        result = runner.invoke(app, ["volume", "list", "--svm", "tenant_a"])
+
+        assert result.exit_code == 0
+        assert "tenant_a/vol_000" in result.stdout
+        assert "tenant_a/vol_104" in result.stdout
+        assert result.stdout.count("tenant_a/vol_") == 105
