@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from arca_storage.adapters.lvm import SubprocessLVMAdapter
+from arca_storage.cli.lib import lvm as legacy_lvm
 from arca_storage.cli.lib.lvm import create_lv, delete_lv, resize_lv
 from arca_storage.errors import PreconditionFailedError
 
@@ -30,6 +31,7 @@ class TestCreateLv:
             capture_output=True,
             text=True,
             check=False,
+            timeout=legacy_lvm._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -44,7 +46,11 @@ class TestCreateLv:
 
         assert result == "/dev/vg_pool_01/vol1"
         mock_subprocess.assert_any_call(
-            ["lvcreate", "-L", "100G", "-n", "vol1", "vg_pool_01"], capture_output=True, text=True, check=False
+            ["lvcreate", "-L", "100G", "-n", "vol1", "vg_pool_01"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_lvm._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -82,7 +88,11 @@ class TestResizeLv:
         resize_lv("vg_pool_01", "vol1", 200)
 
         mock_subprocess.assert_any_call(
-            ["lvextend", "-L", "200G", "/dev/vg_pool_01/vol1"], capture_output=True, text=True, check=False
+            ["lvextend", "-L", "200G", "/dev/vg_pool_01/vol1"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_lvm._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -147,7 +157,11 @@ class TestDeleteLv:
         delete_lv("vg_pool_01", "vol1")
 
         mock_subprocess.assert_any_call(
-            ["lvremove", "-f", "/dev/vg_pool_01/vol1"], capture_output=True, text=True, check=False
+            ["lvremove", "-f", "/dev/vg_pool_01/vol1"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_lvm._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit

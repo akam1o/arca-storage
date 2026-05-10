@@ -5,6 +5,14 @@ LVM Thin Provisioning management functions.
 import subprocess
 
 
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+
+
+def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    return subprocess.run(cmd, **kwargs)
+
+
 def _parse_lvm_float(value: str) -> float:
     return float(value.strip().lstrip("<>"))
 
@@ -29,7 +37,7 @@ def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True, *, t
     lv_path = f"/dev/{vg_name}/{lv_name}"
     
     # Check if LV already exists
-    result = subprocess.run(
+    result = _run(
         ["lvdisplay", lv_path],
         capture_output=True,
         text=True,
@@ -56,7 +64,7 @@ def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True, *, t
             vg_name
         ]
     
-    result = subprocess.run(
+    result = _run(
         cmd,
         capture_output=True,
         text=True,
@@ -84,7 +92,7 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     lv_path = f"/dev/{vg_name}/{lv_name}"
     
     # Check if LV exists
-    result = subprocess.run(
+    result = _run(
         ["lvdisplay", lv_path],
         capture_output=True,
         text=True,
@@ -94,7 +102,7 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     if result.returncode != 0:
         raise RuntimeError(f"Logical volume {lv_path} does not exist")
 
-    result = subprocess.run(
+    result = _run(
         [
             "lvs",
             "--noheadings",
@@ -125,7 +133,7 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
         )
     
     # Resize LV
-    result = subprocess.run(
+    result = _run(
         ["lvextend", "-L", f"{new_size_gib}G", lv_path],
         capture_output=True,
         text=True,
@@ -150,7 +158,7 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
     lv_path = f"/dev/{vg_name}/{lv_name}"
 
     # Check if LV exists
-    result = subprocess.run(
+    result = _run(
         ["lvdisplay", lv_path],
         capture_output=True,
         text=True,
@@ -162,7 +170,7 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
         return
 
     # Delete LV
-    result = subprocess.run(
+    result = _run(
         ["lvremove", "-f", lv_path],
         capture_output=True,
         text=True,
@@ -192,7 +200,7 @@ def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
     snap_path = f"/dev/{vg_name}/{snap_lv}"
 
     # Check if source LV exists
-    result = subprocess.run(
+    result = _run(
         ["lvdisplay", source_path],
         capture_output=True,
         text=True,
@@ -203,7 +211,7 @@ def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
         raise RuntimeError(f"Source logical volume {source_path} does not exist")
 
     # Check if snapshot already exists
-    result = subprocess.run(
+    result = _run(
         ["lvdisplay", snap_path],
         capture_output=True,
         text=True,
@@ -221,7 +229,7 @@ def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
         source_path
     ]
 
-    result = subprocess.run(
+    result = _run(
         cmd,
         capture_output=True,
         text=True,

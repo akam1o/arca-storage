@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arca_storage.cli.lib import netns as legacy_netns
 from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, make_vlan_ifname
 from arca_storage.adapters.netns import SubprocessNetNSAdapter
 
@@ -25,8 +26,20 @@ class TestCreateNamespace:
         create_namespace("test_ns")
 
         assert mock_subprocess.call_count == 2
-        mock_subprocess.assert_any_call(["ip", "netns", "list"], capture_output=True, text=True, check=False)
-        mock_subprocess.assert_any_call(["ip", "netns", "add", "test_ns"], capture_output=True, text=True, check=False)
+        mock_subprocess.assert_any_call(
+            ["ip", "netns", "list"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_netns._DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        )
+        mock_subprocess.assert_any_call(
+            ["ip", "netns", "add", "test_ns"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_netns._DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        )
 
     @pytest.mark.unit
     def test_namespace_already_exists(self, mock_subprocess):
@@ -47,7 +60,13 @@ class TestCreateNamespace:
 
         create_namespace("test_ns")
 
-        mock_subprocess.assert_any_call(["ip", "netns", "add", "test_ns"], capture_output=True, text=True, check=False)
+        mock_subprocess.assert_any_call(
+            ["ip", "netns", "add", "test_ns"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_netns._DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        )
 
     @pytest.mark.unit
     def test_create_namespace_fails(self, mock_subprocess):
@@ -123,7 +142,9 @@ class TestAttachVlan:
 
         # Check gateway route was added
         mock_subprocess.assert_any_call(
-            ["ip", "netns", "exec", "test_ns", "ip", "route", "add", "default", "via", "192.168.10.1"], check=True
+            ["ip", "netns", "exec", "test_ns", "ip", "route", "add", "default", "via", "192.168.10.1"],
+            check=True,
+            timeout=legacy_netns._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
 
@@ -140,7 +161,13 @@ class TestDeleteNamespace:
 
         delete_namespace("test_ns")
 
-        mock_subprocess.assert_any_call(["ip", "netns", "del", "test_ns"], capture_output=True, text=True, check=False)
+        mock_subprocess.assert_any_call(
+            ["ip", "netns", "del", "test_ns"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=legacy_netns._DEFAULT_COMMAND_TIMEOUT_SECONDS,
+        )
 
     @pytest.mark.unit
     def test_delete_nonexistent_namespace(self, mock_subprocess):

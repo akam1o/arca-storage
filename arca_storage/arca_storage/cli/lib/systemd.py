@@ -5,6 +5,14 @@ systemd unit management functions.
 import subprocess
 
 
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+
+
+def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    return subprocess.run(cmd, **kwargs)
+
+
 def start_unit(unit_name: str) -> None:
     """
     Start a systemd unit.
@@ -15,7 +23,7 @@ def start_unit(unit_name: str) -> None:
     Raises:
         RuntimeError: If starting unit fails
     """
-    result = subprocess.run(
+    result = _run(
         ["systemctl", "start", unit_name],
         capture_output=True,
         text=True,
@@ -36,7 +44,7 @@ def stop_unit(unit_name: str) -> None:
     Raises:
         RuntimeError: If stopping unit fails
     """
-    result = subprocess.run(
+    result = _run(
         ["systemctl", "stop", unit_name],
         capture_output=True,
         text=True,
@@ -57,7 +65,7 @@ def is_active(unit_name: str) -> bool:
     Returns:
         True if unit is active, False otherwise
     """
-    result = subprocess.run(
+    result = _run(
         ["systemctl", "is-active", unit_name],
         capture_output=True,
         text=True,
@@ -65,4 +73,3 @@ def is_active(unit_name: str) -> bool:
     )
     
     return result.returncode == 0
-

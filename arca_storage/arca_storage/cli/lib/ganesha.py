@@ -17,6 +17,7 @@ from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.config import ArcaSettings, load_settings
 
 TEMPLATE_VERSION = "1.1.0"
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 _GANESHA_SEC_TYPES = {"sys", "krb5", "krb5i", "krb5p"}
 _GANESHA_ACCESS_TYPES = {"RW", "RO"}
 _GANESHA_SQUASH_TYPES = {"Root_Squash", "No_Root_Squash"}
@@ -272,7 +273,8 @@ def reload(svm_name: str, *, host_network: bool = False) -> None:
         ["systemctl", "reload", f"{unit}@{svm_name}"],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
+        timeout=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
     )
     
     if result.returncode != 0:

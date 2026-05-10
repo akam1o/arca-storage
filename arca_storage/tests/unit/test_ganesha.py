@@ -150,7 +150,11 @@ class TestReload:
         reload("tenant_a")
 
         mock_subprocess.assert_called_once_with(
-            ["systemctl", "reload", "nfs-ganesha@tenant_a"], capture_output=True, text=True, check=False
+            ["systemctl", "reload", "nfs-ganesha@tenant_a"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=ganesha._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit
@@ -161,7 +165,11 @@ class TestReload:
         reload("tenant_a", host_network=True)
 
         mock_subprocess.assert_called_once_with(
-            ["systemctl", "reload", "nfs-ganesha-host@tenant_a"], capture_output=True, text=True, check=False
+            ["systemctl", "reload", "nfs-ganesha-host@tenant_a"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=ganesha._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
 
     @pytest.mark.unit

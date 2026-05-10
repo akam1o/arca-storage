@@ -9,6 +9,12 @@ from typing import Optional
 
 
 CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
+
+
+def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+    kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
+    return subprocess.run(cmd, **kwargs)
 
 
 def _parse_netns_names(output: str) -> set[str]:
@@ -57,7 +63,7 @@ def make_vlan_ifname(svm_name: str, vlan_id: int, *, attempt: int = 0) -> str:
 
 
 def _ifname_exists_in_root(ifname: str) -> bool:
-    result = subprocess.run(
+    result = _run(
         ["ip", "link", "show", ifname],
         capture_output=True,
         text=True,
@@ -96,7 +102,7 @@ def create_namespace(name: str) -> None:
         RuntimeError: If namespace creation fails
     """
     # Check if namespace already exists
-    result = subprocess.run(
+    result = _run(
         ["ip", "netns", "list"],
         capture_output=True,
         text=True,
@@ -108,7 +114,7 @@ def create_namespace(name: str) -> None:
         return
     
     # Create namespace
-    result = subprocess.run(
+    result = _run(
         ["ip", "netns", "add", name],
         capture_output=True,
         text=True,
@@ -145,7 +151,7 @@ def attach_vlan(
     vlan_if = ifname or f"{parent_if}.{vlan_id}"
     
     # Check if VLAN interface already exists
-    result = subprocess.run(
+    result = _run(
         ["ip", "link", "show", vlan_if],
         capture_output=True,
         text=True,
@@ -154,7 +160,7 @@ def attach_vlan(
     
     if result.returncode == 0:
         # Interface exists, check if it's in the namespace
-        result = subprocess.run(
+        result = _run(
             ["ip", "netns", "exec", namespace, "ip", "link", "show", vlan_if],
             capture_output=True,
             text=True,
@@ -167,19 +173,19 @@ def attach_vlan(
             return
         else:
             # Move to namespace
-            subprocess.run(
+            _run(
                 ["ip", "link", "set", vlan_if, "netns", namespace],
                 check=True
             )
     else:
         # Create VLAN interface
-        subprocess.run(
+        _run(
             ["ip", "link", "add", "link", parent_if, "name", vlan_if, "type", "vlan", "id", str(vlan_id)],
             check=True
         )
         
         # Move to namespace
-        subprocess.run(
+        _run(
             ["ip", "link", "set", vlan_if, "netns", namespace],
             check=True
         )
@@ -198,13 +204,13 @@ def _configure_ip(
     """Configure IP address and gateway in namespace."""
     # Set MTU if not default
     if mtu != 1500:
-        subprocess.run(
+        _run(
             ["ip", "netns", "exec", namespace, "ip", "link", "set", interface, "mtu", str(mtu)],
             check=True
         )
     
     # Check if IP is already configured
-    result = subprocess.run(
+    result = _run(
         ["ip", "netns", "exec", namespace, "ip", "addr", "show", interface],
         capture_output=True,
         text=True,
@@ -213,13 +219,13 @@ def _configure_ip(
     
     if ip_cidr not in result.stdout:
         # Add IP address
-        subprocess.run(
+        _run(
             ["ip", "netns", "exec", namespace, "ip", "addr", "add", ip_cidr, "dev", interface],
             check=True
         )
     
     # Bring interface up
-    subprocess.run(
+    _run(
         ["ip", "netns", "exec", namespace, "ip", "link", "set", interface, "up"],
         check=True
     )
@@ -227,14 +233,14 @@ def _configure_ip(
     # Configure gateway if provided
     if gateway:
         # Remove existing default route
-        subprocess.run(
+        _run(
             ["ip", "netns", "exec", namespace, "ip", "route", "del", "default"],
             capture_output=True,
             check=False
         )
         
         # Add default route
-        subprocess.run(
+        _run(
             ["ip", "netns", "exec", namespace, "ip", "route", "add", "default", "via", gateway],
             check=True
         )
@@ -251,7 +257,7 @@ def delete_namespace(name: str) -> None:
         RuntimeError: If namespace deletion fails
     """
     # Check if namespace exists
-    result = subprocess.run(
+    result = _run(
         ["ip", "netns", "list"],
         capture_output=True,
         text=True,
@@ -263,7 +269,7 @@ def delete_namespace(name: str) -> None:
         return
     
     # Delete namespace (this also removes all interfaces in it)
-    result = subprocess.run(
+    result = _run(
         ["ip", "netns", "del", name],
         capture_output=True,
         text=True,

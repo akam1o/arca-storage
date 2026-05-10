@@ -8,13 +8,20 @@ from typing import Optional, Sequence
 
 from arca_storage.cli.lib.netns import make_vlan_ifname
 
+_DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 _RESOURCE_ATTR_RE = re.compile(
     r"""(?:^|\s)(?P<name>[\w-]+)=(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>\S+))"""
 )
 
 
 def _run(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
-    return subprocess.run(list(cmd), capture_output=True, text=True, check=False)
+    return subprocess.run(
+        list(cmd),
+        capture_output=True,
+        text=True,
+        check=False,
+        timeout=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
+    )
 
 
 def _resource_exists(name: str) -> bool:
