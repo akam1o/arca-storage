@@ -71,7 +71,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         with pytest.raises(exception.VolumeBackendAPIException, match="arca_storage_api_token"):
             self.driver.do_setup(self.driver._context)
 
-        mock_super_setup.assert_called_once_with(self.driver._context)
+        mock_super_setup.assert_not_called()
 
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
     def test_do_setup_rejects_unimplemented_per_project_strategy(self, mock_super_setup):
