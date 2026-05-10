@@ -27,6 +27,7 @@ class PacemakerAdapter(Protocol):
         mtu: int,
         parent_if: str,
         vg_name: str,
+        filesystem_lv_name: Optional[str],
         create_filesystem: bool,
         drbd_resource_name: str,
         enforce_drbd_constraints: bool,
@@ -58,6 +59,7 @@ class SubprocessPacemakerAdapter:
         mtu: int = 1500,
         parent_if: str = "bond0",
         vg_name: str = "vg_pool_01",
+        filesystem_lv_name: Optional[str] = None,
         create_filesystem: bool = True,
         drbd_resource_name: str = "r0",
         enforce_drbd_constraints: bool = True,
@@ -74,7 +76,7 @@ class SubprocessPacemakerAdapter:
         # Filesystem resource
         fs_resource = f"fs_{svm_name}"
         if create_filesystem and not self.resource_exists(fs_resource):
-            device = f"/dev/{vg_name}/vol_{svm_name}"
+            device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
             run_cmd(
                 [
                     "pcs", "resource", "create", fs_resource,
@@ -239,6 +241,7 @@ class FakePacemakerAdapter:
         mtu: int = 1500,
         parent_if: str = "bond0",
         vg_name: str = "vg_pool_01",
+        filesystem_lv_name: Optional[str] = None,
         create_filesystem: bool = True,
         drbd_resource_name: str = "r0",
         enforce_drbd_constraints: bool = True,
@@ -248,7 +251,13 @@ class FakePacemakerAdapter:
         resources = []
         if create_filesystem:
             fs = f"fs_{svm_name}"
-            self.resources.setdefault(fs, {"type": "Filesystem"})
+            self.resources.setdefault(
+                fs,
+                {
+                    "type": "Filesystem",
+                    "device": f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}",
+                },
+            )
             resources.append(fs)
         if vlan_id is None:
             ip_res = f"ip_{svm_name}"

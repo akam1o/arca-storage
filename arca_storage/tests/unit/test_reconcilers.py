@@ -174,6 +174,7 @@ class TestSVMReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.lv_created is True
         assert result.status.fs_formatted is True
+        assert adapters.pacemaker.resources["fs_root-resume"]["device"] == f"/dev/vg_arca/{svm_root_lv_name('root-resume')}"
         assert db.get_svm("root-resume")["status"]["phase"] == Phase.READY.value
 
     def test_create_svm_root_lv_recreates_missing_recorded_lv(self, db, adapters, config):

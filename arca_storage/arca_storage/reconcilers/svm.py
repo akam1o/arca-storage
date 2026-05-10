@@ -122,6 +122,7 @@ class SVMReconciler:
                 mtu=spec.mtu,
                 parent_if=parent_if,
                 vg_name=vg_name,
+                filesystem_lv_name=svm.status.lv_name,
                 create_filesystem=bool(spec.root_volume_size_gib),
                 drbd_resource_name=drbd_resource,
                 enforce_drbd_constraints=True,

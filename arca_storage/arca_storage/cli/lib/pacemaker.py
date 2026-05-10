@@ -236,6 +236,7 @@ def create_group(
     mtu: int = 1500,
     parent_if: str = "bond0",
     vg_name: str = "vg_pool_01",
+    filesystem_lv_name: Optional[str] = None,
     create_filesystem: bool = True,
     drbd_resource_name: str = "r0",
     enforce_drbd_constraints: bool = True,
@@ -254,6 +255,7 @@ def create_group(
         mtu: MTU size
         parent_if: Parent interface (default: bond0)
         vg_name: Volume group name for Filesystem resource device path
+        filesystem_lv_name: Optional logical volume name for the Filesystem resource.
         create_filesystem: Whether to create Filesystem resource (default: True)
         
     Raises:
@@ -271,7 +273,7 @@ def create_group(
     # Create Filesystem resource (optional)
     fs_resource = f"fs_{svm_name}"
     if create_filesystem and not _resource_exists(fs_resource):
-        device = f"/dev/{vg_name}/vol_{svm_name}"
+        device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
         result = _run(
             [
                 "pcs",
