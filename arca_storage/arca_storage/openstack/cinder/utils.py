@@ -659,6 +659,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             capture_output=True,
             text=True,
             check=True,
+            pass_fds=(source_fd,),
             timeout=timeout,
         )
 

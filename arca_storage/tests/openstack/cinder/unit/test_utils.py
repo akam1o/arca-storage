@@ -384,6 +384,30 @@ class TestUtilityFunctions(unittest.TestCase):
             with open(source_path, "rb") as source:
                 assert source.read() == b"replacement-data"
 
+    def test_copy_sparse_file_passes_source_fd_to_cp(self):
+        """Sparse copy must keep the validated source fd open for cp."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            captured = {}
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            def capture_run_kwargs(command, **kwargs):
+                captured["command"] = command
+                captured["pass_fds"] = kwargs["pass_fds"]
+                return self._fake_sparse_cp(command, **kwargs)
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=capture_run_kwargs,
+            ):
+                arca_utils.copy_sparse_file(source_path, dest_path)
+
+            source_fd = captured["pass_fds"][0]
+            assert captured["pass_fds"] == (source_fd,)
+            assert captured["command"][-2].endswith(f"/{source_fd}")
+
     def test_copy_sparse_file_hard_link_fallback_copies_without_overwrite(self):
         """Fallback copy installs the destination using exclusive creation."""
         with tempfile.TemporaryDirectory() as temp_dir:
