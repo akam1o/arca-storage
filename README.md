@@ -205,7 +205,10 @@ API endpoints:
 - `GET /v1/snapshots` - List snapshots
 - `DELETE /v1/snapshots/{name}` - Delete snapshot
 
-See API documentation at `http://localhost:8080/docs` when the server is running.
+The interactive API documentation is available at `http://localhost:8080/docs`.
+When token authentication is enabled, this endpoint is protected like the API;
+use the explicit loopback-only unauthenticated development mode for browser
+access to Swagger UI.
 
 ### OpenStack (Cinder)
 

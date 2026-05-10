@@ -81,12 +81,13 @@ export ARCA_API_TOKEN="$(openssl rand -hex 32)"
 arca-storage-api --host 127.0.0.1 --port 8080
 
 # API will be available at http://localhost:8080
-# API documentation: http://localhost:8080/docs
+# API documentation is also protected in token mode.
 
 # Example authenticated request
 curl -H "Authorization: Bearer ${ARCA_API_TOKEN}" http://localhost:8080/v1/svms
 
-# Local development only: explicitly allow unauthenticated loopback access
+# Local development only: explicitly allow unauthenticated loopback access.
+# Use this mode for browser-based Swagger UI at http://localhost:8080/docs.
 unset ARCA_API_TOKEN ARCA_AUTH_TOKEN
 ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK=true arca-storage-api --host 127.0.0.1 --port 8080
 ```
