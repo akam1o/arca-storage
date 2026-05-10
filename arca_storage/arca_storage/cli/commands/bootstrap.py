@@ -56,20 +56,30 @@ def _render_env(cfg) -> str:
     return cfg.to_systemd_env()
 
 
-def _pcs_host_auth(nodes: list[str], hacluster_password: str) -> subprocess.CompletedProcess[str]:
+def _pcs_host_auth(
+    nodes: list[str],
+    hacluster_password: str,
+    *,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
     return _run(
         ["pcs", "host", "auth", *nodes, "-u", "hacluster"],
         input=f"{hacluster_password}\n",
         check=False,
+        timeout=timeout,
     )
 
 
-def _completed_successfully(cmd: list[str]) -> bool:
-    return _run(cmd, check=False).returncode == 0
+def _completed_successfully(cmd: list[str], *, timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS) -> bool:
+    return _run(cmd, check=False, timeout=timeout).returncode == 0
 
 
-def _run_required(cmd: list[str]) -> subprocess.CompletedProcess[str]:
-    result = _run(cmd, check=False)
+def _run_required(
+    cmd: list[str],
+    *,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> subprocess.CompletedProcess[str]:
+    result = _run(cmd, check=False, timeout=timeout)
     if result.returncode != 0:
         output = (result.stderr or result.stdout or "").strip()
         detail = output or f"exit status {result.returncode}"
@@ -77,13 +87,18 @@ def _run_required(cmd: list[str]) -> subprocess.CompletedProcess[str]:
     return result
 
 
-def _apply_drbd_config(resource: str, *, primary: bool = False) -> None:
-    if not _completed_successfully(["drbdadm", "dump-md", resource]):
-        _run_required(["drbdadm", "create-md", resource])
-    if not _completed_successfully(["drbdadm", "status", resource]):
-        _run_required(["drbdadm", "up", resource])
+def _apply_drbd_config(
+    resource: str,
+    *,
+    primary: bool = False,
+    timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
+) -> None:
+    if not _completed_successfully(["drbdadm", "dump-md", resource], timeout=timeout):
+        _run_required(["drbdadm", "create-md", resource], timeout=timeout)
+    if not _completed_successfully(["drbdadm", "status", resource], timeout=timeout):
+        _run_required(["drbdadm", "up", resource], timeout=timeout)
     if primary:
-        _run_required(["drbdadm", "primary", "--force", resource])
+        _run_required(["drbdadm", "primary", "--force", resource], timeout=timeout)
 
 
 def _validate_drbd_resource_name(resource: str) -> str:
@@ -257,7 +272,7 @@ def install(
         # systemd environment file (used by nfs-ganesha@.service)
         _write_env_file(cfg)
 
-        _run(["systemctl", "daemon-reload"])
+        _run(["systemctl", "daemon-reload"], timeout=cfg.timeouts.subprocess_default)
         typer.echo("Installed bootstrap resources successfully")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
@@ -275,7 +290,7 @@ def render_env():
         cfg = load_settings()
         env_path = _write_env_file(cfg)
         typer.echo(f"Wrote {env_path}")
-        _run(["systemctl", "daemon-reload"], check=False)
+        _run(["systemctl", "daemon-reload"], check=False, timeout=cfg.timeouts.subprocess_default)
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -292,6 +307,8 @@ def verify(
     This command is non-destructive.
     """
     cfg = load_settings()
+    default_timeout = cfg.timeouts.subprocess_default
+    pacemaker_timeout = cfg.timeouts.pacemaker_operation
     issues: list[str] = []
 
     def check(cond: bool, ok: str, bad: str) -> None:
@@ -347,25 +364,25 @@ def verify(
         # systemd health (only if systemctl exists)
         if shutil.which("systemctl"):
             for unit in ["pcsd", "corosync", "pacemaker"]:
-                res = _run(["systemctl", "is-active", unit], check=False)
+                res = _run(["systemctl", "is-active", unit], check=False, timeout=default_timeout)
                 check(res.returncode == 0, f"systemd {unit} is active", f"systemd {unit} is not active")
         else:
             check(False, "systemctl available", "systemctl not found; cannot verify services")
 
         # Pacemaker cluster health
         if shutil.which("pcs"):
-            res = _run(["pcs", "status"], check=False)
+            res = _run(["pcs", "status"], check=False, timeout=pacemaker_timeout)
             check(res.returncode == 0, "pcs status ok", f"pcs status failed: {(res.stderr or res.stdout).strip()}")
 
             master = f"ms_drbd_{cfg.cluster.drbd_resource}"
-            res = _run(["pcs", "resource", "show", master], check=False)
+            res = _run(["pcs", "resource", "show", master], check=False, timeout=pacemaker_timeout)
             check(res.returncode == 0, f"Pacemaker DRBD master present: {master}", f"missing Pacemaker DRBD master: {master}")
         else:
             check(False, "pcs available", "pcs not found; cannot verify cluster resources")
 
         # DRBD status
         if shutil.which("drbdadm"):
-            res = _run(["drbdadm", "status", cfg.cluster.drbd_resource], check=False)
+            res = _run(["drbdadm", "status", cfg.cluster.drbd_resource], check=False, timeout=default_timeout)
             check(
                 res.returncode == 0,
                 f"drbdadm status ok: {cfg.cluster.drbd_resource}",
@@ -376,9 +393,13 @@ def verify(
 
         # LVM status
         if shutil.which("vgs") and shutil.which("lvs"):
-            res = _run(["vgs", cfg.storage.vg_name], check=False)
+            res = _run(["vgs", cfg.storage.vg_name], check=False, timeout=default_timeout)
             check(res.returncode == 0, f"VG present: {cfg.storage.vg_name}", f"missing VG: {cfg.storage.vg_name}")
-            res = _run(["lvs", f"{cfg.storage.vg_name}/{cfg.storage.thinpool_name}"], check=False)
+            res = _run(
+                ["lvs", f"{cfg.storage.vg_name}/{cfg.storage.thinpool_name}"],
+                check=False,
+                timeout=default_timeout,
+            )
             check(
                 res.returncode == 0,
                 f"Thin pool present: {cfg.storage.vg_name}/{cfg.storage.thinpool_name}",
@@ -416,34 +437,42 @@ def pacemaker_cluster(
     This runs locally and configures the cluster across the provided nodes.
     """
     try:
+        cfg = load_settings(require_file=False)
+        default_timeout = cfg.timeouts.subprocess_default
+        pacemaker_timeout = cfg.timeouts.pacemaker_operation
         node_list = [n for n in nodes.split() if n]
         if len(node_list) < 2:
             raise ValueError("Provide at least 2 nodes")
 
         # Ensure pcsd is running
-        _run(["systemctl", "enable", "--now", "pcsd"])
+        _run(["systemctl", "enable", "--now", "pcsd"], timeout=default_timeout)
 
         # Ensure hacluster password
         _run(
             ["chpasswd"],
             input=f"hacluster:{hacluster_password}\n",
+            timeout=default_timeout,
         )
 
         # Authenticate and setup
-        auth = _pcs_host_auth(node_list, hacluster_password)
+        auth = _pcs_host_auth(node_list, hacluster_password, timeout=pacemaker_timeout)
         if auth.returncode != 0 and "Authorized" not in (auth.stdout or ""):
             raise RuntimeError(f"pcs host auth failed: {auth.stderr.strip()}")
 
         if not Path("/etc/corosync/authkey").exists():
-            setup = _run(["pcs", "cluster", "setup", "--name", cluster_name, *node_list], check=False)
+            setup = _run(
+                ["pcs", "cluster", "setup", "--name", cluster_name, *node_list],
+                check=False,
+                timeout=pacemaker_timeout,
+            )
             if setup.returncode != 0 and "already exists" not in (setup.stderr or "").lower():
                 raise RuntimeError(f"pcs cluster setup failed: {setup.stderr.strip()}")
 
-        _run(["pcs", "cluster", "start", "--all"])
-        _run(["pcs", "cluster", "enable", "--all"])
+        _run(["pcs", "cluster", "start", "--all"], timeout=pacemaker_timeout)
+        _run(["pcs", "cluster", "enable", "--all"], timeout=pacemaker_timeout)
 
         stonith_value = "true" if stonith_enabled else "false"
-        _run(["pcs", "property", "set", f"stonith-enabled={stonith_value}"])
+        _run(["pcs", "property", "set", f"stonith-enabled={stonith_value}"], timeout=pacemaker_timeout)
 
         typer.echo("Pacemaker cluster bootstrap completed")
     except Exception as e:
@@ -468,6 +497,7 @@ def drbd_config(
     Write DRBD resource configuration to /etc/drbd.d/<resource>.res.
     """
     try:
+        cfg = load_settings(require_file=False)
         res_content = _render_drbd_config(
             resource=resource,
             device=device,
@@ -485,7 +515,7 @@ def drbd_config(
         typer.echo(f"Wrote DRBD resource config: {res_path}")
 
         if apply:
-            _apply_drbd_config(resource, primary=primary)
+            _apply_drbd_config(resource, primary=primary, timeout=cfg.timeouts.subprocess_default)
             typer.echo("Applied DRBD configuration")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
@@ -506,22 +536,23 @@ def lvm_thinpool(
     """
     try:
         cfg = load_settings()
+        timeout = cfg.timeouts.subprocess_default
         vg = vg or cfg.storage.vg_name
         thinpool = thinpool or cfg.storage.thinpool_name
 
         # PV
-        pv_check = _run(["pvs", pv], check=False)
+        pv_check = _run(["pvs", pv], check=False, timeout=timeout)
         if pv_check.returncode != 0:
-            _run(["pvcreate", pv])
+            _run(["pvcreate", pv], timeout=timeout)
 
         # VG
-        vg_check = _run(["vgs", vg], check=False)
+        vg_check = _run(["vgs", vg], check=False, timeout=timeout)
         if vg_check.returncode != 0:
-            _run(["vgcreate", vg, pv])
+            _run(["vgcreate", vg, pv], timeout=timeout)
 
         # Thinpool
         lv_path = f"{vg}/{thinpool}"
-        lv_check = _run(["lvs", lv_path], check=False)
+        lv_check = _run(["lvs", lv_path], check=False, timeout=timeout)
         if lv_check.returncode != 0:
             _run(
                 [
@@ -536,10 +567,11 @@ def lvm_thinpool(
                     metadata_size,
                     "-Z",
                     "y",
-                ]
+                ],
+                timeout=timeout,
             )
 
-        _run(["systemctl", "enable", "--now", "lvm2-monitor"], check=False)
+        _run(["systemctl", "enable", "--now", "lvm2-monitor"], check=False, timeout=timeout)
         typer.echo("LVM thin pool bootstrap completed")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)

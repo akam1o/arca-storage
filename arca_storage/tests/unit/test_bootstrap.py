@@ -1,4 +1,5 @@
 import subprocess
+from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
@@ -45,8 +46,9 @@ def test_run_raises_runtime_error_on_timeout():
             bootstrap._run(["pcs", "status"])
 
 
-def test_apply_drbd_config_runs_missing_steps():
+def test_apply_drbd_config_runs_missing_steps_with_configured_timeout():
     calls = []
+    timeout = 120
 
     def fake_run(cmd, **kwargs):
         calls.append((cmd, kwargs))
@@ -57,7 +59,7 @@ def test_apply_drbd_config_runs_missing_steps():
         return completed(cmd)
 
     with patch.object(bootstrap, "_run", side_effect=fake_run):
-        bootstrap._apply_drbd_config("r0", primary=True)
+        bootstrap._apply_drbd_config("r0", primary=True, timeout=timeout)
 
     assert [cmd for cmd, _kwargs in calls] == [
         ["drbdadm", "dump-md", "r0"],
@@ -67,6 +69,7 @@ def test_apply_drbd_config_runs_missing_steps():
         ["drbdadm", "primary", "--force", "r0"],
     ]
     assert all(kwargs["check"] is False for _cmd, kwargs in calls)
+    assert all(kwargs["timeout"] == timeout for _cmd, kwargs in calls)
 
 
 def test_apply_drbd_config_skips_existing_metadata_and_running_resource():
@@ -147,3 +150,41 @@ def test_render_drbd_config_rejects_invalid_values(overrides, message):
 
     with pytest.raises(ValueError, match=message):
         bootstrap._render_drbd_config(**kwargs)
+
+
+def test_lvm_thinpool_uses_configured_subprocess_timeout():
+    cfg = SimpleNamespace(
+        storage=SimpleNamespace(vg_name="vg_pool_01", thinpool_name="pool"),
+        timeouts=SimpleNamespace(subprocess_default=120),
+    )
+    calls = []
+
+    def fake_run(cmd, **kwargs):
+        calls.append((cmd, kwargs))
+        if cmd[0] in {"pvs", "vgs", "lvs"}:
+            return completed(cmd, 1)
+        return completed(cmd)
+
+    with (
+        patch.object(bootstrap, "load_settings", return_value=cfg),
+        patch.object(bootstrap, "_run", side_effect=fake_run),
+    ):
+        bootstrap.lvm_thinpool(
+            pv="/dev/drbd0",
+            vg=None,
+            thinpool=None,
+            size="80%VG",
+            metadata_size="15.8G",
+            chunk_size="256K",
+        )
+
+    assert [cmd[0] for cmd, _kwargs in calls] == [
+        "pvs",
+        "pvcreate",
+        "vgs",
+        "vgcreate",
+        "lvs",
+        "lvcreate",
+        "systemctl",
+    ]
+    assert all(kwargs["timeout"] == 120 for _cmd, kwargs in calls)
