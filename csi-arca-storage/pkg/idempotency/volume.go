@@ -23,16 +23,11 @@ func (g *VolumeIDGenerator) GenerateVolumeID(name string) string {
 
 // ValidateVolumeID checks if a volume ID has the correct format
 func (g *VolumeIDGenerator) ValidateVolumeID(volumeID string) bool {
-	if len(volumeID) < 4 {
+	// Format: pvc-{32 hex chars}
+	if len(volumeID) != 36 {
 		return false
 	}
 	if volumeID[:4] != "pvc-" {
-		return false
-	}
-
-	// Accept legacy 64-bit IDs and new 128-bit IDs.
-	hexLen := len(volumeID) - 4
-	if hexLen != 16 && hexLen != 32 {
 		return false
 	}
 

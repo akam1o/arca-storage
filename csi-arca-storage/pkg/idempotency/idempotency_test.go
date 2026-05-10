@@ -16,15 +16,15 @@ func TestGenerateVolumeIDUses128BitDigest(t *testing.T) {
 	}
 }
 
-func TestValidateVolumeIDAcceptsLegacyAndCurrentFormats(t *testing.T) {
+func TestValidateVolumeIDRequires128BitFormat(t *testing.T) {
 	gen := NewVolumeIDGenerator()
 	tests := []struct {
 		name     string
 		volumeID string
 		want     bool
 	}{
-		{"legacy64", "pvc-0123456789abcdef", true},
 		{"current128", "pvc-0123456789abcdef0123456789abcdef", true},
+		{"legacy64", "pvc-0123456789abcdef", false},
 		{"missingPrefix", "vol-0123456789abcdef0123456789abcdef", false},
 		{"tooShort", "pvc-0123456789abcde", false},
 		{"tooLong", "pvc-0123456789abcdef0123456789abcdef00", false},
@@ -56,15 +56,15 @@ func TestGenerateSnapshotIDUses128BitDigest(t *testing.T) {
 	}
 }
 
-func TestValidateSnapshotIDAcceptsLegacyAndCurrentFormats(t *testing.T) {
+func TestValidateSnapshotIDRequires128BitFormat(t *testing.T) {
 	gen := NewSnapshotIDGenerator()
 	tests := []struct {
 		name       string
 		snapshotID string
 		want       bool
 	}{
-		{"legacy64", "0123456789abcdef", true},
 		{"current128", "0123456789abcdef0123456789abcdef", true},
+		{"legacy64", "0123456789abcdef", false},
 		{"tooShort", "0123456789abcde", false},
 		{"tooLong", "0123456789abcdef0123456789abcdef00", false},
 		{"uppercase", "0123456789ABCDEF0123456789abcdef", false},

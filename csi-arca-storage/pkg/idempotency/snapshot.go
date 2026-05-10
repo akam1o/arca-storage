@@ -23,8 +23,8 @@ func (g *SnapshotIDGenerator) GenerateSnapshotID(name string) string {
 
 // ValidateSnapshotID checks if a snapshot ID has the correct format
 func (g *SnapshotIDGenerator) ValidateSnapshotID(snapshotID string) bool {
-	// Accept legacy 64-bit IDs and new 128-bit IDs.
-	if len(snapshotID) != 16 && len(snapshotID) != 32 {
+	// Format: 32 hex chars
+	if len(snapshotID) != 32 {
 		return false
 	}
 	// Check if all chars are valid hex
