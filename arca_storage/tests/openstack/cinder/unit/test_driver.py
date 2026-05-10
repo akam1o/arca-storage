@@ -81,7 +81,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         with pytest.raises(exception.VolumeBackendAPIException, match="per_project"):
             self.driver.do_setup(self.driver._context)
 
-        mock_super_setup.assert_called_once_with(self.driver._context)
+        mock_super_setup.assert_not_called()
 
     def _create_mock_volume(self, volume_id="test-vol-id", name="test-volume", size=10):
         """Create a mock Cinder volume object."""

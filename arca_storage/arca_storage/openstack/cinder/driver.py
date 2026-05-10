@@ -110,6 +110,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         Raises:
             exception.VolumeBackendAPIException: If setup fails
         """
+        self._validate_supported_svm_strategy()
+
         auth_type = None
         api_token = None
         if self.configuration.arca_storage_use_api:
@@ -121,7 +123,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         super(ArcaStorageNFSDriver, self).do_setup(context)
         self._context = context
-        self._validate_supported_svm_strategy()
 
         try:
             # Initialize ARCA Storage API client if enabled
