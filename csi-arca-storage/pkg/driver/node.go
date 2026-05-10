@@ -301,6 +301,9 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
 	}
+	if err := d.validateVolumeCapabilities([]*csi.VolumeCapability{req.GetVolumeCapability()}); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capability: %v", err)
+	}
 
 	// Extract volume context
 	volumeContext := req.GetVolumeContext()
@@ -511,6 +514,9 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 
 	if req.GetVolumeCapability() == nil {
 		return nil, status.Error(codes.InvalidArgument, "volume capability is required")
+	}
+	if err := d.validateVolumeCapabilities([]*csi.VolumeCapability{req.GetVolumeCapability()}); err != nil {
+		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capability: %v", err)
 	}
 
 	klog.V(4).Infof("Publishing volume %s from %s to %s", volumeID, stagingTargetPath, targetPath)
