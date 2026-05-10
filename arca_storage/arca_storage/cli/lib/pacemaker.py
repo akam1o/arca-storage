@@ -2,10 +2,15 @@
 Pacemaker resource management functions.
 """
 
+import re
 import subprocess
 from typing import Optional, Sequence
 
 from arca_storage.cli.lib.netns import make_vlan_ifname
+
+_RESOURCE_ATTR_RE = re.compile(
+    r"""(?:^|\s)(?P<name>[\w-]+)=(?:"(?P<double>[^"]*)"|'(?P<single>[^']*)'|(?P<bare>\S+))"""
+)
 
 
 def _run(cmd: Sequence[str]) -> subprocess.CompletedProcess[str]:
@@ -54,6 +59,13 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
     return members
 
 
+def _parse_resource_attribute(text: str, name: str) -> Optional[str]:
+    for match in _RESOURCE_ATTR_RE.finditer(text):
+        if match.group("name") == name:
+            return match.group("double") or match.group("single") or match.group("bare") or ""
+    return None
+
+
 def _append_unique(members: list[str], resource: str) -> None:
     resource = resource.strip().rstrip(":")
     if resource and resource not in members:
@@ -75,6 +87,21 @@ def _group_members(group_name: str) -> list[str]:
     if result.returncode != 0:
         result = _run(["pcs", "resource", "show", group_name])
     return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+
+
+def _resource_text(name: str) -> str:
+    result = _run(["pcs", "resource", "config", name])
+    if result.returncode != 0:
+        result = _run(["pcs", "resource", "show", name])
+    return (result.stdout or "") + "\n" + (result.stderr or "")
+
+
+def _ensure_resource_attribute(resource: str, name: str, value: str) -> None:
+    if _parse_resource_attribute(_resource_text(resource), name) == value:
+        return
+    result = _run(["pcs", "resource", "update", resource, f"{name}={value}"])
+    if result.returncode != 0:
+        raise RuntimeError(f"Failed to update {resource} {name}: {result.stderr.strip()}")
 
 
 def _ensure_group_members(group_name: str, resources: list[str]) -> None:
@@ -272,26 +299,28 @@ def create_group(
 
     # Create Filesystem resource (optional)
     fs_resource = f"fs_{svm_name}"
-    if create_filesystem and not _resource_exists(fs_resource):
-        device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
-        result = _run(
-            [
-                "pcs",
-                "resource",
-                "create",
-                fs_resource,
-                "ocf:heartbeat:Filesystem",
-                f"device={device}",
-                f"directory={mount_path}",
-                "fstype=xfs",
-                "op",
-                "monitor",
-                "interval=10s",
-            ]
-        )
-        if result.returncode != 0:
-            raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
     if create_filesystem:
+        device = f"/dev/{vg_name}/{filesystem_lv_name or f'vol_{svm_name}'}"
+        if not _resource_exists(fs_resource):
+            result = _run(
+                [
+                    "pcs",
+                    "resource",
+                    "create",
+                    fs_resource,
+                    "ocf:heartbeat:Filesystem",
+                    f"device={device}",
+                    f"directory={mount_path}",
+                    "fstype=xfs",
+                    "op",
+                    "monitor",
+                    "interval=10s",
+                ]
+            )
+            if result.returncode != 0:
+                raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
+        elif filesystem_lv_name:
+            _ensure_resource_attribute(fs_resource, "device", device)
         resources.append(fs_resource)
 
     if vlan_id is None:

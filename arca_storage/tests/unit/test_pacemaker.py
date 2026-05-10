@@ -7,6 +7,7 @@ from unittest.mock import MagicMock
 import pytest
 
 from arca_storage.adapters.pacemaker import (
+    FakePacemakerAdapter,
     SubprocessPacemakerAdapter,
     _parse_group_members as parse_adapter_group_members,
 )
@@ -91,6 +92,47 @@ def test_create_group_creates_missing_resources(mock_subprocess):
     assert any(cmd[:5] == ["pcs", "resource", "create", "netns_tenant_a", "ocf:local:NetnsVlan"] for cmd in calls)
     assert any("vlan_id=100" in cmd for cmd in calls if isinstance(cmd, list))
     assert any("ifname=v100-tenantxxxx" in cmd for cmd in calls if isinstance(cmd, list))
+
+
+@pytest.mark.unit
+def test_create_group_updates_existing_filesystem_device(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(
+            returncode=0,
+            stdout="Attributes: device=/dev/vg_pool_01/vol_tenant_a directory=/exports/tenant_a fstype=xfs",
+            stderr="",
+        ),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=0),  # pcs resource update fs_tenant_a ...
+        MagicMock(returncode=1),  # pcs resource show ip_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ip_tenant_a
+        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=None,
+        ip="192.168.10.5",
+        prefix=32,
+        gw=None,
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+        filesystem_lv_name="svmroot-tenant_a-abc123",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert ["pcs", "resource", "update", "fs_tenant_a", "device=/dev/vg_pool_01/svmroot-tenant_a-abc123"] in calls
+    assert not any(cmd[:5] == ["pcs", "resource", "create", "fs_tenant_a", "ocf:heartbeat:Filesystem"] for cmd in calls)
 
 
 @pytest.mark.unit
@@ -388,6 +430,67 @@ def test_subprocess_adapter_uses_configured_filesystem_lv_name(mock_subprocess):
     calls = [c.args[0] for c in mock_subprocess.call_args_list]
     fs_create = next(cmd for cmd in calls if cmd[:5] == ["pcs", "resource", "create", "fs_tenant_a", "ocf:heartbeat:Filesystem"])
     assert "device=/dev/vg_pool_01/svmroot-tenant_a-abc123" in fs_create
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_updates_existing_filesystem_device(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(
+            returncode=0,
+            stdout="Attributes: device=/dev/vg_pool_01/vol_tenant_a directory=/exports/tenant_a fstype=xfs",
+            stderr="",
+        ),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=0),  # pcs resource update fs_tenant_a ...
+        MagicMock(returncode=1),  # pcs resource show ip_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ip_tenant_a
+        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint order ...
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0),  # pcs constraint colocation add ...
+    ]
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=None,
+        ip="192.168.10.5",
+        prefix=32,
+        gw=None,
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+        filesystem_lv_name="svmroot-tenant_a-abc123",
+    )
+
+    calls = [c.args[0] for c in mock_subprocess.call_args_list]
+    assert ["pcs", "resource", "update", "fs_tenant_a", "device=/dev/vg_pool_01/svmroot-tenant_a-abc123"] in calls
+    assert not any(cmd[:5] == ["pcs", "resource", "create", "fs_tenant_a", "ocf:heartbeat:Filesystem"] for cmd in calls)
+
+
+@pytest.mark.unit
+def test_fake_adapter_updates_existing_filesystem_device():
+    adapter = FakePacemakerAdapter()
+    adapter.resources["fs_tenant_a"] = {"type": "Filesystem", "device": "/dev/vg_pool_01/vol_tenant_a"}
+
+    adapter.create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=None,
+        ip="192.168.10.5",
+        prefix=32,
+        gw=None,
+        parent_if="bond0",
+        vg_name="vg_pool_01",
+        filesystem_lv_name="svmroot-tenant_a-abc123",
+    )
+
+    assert adapter.resources["fs_tenant_a"]["device"] == "/dev/vg_pool_01/svmroot-tenant_a-abc123"
 
 
 @pytest.mark.unit
