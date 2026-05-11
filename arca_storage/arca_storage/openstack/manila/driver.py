@@ -1281,6 +1281,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         LOG.info("Creating share %s (size: %d GiB)", share_id, size_gib)
 
         try:
+            qos_limits = self._qos_limits_for_share(share)
+
             # Determine SVM for this share (create if needed for per_project)
             svm_name = self._get_svm_for_share(
                 share,
@@ -1309,8 +1311,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Persist SVM mapping for later operations (best-effort).
             self._persist_share_metadata(context, share, {"arca_svm_name": svm_name})
 
-            # Apply QoS if share type has specs (best-effort)
-            self._apply_qos_to_share(share, volume_name, svm_name)
+            # Apply QoS if share type has specs.
+            self._apply_qos_to_share(share, volume_name, svm_name, qos_limits)
 
             # Return export locations in Manila 2025.1 format
             return [
@@ -1329,6 +1331,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 existing_volume = self.arca_client.get_volume(volume_name, svm_name)
                 export_path = existing_volume.get("export_path")
                 if export_path:
+                    self._apply_qos_to_share(share, volume_name, svm_name, qos_limits)
                     return [
                         {
                             "path": export_path,
@@ -1613,6 +1616,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         )
 
         try:
+            qos_limits = self._qos_limits_for_share(share)
+
             strategy = self._svm_strategy_effective or self.configuration.arca_storage_svm_strategy
             if not parent_share:
                 parent_share = snapshot.get("share")
@@ -1691,8 +1696,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Persist SVM mapping for later operations (best-effort).
             self._persist_share_metadata(context, share, {"arca_svm_name": svm_name})
 
-            # Apply QoS if share type has specs (best-effort)
-            self._apply_qos_to_share(share, volume_name, svm_name)
+            # Apply QoS if share type has specs.
+            self._apply_qos_to_share(share, volume_name, svm_name, qos_limits)
 
             # Return export locations in Manila 2025.1 format
             return [
@@ -2063,45 +2068,67 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
     # QoS Helper Method
 
-    def _apply_qos_to_share(self, share, volume_name, svm_name):
-        """Apply QoS limits to share (best-effort).
+    def _qos_limits_for_share(self, share):
+        """Return parsed QoS limits for a share, or None when not requested.
+
+        Args:
+            share: Manila share object
+        """
+        share_type = share.get("share_type")
+        if not share_type:
+            return None
+
+        extra_specs = share_type.get("extra_specs", {})
+
+        # Extract QoS specs (arca_manila:* prefix)
+        read_iops = extra_specs.get("arca_manila:read_iops_sec")
+        write_iops = extra_specs.get("arca_manila:write_iops_sec")
+        read_bps = extra_specs.get("arca_manila:read_bytes_sec")
+        write_bps = extra_specs.get("arca_manila:write_bytes_sec")
+
+        if not any([read_iops, write_iops, read_bps, write_bps]):
+            return None
+
+        try:
+            return {
+                "read_iops": int(read_iops) if read_iops else None,
+                "write_iops": int(write_iops) if write_iops else None,
+                "read_bps": int(read_bps) if read_bps else None,
+                "write_bps": int(write_bps) if write_bps else None,
+            }
+        except (TypeError, ValueError) as e:
+            raise manila_exception.ShareBackendException(
+                f"Invalid QoS extra specs for share {share['id']}: {e}"
+            )
+
+    def _apply_qos_to_share(self, share, volume_name, svm_name, qos_limits=None):
+        """Apply QoS limits to share.
 
         Args:
             share: Manila share object
             volume_name: Volume name
             svm_name: SVM name
+            qos_limits: Parsed QoS limits from _qos_limits_for_share
         """
+        if qos_limits is None:
+            qos_limits = self._qos_limits_for_share(share)
+        if qos_limits is None:
+            return
+
         try:
-            share_type = share.get("share_type")
-            if not share_type:
-                return
-
-            extra_specs = share_type.get("extra_specs", {})
-
-            # Extract QoS specs (arca_manila:* prefix)
-            read_iops = extra_specs.get("arca_manila:read_iops_sec")
-            write_iops = extra_specs.get("arca_manila:write_iops_sec")
-            read_bps = extra_specs.get("arca_manila:read_bytes_sec")
-            write_bps = extra_specs.get("arca_manila:write_bytes_sec")
-
-            if not any([read_iops, write_iops, read_bps, write_bps]):
-                return
-
-            # Apply QoS via ARCA API
             self.arca_client.apply_qos(
                 volume=volume_name,
                 svm=svm_name,
-                read_iops=int(read_iops) if read_iops else None,
-                write_iops=int(write_iops) if write_iops else None,
-                read_bps=int(read_bps) if read_bps else None,
-                write_bps=int(write_bps) if write_bps else None,
+                **qos_limits,
             )
 
             LOG.info("Applied QoS to share %s", share["id"])
 
         except Exception as e:
-            # QoS is best-effort, don't fail share creation
-            LOG.warning("Failed to apply QoS to share %s: %s", share["id"], e)
+            LOG.exception("Failed to apply QoS to share %s", share["id"])
+            raise manila_exception.ShareBackendException(
+                f"Failed to apply QoS to share {share['id']}: {e}"
+            )
 
     # SVM Lifecycle Management
     # NOTE: SVM garbage collection for per_project strategy is planned but not yet implemented.
