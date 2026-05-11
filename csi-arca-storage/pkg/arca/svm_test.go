@@ -9,6 +9,10 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	k8sfake "k8s.io/client-go/kubernetes/fake"
+
+	"github.com/akam1o/csi-arca-storage/pkg/lock"
 )
 
 func TestSVMNameForNamespaceKeepsShortNamesReadable(t *testing.T) {
@@ -94,4 +98,47 @@ func TestEnsureSVMWaitsForReadyExistingSVM(t *testing.T) {
 	if atomic.LoadInt32(&getCount) < 2 {
 		t.Fatalf("GetSVM count = %d, want at least 2", getCount)
 	}
+}
+
+func TestEnsureSVMReturnsErrorWithoutClient(t *testing.T) {
+	_, err := NewSVMManager(nil, nil, nil, 1500).EnsureSVM(context.Background(), "default")
+	if err == nil || !strings.Contains(err.Error(), "ARCA client") {
+		t.Fatalf("EnsureSVM() error = %v, want ARCA client configuration error", err)
+	}
+}
+
+func TestEnsureSVMReturnsErrorWithoutLockManager(t *testing.T) {
+	client := newMissingSVMTestClient(t)
+
+	_, err := NewSVMManager(client, nil, nil, 1500).EnsureSVM(context.Background(), "default")
+	if err == nil || !strings.Contains(err.Error(), "lock manager") {
+		t.Fatalf("EnsureSVM() error = %v, want lock manager configuration error", err)
+	}
+}
+
+func TestEnsureSVMReturnsErrorWithoutNetworkAllocator(t *testing.T) {
+	client := newMissingSVMTestClient(t)
+	lockMgr := lock.NewManager(k8sfake.NewClientset(), "kube-system", "test-controller")
+
+	_, err := NewSVMManager(client, nil, lockMgr, 1500).EnsureSVM(context.Background(), "default")
+	if err == nil || !strings.Contains(err.Error(), "network allocator") {
+		t.Fatalf("EnsureSVM() error = %v, want network allocator configuration error", err)
+	}
+}
+
+func newMissingSVMTestClient(t *testing.T) *Client {
+	t.Helper()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusNotFound)
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"NOT_FOUND","message":"SVM not found","details":{"resource":"SVM"}}}`))
+	}))
+	t.Cleanup(server.Close)
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	return client
 }

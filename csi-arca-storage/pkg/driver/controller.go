@@ -411,9 +411,17 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			return nil, status.Errorf(codes.OutOfRange, "requested volume capacity exceeds limit")
 		}
 
+		releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, arca.SVMNameForNamespace(namespace))
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, status.FromContextError(ctxErr).Err()
+			}
+			return nil, status.Errorf(codes.Aborted, "failed to serialize SVM lifecycle: %v", err)
+		}
+		defer releaseControllerSVMLock()
+
 		// Ensure SVM exists for this namespace
 		klog.V(4).Infof("Ensuring SVM exists for namespace: %s", namespace)
-		var err error
 		svm, err = d.svmManager.EnsureSVM(ctx, namespace)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to ensure SVM: %v", err)
@@ -796,6 +804,13 @@ func (d *Driver) cleanupUnusedControllerSVM(ctx context.Context, deletedVolume *
 		return
 	}
 
+	releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, deletedVolume.SVMName)
+	if err != nil {
+		klog.Warningf("Failed to acquire SVM lifecycle lock for %s: %v", deletedVolume.SVMName, err)
+		return
+	}
+	defer releaseControllerSVMLock()
+
 	hasVolumes, err := d.hasVolumesInSVM(deletedVolume.SVMName)
 	if err != nil {
 		klog.Warningf("Failed to check remaining volumes for SVM %s: %v", deletedVolume.SVMName, err)
@@ -1085,11 +1100,8 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 				return nil, status.Errorf(codes.Unavailable, "source volume %s is not ready", sourceVolumeID)
 			}
 			klog.V(4).Infof("Snapshot %s metadata exists but is not ready, resuming creation", snapshotID)
-			if _, err := d.ensureSnapshotBackend(ctx, existingSnap, sourceVolume); err != nil {
-				return nil, snapshotBackendCreateError(snapshotID, err)
-			}
-			if err := d.markSnapshotReady(existingSnap); err != nil {
-				return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+			if err := d.ensureSnapshotReady(ctx, existingSnap, sourceVolume); err != nil {
+				return nil, err
 			}
 			return &csi.CreateSnapshotResponse{
 				Snapshot: existingSnap.ToCSISnapshot(),
@@ -1148,8 +1160,8 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 			existingSnap, getErr := d.store.GetSnapshot(snapshotID)
 			if getErr == nil {
 				if !existingSnap.ReadyToUse {
-					if err := d.markSnapshotReady(existingSnap); err != nil {
-						return nil, status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+					if err := d.ensureSnapshotReady(ctx, existingSnap, sourceVolume); err != nil {
+						return nil, err
 					}
 				}
 				return &csi.CreateSnapshotResponse{Snapshot: existingSnap.ToCSISnapshot()}, nil
@@ -1177,6 +1189,16 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	return &csi.CreateSnapshotResponse{
 		Snapshot: snapshotInfo.ToCSISnapshot(),
 	}, nil
+}
+
+func (d *Driver) ensureSnapshotReady(ctx context.Context, snapshotInfo *store.SnapshotInfo, sourceVolume *store.VolumeInfo) error {
+	if _, err := d.ensureSnapshotBackend(ctx, snapshotInfo, sourceVolume); err != nil {
+		return snapshotBackendCreateError(snapshotInfo.SnapshotID, err)
+	}
+	if err := d.markSnapshotReady(snapshotInfo); err != nil {
+		return status.Errorf(codes.Internal, "failed to persist snapshot ready status: %v", err)
+	}
+	return nil
 }
 
 func (d *Driver) ensureSnapshotBackend(ctx context.Context, snapshotInfo *store.SnapshotInfo, sourceVolume *store.VolumeInfo) (bool, error) {

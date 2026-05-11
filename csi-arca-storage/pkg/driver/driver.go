@@ -58,10 +58,12 @@ type Driver struct {
 	// Metadata store
 	store store.Store
 
-	volumeCreateLocksMu sync.Mutex
-	volumeCreateLocks   map[string]*volumeCreateLock
-	nodeSVMLocksMu      sync.Mutex
-	nodeSVMLocks        map[string]*nodeSVMLock
+	volumeCreateLocksMu  sync.Mutex
+	volumeCreateLocks    map[string]*volumeCreateLock
+	controllerSVMLocksMu sync.Mutex
+	controllerSVMLocks   map[string]*controllerSVMLock
+	nodeSVMLocksMu       sync.Mutex
+	nodeSVMLocks         map[string]*nodeSVMLock
 
 	// CSI capabilities
 	csi.UnimplementedIdentityServer
