@@ -46,6 +46,10 @@ func NewSVMManager(client *Client, allocator *StandaloneAllocator, lockMgr *lock
 
 // EnsureSVM ensures an SVM exists for the given namespace (idempotent)
 func (m *SVMManager) EnsureSVM(ctx context.Context, namespace string) (*SVM, error) {
+	if m == nil || m.client == nil {
+		return nil, fmt.Errorf("SVM manager is not configured with an ARCA client")
+	}
+
 	svmName := svmNameForNamespace(namespace)
 
 	// Try to get existing SVM first (fast path)
@@ -65,6 +69,13 @@ func (m *SVMManager) EnsureSVM(ctx context.Context, namespace string) (*SVM, err
 
 // createSVMWithLock creates an SVM with distributed locking
 func (m *SVMManager) createSVMWithLock(ctx context.Context, namespace, svmName string) (*SVM, error) {
+	if m.lockMgr == nil {
+		return nil, fmt.Errorf("SVM manager is not configured with a lock manager")
+	}
+	if m.allocator == nil {
+		return nil, fmt.Errorf("SVM manager is not configured with a network allocator")
+	}
+
 	// Acquire distributed lock to prevent concurrent creation
 	lockCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
