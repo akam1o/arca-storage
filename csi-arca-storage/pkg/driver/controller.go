@@ -411,9 +411,17 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			return nil, status.Errorf(codes.OutOfRange, "requested volume capacity exceeds limit")
 		}
 
+		releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, arca.SVMNameForNamespace(namespace))
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, status.FromContextError(ctxErr).Err()
+			}
+			return nil, status.Errorf(codes.Aborted, "failed to serialize SVM lifecycle: %v", err)
+		}
+		defer releaseControllerSVMLock()
+
 		// Ensure SVM exists for this namespace
 		klog.V(4).Infof("Ensuring SVM exists for namespace: %s", namespace)
-		var err error
 		svm, err = d.svmManager.EnsureSVM(ctx, namespace)
 		if err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to ensure SVM: %v", err)
@@ -795,6 +803,13 @@ func (d *Driver) cleanupUnusedControllerSVM(ctx context.Context, deletedVolume *
 	if deletedVolume == nil || deletedVolume.SVMName == "" || d.svmManager == nil {
 		return
 	}
+
+	releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, deletedVolume.SVMName)
+	if err != nil {
+		klog.Warningf("Failed to acquire SVM lifecycle lock for %s: %v", deletedVolume.SVMName, err)
+		return
+	}
+	defer releaseControllerSVMLock()
 
 	hasVolumes, err := d.hasVolumesInSVM(deletedVolume.SVMName)
 	if err != nil {

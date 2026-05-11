@@ -347,6 +347,116 @@ func TestDeleteVolumeKeepsSVMWithOtherVolumes(t *testing.T) {
 	}
 }
 
+func TestDeleteVolumeWaitsForInFlightCreateBeforeDeletingSVM(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-a",
+		SVMName:       "k8s-ns-a",
+		VIP:           "10.0.0.10",
+		ExportRoot:    "/exports/k8s-ns-a",
+		Path:          "vol-a",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	volumeIDGen := idempotency.NewVolumeIDGenerator()
+	newVolumeID := volumeIDGen.GenerateVolumeID("new-pvc")
+	directoryCreateEntered := make(chan struct{})
+	releaseDirectoryCreate := make(chan struct{})
+	var svmDeleteCalls int32
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-ns-a","ip_cidr":"10.0.0.10/24","vip":"10.0.0.10","export_root":"/exports/k8s-ns-a","gateway":"","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/directories":
+			close(directoryCreateEntered)
+			<-releaseDirectoryCreate
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"directory":{}}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/k8s-ns-a":
+			if got := r.URL.Query().Get("path"); got != "vol-a" {
+				t.Fatalf("directory delete path = %q, want vol-a", got)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/svms/k8s-ns-a":
+			atomic.AddInt32(&svmDeleteCalls, 1)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		svmManager:    arca.NewSVMManager(client, nil, nil, 1500),
+		store:         st,
+		volumeIDGen:   volumeIDGen,
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+			Name: "new-pvc",
+			Parameters: map[string]string{
+				paramNamespace: "ns-a",
+				paramPVCName:   "new-pvc",
+			},
+			CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+			VolumeCapabilities: testVolumeCapabilities(),
+		})
+		createDone <- err
+	}()
+
+	select {
+	case <-directoryCreateEntered:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for in-flight directory create")
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "vol-a"})
+		deleteDone <- err
+	}()
+
+	select {
+	case err := <-deleteDone:
+		close(releaseDirectoryCreate)
+		t.Fatalf("DeleteVolume returned before in-flight CreateVolume completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseDirectoryCreate)
+
+	if err := <-createDone; err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("DeleteVolume() error = %v", err)
+	}
+	if calls := atomic.LoadInt32(&svmDeleteCalls); calls != 0 {
+		t.Fatalf("SVM delete calls = %d, want 0", calls)
+	}
+	stored, err := st.GetVolume(newVolumeID)
+	if err != nil {
+		t.Fatalf("new volume metadata missing: %v", err)
+	}
+	if !store.IsVolumeReady(stored) {
+		t.Fatalf("new volume is not ready")
+	}
+}
+
 func TestCreateVolumeDoesNotRestoreSnapshotWhenMetadataStoreFails(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	st := &failingCreateStore{MemoryStore: memoryStore}

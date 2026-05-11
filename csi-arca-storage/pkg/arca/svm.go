@@ -217,6 +217,11 @@ func (m *SVMManager) GetSVMForNamespace(ctx context.Context, namespace string) (
 	return m.client.GetSVM(ctx, svmName)
 }
 
+// SVMNameForNamespace returns the deterministic SVM name for a Kubernetes namespace.
+func SVMNameForNamespace(namespace string) string {
+	return svmNameForNamespace(namespace)
+}
+
 func svmNameForNamespace(namespace string) string {
 	name := svmNamePrefix + namespace
 	if len(name) <= maxArcaSVMNameBytes {
