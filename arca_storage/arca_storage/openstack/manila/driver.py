@@ -2090,7 +2090,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             return None
 
         try:
-            return {
+            qos_limits = {
                 "read_iops": int(read_iops) if read_iops else None,
                 "write_iops": int(write_iops) if write_iops else None,
                 "read_bps": int(read_bps) if read_bps else None,
@@ -2100,6 +2100,18 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             raise manila_exception.ShareBackendException(
                 f"Invalid QoS extra specs for share {share['id']}: {e}"
             )
+
+        invalid_limits = []
+        for name, value in qos_limits.items():
+            if value is not None and value <= 0:
+                invalid_limits.append(name)
+        if invalid_limits:
+            raise manila_exception.ShareBackendException(
+                f"Invalid QoS extra specs for share {share['id']}: "
+                f"{', '.join(invalid_limits)} must be greater than 0"
+            )
+
+        return qos_limits
 
     def _apply_qos_to_share(self, share, volume_name, svm_name, qos_limits=None):
         """Apply QoS limits to share.

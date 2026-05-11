@@ -76,6 +76,24 @@ def test_create_share_fails_on_invalid_qos_specs(
     mock_arca_client.apply_qos.assert_not_called()
 
 
+@pytest.mark.parametrize("spec_value", ["0", "-1"])
+def test_create_share_fails_on_non_positive_qos_specs(
+    driver, mock_arca_client, mock_manila_share, spec_value
+):
+    mock_manila_share["share_type"]["extra_specs"] = {
+        "arca_manila:read_iops_sec": spec_value,
+    }
+
+    with pytest.raises(
+        manila_driver.manila_exception.ShareBackendException,
+        match="Failed to create share: Invalid QoS extra specs.*must be greater than 0",
+    ):
+        driver.create_share(Mock(), mock_manila_share, None)
+
+    mock_arca_client.create_volume.assert_not_called()
+    mock_arca_client.apply_qos.assert_not_called()
+
+
 def test_create_share_existing_volume_applies_qos_specs(
     driver, mock_arca_client, mock_manila_share
 ):
