@@ -117,6 +117,21 @@ func (s *racingCreateStore) CreateVolume(info *store.VolumeInfo) error {
 	return s.MemoryStore.CreateVolume(info)
 }
 
+type racingCreateSnapshotStore struct {
+	*store.MemoryStore
+	existing *store.SnapshotInfo
+}
+
+func (s *racingCreateSnapshotStore) CreateSnapshot(info *store.SnapshotInfo) error {
+	if s.existing != nil && s.existing.SnapshotID == info.SnapshotID {
+		if err := s.MemoryStore.CreateSnapshot(s.existing); err != nil && !store.IsAlreadyExists(err) {
+			return err
+		}
+		return fmt.Errorf("%w: snapshot %s", store.ErrAlreadyExists, info.SnapshotID)
+	}
+	return s.MemoryStore.CreateSnapshot(info)
+}
+
 func TestControllerExpandVolumeReturnsInternalOnStoreGetFailure(t *testing.T) {
 	st := &failingGetStore{
 		MemoryStore:  store.NewMemoryStore(),
@@ -1429,6 +1444,90 @@ func TestCreateSnapshotRestoresMetadataWhenBackendAlreadyExistsReady(t *testing.
 	}
 	if !snap.ReadyToUse {
 		t.Fatalf("snapshot metadata was not marked ready")
+	}
+}
+
+func TestCreateSnapshotKeepsRacedPendingMetadataWhenBackendNotReady(t *testing.T) {
+	st := &racingCreateSnapshotStore{MemoryStore: store.NewMemoryStore()}
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(true),
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
+	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
+	st.existing = &store.SnapshotInfo{
+		SnapshotID:       snapshotID,
+		Name:             "snap-a",
+		SourceVolumeID:   "source-vol",
+		SourceVolumePath: "source-path",
+		SVMName:          "svm-a",
+		Path:             snapshotID,
+		SizeBytes:        1 << 30,
+		ReadyToUse:       false,
+	}
+
+	var snapshotRequests int
+	var snapshotListRequests int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			snapshotRequests++
+			if snapshotRequests == 1 {
+				w.WriteHeader(http.StatusCreated)
+				_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
+				return
+			}
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"ALREADY_EXISTS","message":"snapshot exists","details":{"resource":"Snapshot"}}}`))
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/snapshots":
+			snapshotListRequests++
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"` + snapshotID + `","svm":"svm-a","volume":"source-path","status":"Creating","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":null}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		snapshotIDGen: snapshotIDGen,
+	}
+
+	_, err = driver.CreateSnapshot(context.Background(), &csi.CreateSnapshotRequest{
+		Name:           "snap-a",
+		SourceVolumeId: "source-vol",
+	})
+
+	if status.Code(err) != codes.Aborted {
+		t.Fatalf("expected Aborted error, got %v", err)
+	}
+	if snapshotRequests != 2 {
+		t.Fatalf("snapshot requests = %d, want 2", snapshotRequests)
+	}
+	if snapshotListRequests != 1 {
+		t.Fatalf("snapshot list requests = %d, want 1", snapshotListRequests)
+	}
+	snap, err := st.GetSnapshot(snapshotID)
+	if err != nil {
+		t.Fatalf("get snapshot: %v", err)
+	}
+	if snap.ReadyToUse {
+		t.Fatalf("snapshot metadata was marked ready")
 	}
 }
 
