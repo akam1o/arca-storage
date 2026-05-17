@@ -9,7 +9,7 @@ from typing import List, Optional, Union
 from pydantic import BaseModel, Field, field_validator
 
 from arca_storage.cli.lib.validators import (
-    normalize_ip_cidr,
+    normalize_nfs_client_cidr,
     validate_name as validate_resource_name,
     validate_svm_ip_cidr,
 )
@@ -391,7 +391,7 @@ class ExportCreate(BaseModel):
 
     @field_validator("client")
     def validate_client(cls, v: str) -> str:
-        return normalize_ip_cidr(v)
+        return normalize_nfs_client_cidr(v)
 
     @field_validator("sec")
     def validate_sec(cls, v: List[str]) -> List[str]:

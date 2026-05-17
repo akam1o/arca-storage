@@ -21,7 +21,7 @@ from arca_storage.db import encode_cursor
 from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
-from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
+from arca_storage.cli.lib.validators import normalize_ip_cidr, normalize_nfs_client_cidr, validate_name
 from arca_storage.api.services.svm_service import require_svm_ready_record
 from arca_storage.api.services.volume_service import require_volume_ready_record
 
@@ -30,7 +30,7 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     """Add an NFS export via the reconciler."""
     validate_name(export_data.svm)
     validate_name(export_data.volume)
-    client = normalize_ip_cidr(export_data.client)
+    client = normalize_nfs_client_cidr(export_data.client)
 
     ctx = get_context()
     svm_record = ctx.db.get_svm(export_data.svm)

@@ -183,6 +183,25 @@ def normalize_ip_cidr(cidr: str) -> str:
         raise ValueError(f"Invalid CIDR format: {e}")
 
 
+def normalize_nfs_client_cidr(cidr: str) -> str:
+    """Validate and canonicalize a CIDR allowed for new NFS exports."""
+    normalized = normalize_ip_cidr(cidr)
+    network = ipaddress.IPv4Network(normalized)
+
+    if network.prefixlen == 0:
+        raise ValueError("NFS export client CIDR must not include the IPv4 default route")
+    if network.is_multicast:
+        raise ValueError("NFS export client CIDR must not be multicast")
+    if network.is_loopback:
+        raise ValueError("NFS export client CIDR must not be loopback")
+    if network.is_link_local:
+        raise ValueError("NFS export client CIDR must not be link-local")
+    if network.is_reserved:
+        raise ValueError("NFS export client CIDR must not be reserved")
+
+    return normalized
+
+
 def validate_ipv4(ip: str) -> None:
     """
     Validate an IPv4 address string.

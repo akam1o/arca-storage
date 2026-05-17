@@ -47,6 +47,15 @@ class TestExportAdd:
         assert result.exit_code == 1
         assert "Error" in cli_output(result)
 
+    @pytest.mark.integration
+    def test_add_export_rejects_default_route_client(self):
+        """Test adding export rejects world-open client CIDRs."""
+        runner = CliRunner()
+        result = runner.invoke(app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "0.0.0.0/0"])
+
+        assert result.exit_code == 1
+        assert "default route" in cli_output(result)
+
 
 class TestExportRemove:
     """Tests for export remove command."""

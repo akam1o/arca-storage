@@ -63,6 +63,15 @@ class TestAddExport:
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
+    def test_add_export_rejects_default_route_client(self, client):
+        """Test adding export refuses world-open client CIDRs."""
+        response = client.post("/v1/exports", json={"svm": "tenant_a", "volume": "vol1", "client": "0.0.0.0/0"})
+
+        assert response.status_code == 400
+        assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+        assert "default route" in response.json()["error"]["details"]["errors"][0]["msg"]
+
+    @pytest.mark.integration
     def test_add_export_rejects_unsupported_sec_type(self, client):
         response = client.post(
             "/v1/exports",

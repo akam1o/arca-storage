@@ -15,7 +15,7 @@ from arca_storage.api.services import export_service
 from arca_storage.cli.commands._pagination import list_all_exports
 from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
 from arca_storage.cli.lib.state import get_state_dir
-from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
+from arca_storage.cli.lib.validators import normalize_nfs_client_cidr, validate_ip_cidr, validate_name
 from arca_storage.context import get_context
 
 app = typer.Typer(help="Export management commands")
@@ -33,7 +33,7 @@ def add(
     try:
         validate_name(volume)
         validate_name(svm)
-        validate_ip_cidr(client)
+        client = normalize_nfs_client_cidr(client)
 
         if access not in ("rw", "ro"):
             raise ValueError("Access must be 'rw' or 'ro'")
