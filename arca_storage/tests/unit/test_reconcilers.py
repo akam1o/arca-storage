@@ -926,6 +926,69 @@ class TestExportReconciler:
         assert adapters.ganesha.bind_addrs["host-svm"] == "10.0.8.5"
         assert adapters.ganesha.host_network["host-svm"] is True
 
+    def test_export_render_ignores_invalid_persisted_svm_bind_addr(self, db, adapters, config):
+        svm = SVM(spec=SVMSpec(name="host-svm", ip_cidr="bad:/export/24"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        _insert_ready_volume(db, "host-svm", "vol1")
+        rec = ExportReconciler(db, adapters, config=config)
+
+        result = rec.reconcile(Export(spec=ExportSpec(svm="host-svm", volume="vol1", client="10.0.0.0/24")))
+
+        assert result.status.phase == Phase.READY
+        assert adapters.ganesha.bind_addrs["host-svm"] is None
+        assert adapters.ganesha.host_network["host-svm"] is True
+
+    def test_create_export_rejects_unsafe_custom_path_before_persist(self, db, adapters, config):
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.1.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        rec = ExportReconciler(db, adapters, config=config)
+
+        export = Export(
+            spec=ExportSpec(
+                svm="svm1",
+                volume="__csi_root__",
+                client="10.0.0.0/24",
+                path="/export/svm1/../escape",
+                pseudo="/export/svm1",
+                owner="csi",
+            ),
+        )
+
+        with pytest.raises(ValueError, match="relative path segments"):
+            rec.reconcile(export)
+
+        assert db.get_export("svm1", "__csi_root__", "10.0.0.0/24") is None
+        assert adapters.ganesha.exports.get("svm1") is None
+
+    @pytest.mark.parametrize(
+        ("unsafe_path", "unsafe_pseudo"),
+        [
+            ("/export/svm1/../escape", "/export/svm1/vol1"),
+            ("/export/svm1/vol1", "/export/svm1/../escape"),
+        ],
+    )
+    def test_sync_skips_ready_export_with_unsafe_persisted_path_data(
+        self, db, adapters, config, unsafe_path, unsafe_pseudo
+    ):
+        _insert_ready_volume(db, "svm1", "ready")
+        _insert_ready_volume(db, "svm1", "unsafe")
+        rec = ExportReconciler(db, adapters, config=config)
+        ready = rec.reconcile(Export(spec=ExportSpec(svm="svm1", volume="ready", client="10.0.0.0/24")))
+        assert ready.status.phase == Phase.READY
+
+        unsafe = Export(spec=ExportSpec(svm="svm1", volume="unsafe", client="10.0.1.0/24"))
+        unsafe.status.phase = Phase.READY
+        unsafe.status.export_id = 99
+        unsafe.status.path = unsafe_path
+        unsafe.status.pseudo = unsafe_pseudo
+        db.upsert_export(unsafe)
+
+        rec.sync_svm_config("svm1")
+
+        assert [entry["path"] for entry in adapters.ganesha.exports["svm1"]] == ["/export/svm1/ready"]
+
     def test_sync_skips_failed_exports(self, db, adapters, config):
         _insert_ready_volume(db, "svm1", "ready")
         rec = ExportReconciler(db, adapters, config=config)

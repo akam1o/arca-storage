@@ -9,10 +9,10 @@ import json
 import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
-from ipaddress import IPv4Interface
 from pathlib import Path
 from typing import Optional
 
+from arca_storage.cli.lib.validators import validate_svm_ip_cidr
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError, PreconditionFailedError
@@ -345,9 +345,9 @@ class ExportReconciler:
         spec = json.loads(record["spec"])
         ip_cidr = str(spec.get("ip_cidr") or "")
         try:
-            bind_addr = str(IPv4Interface(ip_cidr).ip)
-        except Exception:
-            bind_addr = ip_cidr.split("/", 1)[0] if ip_cidr else None
+            bind_addr, _prefix = validate_svm_ip_cidr(ip_cidr)
+        except ValueError:
+            bind_addr = None
         return bind_addr, spec.get("vlan_id") is None
 
     @contextmanager
@@ -395,11 +395,23 @@ def _records_to_config_entries(
         if phase != Phase.READY.value and not is_current_transient:
             continue
 
-        path = status.get("path") or spec.get("path") or _export_path(ExportSpec.model_validate(spec), export_dir)
+        try:
+            path = _record_export_path(spec, status, export_dir)
+            pseudo = _record_export_pseudo(spec, status, path)
+        except (TypeError, ValueError) as e:
+            logger.warning(
+                "Skipping export %s/%s/%s with unsafe path data: %s",
+                spec.get("svm"),
+                spec.get("volume"),
+                spec.get("client"),
+                e,
+            )
+            continue
+
         entry = {
             "export_id": int(export_id),
             "path": path,
-            "pseudo": status.get("pseudo") or spec.get("pseudo") or path,
+            "pseudo": pseudo,
             "access": str(spec.get("access", "RW")).upper(),
             "squash": "Root_Squash" if spec.get("root_squash", True) else "No_Root_Squash",
             "sec": spec.get("sec") or ["sys"],
@@ -442,14 +454,43 @@ def _requires_ready_volume(export: Export) -> bool:
     return not (export.spec.owner == "csi" and export.spec.volume == "__csi_root__")
 
 
+def _record_export_path(spec: dict, status: dict, export_dir: str) -> str:
+    raw_path = status.get("path") or spec.get("path")
+    if raw_path:
+        return _normalize_absolute_export_path(raw_path, "export path")
+    return _export_path(ExportSpec.model_validate(spec), export_dir)
+
+
+def _record_export_pseudo(spec: dict, status: dict, path: str) -> str:
+    return _normalize_absolute_export_path(status.get("pseudo") or spec.get("pseudo") or path, "export pseudo")
+
+
 def _export_path(spec: ExportSpec, export_dir: str) -> str:
     if spec.path:
-        return spec.path
-    return f"{str(export_dir).rstrip('/')}/{spec.svm}/{spec.volume}"
+        return _normalize_absolute_export_path(spec.path, "export path")
+    base = _normalize_absolute_export_path(export_dir, "export_dir")
+    return _normalize_absolute_export_path(f"{base}/{spec.svm}/{spec.volume}", "export path")
 
 
 def _export_pseudo(spec: ExportSpec, path: str) -> str:
-    return spec.pseudo or path
+    return _normalize_absolute_export_path(spec.pseudo or path, "export pseudo")
+
+
+def _normalize_absolute_export_path(value: object, field_name: str) -> str:
+    raw = str(value or "").strip()
+    if not raw:
+        raise ValueError(f"{field_name} cannot be empty")
+    if not raw.startswith("/"):
+        raise ValueError(f"{field_name} must be an absolute POSIX path")
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        raise ValueError(f"{field_name} must not contain control characters")
+
+    parts = [part for part in raw.split("/") if part]
+    if not parts:
+        raise ValueError(f"{field_name} must not be the filesystem root")
+    if any(part in {".", ".."} for part in parts):
+        raise ValueError(f"{field_name} must not contain relative path segments")
+    return "/" + "/".join(parts)
 
 
 def _meta_from_record(record: dict) -> ResourceMeta:
