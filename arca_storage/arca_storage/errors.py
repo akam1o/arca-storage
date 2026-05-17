@@ -140,8 +140,11 @@ class SubprocessError(ArcaError):
     """Wraps a failed subprocess call with structured context."""
 
     def __init__(self, cmd: list[str], returncode: int, stderr: str) -> None:
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stderr = stderr
         super().__init__(
             ErrorCode.INTERNAL,
-            f"Command failed (rc={returncode}): {' '.join(cmd)}",
-            {"cmd": cmd, "returncode": returncode, "stderr": stderr},
+            f"Command failed (rc={returncode})",
+            {"returncode": returncode},
         )

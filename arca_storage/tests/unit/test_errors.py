@@ -45,7 +45,10 @@ class TestErrorCodes:
     def test_subprocess_error(self):
         err = SubprocessError(["lvcreate"], 1, "error msg")
         assert err.http_status == 500
-        assert "lvcreate" in err.message
+        assert err.message == "Command failed (rc=1)"
+        assert err.to_dict()["details"] == {"returncode": 1}
+        assert err.cmd == ["lvcreate"]
+        assert err.stderr == "error msg"
 
     def test_to_dict(self):
         err = NotFoundError("SVM", "test")
