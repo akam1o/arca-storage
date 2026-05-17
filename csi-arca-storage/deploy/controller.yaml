@@ -49,6 +49,9 @@ spec:
     spec:
       serviceAccountName: csi-arca-storage-controller
       priorityClassName: system-cluster-critical
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       tolerations:
         - key: CriticalAddonsOnly
           operator: Exists
@@ -57,6 +60,11 @@ spec:
         - name: csi-driver
           image: ghcr.io/akam1o/csi-arca-storage:v1.0.0
           imagePullPolicy: IfNotPresent
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           args:
             - --mode=controller
             - --config=/etc/csi-arca-storage/config.yaml
@@ -90,6 +98,11 @@ spec:
         # External Provisioner
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           args:
             - --csi-address=/csi/csi.sock
             - --v=5
@@ -111,6 +124,11 @@ spec:
         # External Snapshotter
         - name: csi-snapshotter
           image: registry.k8s.io/sig-storage/csi-snapshotter:v8.1.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           args:
             - --csi-address=/csi/csi.sock
             - --v=5
@@ -131,6 +149,11 @@ spec:
         # External Resizer
         - name: csi-resizer
           image: registry.k8s.io/sig-storage/csi-resizer:v1.12.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           args:
             - --csi-address=/csi/csi.sock
             - --v=5
@@ -151,6 +174,11 @@ spec:
         # Liveness Probe
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            capabilities:
+              drop:
+                - ALL
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9808
