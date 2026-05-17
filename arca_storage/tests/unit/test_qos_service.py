@@ -235,6 +235,68 @@ def test_apply_qos_restores_previous_limits_without_db_reads(monkeypatch, tmp_pa
     ]
 
 
+def test_restore_qos_ignores_persisted_cgroup_path_outside_expected_path(monkeypatch, tmp_path):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    cgroup_path.mkdir(parents=True)
+    outside_cgroup_path = tmp_path / "outside-cgroup"
+    outside_cgroup_path.mkdir()
+    (outside_cgroup_path / "io.max").write_text("8:16 riops=1000", encoding="utf-8")
+
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    restored = qos_service._restore_qos_limit_direct_best_effort(
+        "tenant-a",
+        "test-vol",
+        "/dev/vg_arca/test-vol",
+        {"device_id": "8:16", "cgroup_path": str(outside_cgroup_path)},
+        {"read_iops": 2000},
+    )
+
+    assert restored is True
+    assert (outside_cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=2000"
+
+
+def test_restore_qos_ignores_invalid_persisted_device_id(monkeypatch, tmp_path):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "io.max").write_text("8:16 riops=1000", encoding="utf-8")
+
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    restored = qos_service._restore_qos_limit_direct_best_effort(
+        "tenant-a",
+        "test-vol",
+        "/dev/vg_arca/test-vol",
+        {"device_id": "8:16\n9:9 riops=1", "cgroup_path": str(cgroup_path)},
+        {"read_iops": 2000},
+    )
+
+    assert restored is True
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=2000"
+
+
+def test_clear_qos_ignores_persisted_cgroup_path_outside_expected_path(monkeypatch, tmp_path):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    outside_cgroup_path = tmp_path / "outside-cgroup"
+    outside_cgroup_path.mkdir()
+    (outside_cgroup_path / "io.max").write_text("8:16 riops=1000", encoding="utf-8")
+
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+
+    qos_service._clear_qos_limit_best_effort(
+        "tenant-a",
+        "test-vol",
+        {"device_id": "8:16", "cgroup_path": str(outside_cgroup_path)},
+    )
+
+    assert (outside_cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
+
+
 def test_apply_qos_rejects_empty_limits(monkeypatch):
     ctx = SimpleNamespace(
         db=DummyDB(

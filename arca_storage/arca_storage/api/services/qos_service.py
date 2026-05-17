@@ -199,15 +199,39 @@ def _disabled_qos_settings(svm: str, volume: str, persisted: Optional[dict[str, 
     return settings
 
 
-def _clear_qos_limit_best_effort(settings: dict[str, Any]) -> None:
-    raw_cgroup_path = settings.get("cgroup_path")
-    device_id = settings.get("device_id")
-    if not raw_cgroup_path or not device_id:
-        return
+def _trusted_persisted_cgroup_path(raw_cgroup_path: Any, svm: str, volume: str) -> Optional[Path]:
+    if not raw_cgroup_path:
+        return None
     try:
         cgroup_path = Path(str(raw_cgroup_path))
+        expected_path = _get_cgroup_path(svm, volume)
+        if cgroup_path.resolve(strict=False) != expected_path.resolve(strict=False):
+            return None
+    except (OSError, RuntimeError, ValueError):
+        return None
+    return cgroup_path
+
+
+def _trusted_persisted_device_id(raw_device_id: Any) -> Optional[str]:
+    if raw_device_id is None:
+        return None
+
+    device_id = str(raw_device_id).strip()
+    major, separator, minor = device_id.partition(":")
+    if separator != ":" or not major.isdigit() or not minor.isdigit():
+        return None
+    return f"{int(major)}:{int(minor)}"
+
+
+def _clear_qos_limit_best_effort(svm: str, volume: str, settings: dict[str, Any]) -> None:
+    raw_cgroup_path = settings.get("cgroup_path")
+    cgroup_path = _trusted_persisted_cgroup_path(raw_cgroup_path, svm, volume)
+    device_id = _trusted_persisted_device_id(settings.get("device_id"))
+    if not cgroup_path or not device_id:
+        return
+    try:
         if cgroup_path.exists():
-            _clear_io_max_limit(cgroup_path, str(device_id))
+            _clear_io_max_limit(cgroup_path, device_id)
     except Exception:
         pass
 
@@ -231,10 +255,10 @@ def _restore_qos_limit_direct_best_effort(
     raw_cgroup_path = settings.get("cgroup_path")
     raw_device_id = settings.get("device_id")
     try:
-        cgroup_path = Path(str(raw_cgroup_path)) if raw_cgroup_path else _get_cgroup_path(svm, volume)
+        cgroup_path = _trusted_persisted_cgroup_path(raw_cgroup_path, svm, volume) or _get_cgroup_path(svm, volume)
         if not cgroup_path.exists():
             return False
-        device_id = str(raw_device_id) if raw_device_id else _get_device_id(lv_path)
+        device_id = _trusted_persisted_device_id(raw_device_id) or _get_device_id(lv_path)
         _write_io_max_limit(cgroup_path, device_id, _qos_io_max_line(device_id, limits))
         return True
     except Exception:
@@ -282,7 +306,7 @@ def _persist_reapplied_qos(
     try:
         _persist_volume_qos(ctx, svm, volume, qos_settings)
     except NotFoundError:
-        _clear_qos_limit_best_effort(qos_settings)
+        _clear_qos_limit_best_effort(svm, volume, qos_settings)
         raise
 
 
@@ -354,7 +378,7 @@ def apply_qos_to_volume(
     try:
         _persist_volume_qos(ctx, svm, volume, qos_settings)
     except NotFoundError:
-        _clear_qos_limit_best_effort(qos_settings)
+        _clear_qos_limit_best_effort(svm, volume, qos_settings)
         raise
     except Exception:
         _restore_qos_state_best_effort(ctx, svm, volume, lv_path, previous_qos)
