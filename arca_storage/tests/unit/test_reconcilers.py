@@ -927,9 +927,14 @@ class TestExportReconciler:
         assert adapters.ganesha.host_network["host-svm"] is True
 
     def test_export_render_ignores_invalid_persisted_svm_bind_addr(self, db, adapters, config):
-        svm = SVM(spec=SVMSpec(name="host-svm", ip_cidr="bad:/export/24"))
+        svm = SVM(spec=SVMSpec(name="host-svm", ip_cidr="10.0.8.5/32"))
         svm.status.phase = Phase.READY
         db.insert_svm(svm)
+        spec = svm.spec.model_dump(mode="json")
+        spec["ip_cidr"] = "bad:/export/24"
+        conn = db._conn()
+        conn.execute("UPDATE svms SET spec = ? WHERE name = ?", (json.dumps(spec), "host-svm"))
+        conn.commit()
         _insert_ready_volume(db, "host-svm", "vol1")
         rec = ExportReconciler(db, adapters, config=config)
 

@@ -13,7 +13,6 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from ipaddress import IPv4Interface
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional, Union
 
@@ -23,6 +22,7 @@ from arca_storage.cli.lib.validators import (
     legacy_volume_lv_name,
     snapshot_lv_name,
     svm_root_lv_name,
+    validate_svm_ip_cidr,
     volume_lv_name,
 )
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
@@ -267,14 +267,16 @@ def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _svm_network_key(spec: dict[str, Any]) -> Optional[tuple[Optional[int], str]]:
+def _svm_network_key(spec: dict[str, Any], *, strict: bool = False) -> Optional[tuple[Optional[int], str]]:
     ip_cidr = str(spec.get("ip_cidr") or "")
     if not ip_cidr:
         return None
     try:
-        vip = str(IPv4Interface(ip_cidr).ip)
-    except Exception:
-        vip = ip_cidr.split("/", 1)[0]
+        vip, _prefix = validate_svm_ip_cidr(ip_cidr)
+    except ValueError:
+        if strict:
+            raise
+        return None
     if not vip:
         return None
     raw_vlan = spec.get("vlan_id")
@@ -1635,7 +1637,7 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
+        precondition: Optional[Callable[[sqlite3.Connection], Any]] = None,
     ) -> Optional[dict[str, Any]]:
         with self.transaction(immediate=True) as conn:
             if precondition is not None:
@@ -1681,7 +1683,7 @@ class StateDB:
         key: dict[str, str],
         owner: str,
         *,
-        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
+        precondition: Optional[Callable[[sqlite3.Connection], Any]] = None,
     ) -> bool:
         with self.transaction(immediate=True) as conn:
             if precondition is not None:
@@ -1816,7 +1818,7 @@ class StateDB:
         *,
         exclude_name: str,
     ) -> None:
-        key = _svm_network_key(spec)
+        key = _svm_network_key(spec, strict=True)
         if key is None:
             return
         vlan_id, vip = key

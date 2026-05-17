@@ -143,6 +143,31 @@ class TestStateDB:
         assert exc_info.value.details["ip"] == "10.0.0.5"
         assert exc_info.value.details["vlan_id"] == 100
 
+    def test_insert_svm_rejects_invalid_network_key_before_persist(self, db):
+        with pytest.raises(ValueError, match="Invalid CIDR format"):
+            db.insert_svm(SVM(spec=SVMSpec(name="bad", vlan_id=100, ip_cidr="bad:/exports/24")))
+
+        assert db.get_svm("bad") is None
+
+    def test_upsert_svm_rejects_invalid_network_key_before_persist(self, db):
+        with pytest.raises(ValueError, match="Invalid CIDR format"):
+            db.upsert_svm(SVM(spec=SVMSpec(name="bad", vlan_id=100, ip_cidr="bad:/exports/24")))
+
+        assert db.get_svm("bad") is None
+
+    def test_insert_svm_ignores_corrupt_existing_network_key(self, db):
+        corrupt = SVM(spec=SVMSpec(name="corrupt", vlan_id=100, ip_cidr="10.0.0.6/32"))
+        db.insert_svm(corrupt)
+        conn = db._conn()
+        spec = corrupt.spec.model_dump(mode="json")
+        spec["ip_cidr"] = "bad:/exports/24"
+        conn.execute("UPDATE svms SET spec = ? WHERE name = ?", (json.dumps(spec), "corrupt"))
+        conn.commit()
+
+        db.insert_svm(SVM(spec=SVMSpec(name="valid", vlan_id=100, ip_cidr="10.0.0.5/32")))
+
+        assert db.get_svm("valid") is not None
+
     def test_upsert_svm_rejects_duplicate_host_network_vip(self, db):
         db.upsert_svm(SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32")))
 
