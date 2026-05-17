@@ -108,6 +108,11 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         snapshot.context = Mock(name=f"context-{snapshot_id}")
         return snapshot
 
+    def _mock_driver_file_paths(self, mock_utils):
+        mock_utils.get_volume_file_path.side_effect = (
+            lambda mount_point, file_name: os.path.join(mount_point, file_name)
+        )
+
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_volume_creates_file_in_svm_export(self, mock_utils):
         """Create volume mounts the shared SVM export and creates a volume-id file."""
@@ -433,6 +438,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_snapshot_copies_volume_file(self, mock_utils):
         """Snapshots are file copies from volume-id to snapshot-id paths."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
         mount_point = "/var/lib/cinder/mnt/svm_test-svm"
@@ -455,6 +461,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_snapshot_uses_persisted_volume_svm(self, mock_utils):
         """Snapshot creation ignores later default-SVM config drift."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         source_volume.provider_id = "source-svm"
         snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
@@ -493,6 +500,23 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_utils.mount_nfs.assert_not_called()
         mock_utils.copy_sparse_file.assert_not_called()
 
+    @patch("arca_storage.openstack.cinder.driver.arca_utils.copy_sparse_file")
+    def test_create_snapshot_rejects_unsafe_snapshot_file_name(self, mock_copy):
+        """Snapshot IDs must not produce nested or traversing storage paths."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        snapshot = self._create_mock_snapshot("snap/../../escape", "source-vol-id")
+        self.driver.db.volume_get.return_value = source_volume
+
+        with patch.object(
+            self.driver,
+            "_mount_svm_export",
+            return_value=("192.168.100.5:/exports/test-svm", "/var/lib/cinder/mnt/svm_test-svm"),
+        ):
+            with pytest.raises(exception.VolumeBackendAPIException, match="Invalid volume file name"):
+                self.driver.create_snapshot(snapshot)
+
+        mock_copy.assert_not_called()
+
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
@@ -500,6 +524,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_exists, mock_remove
     ):
         """Snapshot deletion removes the snapshot-id file from the SVM export."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
         mount_point = "/var/lib/cinder/mnt/svm_test-svm"
@@ -518,6 +543,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_exists, mock_remove
     ):
         """Driver-managed provider fields are enough to remove a snapshot file."""
+        self._mock_driver_file_paths(mock_utils)
         snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
         snapshot.provider_location = "192.168.100.5:/exports/source-svm"
         snapshot.provider_id = "source-svm"
@@ -541,6 +567,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_exists, mock_remove
     ):
         """Snapshot cleanup follows the source volume's persisted SVM."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         source_volume.provider_location = "192.168.100.5:/exports/source-svm"
         source_volume.provider_id = "source-svm"
@@ -569,6 +596,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_exists, mock_remove
     ):
         """User-facing metadata must not control snapshot storage routing."""
+        self._mock_driver_file_paths(mock_utils)
         snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
         snapshot.provider_location = "192.168.100.5:/exports/source-svm"
         snapshot.provider_id = "source-svm"
@@ -597,6 +625,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_volume_from_snapshot_copies_snapshot_file(self, mock_utils, mock_getsize):
         """Create-from-snapshot copies snapshot-id to the new volume-id file."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=20)
         snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
@@ -672,6 +701,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_getsize
     ):
         """Driver-managed provider fields are enough to restore a snapshot."""
+        self._mock_driver_file_paths(mock_utils)
         self.driver.configuration.arca_storage_default_svm = "source-svm"
         new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
         snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
@@ -701,6 +731,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_getsize
     ):
         """User-facing metadata must not bypass cross-SVM restore protection."""
+        self._mock_driver_file_paths(mock_utils)
         self.driver.configuration.arca_storage_svm_strategy = "manual"
         new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=10)
         new_volume.volume_type = {"extra_specs": {"arca_storage:svm_name": "source-svm"}}
@@ -740,6 +771,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self, mock_utils, mock_getsize, mock_remove
     ):
         """Post-copy failures remove the newly-created destination file."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=20)
         snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
@@ -757,6 +789,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_cloned_volume_copies_source_volume_file(self, mock_utils):
         """Clone creates a new volume-id file by copying the source volume-id file."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id", size=10)
         new_volume = self._create_mock_volume(volume_id="clone-vol-id", size=12)
         mount_point = "/var/lib/cinder/mnt/svm_test-svm"
@@ -801,6 +834,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_cloned_volume_cleans_up_file_after_post_copy_failure(self, mock_utils, mock_remove):
         """Post-copy failures remove the newly-created cloned file."""
+        self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id", size=10)
         new_volume = self._create_mock_volume(volume_id="clone-vol-id", size=12)
         mount_point = "/var/lib/cinder/mnt/svm_test-svm"

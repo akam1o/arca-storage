@@ -907,10 +907,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             export_path, mount_point = self._mount_svm_export(svm_name)
 
             # Source volume file path
-            source_file = os.path.join(mount_point, f"volume-{volume_id}")
+            source_file = arca_utils.get_volume_file_path(mount_point, f"volume-{volume_id}")
 
             # Snapshot file path (using snapshot ID, not snapshot name)
-            snapshot_file = os.path.join(mount_point, f"snapshot-{snapshot_id}")
+            snapshot_file = arca_utils.get_volume_file_path(mount_point, f"snapshot-{snapshot_id}")
 
             # Get timeout from configuration
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
@@ -957,7 +957,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             _, mount_point = self._mount_svm_export_path(svm_name, export_path)
 
             # Snapshot file path (using snapshot ID)
-            snapshot_file = os.path.join(mount_point, f"snapshot-{snapshot_id}")
+            snapshot_file = arca_utils.get_volume_file_path(mount_point, f"snapshot-{snapshot_id}")
 
             # Delete snapshot file
             if os.path.exists(snapshot_file):
@@ -1025,10 +1025,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             target_mount_point = source_mount_point
 
             # Snapshot file path (using snapshot ID)
-            snapshot_file = os.path.join(source_mount_point, f"snapshot-{snapshot_id}")
+            snapshot_file = arca_utils.get_volume_file_path(source_mount_point, f"snapshot-{snapshot_id}")
 
             # New volume file path (using volume ID)
-            volume_file = os.path.join(target_mount_point, f"volume-{volume_id}")
+            volume_file = arca_utils.get_volume_file_path(target_mount_point, f"volume-{volume_id}")
 
             # Get timeout from configuration
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
@@ -1115,10 +1115,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             target_mount_point = source_mount_point
 
             # Source volume file path
-            source_file = os.path.join(source_mount_point, f"volume-{src_volume_id}")
+            source_file = arca_utils.get_volume_file_path(source_mount_point, f"volume-{src_volume_id}")
 
             # New volume file path
-            volume_file = os.path.join(target_mount_point, f"volume-{volume_id}")
+            volume_file = arca_utils.get_volume_file_path(target_mount_point, f"volume-{volume_id}")
 
             # Get timeout from configuration
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
