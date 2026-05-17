@@ -16,6 +16,16 @@
           Default secrets detected. Set pacemaker_hacluster_password and drbd_shared_secret to non-default values
           (use ansible-vault for production).
       when: not (test_mode | default(false) | bool)
+    - name: Fail fast if STONITH is disabled without explicit lab opt-out
+      ansible.builtin.assert:
+        that:
+          - pacemaker_enable_stonith | default(false) | bool
+        fail_msg: >-
+          STONITH is disabled. Set pacemaker_enable_stonith=true for production,
+          or set pacemaker_allow_stonith_disabled_for_lab=true only for isolated lab environments.
+      when:
+        - not (test_mode | default(false) | bool)
+        - not (pacemaker_allow_stonith_disabled_for_lab | default(false) | bool)
   roles:
     - role: common
       tags: [common]

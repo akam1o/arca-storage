@@ -66,7 +66,7 @@ ansible-playbook -i inventory.ini site.yml --tags arca_cli,arca_runtime \
 ```
 
 ## STONITH設定
-デフォルトでは `pacemaker_enable_stonith: false` に設定されています。本番環境では以下の手順でSTONITHを有効化することを強く推奨します：
+デフォルトでは `pacemaker_enable_stonith: false` に設定されていますが、`site.yml` は STONITH が有効か、隔離された検証環境向けに `pacemaker_allow_stonith_disabled_for_lab: true` が明示されていない限り fail-fast します。本番環境では以下の手順でSTONITHを有効化してください：
 
 1. `group_vars/all.yml` で `pacemaker_enable_stonith: true` に変更
 2. 環境に応じたSTONITHデバイスを手動で作成

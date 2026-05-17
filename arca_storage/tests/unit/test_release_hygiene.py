@@ -20,3 +20,12 @@ def test_ansible_site_rejects_default_cluster_secrets(repo_root):
 
     assert 'pacemaker_hacluster_password != "changeme"' in playbook
     assert 'drbd_shared_secret != "changeme"' in playbook
+
+
+def test_ansible_site_rejects_disabled_stonith_without_lab_opt_out(repo_root):
+    playbook = (repo_root / "ansible/site.yml").read_text(encoding="utf-8")
+    group_vars = (repo_root / "ansible/group_vars/all.yml").read_text(encoding="utf-8")
+
+    assert "pacemaker_enable_stonith | default(false) | bool" in playbook
+    assert "pacemaker_allow_stonith_disabled_for_lab | default(false) | bool" in playbook
+    assert "pacemaker_allow_stonith_disabled_for_lab: false" in group_vars

@@ -68,6 +68,9 @@ pacemaker_cluster_bootstrap_node: "{{ pacemaker_nodes[0].name }}"
 # NOTE: STONITH is disabled by default. To enable, set to true and configure
 # appropriate STONITH devices for your environment (e.g., fence_ipmilan, fence_aws, etc.)
 pacemaker_enable_stonith: false
+# Keep false for production. Set true only for isolated lab environments where
+# fencing is intentionally unavailable.
+pacemaker_allow_stonith_disabled_for_lab: false
 pacemaker_install_netnsvlan_ra: true
 # Ansible is intended for initial bootstrap only; runtime resource management is handled by `arca`.
 pacemaker_create_resources: false
