@@ -167,6 +167,21 @@ def test_load_settings_rejects_unsafe_filesystem_paths(monkeypatch, temp_dir, se
 
 
 @pytest.mark.unit
+def test_load_settings_rejects_control_character_filesystem_paths(monkeypatch, temp_dir):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(
+        '[ganesha]\nconfig_dir = "/srv/ganesha\\nARCA_EXPORT_DIR=/tmp"\n',
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match="control characters"):
+        load_settings()
+
+
+@pytest.mark.unit
 def test_reconciler_config_is_derived_from_toml(monkeypatch, temp_dir):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
@@ -220,3 +235,15 @@ def test_systemd_env_only_exports_values_consumed_by_units(monkeypatch, temp_dir
     assert "ARCA_EXPORT_DIR" not in rendered
     assert "ARCA_API_HOST" not in rendered
     assert "ARCA_STATE_DIR" not in rendered
+
+
+@pytest.mark.unit
+def test_systemd_env_quotes_values_for_environment_file():
+    from arca_storage import config as config_mod
+
+    settings = config_mod.ArcaSettings(
+        ganesha=config_mod.GaneshaConfig(config_dir='/srv/ganesha config "blue"')
+    )
+
+    rendered = settings.to_systemd_env()
+    assert 'ARCA_GANESHA_CONFIG_DIR="/srv/ganesha config \\"blue\\""' in rendered

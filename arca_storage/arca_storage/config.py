@@ -13,6 +13,8 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
 _PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_SYSTEMD_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+_SYSTEMD_ENV_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 
 
 def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
@@ -21,6 +23,8 @@ def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must not be empty")
     if "\x00" in raw:
         raise ValueError(f"{field_name} must not contain NUL bytes")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError(f"{field_name} must not contain control characters")
 
     path = PurePosixPath(raw)
     if not path.is_absolute():
@@ -47,6 +51,20 @@ def validate_path_component(value: str, *, field_name: str) -> str:
             "alphanumeric characters, dots, underscores, or hyphens"
         )
     return raw
+
+
+def _systemd_env_assignment(name: str, value: str) -> str:
+    if not _SYSTEMD_ENV_NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid systemd environment variable name: {name!r}")
+
+    raw = str(value)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError(f"{name} must not contain control characters")
+    if _SYSTEMD_ENV_SAFE_VALUE_RE.fullmatch(raw):
+        rendered = raw
+    else:
+        rendered = '"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return f"{name}={rendered}"
 
 
 class StorageConfig(BaseModel):
@@ -185,7 +203,7 @@ class ArcaSettings(BaseModel):
         """Render derived environment variables consumed by systemd units."""
         lines = [
             "# Managed by arca bootstrap (derived from /etc/arca-storage/config.toml)",
-            f"ARCA_GANESHA_CONFIG_DIR={self.ganesha.config_dir}",
+            _systemd_env_assignment("ARCA_GANESHA_CONFIG_DIR", self.ganesha.config_dir),
         ]
         return "\n".join(lines) + "\n"
 
@@ -193,7 +211,7 @@ class ArcaSettings(BaseModel):
 def _load_toml(path: Path) -> dict:
     """Load TOML using tomllib (Python 3.11+) or tomli."""
     try:
-        import tomllib  # Python 3.11+
+        import tomllib  # type: ignore[import-not-found]  # Python 3.11+
     except ModuleNotFoundError:
         import tomli as tomllib  # type: ignore[no-redef]
     with path.open("rb") as f:
