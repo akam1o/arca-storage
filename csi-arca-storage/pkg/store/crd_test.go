@@ -1,6 +1,7 @@
 package store
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -8,6 +9,121 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	ctrlfake "sigs.k8s.io/controller-runtime/pkg/client/fake"
 )
+
+func TestCRDStoreCreateVolumeRejectsUnsafePath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme() error = %v", err)
+	}
+	st := &CRDStore{
+		client: ctrlfake.NewClientBuilder().WithScheme(scheme).Build(),
+	}
+
+	err := st.CreateVolume(&VolumeInfo{
+		VolumeID:      testVolumeID,
+		Name:          "pvc-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "/path-a",
+		CapacityBytes: 1 << 30,
+		CreatedAt:     time.Now(),
+	})
+	if err == nil {
+		t.Fatal("CreateVolume() error = nil, want unsafe path error")
+	}
+	if !strings.Contains(err.Error(), "volume path must be a relative path") {
+		t.Fatalf("CreateVolume() error = %v, want relative path validation", err)
+	}
+}
+
+func TestCRDStoreGetVolumeRejectsUnsafeStoredPath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme() error = %v", err)
+	}
+
+	existing := volumeInfoToArcaVolume(&VolumeInfo{
+		VolumeID:      testVolumeID,
+		Name:          "pvc-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: 1 << 30,
+		CreatedAt:     time.Now(),
+	})
+	existing.Spec.Path = "volumes/../path-a"
+	st := &CRDStore{
+		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
+	}
+
+	_, err := st.GetVolume(testVolumeID)
+	if err == nil {
+		t.Fatal("GetVolume() error = nil, want unsafe stored path error")
+	}
+	if !strings.Contains(err.Error(), "invalid stored ArcaVolume") || !strings.Contains(err.Error(), "volume path must be canonical") {
+		t.Fatalf("GetVolume() error = %v, want invalid stored ArcaVolume canonical path error", err)
+	}
+}
+
+func TestCRDStoreListVolumesRejectsUnsafeStoredPath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme() error = %v", err)
+	}
+
+	existing := volumeInfoToArcaVolume(&VolumeInfo{
+		VolumeID:      testVolumeID,
+		Name:          "pvc-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: 1 << 30,
+		CreatedAt:     time.Now(),
+	})
+	existing.Spec.Path = "/path-a"
+	st := &CRDStore{
+		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
+	}
+
+	_, _, err := st.ListVolumes("", 0)
+	if err == nil {
+		t.Fatal("ListVolumes() error = nil, want unsafe stored path error")
+	}
+	if !strings.Contains(err.Error(), "invalid stored ArcaVolume") || !strings.Contains(err.Error(), "volume path must be a relative path") {
+		t.Fatalf("ListVolumes() error = %v, want invalid stored ArcaVolume relative path error", err)
+	}
+}
+
+func TestCRDStoreGetSnapshotRejectsUnsafeStoredSourceVolumePath(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme() error = %v", err)
+	}
+
+	existing := snapshotInfoToArcaSnapshot(&SnapshotInfo{
+		SnapshotID:       testSnapshotID,
+		Name:             "snap-a",
+		SourceVolumeID:   testVolumeID,
+		SourceVolumePath: testVolumeID,
+		SVMName:          "svm-a",
+		Path:             testSnapshotID,
+		SizeBytes:        1 << 30,
+		CreatedAt:        time.Now(),
+		ReadyToUse:       true,
+	})
+	existing.Spec.SourceVolumePath = "volumes/../" + testVolumeID
+	st := &CRDStore{
+		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
+	}
+
+	_, err := st.GetSnapshot(testSnapshotID)
+	if err == nil {
+		t.Fatal("GetSnapshot() error = nil, want unsafe stored source path error")
+	}
+	if !strings.Contains(err.Error(), "invalid stored ArcaSnapshot") || !strings.Contains(err.Error(), "snapshot source volume path must be canonical") {
+		t.Fatalf("GetSnapshot() error = %v, want invalid stored ArcaSnapshot canonical source path error", err)
+	}
+}
 
 func TestCRDStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
 	scheme := runtime.NewScheme()

@@ -75,6 +75,7 @@ type ArcaVolumeSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`
 	Path string `json:"path"`
 
 	// CapacityBytes is the provisioned capacity in bytes.
@@ -156,6 +157,7 @@ type ArcaSnapshotSpec struct {
 	// It is persisted so snapshots can still be deleted if volume metadata is lost.
 	// +kubebuilder:validation:Optional
 	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`
 	SourceVolumePath string `json:"sourceVolumePath,omitempty"`
 
 	// SVMName is the storage virtual machine name.
@@ -169,6 +171,7 @@ type ArcaSnapshotSpec struct {
 	// +kubebuilder:validation:Required
 	// +kubebuilder:validation:MinLength=1
 	// +kubebuilder:validation:MaxLength=4096
+	// +kubebuilder:validation:Pattern=`^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$`
 	Path string `json:"path"`
 
 	// SizeBytes is the logical size of the snapshot in bytes.

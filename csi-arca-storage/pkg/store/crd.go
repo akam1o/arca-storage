@@ -100,6 +100,14 @@ func (s *CRDStore) CreateVolume(info *VolumeInfo) error {
 	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
 	defer cancel()
 
+	if err := validateVolumeInfo(info); err != nil {
+		volumeID := "<nil>"
+		if info != nil {
+			volumeID = info.VolumeID
+		}
+		return fmt.Errorf("invalid ArcaVolume metadata for %s: %w", volumeID, err)
+	}
+
 	av := volumeInfoToArcaVolume(info)
 
 	err := s.client.Create(ctx, av)
@@ -124,6 +132,14 @@ func (s *CRDStore) CreateVolume(info *VolumeInfo) error {
 func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
 	defer cancel()
+
+	if err := validateVolumeInfo(info); err != nil {
+		volumeID := "<nil>"
+		if info != nil {
+			volumeID = info.VolumeID
+		}
+		return fmt.Errorf("invalid ArcaVolume metadata for %s: %w", volumeID, err)
+	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Get existing resource to preserve metadata and the latest resourceVersion.
@@ -181,7 +197,11 @@ func (s *CRDStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 		return nil, MapKubernetesError(err, "ArcaVolume", volumeID)
 	}
 
-	return arcaVolumeToVolumeInfo(av), nil
+	info := arcaVolumeToVolumeInfo(av)
+	if err := validateVolumeInfo(info); err != nil {
+		return nil, fmt.Errorf("invalid stored ArcaVolume %s: %w", volumeID, err)
+	}
+	return info, nil
 }
 
 // DeleteVolume removes volume metadata (idempotent)
@@ -252,7 +272,11 @@ func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeI
 
 	result := make([]*VolumeInfo, 0, len(avList.Items))
 	for i := range avList.Items {
-		result = append(result, arcaVolumeToVolumeInfo(&avList.Items[i]))
+		info := arcaVolumeToVolumeInfo(&avList.Items[i])
+		if err := validateVolumeInfo(info); err != nil {
+			return nil, "", fmt.Errorf("invalid stored ArcaVolume %s: %w", avList.Items[i].Name, err)
+		}
+		result = append(result, info)
 	}
 
 	// Return results in Kubernetes natural order to maintain pagination consistency
@@ -264,6 +288,14 @@ func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeI
 func (s *CRDStore) CreateSnapshot(info *SnapshotInfo) error {
 	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
 	defer cancel()
+
+	if err := validateSnapshotInfo(info); err != nil {
+		snapshotID := "<nil>"
+		if info != nil {
+			snapshotID = info.SnapshotID
+		}
+		return fmt.Errorf("invalid ArcaSnapshot metadata for %s: %w", snapshotID, err)
+	}
 
 	as := snapshotInfoToArcaSnapshot(info)
 
@@ -321,7 +353,11 @@ func (s *CRDStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 		return nil, MapKubernetesError(err, "ArcaSnapshot", snapshotID)
 	}
 
-	return arcaSnapshotToSnapshotInfo(as), nil
+	info := arcaSnapshotToSnapshotInfo(as)
+	if err := validateSnapshotInfo(info); err != nil {
+		return nil, fmt.Errorf("invalid stored ArcaSnapshot %s: %w", snapshotID, err)
+	}
+	return info, nil
 }
 
 // DeleteSnapshot removes snapshot metadata (idempotent)
@@ -401,7 +437,11 @@ func (s *CRDStore) ListSnapshots(sourceVolumeID, startingToken string, maxEntrie
 
 	result := make([]*SnapshotInfo, 0, len(asList.Items))
 	for i := range asList.Items {
-		result = append(result, arcaSnapshotToSnapshotInfo(&asList.Items[i]))
+		info := arcaSnapshotToSnapshotInfo(&asList.Items[i])
+		if err := validateSnapshotInfo(info); err != nil {
+			return nil, "", fmt.Errorf("invalid stored ArcaSnapshot %s: %w", asList.Items[i].Name, err)
+		}
+		result = append(result, info)
 	}
 
 	// Return results in Kubernetes natural order to maintain pagination consistency
