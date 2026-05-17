@@ -276,6 +276,35 @@ class TestUtilityFunctions(unittest.TestCase):
 
             assert not os.path.exists(volume_file)
 
+    def test_volume_file_helpers_reject_unsafe_names(self):
+        """Volume file helpers must not allow path traversal outside the mount."""
+        unsafe_names = [
+            "../escape",
+            "nested/escape",
+            "nested\\escape",
+            "",
+            ".hidden",
+            "volume\nBAD",
+        ]
+
+        for volume_name in unsafe_names:
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException,
+                match="Invalid volume file name",
+            ):
+                arca_utils.get_volume_file_path("/mnt/test", volume_name)
+
+    def test_create_volume_file_rejects_unsafe_name_before_open(self):
+        """Unsafe names are rejected before any filesystem mutation."""
+        with patch("arca_storage.openstack.cinder.utils.os.open") as mock_open_file:
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException,
+                match="Invalid volume file name",
+            ):
+                arca_utils.create_volume_file("/mnt/test", "../escape", 1)
+
+        mock_open_file.assert_not_called()
+
     @patch("arca_storage.openstack.cinder.utils.os.remove")
     def test_delete_volume_file_success(self, mock_remove):
         """Test volume file deletion."""

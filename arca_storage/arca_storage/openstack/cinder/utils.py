@@ -55,6 +55,17 @@ def get_mount_point_for_svm(base_path: str, svm_name: str) -> str:
     return os.path.join(base_path, f"svm_{svm_name}")
 
 
+def _volume_file_path(mount_point: str, volume_name: str) -> str:
+    try:
+        validate_name(volume_name)
+    except ValueError as e:
+        raise ArcaStorageException(
+            "Invalid volume file name: must start with alphanumeric and contain "
+            "only alphanumeric, dots, underscores, or hyphens"
+        ) from e
+    return os.path.join(mount_point, volume_name)
+
+
 def ensure_mount_point_exists(mount_point: str) -> None:
     """Ensure mount point directory exists.
 
@@ -374,7 +385,7 @@ def ensure_volume_file(
 ) -> tuple[str, bool]:
     """Create a raw volume file and report whether this process created it."""
     # Volume file path (use volume_name for compatibility with RemoteFSDriver)
-    volume_file = os.path.join(mount_point, volume_name)
+    volume_file = _volume_file_path(mount_point, volume_name)
     created = False
 
     try:
@@ -434,7 +445,7 @@ def delete_volume_file(mount_point: str, volume_name: str) -> None:
         mount_point: NFS mount point
         volume_name: Volume name (filename)
     """
-    volume_file = os.path.join(mount_point, volume_name)
+    volume_file = _volume_file_path(mount_point, volume_name)
 
     try:
         if os.path.exists(volume_file):
@@ -455,7 +466,7 @@ def get_volume_file_path(mount_point: str, volume_name: str) -> str:
     Returns:
         Path to volume file
     """
-    return os.path.join(mount_point, volume_name)
+    return _volume_file_path(mount_point, volume_name)
 
 
 def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> None:
@@ -469,7 +480,7 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
     Raises:
         ArcaStorageException: If extension fails
     """
-    volume_file = os.path.join(mount_point, volume_name)
+    volume_file = _volume_file_path(mount_point, volume_name)
 
     try:
         if not os.path.exists(volume_file):
