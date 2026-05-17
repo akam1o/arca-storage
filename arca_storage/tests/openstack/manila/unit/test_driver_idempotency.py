@@ -52,6 +52,26 @@ class TestShareCreationIdempotency:
         mock_arca_client.create_volume.assert_called_once()
         mock_arca_client.get_volume.assert_called_once()
 
+    def test_create_share_already_exists_rejects_unsafe_existing_export(
+        self, driver_shared, mock_arca_client, mock_manila_share
+    ):
+        """Existing share export paths are validated before returning to Manila."""
+        mock_arca_client.create_volume.side_effect = arca_exceptions.ArcaShareAlreadyExists(
+            share_id="share-share-123"
+        )
+        mock_arca_client.get_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.5:/exports/../secret/share-share-123",
+        }
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="export_path",
+        ):
+            driver_shared.create_share(Mock(), mock_manila_share, None)
+
+        mock_arca_client.apply_qos.assert_not_called()
+
     def test_create_share_already_exists_without_export_raises(self, driver_shared, mock_arca_client, mock_manila_share):
         """Test that share already exists without export path raises error."""
         mock_arca_client.create_volume.side_effect = arca_exceptions.ArcaShareAlreadyExists(

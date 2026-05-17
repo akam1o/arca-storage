@@ -4,6 +4,7 @@ This driver provides OpenStack Manila integration for ARCA Storage
 using NFS as the protocol for shared filesystem access.
 """
 
+import posixpath
 import threading
 import time
 from typing import Any, Dict, List, Optional, Tuple
@@ -726,6 +727,98 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         share_id = share.get("id") if hasattr(share, "get") else None
         return f"share-{share_id}" if share_id else None
 
+    @staticmethod
+    def _validate_nfs_export_root(export_root: Any, *, field_name: str) -> str:
+        raw = "" if export_root is None else str(export_root).strip()
+        if not raw:
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not be empty"
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not contain control characters"
+            )
+        if not raw.startswith("/"):
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must be an absolute POSIX path"
+            )
+
+        segments = [part for part in raw.split("/") if part]
+        if any(part in {".", ".."} for part in segments):
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not contain relative path segments"
+            )
+
+        return posixpath.normpath(raw)
+
+    @staticmethod
+    def _validate_nfs_server(server: Any, *, field_name: str) -> str:
+        raw = "" if server is None else str(server).strip()
+        if not raw:
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not be empty"
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not contain control characters"
+            )
+        if any(ch.isspace() for ch in raw):
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not contain whitespace"
+            )
+        if "/" in raw or "\\" in raw:
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must be a hostname or IP address"
+            )
+        if raw.startswith("["):
+            inner = raw[1:-1] if raw.endswith("]") else ""
+            if not inner or "[" in inner or "]" in inner:
+                raise manila_exception.ShareBackendException(
+                    f"{field_name} must use bracketed IPv6 syntax"
+                )
+            return raw
+        if ":" in raw:
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not contain ':'; use bracketed IPv6 syntax"
+            )
+        return raw
+
+    def _format_nfs_export_path(
+        self,
+        server: Any,
+        export_root: Any,
+        *,
+        server_field_name: str,
+        root_field_name: str,
+    ) -> str:
+        validated_server = self._validate_nfs_server(
+            server,
+            field_name=server_field_name,
+        )
+        validated_root = self._validate_nfs_export_root(
+            export_root,
+            field_name=root_field_name,
+        )
+        return f"{validated_server}:{validated_root}"
+
+    def _validate_nfs_export_path(self, export_path: Any, *, field_name: str) -> str:
+        raw = "" if export_path is None else str(export_path).strip()
+        if not raw:
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must not be empty"
+            )
+        server, separator, export_root = raw.rpartition(":")
+        if not separator:
+            raise manila_exception.ShareBackendException(
+                f"{field_name} must be formatted as <server>:<absolute_path>"
+            )
+        return self._format_nfs_export_path(
+            server,
+            export_root,
+            server_field_name=f"{field_name} server",
+            root_field_name=f"{field_name} export root",
+        )
+
     def _svm_from_export_path(
         self,
         export_path: Optional[str],
@@ -735,9 +828,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         if not isinstance(export_path, str) or not export_path.strip():
             return None
 
-        path = export_path.strip()
-        if ":" in path:
-            path = path.split(":", 1)[1]
+        path = self._validate_nfs_export_path(
+            export_path,
+            field_name="export_path",
+        )
+        path = path.rpartition(":")[2]
 
         segments = [segment for segment in path.split("/") if segment]
         if len(segments) >= 2 and segments[-1] == volume_name:
@@ -1300,11 +1395,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             )
 
             # Extract export path from API response (authoritative)
-            export_path = volume_info.get("export_path")
-            if not export_path:
+            raw_export_path = volume_info.get("export_path")
+            if not raw_export_path:
                 raise manila_exception.ShareBackendException(
                     f"No export_path in volume creation response for {volume_name}"
                 )
+            export_path = self._validate_nfs_export_path(
+                raw_export_path,
+                field_name=f"ARCA export_path for share {share_id}",
+            )
 
             LOG.info("Created share %s with export path: %s", share_id, export_path)
 
@@ -1329,7 +1428,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             LOG.info("Share %s already exists, fetching existing export location", share_id)
             try:
                 existing_volume = self.arca_client.get_volume(volume_name, svm_name)
-                export_path = existing_volume.get("export_path")
+                raw_export_path = existing_volume.get("export_path")
+                export_path = (
+                    self._validate_nfs_export_path(
+                        raw_export_path,
+                        field_name=f"ARCA export_path for existing share {share_id}",
+                    )
+                    if raw_export_path
+                    else None
+                )
                 if export_path:
                     self._apply_qos_to_share(share, volume_name, svm_name, qos_limits)
                     return [
@@ -1389,6 +1496,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Determine SVM for this share
             try:
                 svm_name = self._get_svm_for_share(share)
+            except manila_exception.ShareBackendException:
+                raise
             except Exception:
                 if self._backend_volume_missing(volume_name):
                     LOG.warning(
@@ -1508,13 +1617,20 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
             LOG.info("Created snapshot %s", snapshot_id)
 
+            # Return provider_location as string if snapshot has export_path
+            # Manila expects a string provider_location, not a dict
+            provider_location = None
+            if "export_path" in snapshot_info:
+                provider_location = self._validate_nfs_export_path(
+                    snapshot_info["export_path"],
+                    field_name=f"ARCA export_path for snapshot {snapshot_id}",
+                )
+
             # Persist SVM mapping on snapshot for later operations (best-effort).
             self._persist_snapshot_metadata(context, snapshot, {"arca_svm_name": svm_name})
 
-            # Return provider_location as string if snapshot has export_path
-            # Manila expects a string provider_location, not a dict
-            if "export_path" in snapshot_info:
-                return {"provider_location": snapshot_info["export_path"]}
+            if provider_location:
+                return {"provider_location": provider_location}
 
             return None
 
@@ -1547,6 +1663,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Note: snapshot["share"] may not be available in all Manila API versions
             try:
                 svm_name = self._get_svm_for_snapshot(snapshot, volume_name)
+            except manila_exception.ShareBackendException:
+                raise
             except Exception:
                 if self._backend_volume_missing(volume_name):
                     LOG.warning(
@@ -1680,11 +1798,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             )
 
             # Extract export path from API response (authoritative)
-            export_path = volume_info.get("export_path")
-            if not export_path:
+            raw_export_path = volume_info.get("export_path")
+            if not raw_export_path:
                 raise manila_exception.ShareBackendException(
                     f"No export_path in clone response for {volume_name}"
                 )
+            export_path = self._validate_nfs_export_path(
+                raw_export_path,
+                field_name=f"ARCA export_path for share {share_id}",
+            )
 
             LOG.info(
                 "Created share %s from snapshot %s with export path: %s",

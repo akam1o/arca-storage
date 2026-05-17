@@ -83,6 +83,22 @@ class TestArcaStorageManilaDriverSharedStrategy:
             fs_type="xfs",
         )
 
+    def test_create_share_rejects_unsafe_backend_export_path(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-123",
+            "export_path": "192.168.100.5:/exports/../secret/share-share-123",
+        }
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="export_path",
+        ):
+            driver.create_share(Mock(), mock_manila_share, None)
+
+        mock_arca_client.apply_qos.assert_not_called()
+
     def test_create_share_ignores_user_supplied_svm_metadata(
         self, driver, mock_arca_client, mock_manila_share
     ):
@@ -115,6 +131,22 @@ class TestArcaStorageManilaDriverSharedStrategy:
             force=False,
         )
 
+    def test_delete_share_rejects_unsafe_export_location(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "user-supplied-svm"
+        mock_manila_share["export_locations"] = [
+            {"path": "192.168.100.5:/exports/../secret/share-share-123"}
+        ]
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="export_path",
+        ):
+            driver.delete_share(Mock(), mock_manila_share, None)
+
+        mock_arca_client.delete_volume.assert_not_called()
+
     def test_extend_share_calls_resize_volume(self, driver, mock_arca_client, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
         driver.extend_share(mock_manila_share, 20, None)
@@ -133,6 +165,20 @@ class TestArcaStorageManilaDriverSharedStrategy:
             svm="test-svm",
             volume="share-share-123",
         )
+
+    def test_create_snapshot_rejects_unsafe_backend_export_path(
+        self, driver, mock_arca_client, mock_manila_snapshot
+    ):
+        mock_arca_client.create_snapshot.return_value = {
+            "name": "snapshot-snapshot-123",
+            "export_path": "192.168.100.5:/exports/../secret/snapshot-snapshot-123",
+        }
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="export_path",
+        ):
+            driver.create_snapshot(Mock(), mock_manila_snapshot, None)
 
     def test_delete_snapshot_uses_shared_svm_when_share_missing(self, driver, mock_arca_client):
         snapshot = {"id": "snapshot-123", "share_id": "share-123", "metadata": {"arca_svm_name": "test-svm"}}
@@ -188,6 +234,23 @@ class TestArcaStorageManilaDriverSharedStrategy:
             snapshot_name="snapshot-snapshot-123",
             size_gib=10,
         )
+
+    def test_create_share_from_snapshot_rejects_unsafe_backend_export_path(
+        self, driver, mock_arca_client, mock_manila_snapshot
+    ):
+        new_share = {"id": "share-456", "size": 10, "project_id": "test-project-id", "metadata": {}}
+        mock_arca_client.clone_volume_from_snapshot.return_value = {
+            "name": "share-share-456",
+            "export_path": "192.168.100.5:/exports/../secret/share-share-456",
+        }
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="export_path",
+        ):
+            driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+
+        mock_arca_client.apply_qos.assert_not_called()
 
     def test_update_access_add_rule(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
