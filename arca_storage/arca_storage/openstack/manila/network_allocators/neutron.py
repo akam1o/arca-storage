@@ -13,6 +13,8 @@ from keystoneauth1 import exceptions as ks_exceptions
 from oslo_config import cfg
 from oslo_log import log as logging
 
+from arca_storage.openstack.http_errors import safe_error_detail
+
 from ..exceptions import (
     ArcaNetworkConflict,
     ArcaNeutronError,
@@ -185,40 +187,49 @@ class NeutronAllocator(NetworkAllocator):
             )
         except ks_exceptions.Unauthorized as e:
             # Authentication error - not retryable
-            LOG.error("Neutron authentication failed: %s", e)
-            raise ArcaNeutronAuthenticationError(details=str(e))
+            details = safe_error_detail(e)
+            LOG.error("Neutron authentication failed: %s", details)
+            raise ArcaNeutronAuthenticationError(details=details)
         except neutron_exceptions.Unauthorized as e:
             # Neutron client authentication error - not retryable
-            LOG.error("Neutron client authentication failed: %s", e)
-            raise ArcaNeutronAuthenticationError(details=str(e))
+            details = safe_error_detail(e)
+            LOG.error("Neutron client authentication failed: %s", details)
+            raise ArcaNeutronAuthenticationError(details=details)
         except ks_exceptions.Forbidden as e:
             # Permission error - not retryable
-            LOG.error("Neutron permission denied: %s", e)
-            raise ArcaNeutronError(details=f"Permission denied: {e}")
+            details = safe_error_detail(e)
+            LOG.error("Neutron permission denied: %s", details)
+            raise ArcaNeutronError(details=f"Permission denied: {details}")
         except neutron_exceptions.Forbidden as e:
             # Neutron client permission error - not retryable
-            LOG.error("Neutron client permission denied: %s", e)
-            raise ArcaNeutronError(details=f"Permission denied: {e}")
+            details = safe_error_detail(e)
+            LOG.error("Neutron client permission denied: %s", details)
+            raise ArcaNeutronError(details=f"Permission denied: {details}")
         except neutron_exceptions.BadRequest as e:
             # Invalid request - not retryable
-            LOG.error("Invalid Neutron port request: %s", e)
-            raise ArcaNeutronPortCreationFailed(details=f"Bad request: {e}")
+            details = safe_error_detail(e)
+            LOG.error("Invalid Neutron port request: %s", details)
+            raise ArcaNeutronPortCreationFailed(details=f"Bad request: {details}")
         except neutron_exceptions.NotFound as e:
             # Resource not found (network/subnet deleted after validation) - not retryable
-            LOG.error("Neutron resource not found: %s", e)
-            raise ArcaNeutronError(details=f"Resource not found: {e}")
+            details = safe_error_detail(e)
+            LOG.error("Neutron resource not found: %s", details)
+            raise ArcaNeutronError(details=f"Resource not found: {details}")
         except neutron_exceptions.Conflict as e:
             # IP conflict or duplicate - retryable
-            LOG.warning("Neutron port conflict for SVM %s: %s", svm_name, e)
-            raise ArcaNetworkConflict(details=f"Port conflict: {e}")
+            details = safe_error_detail(e)
+            LOG.warning("Neutron port conflict for SVM %s: %s", svm_name, details)
+            raise ArcaNetworkConflict(details=f"Port conflict: {details}")
         except (neutron_exceptions.ServiceUnavailable, neutron_exceptions.ConnectionFailed) as e:
             # Transient error - retryable
-            LOG.warning("Neutron service unavailable: %s", e)
-            raise ArcaNetworkConflict(details=f"Service unavailable: {e}")
+            details = safe_error_detail(e)
+            LOG.warning("Neutron service unavailable: %s", details)
+            raise ArcaNetworkConflict(details=f"Service unavailable: {details}")
         except Exception as e:
             # Unknown error - treat as retryable but log as error
-            LOG.error("Unexpected error creating Neutron port for SVM %s: %s", svm_name, e)
-            raise ArcaNetworkConflict(details=f"Failed to create port: {e}")
+            details = safe_error_detail(e)
+            LOG.error("Unexpected error creating Neutron port for SVM %s: %s", svm_name, details)
+            raise ArcaNetworkConflict(details=f"Failed to create port: {details}")
 
         # Check for duplicate ports (race condition detection)
         all_ports = self._neutron_client.list_ports(
@@ -257,7 +268,7 @@ class NeutronAllocator(NetworkAllocator):
             self._neutron_client.delete_port(allocation_id)
             LOG.info("Deleted Neutron port %s", allocation_id)
         except Exception as e:
-            LOG.warning("Failed to delete Neutron port %s: %s", allocation_id, e)
+            LOG.warning("Failed to delete Neutron port %s: %s", allocation_id, safe_error_detail(e))
 
     def _consolidate_duplicate_ports(self, ports, newly_created_port_id=None):
         """Consolidate duplicate ports by keeping oldest and deleting the rest.
@@ -292,7 +303,7 @@ class NeutronAllocator(NetworkAllocator):
                 self._neutron_client.delete_port(duplicate_port["id"])
                 LOG.info("Deleted duplicate port %s", duplicate_port["id"])
             except Exception as e:
-                LOG.error("Failed to delete duplicate port %s: %s", duplicate_port["id"], e)
+                LOG.error("Failed to delete duplicate port %s: %s", duplicate_port["id"], safe_error_detail(e))
 
         return [port_to_keep]
 
@@ -329,7 +340,7 @@ class NeutronAllocator(NetworkAllocator):
             return ports[0] if ports else None
 
         except Exception as e:
-            LOG.warning("Failed to query existing ports: %s", e)
+            LOG.warning("Failed to query existing ports: %s", safe_error_detail(e))
         return None
 
     def _extract_allocation_from_port(self, port, network=None) -> NetworkAllocation:

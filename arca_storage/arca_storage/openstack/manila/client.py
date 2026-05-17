@@ -2,7 +2,7 @@
 
 from typing import Any, Dict, List, Optional
 
-from arca_storage.openstack.http_errors import response_error_message, safe_error_detail
+from arca_storage.openstack.http_errors import redact_sensitive, response_error_message, safe_error_detail
 
 try:
     import requests
@@ -223,7 +223,11 @@ class ArcaManilaClient:
             url = f"{self.base_url}/{path}"
 
         LOG.debug(
-            f"Making {method} request to {path} with params={params}, json_data={json_data}"
+            "Making %s request to %s with params=%s, json_data=%s",
+            method,
+            path,
+            redact_sensitive(params),
+            redact_sensitive(json_data),
         )
 
         try:
@@ -236,7 +240,7 @@ class ArcaManilaClient:
                 verify=self.verify_ssl,
             )
 
-            LOG.debug(f"Response status: {response.status_code}")
+            LOG.debug("Response status: %s", response.status_code)
 
             # Handle HTTP errors
             if response.status_code >= 400:

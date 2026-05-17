@@ -81,6 +81,26 @@ class TestArcaManilaClientMakeRequest:
         assert "<redacted>" in str(exc_info.value)
 
     @patch("requests.Session.request")
+    def test_debug_log_redacts_sensitive_request_fields(self, mock_request, client):
+        resp = Mock()
+        resp.status_code = 200
+        resp.json.return_value = {"data": {}}
+        mock_request.return_value = resp
+
+        with patch.object(manila_client.LOG, "debug") as mock_debug:
+            client._make_request(
+                "POST",
+                "/v1/svms",
+                json_data={"name": "svm1", "auth_token": "secret-token"},
+                params={"password": "hunter2"},
+            )
+
+        rendered_calls = " ".join(str(call.args) for call in mock_debug.call_args_list)
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "<redacted>" in rendered_calls
+
+    @patch("requests.Session.request")
     def test_404_volume_maps_to_ArcaShareNotFound(self, mock_request, client):
         resp = Mock()
         resp.status_code = 404

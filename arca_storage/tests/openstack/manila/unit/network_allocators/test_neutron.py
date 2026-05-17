@@ -337,6 +337,28 @@ class TestNeutronAllocator:
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
+    def test_allocate_port_creation_failure_redacts_sensitive_details(
+        self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
+    ):
+        """Neutron errors should not leak credentials into Manila exceptions."""
+        mock_ks_loading.load_auth_from_conf_options.return_value = Mock()
+        mock_ks_loading.load_session_from_conf_options.return_value = Mock()
+        mock_neutron_module.Client.return_value = mock_neutron_client
+        mock_neutron_client.create_port.side_effect = Exception(
+            "Neutron API error token=secret-token password=hunter2"
+        )
+
+        allocator.validate_config()
+
+        with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
+            allocator.allocate("project-123", "manila_project-123")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_deallocate_deletes_port(
         self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
     ):
