@@ -130,6 +130,19 @@ def test_load_settings_rejects_world_open_csi_client_cidr(monkeypatch, temp_dir)
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize("vendor", ["../etc", "/tmp", "local/bad", "..", ".hidden", ""])
+def test_load_settings_rejects_unsafe_pacemaker_ra_vendor(monkeypatch, temp_dir, vendor):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(f"[cluster]\npacemaker_ra_vendor = {vendor!r}\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match="cluster.pacemaker_ra_vendor"):
+        load_settings()
+
+
+@pytest.mark.unit
 @pytest.mark.parametrize(
     "section,key,value,match",
     [

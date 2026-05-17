@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+import re
 from pathlib import Path, PurePosixPath
 from typing import Optional, Union
 
@@ -11,6 +12,7 @@ from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validat
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
+_PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 
 
 def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
@@ -31,6 +33,20 @@ def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
         raise ValueError(f"{field_name} must not contain relative path segments")
 
     return str(path)
+
+
+def validate_path_component(value: str, *, field_name: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError(f"{field_name} must not be empty")
+    if raw in {".", ".."} or "/" in raw or "\\" in raw:
+        raise ValueError(f"{field_name} must be a single safe path component")
+    if not _PATH_COMPONENT_RE.fullmatch(raw):
+        raise ValueError(
+            f"{field_name} must start with an alphanumeric character and contain only "
+            "alphanumeric characters, dots, underscores, or hyphens"
+        )
+    return raw
 
 
 class StorageConfig(BaseModel):
@@ -54,6 +70,11 @@ class ClusterConfig(BaseModel):
     enable_stonith: bool = True
     drbd_resource: str = "r0"
     pacemaker_ra_vendor: str = "local"
+
+    @field_validator("pacemaker_ra_vendor")
+    @classmethod
+    def validate_pacemaker_ra_vendor(cls, value: str) -> str:
+        return validate_path_component(value, field_name="cluster.pacemaker_ra_vendor")
 
 
 class APIConfig(BaseModel):

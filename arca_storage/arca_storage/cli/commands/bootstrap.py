@@ -8,13 +8,15 @@ import ipaddress
 import os
 import re
 import shutil
+import stat
 import subprocess
+import tempfile
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
 import typer
 
-from arca_storage.config import DEFAULT_CONFIG_PATH, load_settings
+from arca_storage.config import DEFAULT_CONFIG_PATH, load_settings, validate_path_component
 
 app = typer.Typer(help="Bootstrap initial system/cluster configuration")
 
@@ -54,6 +56,10 @@ def _resource_path(*parts: str) -> Path:
 
 def _render_env(cfg) -> str:
     return cfg.to_systemd_env()
+
+
+def _validate_path_component(value: str, *, field: str) -> str:
+    return validate_path_component(value, field_name=field)
 
 
 def _pcs_host_auth(
@@ -157,6 +163,58 @@ def _validate_drbd_port(port: int) -> int:
     return port
 
 
+def _ensure_directory(path: Path) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        path.mkdir(parents=True, exist_ok=True)
+        return
+    if stat.S_ISLNK(mode):
+        raise RuntimeError(f"Refusing to use symlinked directory: {path}")
+    if not stat.S_ISDIR(mode):
+        raise RuntimeError(f"Refusing to use non-directory path: {path}")
+
+
+def _ensure_regular_destination(path: Path) -> None:
+    try:
+        mode = path.lstat().st_mode
+    except FileNotFoundError:
+        return
+    if stat.S_ISLNK(mode):
+        raise RuntimeError(f"Refusing to overwrite symlinked file: {path}")
+    if not stat.S_ISREG(mode):
+        raise RuntimeError(f"Refusing to overwrite non-regular file: {path}")
+
+
+def _write_file_atomically(path: Path, content: bytes, *, mode: int) -> None:
+    _ensure_directory(path.parent)
+    _ensure_regular_destination(path)
+    fd, temp_name = tempfile.mkstemp(prefix=f".{path.name}.", dir=path.parent)
+    try:
+        with os.fdopen(fd, "wb") as f:
+            f.write(content)
+            f.flush()
+            os.fsync(f.fileno())
+        os.chmod(temp_name, mode)
+        os.replace(temp_name, path)
+    except Exception:
+        try:
+            os.unlink(temp_name)
+        except FileNotFoundError:
+            pass
+        raise
+
+
+def _copy_file_atomically(src: Path, dst: Path, *, mode: int) -> None:
+    _write_file_atomically(dst, src.read_bytes(), mode=mode)
+
+
+def _chmod_regular_file(path: Path, mode: int) -> None:
+    _ensure_regular_destination(path)
+    if path.exists():
+        os.chmod(path, mode)
+
+
 def _render_drbd_config(
     *,
     resource: str,
@@ -201,9 +259,9 @@ def _render_drbd_config(
 
 def _write_env_file(cfg) -> Path:
     env_dst_dir = Path("/etc/arca-storage")
-    env_dst_dir.mkdir(parents=True, exist_ok=True)
+    _ensure_directory(env_dst_dir)
     env_dst = env_dst_dir / "arca-storage.env"
-    env_dst.write_text(_render_env(cfg), encoding="utf-8")
+    _write_file_atomically(env_dst, _render_env(cfg).encode("utf-8"), mode=0o644)
     return env_dst
 
 
@@ -224,19 +282,21 @@ def install(
     try:
         if install_config:
             cfg_dst_dir = Path("/etc/arca-storage")
-            cfg_dst_dir.mkdir(parents=True, exist_ok=True)
+            _ensure_directory(cfg_dst_dir)
 
             config_src = _resource_path("config", "config.toml")
             config_dst = cfg_dst_dir / "config.toml"
             if config_src.exists() and not config_dst.exists():
-                shutil.copy2(config_src, config_dst)
+                _copy_file_atomically(config_src, config_dst, mode=0o644)
+            else:
+                _ensure_regular_destination(config_dst)
 
             api_env_src = _resource_path("config", "api.env")
             api_env_dst = cfg_dst_dir / "api.env"
             if api_env_src.exists() and not api_env_dst.exists():
-                shutil.copy2(api_env_src, api_env_dst)
-            if api_env_dst.exists():
-                os.chmod(api_env_dst, 0o600)
+                _copy_file_atomically(api_env_src, api_env_dst, mode=0o600)
+            else:
+                _chmod_regular_file(api_env_dst, 0o600)
 
             # Reload config after installing files so derived env matches.
             cfg = load_settings(DEFAULT_CONFIG_PATH)
@@ -248,18 +308,18 @@ def install(
         if not ra_src.exists():
             raise RuntimeError(f"Missing packaged RA: {ra_src}")
 
-        ra_dst_dir = Path(f"/usr/lib/ocf/resource.d/{ra_vendor or cfg.cluster.pacemaker_ra_vendor}")
-        ra_dst_dir.mkdir(parents=True, exist_ok=True)
+        vendor = _validate_path_component(ra_vendor or cfg.cluster.pacemaker_ra_vendor, field="ra_vendor")
+        ra_dst_dir = Path("/usr/lib/ocf/resource.d") / vendor
+        _ensure_directory(ra_dst_dir)
         ra_dst = ra_dst_dir / "NetnsVlan"
-        shutil.copy2(ra_src, ra_dst)
-        os.chmod(ra_dst, 0o755)
+        _copy_file_atomically(ra_src, ra_dst, mode=0o755)
 
         # systemd units
         if install_api_service:
             api_src = _resource_path("systemd", "arca-storage-api.service")
             api_dst = Path("/etc/systemd/system/arca-storage-api.service")
             if api_src.exists():
-                shutil.copy2(api_src, api_dst)
+                _copy_file_atomically(api_src, api_dst, mode=0o644)
 
         if install_ganesha_unit:
             for unit in ["nfs-ganesha@.service", "nfs-ganesha-host@.service"]:
@@ -267,7 +327,7 @@ def install(
                 ganesha_dst = Path("/etc/systemd/system") / unit
                 if not ganesha_src.exists():
                     raise RuntimeError(f"Missing packaged systemd unit: {ganesha_src}")
-                shutil.copy2(ganesha_src, ganesha_dst)
+                _copy_file_atomically(ganesha_src, ganesha_dst, mode=0o644)
 
         # systemd environment file (used by nfs-ganesha@.service)
         _write_env_file(cfg)
@@ -333,7 +393,8 @@ def verify(
         check(shutil.which(binary) is not None, f"found binary: {binary}", f"missing binary in PATH: {binary}")
 
     # Pacemaker RA
-    ra_path = Path(f"/usr/lib/ocf/resource.d/{cfg.cluster.pacemaker_ra_vendor}/NetnsVlan")
+    vendor = _validate_path_component(cfg.cluster.pacemaker_ra_vendor, field="cluster.pacemaker_ra_vendor")
+    ra_path = Path("/usr/lib/ocf/resource.d") / vendor / "NetnsVlan"
     check(
         ra_path.exists(),
         f"NetnsVlan RA installed at {ra_path}",
@@ -509,9 +570,9 @@ def drbd_config(
             port=port,
         )
         dest_dir = Path("/etc/drbd.d")
-        dest_dir.mkdir(parents=True, exist_ok=True)
+        _ensure_directory(dest_dir)
         res_path = dest_dir / f"{resource}.res"
-        res_path.write_text(res_content, encoding="utf-8")
+        _write_file_atomically(res_path, res_content.encode("utf-8"), mode=0o644)
         typer.echo(f"Wrote DRBD resource config: {res_path}")
 
         if apply:

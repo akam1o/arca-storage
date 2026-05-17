@@ -1,4 +1,5 @@
 import subprocess
+import stat
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -150,6 +151,38 @@ def test_render_drbd_config_rejects_invalid_values(overrides, message):
 
     with pytest.raises(ValueError, match=message):
         bootstrap._render_drbd_config(**kwargs)
+
+
+@pytest.mark.parametrize("vendor", ["../etc", "/tmp", "local/bad", "..", ".hidden", ""])
+def test_validate_path_component_rejects_unsafe_ra_vendor(vendor):
+    with pytest.raises(ValueError, match="ra_vendor"):
+        bootstrap._validate_path_component(vendor, field="ra_vendor")
+
+
+def test_copy_file_atomically_sets_requested_mode(tmp_path):
+    src = tmp_path / "api.env.src"
+    src.write_text("ARCA_API_TOKEN=secret\n", encoding="utf-8")
+    src.chmod(0o644)
+    dst = tmp_path / "api.env"
+
+    bootstrap._copy_file_atomically(src, dst, mode=0o600)
+
+    assert dst.read_text(encoding="utf-8") == "ARCA_API_TOKEN=secret\n"
+    assert stat.S_IMODE(dst.lstat().st_mode) == 0o600
+
+
+def test_copy_file_atomically_refuses_symlink_destination(tmp_path):
+    src = tmp_path / "api.env.src"
+    src.write_text("ARCA_API_TOKEN=secret\n", encoding="utf-8")
+    target = tmp_path / "target"
+    target.write_text("unchanged\n", encoding="utf-8")
+    dst = tmp_path / "api.env"
+    dst.symlink_to(target)
+
+    with pytest.raises(RuntimeError, match="symlinked file"):
+        bootstrap._copy_file_atomically(src, dst, mode=0o600)
+
+    assert target.read_text(encoding="utf-8") == "unchanged\n"
 
 
 def test_lvm_thinpool_uses_configured_subprocess_timeout():
