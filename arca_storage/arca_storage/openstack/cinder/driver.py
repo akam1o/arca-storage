@@ -634,9 +634,35 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
     def _configured_svm_export_root(self, svm_name: str) -> str:
         """Return the configured per-SVM export root for static NFS mode."""
-        base = getattr(self.configuration, "arca_storage_nfs_export_root", None) or "/exports"
-        base = str(base).rstrip("/")
-        return f"{base}/{svm_name}" if base else f"/{svm_name}"
+        base = getattr(self.configuration, "arca_storage_nfs_export_root", None)
+        if base is None:
+            base = "/exports"
+        base = self._validate_nfs_export_root(base, field_name="arca_storage_nfs_export_root")
+        return posixpath.join(base, svm_name)
+
+    @staticmethod
+    def _validate_nfs_export_root(export_root: Any, *, field_name: str) -> str:
+        raw = str(export_root).strip()
+        if not raw:
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not be empty") % field_name
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not contain control characters") % field_name
+            )
+        if not raw.startswith("/"):
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must be an absolute POSIX path") % field_name
+            )
+
+        segments = [part for part in raw.split("/") if part]
+        if any(part in {".", ".."} for part in segments):
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not contain relative path segments") % field_name
+            )
+
+        return posixpath.normpath(raw)
 
     def _get_export_path(self, svm_name: str) -> str:
         """Resolve NFS export path for an SVM.
@@ -652,7 +678,13 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         if self.configuration.arca_storage_use_api:
             svm_info = self._get_svm_info(svm_name, refresh=True)
             svm_vip = svm_info["vip"]
-            export_root = svm_info.get("export_root") or self._configured_svm_export_root(svm_name)
+            if svm_info.get("export_root"):
+                export_root = self._validate_nfs_export_root(
+                    svm_info["export_root"],
+                    field_name=f"ARCA API export_root for SVM {svm_name}",
+                )
+            else:
+                export_root = self._configured_svm_export_root(svm_name)
             return f"{svm_vip}:{export_root}"
 
         raise exception.VolumeBackendAPIException(

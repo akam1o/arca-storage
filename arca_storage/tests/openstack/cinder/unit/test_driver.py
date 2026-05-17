@@ -341,6 +341,26 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert export_path == "192.168.100.5:/srv/arca/exports/test-svm"
         self.driver.arca_client.get_svm.assert_not_called()
 
+    def test_get_export_path_rejects_unsafe_configured_export_root(self):
+        """Configured export roots must not escape through relative path segments."""
+        unsafe_roots = [
+            "exports",
+            "/exports/../secret",
+            "/exports/./test",
+            "/exports\nBAD",
+            "",
+        ]
+
+        for export_root in unsafe_roots:
+            self.driver.configuration.arca_storage_nfs_export_root = export_root
+            with pytest.raises(
+                exception.VolumeBackendAPIException,
+                match="arca_storage_nfs_export_root",
+            ):
+                self.driver._get_export_path("test-svm")
+
+        self.driver.arca_client.get_svm.assert_not_called()
+
     def test_get_export_path_uses_svm_vip_from_api(self):
         """API mode resolves the SVM VIP and export root when no static server is set."""
         self.driver.configuration.arca_storage_nfs_server = None
@@ -353,6 +373,20 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         export_path = self.driver._get_export_path("test-svm")
 
         assert export_path == "192.168.100.9:/srv/arca/exports/test-svm"
+        self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
+
+    def test_get_export_path_rejects_unsafe_api_export_root(self):
+        """API-provided export roots are validated before mounting."""
+        self.driver.configuration.arca_storage_nfs_server = None
+        self.driver.arca_client.get_svm.return_value = {
+            "name": "test-svm",
+            "vip": "192.168.100.9",
+            "export_root": "/srv/arca/../secret/test-svm",
+        }
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="export_root"):
+            self.driver._get_export_path("test-svm")
+
         self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
 
     def test_get_export_path_refreshes_api_svm_info(self):
