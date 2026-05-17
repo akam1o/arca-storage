@@ -4,13 +4,33 @@ from __future__ import annotations
 
 import ipaddress
 import os
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
+
+
+def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError(f"{field_name} must not be empty")
+    if "\x00" in raw:
+        raise ValueError(f"{field_name} must not contain NUL bytes")
+
+    path = PurePosixPath(raw)
+    if not path.is_absolute():
+        raise ValueError(f"{field_name} must be an absolute POSIX path")
+
+    segments = [part for part in raw.split("/") if part]
+    if not segments:
+        raise ValueError(f"{field_name} must not be the filesystem root")
+    if any(part in {".", ".."} for part in segments):
+        raise ValueError(f"{field_name} must not contain relative path segments")
+
+    return str(path)
 
 
 class StorageConfig(BaseModel):
@@ -57,6 +77,11 @@ class StateConfig(BaseModel):
     db_path: str = "/var/lib/arca-storage/state.db"
     runtime_dir: str = "/var/lib/arca-storage"
 
+    @field_validator("db_path", "runtime_dir")
+    @classmethod
+    def validate_paths(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_absolute_posix_path(value, field_name=f"state.{info.field_name}")
+
 
 class GaneshaConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
@@ -66,6 +91,11 @@ class GaneshaConfig(BaseModel):
     protocols: list[int] = Field(default_factory=lambda: [4])
     mountd_port: int = 20048
     nlm_port: int = 32768
+
+    @field_validator("config_dir", "export_dir")
+    @classmethod
+    def validate_paths(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_absolute_posix_path(value, field_name=f"ganesha.{info.field_name}")
 
     @field_validator("protocols")
     @classmethod

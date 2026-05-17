@@ -130,6 +130,30 @@ def test_load_settings_rejects_world_open_csi_client_cidr(monkeypatch, temp_dir)
 
 
 @pytest.mark.unit
+@pytest.mark.parametrize(
+    "section,key,value,match",
+    [
+        ("state", "db_path", "state.db", "absolute POSIX path"),
+        ("state", "runtime_dir", "../runtime", "absolute POSIX path"),
+        ("state", "runtime_dir", "/var/../runtime", "relative path segments"),
+        ("state", "runtime_dir", "/", "filesystem root"),
+        ("ganesha", "config_dir", "ganesha", "absolute POSIX path"),
+        ("ganesha", "export_dir", "/exports/../escape", "relative path segments"),
+        ("ganesha", "export_dir", "/", "filesystem root"),
+    ],
+)
+def test_load_settings_rejects_unsafe_filesystem_paths(monkeypatch, temp_dir, section, key, value, match):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(f"[{section}]\n{key} = {value!r}\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match=match):
+        load_settings()
+
+
+@pytest.mark.unit
 def test_reconciler_config_is_derived_from_toml(monkeypatch, temp_dir):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
