@@ -5,11 +5,14 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
 )
+
+var svmNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
 // SVMMount represents an SVM mount point
 type SVMMount struct {
@@ -34,6 +37,9 @@ type MountManager struct {
 func NewMountManager(nodeState *NodeState, baseMountPath string) (*MountManager, error) {
 	if baseMountPath == "" {
 		baseMountPath = "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
+	}
+	if err := validateBaseMountPath(baseMountPath); err != nil {
+		return nil, err
 	}
 
 	// Ensure base mount directory exists
@@ -71,6 +77,9 @@ func (m *MountManager) reconcile() error {
 	}
 
 	for svmName, info := range svms {
+		if err := validateSVMName(svmName); err != nil {
+			return fmt.Errorf("invalid SVM name in node state: %w", err)
+		}
 		mountPath := m.getMountPath(svmName)
 
 		// Check if already mounted
@@ -116,6 +125,10 @@ func (m *MountManager) EnsureSVMMount(
 	exportRoot string,
 	nfsMountOptions []string,
 ) (string, error) {
+	if err := validateSVMName(svmName); err != nil {
+		return "", err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -219,6 +232,10 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 // ShouldUnmountSVM checks if an SVM should be unmounted (refcount == 0)
 // Refcount is derived from NodeState, not stored
 func (m *MountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bool, error) {
+	if err := validateSVMName(svmName); err != nil {
+		return false, err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -235,6 +252,10 @@ func (m *MountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bo
 
 // UnmountSVM unmounts an SVM
 func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
+	if err := validateSVMName(svmName); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -274,6 +295,10 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 
 // GetMountPath returns the mount path for an SVM
 func (m *MountManager) GetMountPath(svmName string) (string, error) {
+	if err := validateSVMName(svmName); err != nil {
+		return "", err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -288,6 +313,30 @@ func (m *MountManager) GetMountPath(svmName string) (string, error) {
 // getMountPath constructs the mount path for an SVM (must hold lock or be in init)
 func (m *MountManager) getMountPath(svmName string) string {
 	return filepath.Join(m.baseMountPath, svmName)
+}
+
+func validateBaseMountPath(baseMountPath string) error {
+	if !filepath.IsAbs(baseMountPath) {
+		return fmt.Errorf("base mount path must be absolute: %s", baseMountPath)
+	}
+	cleaned := filepath.Clean(baseMountPath)
+	if cleaned != baseMountPath {
+		return fmt.Errorf("base mount path must be canonical: %s", baseMountPath)
+	}
+	if cleaned == string(filepath.Separator) {
+		return fmt.Errorf("base mount path must not be the filesystem root")
+	}
+	return nil
+}
+
+func validateSVMName(svmName string) error {
+	if svmName == "" {
+		return fmt.Errorf("SVM name cannot be empty")
+	}
+	if !svmNamePattern.MatchString(svmName) {
+		return fmt.Errorf("invalid SVM name %q: must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens", svmName)
+	}
+	return nil
 }
 
 // isMountPoint checks if a path is a mount point

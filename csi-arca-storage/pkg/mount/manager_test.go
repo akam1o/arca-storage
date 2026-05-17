@@ -41,6 +41,81 @@ func (v *fakeMountSourceValidator) ValidateMountSource(targetPath, expectedSourc
 	return v.err
 }
 
+func TestNewMountManagerRejectsUnsafeBaseMountPath(t *testing.T) {
+	uncleanPath := t.TempDir() + "/../mounts"
+	tests := []struct {
+		name          string
+		baseMountPath string
+		wantErr       string
+	}{
+		{
+			name:          "relative",
+			baseMountPath: "relative/mounts",
+			wantErr:       "base mount path must be absolute",
+		},
+		{
+			name:          "unclean",
+			baseMountPath: uncleanPath,
+			wantErr:       "base mount path must be canonical",
+		},
+		{
+			name:          "root",
+			baseMountPath: string(filepath.Separator),
+			wantErr:       "base mount path must not be the filesystem root",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeState := &NodeState{data: &NodeStateData{Volumes: make(map[string]*VolumeStaging)}}
+
+			_, err := NewMountManager(nodeState, tt.baseMountPath)
+			if err == nil {
+				t.Fatal("NewMountManager error = nil, want base mount path validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("NewMountManager error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewMountManagerRejectsInvalidSVMNameFromNodeState(t *testing.T) {
+	nodeState := &NodeState{data: &NodeStateData{Volumes: map[string]*VolumeStaging{
+		"volume-a": {
+			SVMName:     "../tenant-a",
+			VIP:         "192.0.2.10",
+			StagingPath: "/stage/volume-a",
+		},
+	}}}
+
+	_, err := NewMountManager(nodeState, filepath.Join(t.TempDir(), "mounts"))
+	if err == nil {
+		t.Fatal("NewMountManager error = nil, want invalid SVM name error")
+	}
+	if !strings.Contains(err.Error(), "invalid SVM name in node state") {
+		t.Fatalf("NewMountManager error = %v, want invalid SVM name in node state", err)
+	}
+}
+
+func TestMountManagerRejectsInvalidSVMNames(t *testing.T) {
+	manager := newTestMountManager(t)
+	ctx := context.Background()
+
+	if _, err := manager.EnsureSVMMount(ctx, "../tenant-a", "192.0.2.10", "", nil); err == nil {
+		t.Fatal("EnsureSVMMount should reject invalid SVM name")
+	}
+	if _, err := manager.ShouldUnmountSVM(ctx, "../tenant-a"); err == nil {
+		t.Fatal("ShouldUnmountSVM should reject invalid SVM name")
+	}
+	if err := manager.UnmountSVM(ctx, "../tenant-a"); err == nil {
+		t.Fatal("UnmountSVM should reject invalid SVM name")
+	}
+	if _, err := manager.GetMountPath("../tenant-a"); err == nil {
+		t.Fatal("GetMountPath should reject invalid SVM name")
+	}
+}
+
 func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
 	manager := newTestMountManager(t)
 	ctx := context.Background()

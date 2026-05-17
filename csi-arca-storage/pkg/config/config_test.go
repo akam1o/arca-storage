@@ -61,6 +61,58 @@ func TestValidateForModeRejectsInvalidMode(t *testing.T) {
 	}
 }
 
+func TestValidateForModeRejectsUnsafeNodeFilesystemPaths(t *testing.T) {
+	tests := []struct {
+		name    string
+		mutate  func(*Config)
+		wantErr string
+	}{
+		{
+			name: "relative state file path",
+			mutate: func(cfg *Config) {
+				cfg.Driver.StateFilePath = "state/node.json"
+			},
+			wantErr: "driver.state_file_path must be an absolute path",
+		},
+		{
+			name: "unclean state file path",
+			mutate: func(cfg *Config) {
+				cfg.Driver.StateFilePath = "/var/lib/csi-arca-storage/../node.json"
+			},
+			wantErr: "driver.state_file_path must be canonical",
+		},
+		{
+			name: "relative base mount path",
+			mutate: func(cfg *Config) {
+				cfg.Driver.BaseMountPath = "mounts"
+			},
+			wantErr: "driver.base_mount_path must be an absolute path",
+		},
+		{
+			name: "root base mount path",
+			mutate: func(cfg *Config) {
+				cfg.Driver.BaseMountPath = "/"
+			},
+			wantErr: "driver.base_mount_path must not be the filesystem root",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := minimalConfigWithoutPools()
+			tt.mutate(cfg)
+
+			err := cfg.ValidateForMode("node")
+			if err == nil {
+				t.Fatal("ValidateForMode(node) error = nil, want path validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("ValidateForMode(node) error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
 func TestValidateForModeRequiresTokenByDefault(t *testing.T) {
 	cfg := minimalConfigWithoutPools()
 	cfg.ARCA.AuthToken = ""

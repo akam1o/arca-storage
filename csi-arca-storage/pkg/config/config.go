@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -146,6 +147,9 @@ func (c *Config) ValidateForMode(mode string) error {
 			return err
 		}
 	case "node":
+		if err := c.validateNodeFilesystemPaths(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("invalid driver mode %q", mode)
 	}
@@ -162,6 +166,33 @@ func normalizedAuthType(authType string) string {
 		return AuthTypeToken
 	}
 	return authType
+}
+
+func validateOptionalAbsolutePath(value, field string) error {
+	if value == "" {
+		return nil
+	}
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be an absolute path", field)
+	}
+	cleaned := filepath.Clean(value)
+	if cleaned != value {
+		return fmt.Errorf("%s must be canonical", field)
+	}
+	if cleaned == string(filepath.Separator) {
+		return fmt.Errorf("%s must not be the filesystem root", field)
+	}
+	return nil
+}
+
+func (c *Config) validateNodeFilesystemPaths() error {
+	if err := validateOptionalAbsolutePath(c.Driver.StateFilePath, "driver.state_file_path"); err != nil {
+		return err
+	}
+	if err := validateOptionalAbsolutePath(c.Driver.BaseMountPath, "driver.base_mount_path"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Config) validateNetworkPools() error {
