@@ -1,5 +1,7 @@
+import ast
 import subprocess
 import stat
+from pathlib import Path
 from types import SimpleNamespace
 from unittest.mock import patch
 
@@ -45,6 +47,25 @@ def test_run_raises_runtime_error_on_timeout():
     ):
         with pytest.raises(RuntimeError, match="pcs status timed out after 30s"):
             bootstrap._run(["pcs", "status"])
+
+
+def test_bootstrap_does_not_expose_shell_runner():
+    source = Path(bootstrap.__file__).read_text(encoding="utf-8")
+    tree = ast.parse(source)
+
+    function_names = {
+        node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)
+    }
+    assert "_run_shell" not in function_names
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.List):
+            values = [
+                item.value
+                for item in node.elts
+                if isinstance(item, ast.Constant) and isinstance(item.value, str)
+            ]
+            assert values[:2] != ["bash", "-lc"]
 
 
 def test_apply_drbd_config_runs_missing_steps_with_configured_timeout():

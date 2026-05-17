@@ -45,10 +45,6 @@ def _run(
         raise RuntimeError(f"{' '.join(cmd)} timed out after {timeout}s") from e
 
 
-def _run_shell(command: str) -> subprocess.CompletedProcess[str]:
-    return _run(["bash", "-lc", command])
-
-
 def _resource_path(*parts: str) -> Path:
     # arca_storage/cli/commands/bootstrap.py -> arca_storage/resources/...
     return Path(__file__).resolve().parents[2] / "resources" / Path(*parts)
