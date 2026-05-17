@@ -2,6 +2,8 @@
 
 from typing import Any, Dict, List, Optional
 
+from arca_storage.openstack.http_errors import response_error_message, safe_error_detail
+
 try:
     import requests
     from requests.adapters import HTTPAdapter
@@ -238,18 +240,7 @@ class ArcaManilaClient:
 
             # Handle HTTP errors
             if response.status_code >= 400:
-                # Try to parse JSON error response
-                try:
-                    error_data = response.json()
-                    # Try FastAPI HTTPException format first ({"detail": "..."})
-                    error_msg = error_data.get("detail")
-                    # Fall back to standard format ({"error": {"message": "..."}})
-                    if not error_msg:
-                        error_msg = error_data.get("error", {}).get("message", response.text)
-                except Exception:
-                    # Non-JSON error response
-                    error_msg = response.text
-                    error_data = None
+                error_msg, _error_data = response_error_message(response)
 
                 # Map specific status codes to specific exceptions
                 if response.status_code == 404:
@@ -337,11 +328,13 @@ class ArcaManilaClient:
             LOG.error(f"Request timeout after {self.timeout}s: {path}")
             raise ArcaAPITimeout(timeout=self.timeout)
         except requests.exceptions.ConnectionError as e:
-            LOG.error(f"Connection error: {path}, {str(e)}")
-            raise ArcaAPIConnectionError(details=str(e))
+            details = safe_error_detail(e)
+            LOG.error(f"Connection error: {path}, {details}")
+            raise ArcaAPIConnectionError(details=details)
         except requests.exceptions.RequestException as e:
-            LOG.error(f"Request exception: {path}, {str(e)}")
-            raise ArcaManilaAPIError(details=str(e))
+            details = safe_error_detail(e)
+            LOG.error(f"Request exception: {path}, {details}")
+            raise ArcaManilaAPIError(details=details)
 
     # Volume operations (shares stored as volumes)
 

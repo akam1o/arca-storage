@@ -1,6 +1,9 @@
 """REST API client for ARCA Storage."""
 
 from typing import Any, Dict, List, Optional
+
+from arca_storage.openstack.http_errors import response_error_message, safe_error_detail
+
 try:
     import requests
     from requests.adapters import HTTPAdapter
@@ -128,16 +131,7 @@ class ArcaStorageClient:
 
             # Check for HTTP errors
             if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    # Try FastAPI HTTPException format first ({"detail": "..."})
-                    error_msg = error_data.get("detail")
-                    # Fall back to standard format ({"error": {"message": "..."}})
-                    if not error_msg:
-                        error_msg = error_data.get("error", {}).get("message", response.text)
-                except Exception:
-                    error_msg = response.text
-                    error_data = None
+                error_msg, error_data = response_error_message(response)
 
                 raise ArcaAPIError(
                     f"API request failed: {error_msg}",
@@ -152,11 +146,11 @@ class ArcaStorageClient:
             return response.json()
 
         except requests.exceptions.Timeout as e:
-            raise ArcaAPITimeout(f"API request timed out after {self.timeout}s: {e}")
+            raise ArcaAPITimeout(f"API request timed out after {self.timeout}s: {safe_error_detail(e)}")
         except requests.exceptions.ConnectionError as e:
-            raise ArcaAPIConnectionError(f"Failed to connect to ARCA Storage API: {e}")
+            raise ArcaAPIConnectionError(f"Failed to connect to ARCA Storage API: {safe_error_detail(e)}")
         except requests.exceptions.RequestException as e:
-            raise ArcaAPIError(f"API request failed: {e}")
+            raise ArcaAPIError(f"API request failed: {safe_error_detail(e)}")
 
     def _list_paginated(
         self,

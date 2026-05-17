@@ -101,6 +101,54 @@ class TestArcaStorageClient(unittest.TestCase):
         assert "Volume not found" in str(exc_info.value)
 
     @patch("arca_storage.openstack.cinder.client.requests")
+    def test_make_request_redacts_sensitive_error_details(self, mock_requests):
+        """API errors should not leak tokens or passwords into exceptions."""
+        mock_requests.exceptions = requests.exceptions
+
+        mock_response = Mock()
+        mock_response.status_code = 500
+        mock_response.json.return_value = {
+            "error": {
+                "message": "backend failed with bearer secret-token and password=hunter2",
+                "details": {"auth_token": "secret-token", "safe": "kept"},
+            }
+        }
+        mock_response.text = "backend failed with bearer secret-token and password=hunter2"
+
+        mock_session = Mock()
+        mock_session.request.return_value = mock_response
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+
+        with pytest.raises(arca_exceptions.ArcaAPIError) as exc_info:
+            client._make_request("GET", "/v1/volumes")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert exc_info.value.response_data["error"]["details"]["auth_token"] == "<redacted>"
+        assert exc_info.value.response_data["error"]["details"]["safe"] == "kept"
+
+    @patch("arca_storage.openstack.cinder.client.requests")
+    def test_connection_error_redacts_sensitive_details(self, mock_requests):
+        """Request exceptions should be redacted before surfacing to Cinder."""
+        mock_requests.exceptions = requests.exceptions
+
+        mock_session = Mock()
+        mock_session.request.side_effect = requests.exceptions.ConnectionError(
+            "Authorization: Bearer secret-token"
+        )
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+
+        with pytest.raises(arca_exceptions.ArcaAPIConnectionError) as exc_info:
+            client._make_request("GET", "/v1/volumes")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    @patch("arca_storage.openstack.cinder.client.requests")
     def test_make_request_timeout(self, mock_requests):
         """Test API request timeout."""
         # Create a proper exception class

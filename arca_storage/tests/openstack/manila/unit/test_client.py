@@ -72,6 +72,15 @@ class TestArcaManilaClientMakeRequest:
             client._make_request("GET", "/v1/svms")
 
     @patch("requests.Session.request")
+    def test_connection_error_redacts_sensitive_details(self, mock_request, client):
+        mock_request.side_effect = requests.exceptions.ConnectionError("Authorization: Bearer secret-token")
+        with pytest.raises(exceptions.ArcaAPIConnectionError) as exc_info:
+            client._make_request("GET", "/v1/svms")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    @patch("requests.Session.request")
     def test_404_volume_maps_to_ArcaShareNotFound(self, mock_request, client):
         resp = Mock()
         resp.status_code = 404
@@ -92,6 +101,35 @@ class TestArcaManilaClientMakeRequest:
 
         with pytest.raises(exceptions.ArcaNetworkConflict):
             client._make_request("POST", "/v1/svms", json_data={"name": "svm1", "ip_cidr": "192.168.100.10/24"})
+
+    @patch("requests.Session.request")
+    def test_api_error_redacts_sensitive_response_details(self, mock_request, client):
+        resp = Mock()
+        resp.status_code = 500
+        resp.text = "backend failed token=secret-token password=hunter2"
+        resp.json.return_value = {"detail": resp.text, "auth_token": "secret-token"}
+        mock_request.return_value = resp
+
+        with pytest.raises(exceptions.ArcaManilaAPIError) as exc_info:
+            client._make_request("POST", "/v1/svms", json_data={"name": "svm1"})
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    @patch("requests.Session.request")
+    def test_409_network_conflict_redacts_sensitive_details(self, mock_request, client):
+        resp = Mock()
+        resp.status_code = 409
+        resp.text = "IP address 192.168.100.10 is already in use token=secret-token"
+        resp.json.return_value = {"detail": resp.text}
+        mock_request.return_value = resp
+
+        with pytest.raises(exceptions.ArcaNetworkConflict) as exc_info:
+            client._make_request("POST", "/v1/svms", json_data={"name": "svm1"})
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "192.168.100.10" in str(exc_info.value)
 
 
 class TestArcaManilaClientOperations:
