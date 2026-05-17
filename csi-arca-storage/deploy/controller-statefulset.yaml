@@ -31,6 +31,7 @@ spec:
           imagePullPolicy: IfNotPresent
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -77,6 +78,7 @@ spec:
           image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -103,6 +105,7 @@ spec:
           image: registry.k8s.io/sig-storage/csi-snapshotter:v8.1.0
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -128,6 +131,7 @@ spec:
           image: registry.k8s.io/sig-storage/csi-resizer:v1.12.0
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL
@@ -153,6 +157,7 @@ spec:
           image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
           securityContext:
             allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
             capabilities:
               drop:
                 - ALL

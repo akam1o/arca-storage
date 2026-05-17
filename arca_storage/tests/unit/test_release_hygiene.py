@@ -43,4 +43,5 @@ def test_csi_controller_manifests_drop_privileges(repo_root):
         assert "seccompProfile:" in manifest
         assert "type: RuntimeDefault" in manifest
         assert manifest.count("allowPrivilegeEscalation: false") == 5
+        assert manifest.count("readOnlyRootFilesystem: true") == 5
         assert manifest.count("- ALL") == 5
