@@ -174,6 +174,16 @@ export ARCA_API_TOKEN="$(openssl rand -hex 32)"
 arca-storage-api --host 127.0.0.1 --port 8080
 ```
 
+loopback 外に bind する場合は、Bearer token を平文 HTTP で送らないよう
+TLS 証明書を指定します:
+
+```bash
+export ARCA_API_TOKEN="$(openssl rand -hex 32)"
+arca-storage-api --host 0.0.0.0 --port 8443 \
+  --ssl-certfile /etc/arca-storage/tls/api.crt \
+  --ssl-keyfile /etc/arca-storage/tls/api.key
+```
+
 クライアントからのリクエストでは同じ token を使用します:
 
 ```bash

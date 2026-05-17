@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from arca_storage.api.auth import (
     UNKNOWN_SERVER_HOST,
+    insecure_remote_api_allowed,
     non_loopback_request_server_host,
     unauthenticated_loopback_allowed,
 )
@@ -114,3 +115,11 @@ def test_unauthenticated_loopback_allowed_requires_truthy_opt_in(monkeypatch):
 
     monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
     assert unauthenticated_loopback_allowed() is True
+
+
+def test_insecure_remote_api_allowed_requires_truthy_opt_in(monkeypatch):
+    monkeypatch.delenv("ARCA_ALLOW_INSECURE_REMOTE_API", raising=False)
+    assert insecure_remote_api_allowed() is False
+
+    monkeypatch.setenv("ARCA_ALLOW_INSECURE_REMOTE_API", "true")
+    assert insecure_remote_api_allowed() is True
