@@ -6,7 +6,6 @@ Delegates to the Volume reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
-from ipaddress import IPv4Interface
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
@@ -29,7 +28,7 @@ from arca_storage.errors import (
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import validate_name, volume_lv_name
+from arca_storage.cli.lib.validators import validate_name, validate_svm_ip_cidr, volume_lv_name
 from arca_storage.api.services.svm_service import require_svm_ready_record
 
 _LIST_ALL_LIMIT = 1_000_000
@@ -70,7 +69,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
             allow_failed=allow_failed_resume,
             require_ready_svm=True,
         )
-        if _can_resume_create(acquired, requested_spec, owner=owner):
+        if acquired and _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_volume_create(ctx, acquired, owner)
         raise AlreadyExistsError("Volume", f"{volume_data.svm}/{volume_data.name}")
 
@@ -215,7 +214,7 @@ def _volume_to_dict(vol: Volume, ctx: Optional[Any] = None) -> Dict[str, Any]:
         "mount_path": vol.status.mount_path,
         "lv_path": vol.status.lv_path,
         "lv_name": vol.status.lv_name,
-        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path),
+        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path, vol.spec.name),
         "status": vol.status.phase.value,
         "created_at": vol.metadata.created_at,
     }
@@ -235,29 +234,87 @@ def _volume_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) ->
         "mount_path": mount_path,
         "lv_path": status.get("lv_path"),
         "lv_name": status.get("lv_name"),
-        "export_path": build_volume_export_path(ctx, spec.get("svm"), mount_path),
+        "export_path": build_volume_export_path(ctx, spec.get("svm"), mount_path, spec.get("name")),
         "status": status.get("phase"),
         "created_at": record.get("created_at"),
     }
 
 
-def build_volume_export_path(ctx: Any, svm: Optional[str], mount_path: Optional[str]) -> Optional[str]:
+def build_volume_export_path(
+    ctx: Any,
+    svm: Optional[str],
+    mount_path: Optional[str],
+    volume: Optional[str] = None,
+) -> Optional[str]:
     """Return the NFS export location for a mounted volume."""
     if not svm or not mount_path:
         return None
 
-    record = ctx.db.get_svm(svm)
+    svm_name = _safe_resource_name(svm)
+    if not svm_name:
+        return None
+
+    safe_mount_path = _safe_volume_mount_path(svm_name, volume, mount_path)
+    if not safe_mount_path:
+        return None
+
+    record = ctx.db.get_svm(svm_name)
     if not record:
         return None
 
-    ip_cidr = str(record.get("spec", {}).get("ip_cidr") or "")
-    try:
-        vip = str(IPv4Interface(ip_cidr).ip)
-    except Exception:
-        vip = ip_cidr.split("/", 1)[0] if ip_cidr else ""
+    vip = _vip_from_svm_record(record)
     if not vip:
         return None
-    return f"{vip}:{mount_path}"
+    return f"{vip}:{safe_mount_path}"
+
+
+def _vip_from_svm_record(record: Dict[str, Any]) -> Optional[str]:
+    ip_cidr = str(record.get("spec", {}).get("ip_cidr") or "")
+    try:
+        vip, _prefix = validate_svm_ip_cidr(ip_cidr)
+    except ValueError:
+        return None
+    return vip
+
+
+def _safe_resource_name(value: Any) -> Optional[str]:
+    name = str(value or "")
+    try:
+        validate_name(name)
+    except ValueError:
+        return None
+    return name
+
+
+def _safe_volume_mount_path(svm: str, volume: Optional[str], mount_path: Any) -> Optional[str]:
+    safe_mount_path = _normalize_absolute_volume_path(mount_path)
+    if not safe_mount_path:
+        return None
+
+    if volume is None:
+        return safe_mount_path
+
+    volume_name = _safe_resource_name(volume)
+    if not volume_name:
+        return None
+
+    parts = [part for part in safe_mount_path.split("/") if part]
+    if len(parts) < 3 or parts[-2:] != [svm, volume_name]:
+        return None
+    return safe_mount_path
+
+
+def _normalize_absolute_volume_path(value: Any) -> Optional[str]:
+    raw = str(value or "").strip()
+    if not raw or not raw.startswith("/"):
+        return None
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        return None
+
+    parts = [part for part in raw.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        return None
+    return "/" + "/".join(parts)
 
 
 def require_volume_ready_record(record: Dict[str, Any], svm: str, name: str) -> None:
@@ -284,7 +341,9 @@ def _parse_status(record: Dict[str, Any]) -> Any:
     return VolumeStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: VolumeSpec, *, owner: Optional[str] = None) -> bool:
+def _can_resume_create(
+    record: Optional[Dict[str, Any]], requested_spec: VolumeSpec, *, owner: Optional[str] = None
+) -> bool:
     if not record:
         return False
     status = record.get("status", {})

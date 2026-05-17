@@ -6,7 +6,6 @@ Now delegates to the SVM reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
-from ipaddress import IPv4Interface
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import SVMCreate
@@ -77,7 +76,7 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
             expected_spec=requested_spec.model_dump(mode="json"),
             allow_failed=allow_failed_resume,
         )
-        if _can_resume_create(acquired, requested_spec, owner=owner):
+        if acquired and _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_svm_create(ctx, acquired, owner)
         raise AlreadyExistsError("SVM", svm_data.name)
 
@@ -232,17 +231,35 @@ def _svm_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) -> Di
 
 def _vip_from_ip_cidr(ip_cidr: str) -> str:
     try:
-        return str(IPv4Interface(ip_cidr).ip)
-    except Exception:
-        return ip_cidr.split("/", 1)[0] if ip_cidr else ""
+        vip, _prefix = validate_svm_ip_cidr(ip_cidr)
+    except ValueError:
+        return ""
+    return vip
 
 
 def _export_root(svm_name: str, ctx: Optional[Any] = None) -> str:
     ctx = ctx or get_context()
-    export_dir = str(ctx.settings.to_reconciler_config().get("export_dir", "/exports")).rstrip("/")
+    export_dir = _safe_export_dir(ctx)
     if not svm_name:
-        return export_dir or "/"
-    return f"{export_dir}/{svm_name}" if export_dir else f"/{svm_name}"
+        return export_dir
+    try:
+        validate_name(svm_name)
+    except ValueError:
+        return export_dir
+    return f"{export_dir}/{svm_name}"
+
+
+def _safe_export_dir(ctx: Any) -> str:
+    raw = str(ctx.settings.to_reconciler_config().get("export_dir", "/exports") or "").strip()
+    if not raw or not raw.startswith("/"):
+        return "/exports"
+    if any(ord(char) < 32 or ord(char) == 127 for char in raw):
+        return "/exports"
+
+    parts = [part for part in raw.split("/") if part]
+    if not parts or any(part in {".", ".."} for part in parts):
+        return "/exports"
+    return "/" + "/".join(parts)
 
 
 def _meta_from_record(record: Dict[str, Any]) -> Any:
@@ -254,7 +271,7 @@ def _parse_status(record: Dict[str, Any], kind: str) -> Any:
     return SVMStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: SVMSpec, *, owner: Optional[str] = None) -> bool:
+def _can_resume_create(record: Optional[Dict[str, Any]], requested_spec: SVMSpec, *, owner: Optional[str] = None) -> bool:
     if not record:
         return False
     status = record.get("status", {})

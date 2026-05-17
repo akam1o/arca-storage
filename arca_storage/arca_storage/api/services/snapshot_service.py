@@ -102,7 +102,7 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
             require_ready_volume=True,
             require_ready_svm=True,
         )
-        if _can_resume_create(acquired, requested_spec, owner=owner):
+        if acquired and _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_snapshot_create(ctx, acquired, owner)
         raise AlreadyExistsError("Snapshot", f"{snapshot_data.svm}/{snapshot_data.volume}/{snapshot_data.name}")
 
@@ -372,7 +372,7 @@ def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
         "lv_path": vol.status.lv_path,
         "lv_name": vol.status.lv_name,
         "mount_path": vol.status.mount_path,
-        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path),
+        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path, vol.spec.name),
         "created_at": vol.metadata.created_at,
     }
 
@@ -570,7 +570,9 @@ def _persist_clone_volume(
     ctx.db.log_operation("Volume", volume.metadata.id, "clone", volume.status.phase.value, detail)
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: SnapshotSpec, *, owner: Optional[str] = None) -> bool:
+def _can_resume_create(
+    record: Optional[Dict[str, Any]], requested_spec: SnapshotSpec, *, owner: Optional[str] = None
+) -> bool:
     if not record:
         return False
     status = record.get("status", {})
