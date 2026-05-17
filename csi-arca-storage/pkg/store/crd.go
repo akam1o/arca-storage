@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -124,41 +125,44 @@ func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
 	defer cancel()
 
-	// Get existing resource to preserve metadata
-	existing := &v1alpha1.ArcaVolume{}
-	if err := s.client.Get(ctx, client.ObjectKey{Name: info.VolumeID}, existing); err != nil {
-		return fmt.Errorf("failed to get existing ArcaVolume: %w", err)
-	}
-
-	// Update spec fields
-	updated := volumeInfoToArcaVolume(info)
-	if updated.Spec.CapacityBytes < existing.Spec.CapacityBytes {
-		updated.Spec.CapacityBytes = existing.Spec.CapacityBytes
-	}
-	existing.Spec = updated.Spec
-	if existing.Labels == nil {
-		existing.Labels = make(map[string]string)
-	}
-	for key, value := range updated.Labels {
-		existing.Labels[key] = value
-	}
-	if updated.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get existing resource to preserve metadata and the latest resourceVersion.
+		existing := &v1alpha1.ArcaVolume{}
+		if err := s.client.Get(ctx, client.ObjectKey{Name: info.VolumeID}, existing); err != nil {
+			return err
 		}
-		for key, value := range updated.Annotations {
-			existing.Annotations[key] = value
-		}
-	}
-	if info.TemporaryCloneSnapshot == "" && existing.Annotations != nil {
-		delete(existing.Annotations, temporaryCloneSnapshotAnnotation)
-	}
-	if info.TemporaryCloneSourceVolumePath == "" && existing.Annotations != nil {
-		delete(existing.Annotations, temporaryCloneSourceVolumePathAnnotation)
-	}
 
-	if err := s.client.Update(ctx, existing); err != nil {
-		return fmt.Errorf("failed to update ArcaVolume: %w", err)
+		// Update spec fields
+		updated := volumeInfoToArcaVolume(info)
+		if updated.Spec.CapacityBytes < existing.Spec.CapacityBytes {
+			updated.Spec.CapacityBytes = existing.Spec.CapacityBytes
+		}
+		existing.Spec = updated.Spec
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		for key, value := range updated.Labels {
+			existing.Labels[key] = value
+		}
+		if updated.Annotations != nil {
+			if existing.Annotations == nil {
+				existing.Annotations = make(map[string]string)
+			}
+			for key, value := range updated.Annotations {
+				existing.Annotations[key] = value
+			}
+		}
+		if info.TemporaryCloneSnapshot == "" && existing.Annotations != nil {
+			delete(existing.Annotations, temporaryCloneSnapshotAnnotation)
+		}
+		if info.TemporaryCloneSourceVolumePath == "" && existing.Annotations != nil {
+			delete(existing.Annotations, temporaryCloneSourceVolumePathAnnotation)
+		}
+
+		return s.client.Update(ctx, existing)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update ArcaVolume: %w", MapKubernetesError(err, "ArcaVolume", info.VolumeID))
 	}
 
 	klog.Infof("Updated ArcaVolume %s", info.VolumeID)
@@ -286,15 +290,18 @@ func (s *CRDStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) erro
 	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
 	defer cancel()
 
-	// Get the snapshot first
-	as := &v1alpha1.ArcaSnapshot{}
-	if err := s.client.Get(ctx, client.ObjectKey{Name: snapshotID}, as); err != nil {
-		return fmt.Errorf("failed to get snapshot for status update: %w", MapKubernetesError(err, "ArcaSnapshot", snapshotID))
-	}
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get the snapshot first to use the latest resourceVersion.
+		as := &v1alpha1.ArcaSnapshot{}
+		if err := s.client.Get(ctx, client.ObjectKey{Name: snapshotID}, as); err != nil {
+			return err
+		}
 
-	// Update only the status subresource using Status() writer
-	as.Status.ReadyToUse = readyToUse
-	if err := s.client.Status().Update(ctx, as); err != nil {
+		// Update only the status subresource using Status() writer.
+		as.Status.ReadyToUse = readyToUse
+		return s.client.Status().Update(ctx, as)
+	})
+	if err != nil {
 		return fmt.Errorf("failed to update snapshot status: %w", MapKubernetesError(err, "ArcaSnapshot", snapshotID))
 	}
 
