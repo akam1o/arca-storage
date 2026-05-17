@@ -35,3 +35,14 @@ def test_ansible_netnsvlan_uses_packaged_resource_agent(repo_root):
     assert not role_copy.exists()
     assert "arca_storage/arca_storage/resources/pacemaker/NetnsVlan" in defaults
     assert "src: \"{{ pacemaker_netnsvlan_ra_src }}\"" in tasks
+
+
+def test_ansible_pacemaker_validates_ra_vendor_path_component(repo_root):
+    defaults = (repo_root / "ansible/roles/pacemaker/defaults/main.yml").read_text(encoding="utf-8")
+    tasks = (repo_root / "ansible/roles/pacemaker/tasks/main.yml").read_text(encoding="utf-8")
+
+    assert "pacemaker_ra_vendor: local" in defaults
+    assert "Validate Pacemaker RA vendor" in tasks
+    assert "pacemaker_ra_vendor is string" in tasks
+    assert "(pacemaker_ra_vendor | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')" in tasks
+    assert "pacemaker_ra_vendor must be a single safe path component" in tasks
