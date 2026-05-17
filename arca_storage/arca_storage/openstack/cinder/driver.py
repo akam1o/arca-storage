@@ -398,8 +398,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         try:
             # Prioritize provider_location (persisted export path) over regenerating
             # This ensures consistency even if SVM VIP changes after volume creation
-            if volume.provider_location:
-                export_path = volume.provider_location
+            export_path = self._volume_provider_location(volume)
+            if export_path:
                 LOG.debug(
                     "Using provider_location for volume %s: %s",
                     volume_name,
@@ -558,18 +558,26 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 return provider_id
         return None
 
+    def _volume_provider_location(self, volume) -> Optional[str]:
+        """Return a validated persisted volume provider_location when present."""
+        provider_location = getattr(volume, "provider_location", None)
+        if isinstance(provider_location, str):
+            provider_location = provider_location.strip()
+            if provider_location:
+                return self._validate_nfs_export_path(
+                    provider_location,
+                    field_name="volume provider_location",
+                )
+        return None
+
     def _svm_from_volume_provider_location(self, volume) -> Optional[str]:
         """Best-effort SVM inference for legacy volumes without provider_id."""
-        provider_location = getattr(volume, "provider_location", None)
-        if not isinstance(provider_location, str):
-            return None
-
-        provider_location = provider_location.strip()
+        provider_location = self._volume_provider_location(volume)
         if not provider_location:
             return None
 
         _server, separator, export_root = provider_location.rpartition(":")
-        if not separator or not export_root.startswith("/"):
+        if not separator:
             return None
 
         svm_name = posixpath.basename(export_root.rstrip("/"))
@@ -642,7 +650,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
     @staticmethod
     def _validate_nfs_export_root(export_root: Any, *, field_name: str) -> str:
-        raw = str(export_root).strip()
+        raw = "" if export_root is None else str(export_root).strip()
         if not raw:
             raise exception.VolumeBackendAPIException(
                 data=_("%s must not be empty") % field_name
@@ -664,6 +672,74 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         return posixpath.normpath(raw)
 
+    @staticmethod
+    def _validate_nfs_server(server: Any, *, field_name: str) -> str:
+        raw = "" if server is None else str(server).strip()
+        if not raw:
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not be empty") % field_name
+            )
+        if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not contain control characters") % field_name
+            )
+        if any(ch.isspace() for ch in raw):
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not contain whitespace") % field_name
+            )
+        if "/" in raw or "\\" in raw:
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must be a hostname or IP address") % field_name
+            )
+        if raw.startswith("["):
+            inner = raw[1:-1] if raw.endswith("]") else ""
+            if not inner or "[" in inner or "]" in inner:
+                raise exception.VolumeBackendAPIException(
+                    data=_("%s must use bracketed IPv6 syntax") % field_name
+                )
+            return raw
+        if ":" in raw:
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not contain ':'; use bracketed IPv6 syntax") % field_name
+            )
+        return raw
+
+    def _format_nfs_export_path(
+        self,
+        server: Any,
+        export_root: Any,
+        *,
+        server_field_name: str,
+        root_field_name: str,
+    ) -> str:
+        validated_server = self._validate_nfs_server(
+            server,
+            field_name=server_field_name,
+        )
+        validated_root = self._validate_nfs_export_root(
+            export_root,
+            field_name=root_field_name,
+        )
+        return f"{validated_server}:{validated_root}"
+
+    def _validate_nfs_export_path(self, export_path: Any, *, field_name: str) -> str:
+        raw = "" if export_path is None else str(export_path).strip()
+        if not raw:
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must not be empty") % field_name
+            )
+        server, separator, export_root = raw.rpartition(":")
+        if not separator:
+            raise exception.VolumeBackendAPIException(
+                data=_("%s must be formatted as <server>:<absolute_path>") % field_name
+            )
+        return self._format_nfs_export_path(
+            server,
+            export_root,
+            server_field_name=f"{field_name} server",
+            root_field_name=f"{field_name} export root",
+        )
+
     def _get_export_path(self, svm_name: str) -> str:
         """Resolve NFS export path for an SVM.
 
@@ -673,11 +749,19 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         """
         if getattr(self.configuration, "arca_storage_nfs_server", None):
             export_root = self._configured_svm_export_root(svm_name)
-            return f"{self.configuration.arca_storage_nfs_server}:{export_root}"
+            return self._format_nfs_export_path(
+                self.configuration.arca_storage_nfs_server,
+                export_root,
+                server_field_name="arca_storage_nfs_server",
+                root_field_name="arca_storage_nfs_export_root",
+            )
 
         if self.configuration.arca_storage_use_api:
             svm_info = self._get_svm_info(svm_name, refresh=True)
-            svm_vip = svm_info["vip"]
+            svm_vip = self._validate_nfs_server(
+                svm_info["vip"],
+                field_name=f"ARCA API vip for SVM {svm_name}",
+            )
             if svm_info.get("export_root"):
                 export_root = self._validate_nfs_export_root(
                     svm_info["export_root"],
@@ -685,7 +769,12 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 )
             else:
                 export_root = self._configured_svm_export_root(svm_name)
-            return f"{svm_vip}:{export_root}"
+            return self._format_nfs_export_path(
+                svm_vip,
+                export_root,
+                server_field_name=f"ARCA API vip for SVM {svm_name}",
+                root_field_name=f"ARCA API export_root for SVM {svm_name}",
+            )
 
         raise exception.VolumeBackendAPIException(
             data=_(
@@ -701,6 +790,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
     def _mount_svm_export_path(self, svm_name: str, export_path: str) -> tuple[str, str]:
         """Mount the provided export path for an SVM."""
+        export_path = self._validate_nfs_export_path(
+            export_path,
+            field_name="export_path",
+        )
         mount_point = arca_utils.get_mount_point_for_svm(
             self.configuration.arca_storage_nfs_mount_point_base,
             svm_name,
@@ -718,7 +811,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         if isinstance(provider_location, str):
             provider_location = provider_location.strip()
             if provider_location:
-                return provider_location
+                return self._validate_nfs_export_path(
+                    provider_location,
+                    field_name="snapshot provider_location",
+                )
         return None
 
     def _snapshot_provider_svm(self, snapshot) -> Optional[str]:
@@ -986,7 +1082,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         mount_point = None
         try:
             svm_name, export_path = self._get_snapshot_storage(snapshot)
-            _, mount_point = self._mount_svm_export_path(svm_name, export_path)
+            export_path, mount_point = self._mount_svm_export_path(
+                svm_name,
+                export_path,
+            )
 
             # Snapshot file path (using snapshot ID)
             snapshot_file = arca_utils.get_volume_file_path(mount_point, f"snapshot-{snapshot_id}")

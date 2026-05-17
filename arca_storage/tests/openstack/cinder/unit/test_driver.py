@@ -310,6 +310,16 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         }
         self.driver.arca_client.get_svm.assert_not_called()
 
+    def test_initialize_connection_rejects_unsafe_provider_location(self):
+        """Persisted provider_location is validated before returning it to Nova."""
+        volume = self._create_mock_volume()
+        volume.provider_location = "192.168.100.5:/exports/../secret"
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="provider_location"):
+            self.driver.initialize_connection(volume, {"host": "compute-1"})
+
+        self.driver.arca_client.get_svm.assert_not_called()
+
     def test_initialize_connection_regenerates_export_without_provider_location(self):
         """Legacy volumes without provider_location use the shared SVM export."""
         volume = self._create_mock_volume()
@@ -330,6 +340,36 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         export_path = self.driver._get_export_path("test-svm")
 
         assert export_path == "192.168.100.5:/exports/test-svm"
+        self.driver.arca_client.get_svm.assert_not_called()
+
+    def test_get_export_path_accepts_bracketed_ipv6_nfs_server(self):
+        """Bracketed IPv6 servers remain valid NFS export targets."""
+        self.driver.configuration.arca_storage_nfs_server = "[2001:db8::1]"
+
+        export_path = self.driver._get_export_path("test-svm")
+
+        assert export_path == "[2001:db8::1]:/exports/test-svm"
+        self.driver.arca_client.get_svm.assert_not_called()
+
+    def test_get_export_path_rejects_unsafe_configured_nfs_server(self):
+        """Configured NFS servers must not smuggle path or option-like content."""
+        unsafe_servers = [
+            "192.168.100.5:/exports",
+            "nfs server",
+            "nfs/server",
+            "nfs\nserver",
+            "2001:db8::1",
+            "[2001:db8::1",
+        ]
+
+        for nfs_server in unsafe_servers:
+            self.driver.configuration.arca_storage_nfs_server = nfs_server
+            with pytest.raises(
+                exception.VolumeBackendAPIException,
+                match="arca_storage_nfs_server",
+            ):
+                self.driver._get_export_path("test-svm")
+
         self.driver.arca_client.get_svm.assert_not_called()
 
     def test_get_export_path_uses_configured_export_root(self):
@@ -389,6 +429,20 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
 
+    def test_get_export_path_rejects_unsafe_api_vip(self):
+        """API-provided SVM VIPs must remain a hostname or IP address only."""
+        self.driver.configuration.arca_storage_nfs_server = None
+        self.driver.arca_client.get_svm.return_value = {
+            "name": "test-svm",
+            "vip": "192.168.100.9:/exports/evil",
+            "export_root": "/srv/arca/exports/test-svm",
+        }
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="ARCA API vip"):
+            self.driver._get_export_path("test-svm")
+
+        self.driver.arca_client.get_svm.assert_called_once_with("test-svm")
+
     def test_get_export_path_refreshes_api_svm_info(self):
         """API-backed export resolution does not keep using stale SVM data."""
         self.driver.configuration.arca_storage_nfs_server = None
@@ -433,6 +487,17 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
         with pytest.raises(exception.VolumeBackendAPIException):
             self.driver._get_export_path("test-svm")
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_mount_svm_export_path_rejects_unsafe_export_path(self, mock_utils):
+        """Raw export paths are validated immediately before mount."""
+        with pytest.raises(exception.VolumeBackendAPIException, match="export_path"):
+            self.driver._mount_svm_export_path(
+                "test-svm",
+                "192.168.100.5:/exports/../secret",
+            )
+
+        mock_utils.mount_nfs.assert_not_called()
 
     def test_update_volume_stats_reports_file_backend_capabilities(self):
         """Stats reflect the NFS file backend's supported capabilities."""
@@ -593,6 +658,24 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             mount_options="rw,noatime,vers=4.1",
         )
         mock_remove.assert_called_once_with("/var/lib/cinder/mnt/svm_source-svm/snapshot-snap-id")
+
+    @patch("arca_storage.openstack.cinder.driver.os.remove")
+    @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_delete_snapshot_rejects_unsafe_provider_location(
+        self, mock_utils, mock_exists, mock_remove
+    ):
+        """Snapshot provider_location is rejected before any mount."""
+        snapshot = self._create_mock_snapshot("snap-id", "missing-source-vol-id")
+        snapshot.provider_location = "192.168.100.5:/exports/../secret"
+        snapshot.provider_id = "source-svm"
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="provider_location"):
+            self.driver.delete_snapshot(snapshot)
+
+        self.driver.db.volume_get.assert_not_called()
+        mock_utils.mount_nfs.assert_not_called()
+        mock_remove.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
