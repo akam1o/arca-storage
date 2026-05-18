@@ -52,6 +52,30 @@ def test_parse_cluster_nodes_requires_distinct_safe_hosts():
         bootstrap._parse_cluster_nodes("node-a node-a")
 
 
+def test_validate_lvm_size_accepts_expected_formats():
+    assert bootstrap._validate_lvm_size("80%VG", field="size", allow_percent=True) == "80%VG"
+    assert bootstrap._validate_lvm_size("100%FREE", field="size", allow_percent=True) == "100%FREE"
+    assert bootstrap._validate_lvm_size("15.8G", field="metadata_size") == "15.8G"
+    assert bootstrap._validate_lvm_size("256K", field="chunk_size") == "256K"
+
+
+@pytest.mark.parametrize(
+    ("value", "allow_percent"),
+    [
+        ("", False),
+        ("0G", False),
+        ("-1G", False),
+        ("101%VG", True),
+        ("80%ORIGIN", True),
+        ("15.8G --bad", False),
+        ("../size", False),
+    ],
+)
+def test_validate_lvm_size_rejects_unsafe_values(value, allow_percent):
+    with pytest.raises(ValueError):
+        bootstrap._validate_lvm_size(value, field="size", allow_percent=allow_percent)
+
+
 @pytest.mark.parametrize(
     ("cluster_name", "nodes"),
     [
@@ -288,6 +312,10 @@ def test_lvm_thinpool_uses_configured_subprocess_timeout():
         ({"pv": "/tmp/drbd0"}, "pv"),
         ({"vg": "../vg"}, "vg"),
         ({"thinpool": "pool/bad"}, "thinpool"),
+        ({"size": "--type=thin"}, "size"),
+        ({"size": "101%VG"}, "size"),
+        ({"metadata_size": "../meta"}, "metadata_size"),
+        ({"chunk_size": "256K --bad"}, "chunk_size"),
     ],
 )
 def test_lvm_thinpool_rejects_unsafe_command_tokens(kwargs, message):

@@ -11,6 +11,7 @@ import shutil
 import stat
 import subprocess
 import tempfile
+from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
 from typing import Optional
 
@@ -23,6 +24,8 @@ app = typer.Typer(help="Bootstrap initial system/cluster configuration")
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 _DEVICE_PATH_RE = re.compile(r"/dev/[A-Za-z0-9._/+:-]+")
 _HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
+_LVM_SIZE_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)(?P<unit>[bBsSkKmMgGtTpPeE])")
+_LVM_PERCENT_SIZE_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)%(?P<scope>VG|FREE)", re.IGNORECASE)
 
 
 def _run(
@@ -155,6 +158,30 @@ def _validate_device_path(path: str, *, field: str) -> str:
     if not _DEVICE_PATH_RE.fullmatch(path):
         raise ValueError(f"{field} contains unsupported characters")
     return path
+
+
+def _validate_lvm_size(value: str, *, field: str, allow_percent: bool = False) -> str:
+    if not value:
+        raise ValueError(f"{field} cannot be empty")
+
+    match = _LVM_SIZE_RE.fullmatch(value)
+    if match is None and allow_percent:
+        match = _LVM_PERCENT_SIZE_RE.fullmatch(value)
+    if match is None:
+        unit_hint = " or a percentage such as 80%VG" if allow_percent else ""
+        raise ValueError(f"{field} must be a positive LVM size with a unit{unit_hint}")
+
+    try:
+        amount = Decimal(match.group("amount"))
+    except InvalidOperation as e:
+        raise ValueError(f"{field} must be a positive LVM size") from e
+    if amount <= 0:
+        raise ValueError(f"{field} must be greater than zero")
+
+    if "scope" in match.groupdict() and amount > 100:
+        raise ValueError(f"{field} percentage must be 100 or less")
+
+    return value
 
 
 def _validate_replication_ip(value: str, *, field: str) -> str:
@@ -610,6 +637,9 @@ def lvm_thinpool(
         pv = _validate_device_path(pv, field="pv")
         vg = _validate_path_component(vg or cfg.storage.vg_name, field="vg")
         thinpool = _validate_path_component(thinpool or cfg.storage.thinpool_name, field="thinpool")
+        size = _validate_lvm_size(size, field="size", allow_percent=True)
+        metadata_size = _validate_lvm_size(metadata_size, field="metadata_size")
+        chunk_size = _validate_lvm_size(chunk_size, field="chunk_size")
 
         # PV
         pv_check = _run(["pvs", pv], check=False, timeout=timeout)
