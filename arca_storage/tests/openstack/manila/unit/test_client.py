@@ -286,3 +286,30 @@ class TestArcaManilaClientOperations:
                 call("GET", "/v1/svms", params={"limit": 200, "cursor": "cursor-1"}),
             ]
         )
+
+    @pytest.mark.parametrize(
+        ("method_name", "kwargs", "resource"),
+        [
+            ("list_volumes", {"svm": "svm1", "name": "share-123"}, "volume"),
+            ("list_exports", {"svm": "svm1", "volume": "share-123"}, "export"),
+            ("list_snapshots", {"svm": "svm1", "volume": "share-123"}, "snapshot"),
+            ("list_svms", {}, "SVM"),
+        ],
+    )
+    def test_list_methods_reject_repeated_pagination_cursor(
+        self, client, method_name, kwargs, resource
+    ):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = [
+                {"data": {"items": [{"name": "first"}], "next_cursor": "cursor-1"}},
+                {"data": {"items": [{"name": "second"}], "next_cursor": "cursor-1"}},
+            ]
+
+            method = getattr(client, method_name)
+            with pytest.raises(
+                exceptions.ArcaManilaAPIError,
+                match=f"Repeated {resource} pagination cursor",
+            ):
+                method(**kwargs)
+
+        assert mock_make.call_count == 2

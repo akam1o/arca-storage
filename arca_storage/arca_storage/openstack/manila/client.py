@@ -345,6 +345,22 @@ class ArcaManilaClient:
             LOG.error(f"Request exception: {path}, {details}")
             raise ArcaManilaAPIError(details=details)
 
+    def _next_page_cursor(
+        self,
+        next_cursor: Optional[str],
+        seen_cursors: set[str],
+        resource: str,
+    ) -> Optional[str]:
+        """Return the next page cursor, rejecting cursor cycles."""
+        if not next_cursor:
+            return None
+        if next_cursor in seen_cursors:
+            raise ArcaManilaAPIError(
+                details=f"Repeated {resource} pagination cursor from ARCA API: {next_cursor}"
+            )
+        seen_cursors.add(next_cursor)
+        return next_cursor
+
     # Volume operations (shares stored as volumes)
 
     def create_volume(
@@ -453,6 +469,7 @@ class ArcaManilaClient:
         """
         items: List[Dict[str, Any]] = []
         cursor = None
+        seen_cursors: set[str] = set()
 
         while True:
             params: Dict[str, Any] = {"limit": 200}
@@ -466,7 +483,9 @@ class ArcaManilaClient:
             response = self._make_request("GET", "/v1/volumes", params=params)
             data = response.get("data", {})
             items.extend(data.get("items", []))
-            cursor = data.get("next_cursor")
+            cursor = self._next_page_cursor(
+                data.get("next_cursor"), seen_cursors, "volume"
+            )
             if not cursor:
                 return items
 
@@ -522,6 +541,7 @@ class ArcaManilaClient:
         """
         items: List[Dict[str, Any]] = []
         cursor = None
+        seen_cursors: set[str] = set()
 
         while True:
             params: Dict[str, Any] = {"limit": 200}
@@ -531,7 +551,9 @@ class ArcaManilaClient:
             response = self._make_request("GET", "/v1/svms", params=params)
             data = response.get("data", {})
             items.extend(data.get("items", []))
-            cursor = data.get("next_cursor")
+            cursor = self._next_page_cursor(
+                data.get("next_cursor"), seen_cursors, "SVM"
+            )
             if not cursor:
                 return items
 
@@ -657,6 +679,7 @@ class ArcaManilaClient:
         """
         items: List[Dict[str, Any]] = []
         cursor = None
+        seen_cursors: set[str] = set()
 
         while True:
             params: Dict[str, Any] = {"limit": 200}
@@ -670,7 +693,9 @@ class ArcaManilaClient:
             response = self._make_request("GET", "/v1/snapshots", params=params)
             data = response.get("data", {})
             items.extend(data.get("items", []))
-            cursor = data.get("next_cursor")
+            cursor = self._next_page_cursor(
+                data.get("next_cursor"), seen_cursors, "snapshot"
+            )
             if not cursor:
                 return items
 
@@ -779,6 +804,7 @@ class ArcaManilaClient:
         """
         items: List[Dict[str, Any]] = []
         cursor = None
+        seen_cursors: set[str] = set()
 
         while True:
             params: Dict[str, Any] = {"limit": 200}
@@ -792,7 +818,9 @@ class ArcaManilaClient:
             response = self._make_request("GET", "/v1/exports", params=params)
             data = response.get("data", {})
             items.extend(data.get("items", []))
-            cursor = data.get("next_cursor")
+            cursor = self._next_page_cursor(
+                data.get("next_cursor"), seen_cursors, "export"
+            )
             if not cursor:
                 return items
 
