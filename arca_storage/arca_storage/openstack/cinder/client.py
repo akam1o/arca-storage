@@ -167,6 +167,9 @@ class ArcaStorageClient:
         """Return all list items by following ARCA cursor pagination."""
         items: List[Dict[str, Any]] = []
         next_cursor = cursor
+        seen_cursors: set[str] = set()
+        if next_cursor:
+            seen_cursors.add(next_cursor)
 
         while True:
             page_params = dict(params or {})
@@ -180,6 +183,9 @@ class ArcaStorageClient:
             next_cursor = data.get("next_cursor")
             if not next_cursor:
                 return items
+            if next_cursor in seen_cursors:
+                raise ArcaAPIError(f"Repeated pagination cursor from ARCA API: {next_cursor}")
+            seen_cursors.add(next_cursor)
 
     # Volume operations
 

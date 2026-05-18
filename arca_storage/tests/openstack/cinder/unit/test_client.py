@@ -385,6 +385,31 @@ class TestArcaStorageClient(unittest.TestCase):
         }
 
     @patch("arca_storage.openstack.cinder.client.requests")
+    def test_list_volumes_rejects_repeated_pagination_cursor(self, mock_requests):
+        """List pagination must fail closed when ARCA repeats a cursor."""
+        first_response = Mock()
+        first_response.status_code = 200
+        first_response.json.return_value = {
+            "data": {"items": [{"name": "vol1"}], "next_cursor": "cursor-1"}
+        }
+        second_response = Mock()
+        second_response.status_code = 200
+        second_response.json.return_value = {
+            "data": {"items": [{"name": "vol2"}], "next_cursor": "cursor-1"}
+        }
+
+        mock_session = Mock()
+        mock_session.request.side_effect = [first_response, second_response]
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+
+        with pytest.raises(arca_exceptions.ArcaAPIError, match="Repeated pagination cursor"):
+            client.list_volumes(svm="test-svm", limit=1)
+
+        assert mock_session.request.call_count == 2
+
+    @patch("arca_storage.openstack.cinder.client.requests")
     def test_list_exports_follows_pagination(self, mock_requests):
         """Test export listing follows cursor pagination."""
         first_response = Mock()
