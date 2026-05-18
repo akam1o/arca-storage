@@ -88,10 +88,13 @@ rules:
     resources: ["arcasnapshots/status"]
     verbs: ["get", "update", "patch"]
 
-  # CRD validation (to check if CRDs exist at startup)
+  # CRD validation (to check if required CRDs exist at startup)
   - apiGroups: ["apiextensions.k8s.io"]
     resources: ["customresourcedefinitions"]
-    verbs: ["get", "list"]
+    resourceNames:
+      - arcavolumes.storage.arca.io
+      - arcasnapshots.storage.arca.io
+    verbs: ["get"]
 
 ---
 # ClusterRoleBinding for controller

@@ -80,3 +80,34 @@ def test_csi_node_rbac_does_not_grant_cluster_permissions(repo_root):
         assert "kind: ClusterRoleBinding" not in manifest
         assert "resources:" not in manifest
         assert "verbs:" not in manifest
+
+
+def test_csi_controller_rbac_limits_crd_discovery(repo_root):
+    rbac_manifests = [
+        repo_root / "csi-arca-storage/deploy/rbac-controller.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/rbac-controller.yaml",
+    ]
+
+    for manifest_path in rbac_manifests:
+        manifest = manifest_path.read_text(encoding="utf-8")
+        lines = manifest.splitlines()
+        crd_line_index = next(
+            index
+            for index, line in enumerate(lines)
+            if line.strip() == 'resources: ["customresourcedefinitions"]'
+        )
+        next_rule_index = next(
+            (
+                index
+                for index in range(crd_line_index + 1, len(lines))
+                if lines[index].startswith("  - ")
+            ),
+            len(lines),
+        )
+        crd_rule = "\n".join(lines[crd_line_index - 1 : next_rule_index])
+
+        assert "resourceNames:" in crd_rule
+        assert "arcavolumes.storage.arca.io" in crd_rule
+        assert "arcasnapshots.storage.arca.io" in crd_rule
+        assert 'verbs: ["get"]' in crd_rule
+        assert 'verbs: ["get", "list"]' not in crd_rule
