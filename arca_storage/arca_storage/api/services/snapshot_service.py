@@ -526,36 +526,53 @@ def _run_clone_volume_steps(
     except CreateLeaseLostError:
         raise
     except Exception as e:
-        _cleanup_failed_clone_volume(ctx, volume, vg_name, new_lv, mount_path)
+        cleanup_errors = _cleanup_failed_clone_volume(ctx, volume, vg_name, new_lv, mount_path)
         volume.status.phase = Phase.FAILED
         expected_owner = create_owner
         clear_create_lease(volume.status)
         volume.status.message = f"Clone failed: {e}"
+        if cleanup_errors:
+            volume.status.message = f"{volume.status.message}; cleanup incomplete: {'; '.join(cleanup_errors)}"
         _persist_clone_volume(ctx, volume, volume.status.message, expected_create_owner=expected_owner)
         return volume
 
 
-def _cleanup_failed_clone_volume(ctx: Any, volume: Volume, vg_name: str, lv_name: str, mount_path: str) -> None:
+def _cleanup_failed_clone_volume(ctx: Any, volume: Volume, vg_name: str, lv_name: str, mount_path: str) -> list[str]:
+    cleanup_errors: list[str] = []
     try:
         mounted = volume.status.mounted or ctx.adapters.xfs.is_mounted(mount_path)
-    except Exception:
+    except Exception as e:
+        cleanup_errors.append(f"check mount {mount_path}: {e}")
         mounted = volume.status.mounted
+
     if mounted:
         try:
             ctx.adapters.xfs.umount(mount_path)
-        except Exception:
-            pass
+            volume.status.mounted = False
+            volume.status.mount_path = None
+        except Exception as e:
+            volume.status.mounted = True
+            volume.status.mount_path = mount_path
+            cleanup_errors.append(f"unmount {mount_path}: {e}")
+            return cleanup_errors
+
     if volume.status.lv_created:
         try:
             ctx.adapters.lvm.delete_lv(vg_name, lv_name)
-        except Exception:
-            pass
-    volume.status.lv_created = False
-    volume.status.lv_path = None
-    volume.status.lv_name = None
-    volume.status.fs_formatted = False
+            volume.status.lv_created = False
+            volume.status.lv_path = None
+            volume.status.lv_name = None
+            volume.status.fs_formatted = False
+        except Exception as e:
+            volume.status.lv_created = True
+            volume.status.lv_path = volume.status.lv_path or f"/dev/{vg_name}/{lv_name}"
+            volume.status.lv_name = volume.status.lv_name or lv_name
+            cleanup_errors.append(f"delete LV {vg_name}/{lv_name}: {e}")
+            return cleanup_errors
+
     volume.status.mounted = False
     volume.status.mount_path = None
+    return cleanup_errors
 
 
 def _persist_clone_volume(

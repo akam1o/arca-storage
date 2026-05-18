@@ -634,6 +634,59 @@ class TestCloneVolume:
         assert fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context, name="clone1"))
 
     @pytest.mark.integration
+    def test_clone_volume_preserves_state_when_cleanup_delete_fails(self, fake_context):
+        client = TestClient(app, raise_server_exceptions=False)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        clone_lv = volume_lv_name("tenant_a", "clone1")
+        original_delete_lv = fake_context.adapters.lvm.delete_lv
+
+        def fail_grow(_mount_path):
+            raise RuntimeError("grow failed")
+
+        def fail_clone_delete(vg_name, lv_name):
+            if lv_name == clone_lv:
+                raise RuntimeError("lv cleanup failed")
+            return original_delete_lv(vg_name, lv_name)
+
+        fake_context.adapters.xfs.grow = fail_grow
+        fake_context.adapters.lvm.delete_lv = fail_clone_delete
+
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+        )
+
+        assert response.status_code == 500
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", clone_lv)
+        assert "/exports/tenant_a/clone1" not in fake_context.adapters.xfs.mounts
+        record = fake_context.db.get_volume("tenant_a", "clone1")
+        assert record["status"]["phase"] == "Failed"
+        assert record["status"]["lv_created"] is True
+        assert record["status"]["lv_name"] == clone_lv
+        assert record["status"]["lv_path"] == f"/dev/vg_pool_01/{clone_lv}"
+        assert record["status"]["mounted"] is False
+        assert record["status"]["mount_path"] is None
+        assert "cleanup incomplete" in record["status"]["message"]
+        assert "lv cleanup failed" in record["status"]["message"]
+
+        def grow(mount_path):
+            return type(fake_context.adapters.xfs).grow(fake_context.adapters.xfs, mount_path)
+
+        fake_context.adapters.xfs.grow = grow
+        fake_context.adapters.lvm.delete_lv = original_delete_lv
+        response = client.post(
+            "/v1/volumes/vol1/clone",
+            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+        )
+
+        assert response.status_code == 201
+        assert response.json()["data"]["volume"]["status"] == "Ready"
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", clone_lv)
+
+    @pytest.mark.integration
     def test_clone_volume_resumes_existing_lv_after_stale_lease(self, fake_context):
         from arca_storage.models.volume import Volume, VolumeSpec
 
