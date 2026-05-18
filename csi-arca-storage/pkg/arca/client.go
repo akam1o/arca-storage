@@ -21,6 +21,10 @@ import (
 
 const bytesPerGiB = int64(1024 * 1024 * 1024)
 
+func pathSegment(value string) string {
+	return url.PathEscape(value)
+}
+
 // Client is an ARCA REST API client
 type Client struct {
 	baseURL    string
@@ -247,7 +251,7 @@ func isNonRetryableError(err error) bool {
 
 // GetSVM retrieves SVM information
 func (c *Client) GetSVM(ctx context.Context, name string) (*SVM, error) {
-	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s", name), nil)
+	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s", pathSegment(name)), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +275,7 @@ func (c *Client) CreateSVM(ctx context.Context, req *CreateSVMRequest) (*SVM, er
 
 // DeleteSVM deletes an SVM (idempotent)
 func (c *Client) DeleteSVM(ctx context.Context, name string) error {
-	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/svms/%s", name), nil)
+	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/svms/%s", pathSegment(name)), nil)
 	if err != nil {
 		if errors.Is(err, ErrSVMNotFound) {
 			return nil // Idempotent
@@ -312,7 +316,7 @@ func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 
 // GetSVMCapacity retrieves SVM capacity information
 func (c *Client) GetSVMCapacity(ctx context.Context, svmName string) (*CapacityInfo, error) {
-	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s/capacity", svmName), nil)
+	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s/capacity", pathSegment(svmName)), nil)
 	if err != nil {
 		return nil, err
 	}

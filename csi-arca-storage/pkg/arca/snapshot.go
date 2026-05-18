@@ -50,7 +50,7 @@ func (c *Client) DeleteSnapshot(ctx context.Context, name, svmName, volume strin
 	params.Set("svm", svmName)
 	params.Set("volume", volume)
 
-	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/snapshots/%s", url.PathEscape(name)), nil, params)
+	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/snapshots/%s", pathSegment(name)), nil, params)
 	if err != nil {
 		if errors.Is(err, ErrSnapshotNotFound) {
 			return nil // Idempotent
@@ -67,7 +67,7 @@ func (c *Client) CloneVolumeFromSnapshot(ctx context.Context, req *CloneVolumeFr
 		sourceVolume = req.Name
 	}
 
-	_, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/volumes/%s/clone", url.PathEscape(sourceVolume)), req)
+	_, err := c.doRequest(ctx, http.MethodPost, fmt.Sprintf("/v1/volumes/%s/clone", pathSegment(sourceVolume)), req)
 	return err
 }
 

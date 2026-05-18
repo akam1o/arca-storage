@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"testing"
 	"time"
 )
@@ -83,6 +84,59 @@ func TestClientNormalizesTrailingSlashBaseURL(t *testing.T) {
 
 	if _, err := client.GetSVM(context.Background(), "k8s-default"); err != nil {
 		t.Fatalf("GetSVM() error = %v", err)
+	}
+}
+
+func TestClientEscapesPathSegments(t *testing.T) {
+	dangerousName := "tenant/../other%2Fencoded"
+	escapedName := url.PathEscape(dangerousName)
+
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requests = append(requests, r.Method+" "+r.URL.EscapedPath())
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/svms/"+escapedName:
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"tenant","vip":"192.168.10.5"}}`))
+		case r.Method == http.MethodDelete && r.URL.EscapedPath() == "/v1/svms/"+escapedName:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/svms/"+escapedName+"/capacity":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"total_bytes":1073741824,"available_bytes":536870912,"used_bytes":536870912}}`))
+		case r.Method == http.MethodDelete && r.URL.EscapedPath() == "/v1/directories/"+escapedName:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/quotas/"+escapedName:
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"path":"pvc/data","quota_bytes":1073741824,"used_bytes":0,"project_id":10}}`))
+		default:
+			t.Fatalf("unexpected request: method=%s path=%s raw_path=%s query=%s", r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := client.GetSVM(ctx, dangerousName); err != nil {
+		t.Fatalf("GetSVM() error = %v", err)
+	}
+	if err := client.DeleteSVM(ctx, dangerousName); err != nil {
+		t.Fatalf("DeleteSVM() error = %v", err)
+	}
+	if _, err := client.GetSVMCapacity(ctx, dangerousName); err != nil {
+		t.Fatalf("GetSVMCapacity() error = %v", err)
+	}
+	if err := client.DeleteDirectory(ctx, dangerousName, "pvc/data"); err != nil {
+		t.Fatalf("DeleteDirectory() error = %v", err)
+	}
+	if _, err := client.GetQuota(ctx, dangerousName, "pvc/data"); err != nil {
+		t.Fatalf("GetQuota() error = %v", err)
+	}
+
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want 5: %v", len(requests), requests)
 	}
 }
 
