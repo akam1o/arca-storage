@@ -7,6 +7,7 @@ from __future__ import annotations
 import hashlib
 import json
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -14,6 +15,7 @@ from typing import Dict, List, Optional, Sequence
 from jinja2 import Template
 
 from arca_storage.cli.lib.state import get_state_dir
+from arca_storage.cli.lib.validators import validate_name
 from arca_storage.config import ArcaSettings, load_settings
 
 TEMPLATE_VERSION = "1.1.0"
@@ -21,6 +23,7 @@ _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 _GANESHA_SEC_TYPES = {"sys", "krb5", "krb5i", "krb5p"}
 _GANESHA_ACCESS_TYPES = {"RW", "RO"}
 _GANESHA_SQUASH_TYPES = {"Root_Squash", "No_Root_Squash"}
+_SNAPSHOT_VERSION_RE = re.compile(r"[0-9a-f]{12}")
 
 
 def _template_path() -> Path:
@@ -34,10 +37,31 @@ def _config_snapshot_dir(settings: Optional[ArcaSettings] = None) -> Path:
     return get_state_dir() / "config"
 
 
+def _safe_resource_name(name: str) -> str:
+    value = str(name)
+    validate_name(value)
+    return value
+
+
+def _safe_snapshot_version(config_version: str, *, allow_latest: bool = False) -> str:
+    value = str(config_version)
+    if allow_latest and value == "latest":
+        return value
+    if not _SNAPSHOT_VERSION_RE.fullmatch(value):
+        expected = "'latest' or a 12-character lowercase hex digest" if allow_latest else "a 12-character lowercase hex digest"
+        raise ValueError(f"config_version must be {expected}")
+    return value
+
+
 def _snapshot_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+    svm_name = _safe_resource_name(svm_name)
+    config_version = _safe_snapshot_version(config_version)
     return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.conf"
 
+
 def _snapshot_meta_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+    svm_name = _safe_resource_name(svm_name)
+    config_version = _safe_snapshot_version(config_version)
     return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.json"
 
 
@@ -165,6 +189,7 @@ def render_config(
     Returns:
         Path to the generated config file
     """
+    svm_name = _safe_resource_name(svm_name)
     cfg = settings or load_settings()
     config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -267,6 +292,8 @@ def reload(svm_name: str, *, host_network: bool = False) -> None:
     """
     import subprocess
 
+    svm_name = _safe_resource_name(svm_name)
+
     # Reload using systemctl
     unit = "nfs-ganesha-host" if host_network else "nfs-ganesha"
     result = subprocess.run(
@@ -302,6 +329,9 @@ def add_export(
     Raises:
         RuntimeError: If adding export fails
     """
+    svm_name = _safe_resource_name(svm_name)
+    volume_name = _safe_resource_name(volume_name)
+
     # Load existing exports
     exports = _load_exports(svm_name)
     
@@ -343,6 +373,9 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
     Raises:
         RuntimeError: If removing export fails
     """
+    svm_name = _safe_resource_name(svm_name)
+    volume_name = _safe_resource_name(volume_name)
+
     # Load existing exports
     exports = _load_exports(svm_name)
     
@@ -365,6 +398,7 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
 
 def _load_exports(svm_name: str) -> List[Dict]:
     """Load exports from state file."""
+    svm_name = _safe_resource_name(svm_name)
     state_dir = get_state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     
@@ -379,6 +413,7 @@ def _load_exports(svm_name: str) -> List[Dict]:
 
 def _save_exports(svm_name: str, exports: List[Dict]) -> None:
     """Save exports to state file."""
+    svm_name = _safe_resource_name(svm_name)
     state_dir = get_state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
     
@@ -401,6 +436,11 @@ def list_exports(svm_name: Optional[str] = None, volume_name: Optional[str] = No
     """
     List exports from state files.
     """
+    if svm_name:
+        svm_name = _safe_resource_name(svm_name)
+    if volume_name:
+        volume_name = _safe_resource_name(volume_name)
+
     state_dir = get_state_dir()
     if not state_dir.exists():
         return []
@@ -428,6 +468,7 @@ def sync(svm_name: str) -> str:
 
     Useful after changing runtime configuration (e.g., enabling NFSv3).
     """
+    svm_name = _safe_resource_name(svm_name)
     exports = _load_exports(svm_name)
     path = render_config(svm_name, exports)
     reload(svm_name)
@@ -438,6 +479,7 @@ def list_config_snapshots(svm_name: str) -> List[Dict]:
     """
     List saved ganesha.conf snapshots for a given SVM.
     """
+    svm_name = _safe_resource_name(svm_name)
     snapshot_dir = _config_snapshot_dir()
     if not snapshot_dir.exists():
         return []
@@ -449,6 +491,8 @@ def list_config_snapshots(svm_name: str) -> List[Dict]:
         if p.name == f"ganesha.{svm_name}.latest.conf":
             continue
         version = p.name[len(prefix) : -len(suffix)]
+        if not _SNAPSHOT_VERSION_RE.fullmatch(version):
+            continue
         try:
             mtime = p.stat().st_mtime
         except Exception:
@@ -467,6 +511,8 @@ def rollback_config(svm_name: str, config_version: str, *, host_network: bool = 
         svm_name: SVM name
         config_version: Snapshot version (or "latest")
     """
+    svm_name = _safe_resource_name(svm_name)
+    config_version = _safe_snapshot_version(config_version, allow_latest=True)
     cfg = load_settings()
     config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
@@ -488,6 +534,8 @@ def rollback_config(svm_name: str, config_version: str, *, host_network: bool = 
 
 
 def read_config_snapshot_meta(svm_name: str, config_version: str) -> Dict:
+    svm_name = _safe_resource_name(svm_name)
+    config_version = _safe_snapshot_version(config_version, allow_latest=True)
     snapshot_dir = _config_snapshot_dir()
     if config_version == "latest":
         path = snapshot_dir / f"ganesha.{svm_name}.latest.json"

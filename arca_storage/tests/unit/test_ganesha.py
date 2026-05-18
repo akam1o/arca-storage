@@ -138,6 +138,55 @@ class TestRenderConfig:
         assert result == str(tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf")
         assert (tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf").exists()
 
+    @pytest.mark.unit
+    def test_render_config_rejects_unsafe_svm_name(self):
+        with pytest.raises(ValueError, match="Name must"):
+            render_config("../tenant_a", [])
+
+
+class TestConfigSnapshots:
+    @pytest.mark.unit
+    def test_snapshot_meta_reads_rendered_version_and_latest(self):
+        render_config("tenant_a", [])
+
+        latest = ganesha.read_config_snapshot_meta("tenant_a", "latest")
+        version = latest["config_version"]
+
+        assert ganesha.read_config_snapshot_meta("tenant_a", version)["config_version"] == version
+        assert any(s["config_version"] == version for s in ganesha.list_config_snapshots("tenant_a"))
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "config_version",
+        [
+            "../outside",
+            "abc/def123456",
+            "ABCDEF123456",
+            "short",
+            "",
+        ],
+    )
+    def test_rollback_rejects_unsafe_config_version(self, config_version):
+        with pytest.raises(ValueError, match="config_version"):
+            ganesha.rollback_config("tenant_a", config_version)
+
+    @pytest.mark.unit
+    def test_snapshot_meta_rejects_unsafe_config_version(self):
+        with pytest.raises(ValueError, match="config_version"):
+            ganesha.read_config_snapshot_meta("tenant_a", "../outside")
+
+    @pytest.mark.unit
+    def test_list_config_snapshots_ignores_untrusted_versions(self, tmp_path):
+        snapshot_dir = tmp_path / "config"
+        snapshot_dir.mkdir()
+        (snapshot_dir / "ganesha.tenant_a.abcdef123456.conf").write_text("valid", encoding="utf-8")
+        (snapshot_dir / "ganesha.tenant_a.not-a-digest.conf").write_text("invalid", encoding="utf-8")
+        (snapshot_dir / "ganesha.tenant_a.latest.conf").write_text("latest", encoding="utf-8")
+
+        snapshots = ganesha.list_config_snapshots("tenant_a")
+
+        assert [snapshot["config_version"] for snapshot in snapshots] == ["abcdef123456"]
+
 
 class TestReload:
     """Tests for reload function."""
