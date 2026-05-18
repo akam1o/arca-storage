@@ -453,6 +453,77 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	}
 }
 
+func TestListSnapshotsFollowsPagination(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/snapshots" {
+			http.NotFound(w, r)
+			return
+		}
+		requests = append(requests, r.URL.RawQuery)
+
+		switch len(requests) {
+		case 1:
+			if r.URL.Query().Get("cursor") != "" {
+				t.Fatalf("first request query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"snap-a","svm":"k8s-default","volume":"pvc-1234","status":"Ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":"cursor-1"}}`))
+		case 2:
+			if r.URL.Query().Get("cursor") != "cursor-1" {
+				t.Fatalf("second request query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"snap-b","svm":"k8s-default","volume":"pvc-1234","status":"Ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":null}}`))
+		default:
+			t.Fatalf("unexpected request %d query=%s", len(requests), r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	snapshots, err := client.ListSnapshots(context.Background(), "k8s-default", "pvc-1234", "")
+	if err != nil {
+		t.Fatalf("ListSnapshots() error = %v", err)
+	}
+	if len(snapshots) != 2 || snapshots[0].Name != "snap-a" || snapshots[1].Name != "snap-b" {
+		t.Fatalf("ListSnapshots() = %#v", snapshots)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d", len(requests))
+	}
+}
+
+func TestListSnapshotsRejectsRepeatedPaginationCursor(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/snapshots" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[],"next_cursor":"cursor-1"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSnapshots(context.Background(), "k8s-default", "pvc-1234", "")
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("ListSnapshots() error = %v, want ErrInvalidResponse", err)
+	}
+	if calls != 2 {
+		t.Fatalf("GET calls = %d, want 2", calls)
+	}
+}
+
 func TestCloneVolumeFromSnapshotReturnsAlreadyExistsConflict(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
