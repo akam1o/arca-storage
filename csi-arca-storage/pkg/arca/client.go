@@ -289,6 +289,7 @@ func (c *Client) DeleteSVM(ctx context.Context, name string) error {
 func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 	var all []SVM
 	cursor := ""
+	seenCursors := map[string]struct{}{}
 
 	for {
 		params := url.Values{}
@@ -310,6 +311,10 @@ func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 		if nextCursor == "" {
 			return all, nil
 		}
+		if _, ok := seenCursors[nextCursor]; ok {
+			return nil, fmt.Errorf("%w: repeated SVM pagination cursor %q", ErrInvalidResponse, nextCursor)
+		}
+		seenCursors[nextCursor] = struct{}{}
 		cursor = nextCursor
 	}
 }

@@ -184,6 +184,33 @@ func TestListSVMsFollowsPagination(t *testing.T) {
 	}
 }
 
+func TestListSVMsRejectsRepeatedPaginationCursor(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/svms" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[],"next_cursor":"cursor-1"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSVMs(context.Background())
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("ListSVMs() error = %v, want ErrInvalidResponse", err)
+	}
+	if calls != 2 {
+		t.Fatalf("GET calls = %d, want 2", calls)
+	}
+}
+
 func TestClientRetriesReadRequests(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
