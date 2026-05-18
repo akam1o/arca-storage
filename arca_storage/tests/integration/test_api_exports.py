@@ -8,6 +8,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.api.services import export_service
 
 
 @pytest.fixture
@@ -145,6 +146,35 @@ class TestAddExport:
         response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24")
         assert response.status_code == 200
         assert fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24") is None
+
+    @pytest.mark.integration
+    def test_add_export_returns_conflict_when_existing_export_lease_is_not_acquired(self, fake_context, monkeypatch):
+        client = TestClient(app, raise_server_exceptions=False)
+        client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        )
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+
+        original_can_resume = export_service._can_resume_create
+
+        def can_resume_create(record, requested_spec, *, owner=None):
+            assert record is not None
+            return original_can_resume(record, requested_spec, owner=owner)
+
+        monkeypatch.setattr(export_service, "_can_resume_create", can_resume_create)
+        monkeypatch.setattr(fake_context.db, "acquire_export_create_lease", lambda *_args, **_kwargs: None)
+
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+        )
+
+        assert response.status_code == 409
 
     @pytest.mark.integration
     def test_add_export_rejects_unready_volume(self, fake_context):

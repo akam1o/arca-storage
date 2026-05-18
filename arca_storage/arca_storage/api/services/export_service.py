@@ -62,7 +62,7 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
             allow_failed=allow_failed_resume,
             require_ready_svm=True,
         )
-        if _can_resume_create(acquired, requested_spec, owner=owner):
+        if acquired and _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_export_create(ctx, acquired, owner)
         raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{client}")
 

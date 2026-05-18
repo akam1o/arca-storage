@@ -280,6 +280,29 @@ def test_restore_qos_ignores_invalid_persisted_device_id(monkeypatch, tmp_path):
     assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=2000"
 
 
+def test_restore_qos_state_with_missing_settings_clears_existing_limit(monkeypatch, tmp_path):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "io.max").write_text(
+        "8:1 rbps=1024\n8:16 riops=1000",
+        encoding="utf-8",
+    )
+
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    qos_service._restore_qos_state_best_effort(
+        SimpleNamespace(),
+        "tenant-a",
+        "test-vol",
+        "/dev/vg_arca/test-vol",
+        None,
+    )
+
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8").splitlines() == ["8:1 rbps=1024"]
+
+
 def test_clear_qos_ignores_persisted_cgroup_path_outside_expected_path(monkeypatch, tmp_path):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
     outside_cgroup_path = tmp_path / "outside-cgroup"

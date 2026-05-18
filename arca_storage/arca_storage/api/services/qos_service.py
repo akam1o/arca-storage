@@ -272,7 +272,11 @@ def _restore_qos_state_best_effort(
     lv_path: str,
     settings: Optional[dict[str, Any]],
 ) -> None:
-    limits = _qos_limits_from_settings(settings) if isinstance(settings, dict) else {}
+    if not isinstance(settings, dict):
+        _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
+        return
+
+    limits = _qos_limits_from_settings(settings)
     if not limits:
         _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
         return

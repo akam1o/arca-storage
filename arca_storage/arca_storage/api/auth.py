@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import ipaddress
 import os
+from collections.abc import Mapping
 from typing import Any
 
 
@@ -48,7 +49,7 @@ def is_loopback_bind_host(host: str) -> bool:
         return False
 
 
-def non_loopback_request_server_host(scope: dict[str, Any]) -> str | None:
+def non_loopback_request_server_host(scope: Mapping[str, Any]) -> str | None:
     """Return the request server host unless ASGI confirms it is loopback."""
     server = scope.get("server")
     if not isinstance(server, (tuple, list)) or not server:
