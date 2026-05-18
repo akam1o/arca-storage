@@ -6,6 +6,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 import pytest
+import typer
 
 from arca_storage.cli.commands import bootstrap
 
@@ -27,6 +28,43 @@ def test_pcs_host_auth_does_not_put_password_in_argv():
     assert run.call_args.kwargs["input"] == "secret-password\n"
     assert run.call_args.kwargs["check"] is False
     assert run.call_args.kwargs["timeout"] == bootstrap._DEFAULT_COMMAND_TIMEOUT_SECONDS
+
+
+@pytest.mark.parametrize("nodes", [["node-a", "../node-b"], ["node-a", "--force"]])
+def test_pcs_host_auth_rejects_unsafe_nodes(nodes):
+    with patch.object(bootstrap.subprocess, "run") as run:
+        with pytest.raises(ValueError, match="nodes"):
+            bootstrap._pcs_host_auth(nodes, "secret-password")
+
+    run.assert_not_called()
+
+
+def test_parse_cluster_nodes_requires_distinct_safe_hosts():
+    assert bootstrap._parse_cluster_nodes("node-a node-b.example.local") == [
+        "node-a",
+        "node-b.example.local",
+    ]
+
+    with pytest.raises(ValueError, match="nodes"):
+        bootstrap._parse_cluster_nodes("node-a node_a")
+
+    with pytest.raises(ValueError, match="unique"):
+        bootstrap._parse_cluster_nodes("node-a node-a")
+
+
+@pytest.mark.parametrize(
+    ("cluster_name", "nodes"),
+    [
+        ("../cluster", "node-a node-b"),
+        ("arca", "node-a ../node-b"),
+    ],
+)
+def test_pacemaker_cluster_rejects_unsafe_inputs_before_commands(cluster_name, nodes):
+    with patch.object(bootstrap, "_run") as run:
+        with pytest.raises(typer.Exit):
+            bootstrap.pacemaker_cluster(cluster_name, nodes, "secret-password")
+
+    run.assert_not_called()
 
 
 def test_run_uses_default_timeout():
@@ -242,3 +280,36 @@ def test_lvm_thinpool_uses_configured_subprocess_timeout():
         "systemctl",
     ]
     assert all(kwargs["timeout"] == 120 for _cmd, kwargs in calls)
+
+
+@pytest.mark.parametrize(
+    ("kwargs", "message"),
+    [
+        ({"pv": "/tmp/drbd0"}, "pv"),
+        ({"vg": "../vg"}, "vg"),
+        ({"thinpool": "pool/bad"}, "thinpool"),
+    ],
+)
+def test_lvm_thinpool_rejects_unsafe_command_tokens(kwargs, message):
+    cfg = SimpleNamespace(
+        storage=SimpleNamespace(vg_name="vg_pool_01", thinpool_name="pool"),
+        timeouts=SimpleNamespace(subprocess_default=120),
+    )
+    params = {
+        "pv": "/dev/drbd0",
+        "vg": None,
+        "thinpool": None,
+        "size": "80%VG",
+        "metadata_size": "15.8G",
+        "chunk_size": "256K",
+    }
+    params.update(kwargs)
+
+    with (
+        patch.object(bootstrap, "load_settings", return_value=cfg),
+        patch.object(bootstrap, "_run") as run,
+    ):
+        with pytest.raises(typer.Exit):
+            bootstrap.lvm_thinpool(**params)
+
+    run.assert_not_called()

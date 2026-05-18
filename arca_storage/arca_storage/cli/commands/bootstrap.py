@@ -58,12 +58,26 @@ def _validate_path_component(value: str, *, field: str) -> str:
     return validate_path_component(value, field_name=field)
 
 
+def _validate_cluster_name(cluster_name: str) -> str:
+    return _validate_path_component(cluster_name, field="cluster_name")
+
+
+def _parse_cluster_nodes(nodes: str) -> list[str]:
+    node_list = [_validate_host_name(node, field="nodes") for node in nodes.split() if node]
+    if len(node_list) < 2:
+        raise ValueError("Provide at least 2 nodes")
+    if len(set(node_list)) != len(node_list):
+        raise ValueError("nodes must be unique")
+    return node_list
+
+
 def _pcs_host_auth(
     nodes: list[str],
     hacluster_password: str,
     *,
     timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
+    nodes = [_validate_host_name(node, field="nodes") for node in nodes]
     return _run(
         ["pcs", "host", "auth", *nodes, "-u", "hacluster"],
         input=f"{hacluster_password}\n",
@@ -494,12 +508,11 @@ def pacemaker_cluster(
     This runs locally and configures the cluster across the provided nodes.
     """
     try:
+        cluster_name = _validate_cluster_name(cluster_name)
+        node_list = _parse_cluster_nodes(nodes)
         cfg = load_settings(require_file=False)
         default_timeout = cfg.timeouts.subprocess_default
         pacemaker_timeout = cfg.timeouts.pacemaker_operation
-        node_list = [n for n in nodes.split() if n]
-        if len(node_list) < 2:
-            raise ValueError("Provide at least 2 nodes")
 
         # Ensure pcsd is running
         _run(["systemctl", "enable", "--now", "pcsd"], timeout=default_timeout)
@@ -594,8 +607,9 @@ def lvm_thinpool(
     try:
         cfg = load_settings()
         timeout = cfg.timeouts.subprocess_default
-        vg = vg or cfg.storage.vg_name
-        thinpool = thinpool or cfg.storage.thinpool_name
+        pv = _validate_device_path(pv, field="pv")
+        vg = _validate_path_component(vg or cfg.storage.vg_name, field="vg")
+        thinpool = _validate_path_component(thinpool or cfg.storage.thinpool_name, field="thinpool")
 
         # PV
         pv_check = _run(["pvs", pv], check=False, timeout=timeout)
