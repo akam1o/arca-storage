@@ -11,7 +11,7 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
+from typing import Callable, Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
 from arca_storage.cli.lib.validators import (
@@ -63,7 +63,9 @@ class SVMReconciler:
         spec = svm.spec
 
         ip_addr, prefix = validate_svm_ip_cidr(spec.ip_cidr)
-        uses_vlan = spec.vlan_id is not None
+        vlan_id = spec.vlan_id
+        root_volume_size_gib = spec.root_volume_size_gib
+        uses_vlan = vlan_id is not None
         gateway = spec.gateway or (infer_gateway_from_ip_cidr(spec.ip_cidr) if uses_vlan else None)
         parent_if = self._cfg.get("parent_if", "bond0")
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
@@ -71,10 +73,10 @@ class SVMReconciler:
         export_dir = self._cfg.get("export_dir", "/exports")
         drbd_resource = self._cfg.get("drbd_resource", "r0")
 
-        if uses_vlan and not svm.status.vlan_ifname:
-            svm.status.vlan_ifname = allocate_vlan_ifname(spec.name, spec.vlan_id)
+        if vlan_id is not None and not svm.status.vlan_ifname:
+            svm.status.vlan_ifname = allocate_vlan_ifname(spec.name, vlan_id)
 
-        steps = []
+        steps: list[tuple[str, Callable[[], object]]] = []
         steps.append(
             (
                 "ganesha_configured",
@@ -87,7 +89,7 @@ class SVMReconciler:
             )
         )
 
-        if spec.root_volume_size_gib:
+        if root_volume_size_gib is not None:
             lv_name = svm.status.lv_name or svm_root_lv_name(spec.name)
             svm.status.lv_name = lv_name
             lv_path = f"/dev/{vg_name}/{lv_name}"
@@ -100,7 +102,7 @@ class SVMReconciler:
                     vg_name,
                     thinpool,
                     lv_name,
-                    spec.root_volume_size_gib,
+                    root_volume_size_gib,
                     thin=True,
                 ),
             ))
@@ -114,7 +116,7 @@ class SVMReconciler:
             lambda: self.adapters.pacemaker.create_group(
                 spec.name,
                 f"{export_dir}/{spec.name}",
-                vlan_id=spec.vlan_id,
+                vlan_id=vlan_id,
                 ifname=svm.status.vlan_ifname,
                 ip=ip_addr,
                 prefix=prefix,
@@ -123,7 +125,7 @@ class SVMReconciler:
                 parent_if=parent_if,
                 vg_name=vg_name,
                 filesystem_lv_name=svm.status.lv_name,
-                create_filesystem=bool(spec.root_volume_size_gib),
+                create_filesystem=root_volume_size_gib is not None,
                 drbd_resource_name=drbd_resource,
                 enforce_drbd_constraints=True,
             ),
@@ -135,7 +137,7 @@ class SVMReconciler:
             try:
                 action()
                 setattr(svm.status, field, True)
-                if spec.root_volume_size_gib and field in {"lv_created", "fs_formatted"}:
+                if root_volume_size_gib is not None and field in {"lv_created", "fs_formatted"}:
                     svm.status.lv_name = lv_name
                     svm.status.lv_path = lv_path
                 self._persist(svm, f"step '{field}' completed", expected_create_owner=create_owner)

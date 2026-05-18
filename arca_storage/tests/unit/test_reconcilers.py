@@ -117,6 +117,7 @@ class TestSVMReconciler:
         assert result.status.phase == Phase.READY
         assert result.status.namespace_created is False
         assert result.status.vlan_attached is False
+        assert result.status.vlan_ifname is None
         assert adapters.netns.namespace_exists("novlan") is False
         assert adapters.ganesha.bind_addrs["novlan"] == "10.0.9.5"
         assert adapters.ganesha.host_network["novlan"] is True
