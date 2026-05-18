@@ -874,6 +874,27 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         LOG.error(msg)
         raise exception.VolumeBackendAPIException(data=msg)
 
+    def _ensure_target_size_at_least_source(
+        self,
+        operation: str,
+        target_size_gib: int,
+        source_size_gib: int,
+    ) -> None:
+        """Reject copy operations that would leave an oversized backing file."""
+        if target_size_gib >= source_size_gib:
+            return
+
+        msg = _(
+            "%(operation)s target volume size %(target)sGB is smaller than "
+            "source size %(source)sGB"
+        ) % {
+            "operation": operation,
+            "target": target_size_gib,
+            "source": source_size_gib,
+        }
+        LOG.error(msg)
+        raise exception.VolumeBackendAPIException(data=msg)
+
     def _get_volume_type_extra_specs(self, volume_type) -> Dict[str, Any]:
         """Return extra_specs dict from either an object or a dict-like."""
         if volume_type is None:
@@ -1161,6 +1182,16 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # New volume file path (using volume ID)
             volume_file = arca_utils.get_volume_file_path(target_mount_point, f"volume-{volume_id}")
 
+            # Get snapshot file size before copying so undersized restores fail closed
+            snapshot_size_bytes = os.path.getsize(snapshot_file)
+            gib = 1024 ** 3
+            snapshot_size_gib = (snapshot_size_bytes + gib - 1) // gib
+            self._ensure_target_size_at_least_source(
+                "create volume from snapshot",
+                volume_size,
+                snapshot_size_gib,
+            )
+
             # Get timeout from configuration
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
 
@@ -1169,11 +1200,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             volume_file_created = True
 
             LOG.info("Created volume file from snapshot: %s -> %s", snapshot_file, volume_file)
-
-            # Get snapshot file size to determine if extension is needed
-            snapshot_size_bytes = os.path.getsize(snapshot_file)
-            gib = 1024 ** 3
-            snapshot_size_gib = (snapshot_size_bytes + gib - 1) // gib
 
             # If new volume size is larger than snapshot, extend the file
             if volume_size > snapshot_size_gib:
@@ -1240,6 +1266,11 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 "clone",
                 source_svm_name,
                 target_svm_name,
+            )
+            self._ensure_target_size_at_least_source(
+                "clone",
+                volume_size,
+                src_volume_size,
             )
             source_export_path, source_mount_point = self._mount_svm_export(source_svm_name)
             target_export_path = source_export_path

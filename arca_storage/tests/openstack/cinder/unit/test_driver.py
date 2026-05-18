@@ -771,6 +771,30 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
 
     @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_volume_from_snapshot_rejects_smaller_target(
+        self, mock_utils, mock_getsize
+    ):
+        """Create-from-snapshot must not leave a backing file larger than Cinder's size."""
+        self._mock_driver_file_paths(mock_utils)
+        source_volume = self._create_mock_volume(volume_id="source-vol-id")
+        new_volume = self._create_mock_volume(volume_id="new-vol-id", name="new-volume", size=5)
+        snapshot = self._create_mock_snapshot("snap-id", "source-vol-id")
+        mount_point = "/var/lib/cinder/mnt/svm_test-svm"
+        self.driver.db.volume_get.return_value = source_volume
+        mock_utils.get_mount_point_for_svm.return_value = mount_point
+        mock_getsize.return_value = 10 * 1024**3
+
+        with pytest.raises(
+            exception.VolumeBackendAPIException,
+            match="smaller than source size",
+        ):
+            self.driver.create_volume_from_snapshot(new_volume, snapshot)
+
+        mock_utils.copy_sparse_file.assert_not_called()
+        mock_utils.extend_volume_file.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_volume_from_snapshot_rejects_cross_svm_copy(self, mock_utils, mock_getsize):
         """Manual strategy does not copy snapshot data across SVM boundaries."""
         self.driver.configuration.arca_storage_svm_strategy = "manual"
@@ -929,6 +953,22 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             new_size_gb=12,
         )
         self.driver.arca_client.create_snapshot.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.arca_utils")
+    def test_create_cloned_volume_rejects_smaller_target(self, mock_utils):
+        """Clone must not copy a larger source into a smaller Cinder volume."""
+        source_volume = self._create_mock_volume(volume_id="source-vol-id", size=10)
+        new_volume = self._create_mock_volume(volume_id="clone-vol-id", size=5)
+
+        with pytest.raises(
+            exception.VolumeBackendAPIException,
+            match="smaller than source size",
+        ):
+            self.driver.create_cloned_volume(new_volume, source_volume)
+
+        mock_utils.mount_nfs.assert_not_called()
+        mock_utils.copy_sparse_file.assert_not_called()
+        mock_utils.extend_volume_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_cloned_volume_rejects_cross_svm_copy(self, mock_utils):
