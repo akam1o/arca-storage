@@ -51,6 +51,25 @@ def test_csi_controller_manifests_drop_privileges(repo_root):
         assert manifest.count("- ALL") == 5
 
 
+def test_csi_controller_manifests_wire_liveness_probe(repo_root):
+    controller_manifests = [
+        repo_root / "csi-arca-storage/deploy/controller.yaml",
+        repo_root / "csi-arca-storage/deploy/controller-statefulset.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
+    ]
+
+    for manifest_path in controller_manifests:
+        manifest = manifest_path.read_text(encoding="utf-8")
+        assert "livenessProbe:" in manifest
+        assert "path: /healthz" in manifest
+        assert "port: 9808" in manifest
+        assert "initialDelaySeconds: 10" in manifest
+        assert "timeoutSeconds: 3" in manifest
+        assert "periodSeconds: 10" in manifest
+        assert "failureThreshold: 5" in manifest
+        assert "- --health-port=9808" in manifest
+
+
 def test_csi_node_sidecars_drop_privileges(repo_root):
     node_manifests = [
         repo_root / "csi-arca-storage/deploy/node.yaml",
