@@ -351,6 +351,21 @@ class TestUtilityFunctions(unittest.TestCase):
 
             assert os.path.getsize(volume_path) == 1024**3
 
+    def test_extend_volume_file_rejects_shrink(self):
+        """Volume extension must not truncate an unexpectedly larger file."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            volume_path = os.path.join(temp_dir, "test-volume")
+            original_size = 2 * 1024**3
+            with open(volume_path, "wb") as handle:
+                handle.truncate(original_size)
+
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException, match="Refusing to shrink volume file"
+            ):
+                arca_utils.extend_volume_file(temp_dir, "test-volume", 1)
+
+            assert os.path.getsize(volume_path) == original_size
+
     def test_extend_volume_file_not_exists(self):
         """Test volume file extension when file doesn't exist."""
         with tempfile.TemporaryDirectory() as temp_dir:

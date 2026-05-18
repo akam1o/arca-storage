@@ -496,8 +496,14 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
 
         fd = os.open(volume_file, flags)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
                 raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+            if file_stat.st_size > size_bytes:
+                raise ArcaStorageException(
+                    f"Refusing to shrink volume file {volume_file} "
+                    f"from {file_stat.st_size} bytes to {size_bytes} bytes"
+                )
             os.ftruncate(fd, size_bytes)
         finally:
             os.close(fd)
