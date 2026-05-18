@@ -42,6 +42,10 @@ def test_csi_controller_manifests_drop_privileges(repo_root):
         manifest = manifest_path.read_text(encoding="utf-8")
         assert "seccompProfile:" in manifest
         assert "type: RuntimeDefault" in manifest
+        assert manifest.count("runAsNonRoot: true") == 1
+        assert manifest.count("runAsUser: 65532") == 1
+        assert manifest.count("runAsGroup: 65532") == 1
+        assert manifest.count("fsGroup: 65532") == 1
         assert manifest.count("allowPrivilegeEscalation: false") == 5
         assert manifest.count("readOnlyRootFilesystem: true") == 5
         assert manifest.count("- ALL") == 5

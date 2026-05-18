@@ -1,5 +1,6 @@
 ---
-# StatefulSet for CSI controller (kustomize-friendly: no embedded ConfigMap/Secret)
+# StatefulSet for CSI controller.
+# Kustomize-friendly: no embedded ConfigMap/Secret.
 apiVersion: apps/v1
 kind: StatefulSet
 metadata:
@@ -19,6 +20,10 @@ spec:
       serviceAccountName: csi-arca-storage-controller
       priorityClassName: system-cluster-critical
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       tolerations:

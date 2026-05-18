@@ -13,9 +13,10 @@ data:
       auth_type: "token"
       auth_token: ""  # Set via Secret
       tls:
-        ca_cert_path: ""  # Optional: Set to cert path if custom CA is needed (system CA bundle used if empty)
+        # Optional custom CA path; empty uses the system CA bundle.
+        ca_cert_path: ""
         insecure_skip_verify: false
-    
+
     network:
       pools:
         - cidr: "10.0.0.0/24"
@@ -23,7 +24,7 @@ data:
           vlan: 100
           gateway: "10.0.0.1"
       mtu: 1500
-    
+
     driver:
       endpoint: "unix:///csi/csi.sock"
       state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
@@ -50,6 +51,10 @@ spec:
       serviceAccountName: csi-arca-storage-controller
       priorityClassName: system-cluster-critical
       securityContext:
+        runAsNonRoot: true
+        runAsUser: 65532
+        runAsGroup: 65532
+        fsGroup: 65532
         seccompProfile:
           type: RuntimeDefault
       tolerations:
@@ -95,7 +100,7 @@ spec:
             limits:
               cpu: 500m
               memory: 512Mi
-        
+
         # External Provisioner
         - name: csi-provisioner
           image: registry.k8s.io/sig-storage/csi-provisioner:v5.1.0
@@ -122,7 +127,7 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
-        
+
         # External Snapshotter
         - name: csi-snapshotter
           image: registry.k8s.io/sig-storage/csi-snapshotter:v8.1.0
@@ -148,7 +153,7 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
-        
+
         # External Resizer
         - name: csi-resizer
           image: registry.k8s.io/sig-storage/csi-resizer:v1.12.0
@@ -174,7 +179,7 @@ spec:
             limits:
               cpu: 100m
               memory: 128Mi
-        
+
         # Liveness Probe
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
@@ -197,7 +202,7 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
-      
+
       volumes:
         - name: socket-dir
           emptyDir: {}
