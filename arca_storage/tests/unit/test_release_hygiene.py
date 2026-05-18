@@ -49,3 +49,18 @@ def test_csi_controller_manifests_drop_privileges(repo_root):
         assert manifest.count("allowPrivilegeEscalation: false") == 5
         assert manifest.count("readOnlyRootFilesystem: true") == 5
         assert manifest.count("- ALL") == 5
+
+
+def test_csi_node_sidecars_drop_privileges(repo_root):
+    node_manifests = [
+        repo_root / "csi-arca-storage/deploy/node.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/node.yaml",
+    ]
+
+    for manifest_path in node_manifests:
+        manifest = manifest_path.read_text(encoding="utf-8")
+        assert manifest.count("privileged: true") == 1
+        assert manifest.count("allowPrivilegeEscalation: true") == 1
+        assert manifest.count("allowPrivilegeEscalation: false") == 2
+        assert manifest.count("readOnlyRootFilesystem: true") == 2
+        assert manifest.count("- ALL") == 2
