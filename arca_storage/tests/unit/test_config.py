@@ -146,6 +146,30 @@ def test_load_settings_rejects_unsafe_pacemaker_ra_vendor(monkeypatch, temp_dir,
 @pytest.mark.parametrize(
     "section,key,value,match",
     [
+        ("storage", "vg_name", "../vg", "storage.vg_name"),
+        ("storage", "vg_name", "vg/bad", "storage.vg_name"),
+        ("storage", "thinpool_name", "..", "storage.thinpool_name"),
+        ("storage", "thinpool_name", "", "storage.thinpool_name"),
+        ("network", "parent_interface", "bond0/1", "network.parent_interface"),
+        ("cluster", "drbd_resource", "../r0", "cluster.drbd_resource"),
+        ("cluster", "drbd_resource", "", "cluster.drbd_resource"),
+    ],
+)
+def test_load_settings_rejects_unsafe_resource_tokens(monkeypatch, temp_dir, section, key, value, match):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(f"[{section}]\n{key} = {value!r}\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match=match):
+        load_settings()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "section,key,value,match",
+    [
         ("state", "db_path", "state.db", "absolute POSIX path"),
         ("state", "runtime_dir", "../runtime", "absolute POSIX path"),
         ("state", "runtime_dir", "/var/../runtime", "relative path segments"),

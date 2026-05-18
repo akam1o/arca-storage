@@ -73,12 +73,22 @@ class StorageConfig(BaseModel):
     vg_name: str = "vg_pool_01"
     thinpool_name: str = "pool"
 
+    @field_validator("vg_name", "thinpool_name")
+    @classmethod
+    def validate_lvm_names(cls, value: str, info: ValidationInfo) -> str:
+        return validate_path_component(value, field_name=f"storage.{info.field_name}")
+
 
 class NetworkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     parent_interface: str = "bond0"
     default_nfs_versions: list[str] = Field(default_factory=lambda: ["4"])
+
+    @field_validator("parent_interface")
+    @classmethod
+    def validate_parent_interface(cls, value: str) -> str:
+        return validate_path_component(value, field_name="network.parent_interface")
 
 
 class ClusterConfig(BaseModel):
@@ -88,6 +98,11 @@ class ClusterConfig(BaseModel):
     enable_stonith: bool = True
     drbd_resource: str = "r0"
     pacemaker_ra_vendor: str = "local"
+
+    @field_validator("drbd_resource")
+    @classmethod
+    def validate_drbd_resource(cls, value: str) -> str:
+        return validate_path_component(value, field_name="cluster.drbd_resource")
 
     @field_validator("pacemaker_ra_vendor")
     @classmethod
