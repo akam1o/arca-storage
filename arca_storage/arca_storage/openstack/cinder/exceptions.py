@@ -1,5 +1,7 @@
 """Custom exceptions for ARCA Storage Cinder Driver."""
 
+from typing import Any, Optional
+
 
 class ArcaStorageException(Exception):
     """Base exception for ARCA Storage driver errors."""
@@ -24,7 +26,12 @@ class ArcaAPITimeout(ArcaStorageException):
 class ArcaAPIError(ArcaStorageException):
     """API returned an error response."""
 
-    def __init__(self, message: str, status_code: int = None, response_data: dict = None):
+    def __init__(
+        self,
+        message: str,
+        status_code: Optional[int] = None,
+        response_data: Optional[dict[str, Any]] = None,
+    ):
         super().__init__(message)
         self.status_code = status_code
         self.response_data = response_data

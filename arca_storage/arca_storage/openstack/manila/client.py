@@ -1,21 +1,22 @@
 """REST API client for ARCA Storage Manila Driver."""
 
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, unquote
 
 from arca_storage.openstack.http_errors import redact_sensitive, response_error_message, safe_error_detail
 
 try:
-    import requests
-    from requests.adapters import HTTPAdapter
+    import requests  # type: ignore[import-untyped]
+    from requests.adapters import HTTPAdapter  # type: ignore[import-untyped]
     from urllib3.util.retry import Retry
 except ImportError:
     # requests is an optional dependency for OpenStack integration
     requests = None
     HTTPAdapter = None
-    Retry = None
+    Retry = None  # type: ignore[assignment,misc]
 
 try:
-    from oslo_log import log as logging
+    from oslo_log import log as logging  # type: ignore[import-untyped]
     _HAS_OSLO_LOG = True
 except ImportError:
     # oslo_log is optional for standalone usage
@@ -35,6 +36,10 @@ from .exceptions import (
 )
 
 LOG = logging.getLogger(__name__)
+
+
+def _quote_path_segment(value: str) -> str:
+    return quote(str(value), safe="")
 
 
 class ArcaManilaClient:
@@ -85,7 +90,7 @@ class ArcaManilaClient:
 
         # SSL verification setup
         if ca_bundle:
-            self.verify_ssl = ca_bundle  # Use CA bundle path
+            self.verify_ssl: Any = ca_bundle  # Use CA bundle path
         else:
             self.verify_ssl = verify_ssl  # Boolean or default system CAs
 
@@ -109,7 +114,7 @@ class ArcaManilaClient:
 
         # Configure retry strategy
         # Note: Only retry safe methods (GET) to avoid duplicate operations
-        if HTTPAdapter and Retry:
+        if HTTPAdapter is not None and Retry is not None:
             retry_strategy = Retry(
                 total=retry_count,
                 backoff_factor=1,  # 1s, 2s, 4s...
@@ -154,7 +159,7 @@ class ArcaManilaClient:
         if "volumes" in parts:
             idx = parts.index("volumes")
             if idx + 1 < len(parts):
-                resource_part = parts[idx + 1]
+                resource_part = unquote(parts[idx + 1])
                 # If it's an action word, not a resource ID, fall through
                 if resource_part not in ["volumes", "v1"]:
                     return resource_part
@@ -163,7 +168,7 @@ class ArcaManilaClient:
         elif "snapshots" in parts:
             idx = parts.index("snapshots")
             if idx + 1 < len(parts):
-                resource_part = parts[idx + 1]
+                resource_part = unquote(parts[idx + 1])
                 if resource_part not in ["snapshots", "v1"]:
                     return resource_part
 
@@ -171,7 +176,7 @@ class ArcaManilaClient:
         elif "svms" in parts:
             idx = parts.index("svms")
             if idx + 1 < len(parts):
-                resource_part = parts[idx + 1]
+                resource_part = unquote(parts[idx + 1])
                 if resource_part not in ["svms", "v1"]:
                     return resource_part
 
@@ -398,7 +403,7 @@ class ArcaManilaClient:
         """
         params = {"svm": svm, "force": str(force).lower()}
         try:
-            self._make_request("DELETE", f"/v1/volumes/{name}", params=params)
+            self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(name)}", params=params)
             LOG.info(f"Deleted volume {name} from SVM {svm}")
         except ArcaAPITimeout:
             # Timeout occurred - check if volume was actually deleted
@@ -429,7 +434,7 @@ class ArcaManilaClient:
             ArcaManilaAPIError: API error
         """
         data = {"svm": svm, "new_size_gib": new_size_gib}
-        response = self._make_request("PATCH", f"/v1/volumes/{name}", json_data=data)
+        response = self._make_request("PATCH", f"/v1/volumes/{_quote_path_segment(name)}", json_data=data)
         return response.get("data", {}).get("volume", {})
 
     def list_volumes(
@@ -450,7 +455,7 @@ class ArcaManilaClient:
         cursor = None
 
         while True:
-            params = {"limit": 200}
+            params: Dict[str, Any] = {"limit": 200}
             if svm:
                 params["svm"] = svm
             if name:
@@ -519,7 +524,7 @@ class ArcaManilaClient:
         cursor = None
 
         while True:
-            params = {"limit": 200}
+            params: Dict[str, Any] = {"limit": 200}
             if cursor:
                 params["cursor"] = cursor
 
@@ -624,7 +629,7 @@ class ArcaManilaClient:
         """
         params = {"svm": svm, "volume": volume}
         try:
-            self._make_request("DELETE", f"/v1/snapshots/{name}", params=params)
+            self._make_request("DELETE", f"/v1/snapshots/{_quote_path_segment(name)}", params=params)
         except ArcaAPITimeout:
             # Timeout occurred - check if snapshot was actually deleted
             snapshots = self.list_snapshots(svm=svm, volume=volume)
@@ -654,7 +659,7 @@ class ArcaManilaClient:
         cursor = None
 
         while True:
-            params = {"limit": 200}
+            params: Dict[str, Any] = {"limit": 200}
             if svm:
                 params["svm"] = svm
             if volume:
@@ -692,12 +697,12 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        data = {"name": name, "svm": svm, "snapshot": snapshot_name}
+        data: Dict[str, Any] = {"name": name, "svm": svm, "snapshot": snapshot_name}
         if size_gib is not None:
             data["size_gib"] = size_gib
 
         response = self._make_request(
-            "POST", f"/v1/volumes/{source_volume}/clone", json_data=data
+            "POST", f"/v1/volumes/{_quote_path_segment(source_volume)}/clone", json_data=data
         )
         return response.get("data", {}).get("volume", {})
 
@@ -776,7 +781,7 @@ class ArcaManilaClient:
         cursor = None
 
         while True:
-            params = {"limit": 200}
+            params: Dict[str, Any] = {"limit": 200}
             if svm:
                 params["svm"] = svm
             if volume:
@@ -818,7 +823,7 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        data = {"svm": svm}
+        data: Dict[str, Any] = {"svm": svm}
         if read_iops is not None:
             data["read_iops"] = read_iops
         if write_iops is not None:
@@ -828,7 +833,7 @@ class ArcaManilaClient:
         if write_bps is not None:
             data["write_bps"] = write_bps
 
-        response = self._make_request("PATCH", f"/v1/volumes/{volume}/qos", json_data=data)
+        response = self._make_request("PATCH", f"/v1/volumes/{_quote_path_segment(volume)}/qos", json_data=data)
         return response.get("data", {}).get("qos", {})
 
     def remove_qos(self, volume: str, svm: str) -> None:
@@ -842,7 +847,7 @@ class ArcaManilaClient:
             ArcaManilaAPIError: API error
         """
         params = {"svm": svm}
-        self._make_request("DELETE", f"/v1/volumes/{volume}/qos", params=params)
+        self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(volume)}/qos", params=params)
 
     # Capacity operations
 
@@ -861,5 +866,5 @@ class ArcaManilaClient:
         Note:
             This endpoint may need to be added to ARCA API if not present.
         """
-        response = self._make_request("GET", f"/v1/svms/{svm}/capacity")
+        response = self._make_request("GET", f"/v1/svms/{_quote_path_segment(svm)}/capacity")
         return response.get("data", {}).get("capacity", {})

@@ -3,7 +3,7 @@
 from unittest.mock import Mock, call, patch
 
 import pytest
-import requests
+import requests  # type: ignore[import-untyped]
 
 from arca_storage.openstack.manila import client as manila_client
 from arca_storage.openstack.manila import exceptions
@@ -111,6 +111,9 @@ class TestArcaManilaClientMakeRequest:
         with pytest.raises(exceptions.ArcaShareNotFound):
             client._make_request("GET", "/v1/volumes/share-123")
 
+    def test_extract_resource_id_decodes_url_quoted_segments(self, client):
+        assert client._extract_resource_id("/v1/volumes/share%2F..%2Fqos", "GET") == "share/../qos"
+
     @patch("requests.Session.request")
     def test_409_ip_conflict_maps_to_ArcaNetworkConflict(self, mock_request, client):
         resp = Mock()
@@ -168,6 +171,17 @@ class TestArcaManilaClientOperations:
             vol = client.create_volume(name="share-123", svm="svm1", size_gib=10)
             assert vol["name"] == "share-123"
             assert vol["export_path"] == "vip:/path"
+
+    def test_resource_path_segments_are_url_quoted(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.return_value = {}
+            client.delete_volume(name="share/../qos", svm="svm1")
+
+        mock_make.assert_called_once_with(
+            "DELETE",
+            "/v1/volumes/share%2F..%2Fqos",
+            params={"svm": "svm1", "force": "false"},
+        )
 
     def test_list_volumes_follows_pagination(self, client):
         with patch.object(client, "_make_request") as mock_make:

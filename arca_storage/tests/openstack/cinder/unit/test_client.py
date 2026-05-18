@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import Mock, patch
 
 import pytest
-import requests
+import requests  # type: ignore[import-untyped]
 
 from arca_storage.openstack.cinder import client as arca_client
 from arca_storage.openstack.cinder import exceptions as arca_exceptions
@@ -246,6 +246,23 @@ class TestArcaStorageClient(unittest.TestCase):
         client.delete_volume(name="test-vol", svm="test-svm")
 
         mock_session.request.assert_called_once()
+
+    @patch("arca_storage.openstack.cinder.client.requests")
+    def test_resource_path_segments_are_url_quoted(self, mock_requests):
+        """Path-based resource IDs must stay inside a single URL segment."""
+        mock_response = Mock()
+        mock_response.status_code = 204
+
+        mock_session = Mock()
+        mock_session.request.return_value = mock_response
+        mock_requests.Session.return_value = mock_session
+
+        client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
+        client.delete_volume(name="test-vol/../qos", svm="test-svm")
+
+        assert mock_session.request.call_args.kwargs["url"] == (
+            "http://192.168.10.5:8080/v1/volumes/test-vol%2F..%2Fqos"
+        )
 
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_delete_volume_not_found(self, mock_requests):

@@ -1,18 +1,19 @@
 """REST API client for ARCA Storage."""
 
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote
 
 from arca_storage.openstack.http_errors import response_error_message, safe_error_detail
 
 try:
-    import requests
-    from requests.adapters import HTTPAdapter
+    import requests  # type: ignore[import-untyped]
+    from requests.adapters import HTTPAdapter  # type: ignore[import-untyped]
     from urllib3.util.retry import Retry
 except ImportError:
     # requests is an optional dependency for OpenStack integration
     requests = None
     HTTPAdapter = None
-    Retry = None
+    Retry = None  # type: ignore[assignment,misc]
 
 from .exceptions import (
     ArcaAPIConnectionError,
@@ -23,6 +24,10 @@ from .exceptions import (
     ArcaVolumeAlreadyExists,
     ArcaVolumeNotFound,
 )
+
+
+def _quote_path_segment(value: str) -> str:
+    return quote(str(value), safe="")
 
 
 class ArcaStorageClient:
@@ -80,7 +85,7 @@ class ArcaStorageClient:
 
         # Configure retry strategy
         # Note: Only retry safe methods (GET) to avoid duplicate operations
-        if HTTPAdapter and Retry:
+        if HTTPAdapter is not None and Retry is not None:
             retry_strategy = Retry(
                 total=retry_count,
                 backoff_factor=1,  # 1s, 2s, 4s...
@@ -239,7 +244,7 @@ class ArcaStorageClient:
             params["force"] = "true"
 
         try:
-            self._make_request("DELETE", f"/v1/volumes/{name}", params=params)
+            self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(name)}", params=params)
         except ArcaAPIError as e:
             if e.status_code == 404:
                 raise ArcaVolumeNotFound(f"Volume {name} not found in SVM {svm}")
@@ -263,7 +268,7 @@ class ArcaStorageClient:
         data = {"svm": svm, "new_size_gib": new_size_gib}
 
         try:
-            response = self._make_request("PATCH", f"/v1/volumes/{name}", json_data=data)
+            response = self._make_request("PATCH", f"/v1/volumes/{_quote_path_segment(name)}", json_data=data)
             # API returns: {"data": {"volume": {...}}}
             return response.get("data", {}).get("volume", {})
         except ArcaAPIError as e:
@@ -458,7 +463,7 @@ class ArcaStorageClient:
 
     def get_svm_capacity(self, svm: str) -> Dict[str, Any]:
         """Get SVM capacity statistics."""
-        response = self._make_request("GET", f"/v1/svms/{svm}/capacity")
+        response = self._make_request("GET", f"/v1/svms/{_quote_path_segment(svm)}/capacity")
         return response.get("data", {}).get("capacity", {})
 
     # QoS operations
@@ -489,7 +494,7 @@ class ArcaStorageClient:
             ArcaVolumeNotFound: Volume not found
             ArcaAPIError: API error
         """
-        data = {"svm": svm}
+        data: Dict[str, Any] = {"svm": svm}
 
         if read_iops is not None:
             data["read_iops"] = read_iops
@@ -501,7 +506,7 @@ class ArcaStorageClient:
             data["write_bps"] = write_bps
 
         try:
-            response = self._make_request("PATCH", f"/v1/volumes/{volume}/qos", json_data=data)
+            response = self._make_request("PATCH", f"/v1/volumes/{_quote_path_segment(volume)}/qos", json_data=data)
             # API returns: {"data": {"qos": {...}}}
             return response.get("data", {}).get("qos", {})
         except ArcaAPIError as e:
@@ -523,7 +528,7 @@ class ArcaStorageClient:
         params = {"svm": svm}
 
         try:
-            self._make_request("DELETE", f"/v1/volumes/{volume}/qos", params=params)
+            self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(volume)}/qos", params=params)
         except ArcaAPIError as e:
             if e.status_code != 404:  # Ignore if volume doesn't exist
                 raise
@@ -545,7 +550,7 @@ class ArcaStorageClient:
         params = {"svm": svm}
 
         try:
-            response = self._make_request("GET", f"/v1/volumes/{volume}/qos", params=params)
+            response = self._make_request("GET", f"/v1/volumes/{_quote_path_segment(volume)}/qos", params=params)
             # API returns: {"data": {"qos": {...}}}
             return response.get("data", {}).get("qos", {})
         except ArcaAPIError as e:
