@@ -10,7 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
-from arca_storage.cli.lib.validators import snapshot_lv_name, volume_lv_name
+from arca_storage.cli.lib.validators import legacy_snapshot_lv_name, snapshot_lv_name, volume_lv_name
 from arca_storage.create_resume import assign_create_lease
 
 
@@ -860,6 +860,44 @@ class TestSnapshots:
         assert ("vg_pool_01", snap_lv) in deleted_lvs
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")
         assert fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_snapshot_lv_name(fake_context))
+
+    @pytest.mark.integration
+    def test_create_snapshot_releases_expired_cleanup_reservation_on_cleanup_failure(self, fake_context):
+        client = TestClient(app, raise_server_exceptions=False)
+        create_test_svm(client)
+        assert client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}).status_code == 201
+        source_lv = stored_volume_lv_name(fake_context)
+        snap_lv = snapshot_lv_name("tenant_a", "vol1", "snap1")
+        legacy_snap_lv = legacy_snapshot_lv_name("tenant_a", "vol1", "snap1")
+        fake_context.adapters.lvm.create_snapshot("vg_pool_01", source_lv, snap_lv)
+        fake_context.adapters.lvm.create_snapshot("vg_pool_01", source_lv, legacy_snap_lv)
+        assert fake_context.db.reserve_snapshot_cleanup("tenant_a", "vol1", "snap1", "cleanup-owner") is True
+        conn = fake_context.db._conn()
+        conn.execute(
+            """UPDATE snapshot_cleanup_reservations
+               SET expires_at = ?
+               WHERE svm = ? AND volume = ? AND name = ?
+            """,
+            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "tenant_a", "vol1", "snap1"),
+        )
+        conn.commit()
+        original_delete_lv = fake_context.adapters.lvm.delete_lv
+
+        def fail_legacy_delete(vg_name, lv_name):
+            if lv_name == legacy_snap_lv:
+                raise RuntimeError("legacy snapshot cleanup failed")
+            original_delete_lv(vg_name, lv_name)
+
+        fake_context.adapters.lvm.delete_lv = fail_legacy_delete
+
+        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        assert response.status_code == 500
+        assert response.json()["error"]["details"]["legacy_lv_name"] == legacy_snap_lv
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", snap_lv)
+        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", legacy_snap_lv)
+        assert fake_context.db.reserve_snapshot_cleanup("tenant_a", "vol1", "snap1", "next-owner") is True
+        fake_context.db.release_snapshot_cleanup("tenant_a", "vol1", "snap1", "next-owner")
 
     @pytest.mark.integration
     def test_delete_snapshot_reports_reconciler_failure(self, fake_context):

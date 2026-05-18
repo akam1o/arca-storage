@@ -121,17 +121,29 @@ def _cleanup_expired_snapshot_reservation(ctx: Any, spec: SnapshotSpec, owner: s
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg.get("vg_name", "vg_pool_01")
     snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
+    legacy_snap_lv = legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
+    cleanup_error: Optional[Exception] = None
     try:
         ctx.adapters.lvm.delete_lv(vg_name, snap_lv)
-        legacy_snap_lv = legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
         if legacy_snap_lv != snap_lv:
             ctx.adapters.lvm.delete_lv(vg_name, legacy_snap_lv)
     except Exception as e:
+        cleanup_error = e
         raise InternalError(
             f"Failed to clean pending Snapshot '{spec.svm}/{spec.volume}/{spec.name}'",
-            {"resource": "Snapshot", "name": f"{spec.svm}/{spec.volume}/{spec.name}", "lv_name": snap_lv},
+            {
+                "resource": "Snapshot",
+                "name": f"{spec.svm}/{spec.volume}/{spec.name}",
+                "lv_name": snap_lv,
+                "legacy_lv_name": legacy_snap_lv,
+            },
         ) from e
-    ctx.db.release_snapshot_cleanup(spec.svm, spec.volume, spec.name, owner)
+    finally:
+        try:
+            ctx.db.release_snapshot_cleanup(spec.svm, spec.volume, spec.name, owner)
+        except Exception:
+            if cleanup_error is None:
+                raise
     return True
 
 
