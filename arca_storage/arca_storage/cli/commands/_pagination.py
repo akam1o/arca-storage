@@ -18,6 +18,7 @@ def _collect_pages(
 ) -> list[Record]:
     records: list[Record] = []
     cursor: Optional[str] = None
+    seen_cursors: set[str] = set()
 
     while True:
         page = fetch_page(cursor)
@@ -29,6 +30,9 @@ def _collect_pages(
             return records
 
         cursor = encode_cursor(cursor_values(page[-1]))
+        if cursor in seen_cursors:
+            raise RuntimeError("repeated pagination cursor while listing resources")
+        seen_cursors.add(cursor)
 
 
 def list_all_svms(db: Any) -> list[Record]:
