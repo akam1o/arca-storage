@@ -145,7 +145,7 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) 
 
 
 def _remove_stale_csi_exports(ctx: Any, svm: str, desired_clients: set[str]) -> None:
-    for export in ctx.db.list_exports(svm=svm, limit=1_000_000):
+    for export in ctx.db.list_all_exports(svm=svm):
         spec = export.get("spec", {})
         volume = spec.get("volume")
         client = spec.get("client")
@@ -154,7 +154,7 @@ def _remove_stale_csi_exports(ctx: Any, svm: str, desired_clients: set[str]) -> 
 
 
 def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
-    for export in ctx.db.list_exports(svm=svm, volume=path, limit=1_000_000):
+    for export in ctx.db.list_all_exports(svm=svm, volume=path):
         spec = export.get("spec", {})
         if spec.get("owner") == "csi":
             export_service.remove_internal_export(svm, path, spec["client"])
@@ -162,10 +162,10 @@ def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
     has_other_csi_volume = any(
         e.get("spec", {}).get("owner") == "csi"
         and e.get("spec", {}).get("volume") != CSI_ROOT_EXPORT_VOLUME
-        for e in ctx.db.list_exports(svm=svm, limit=1_000_000)
+        for e in ctx.db.list_all_exports(svm=svm)
     )
     if not has_other_csi_volume:
-        for export in ctx.db.list_exports(svm=svm, volume=CSI_ROOT_EXPORT_VOLUME, limit=1_000_000):
+        for export in ctx.db.list_all_exports(svm=svm, volume=CSI_ROOT_EXPORT_VOLUME):
             spec = export.get("spec", {})
             if spec.get("owner") == "csi":
                 export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, spec["client"])

@@ -12,7 +12,7 @@ import typer
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.api.services import export_service
-from arca_storage.cli.commands._pagination import list_all_exports
+from arca_storage.cli.commands._pagination import list_all_exports, list_all_svms
 from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
 from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import normalize_nfs_client_cidr, validate_ip_cidr, validate_name
@@ -126,12 +126,12 @@ def sync(
             targets = sorted(
                 {
                     str(record.get("spec", {}).get("svm"))
-                    for record in ctx.db.list_exports(limit=1_000_000)
+                    for record in list_all_exports(ctx.db)
                     if record.get("spec", {}).get("svm")
                 }
                 | {
                     str(record.get("spec", {}).get("name"))
-                    for record in ctx.db.list_svms(limit=1_000_000)
+                    for record in list_all_svms(ctx.db)
                     if record.get("spec", {}).get("name")
                 }
             )

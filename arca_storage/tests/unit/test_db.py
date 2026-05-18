@@ -6,6 +6,7 @@ from datetime import datetime, timedelta, timezone
 
 import pytest
 
+import arca_storage.db as db_module
 from arca_storage.cli.lib.validators import legacy_volume_lv_name
 from arca_storage.create_resume import assign_create_lease
 from arca_storage.db import StateDB, encode_cursor
@@ -302,6 +303,72 @@ class TestStateDB:
         page = db.list_volumes(svm="svm1", limit=2, cursor=encode_cursor(["svm1", "vol1"]))
         assert [item["spec"]["name"] for item in page] == ["vol2", "vol3"]
 
+    def test_list_all_helpers_collect_multiple_pages(self, db, monkeypatch):
+        monkeypatch.setattr(db_module, "_LIST_ALL_PAGE_SIZE", 2)
+
+        for name in ("vol1", "vol2", "vol3"):
+            volume = Volume(spec=VolumeSpec(name=name, svm="svm1", size_gib=10))
+            volume.status.phase = Phase.READY
+            db.insert_volume(volume)
+        for name in ("snap1", "snap2", "snap3"):
+            db.insert_snapshot(Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1")))
+        for client in ("10.0.0.0/24", "10.0.1.0/24", "10.0.2.0/24"):
+            db.upsert_export(Export(spec=ExportSpec(svm="svm1", volume="vol1", client=client)))
+
+        assert [record["spec"]["name"] for record in db.list_all_volumes(svm="svm1")] == [
+            "vol1",
+            "vol2",
+            "vol3",
+        ]
+        assert [record["spec"]["name"] for record in db.list_all_snapshots(svm="svm1", volume="vol1")] == [
+            "snap1",
+            "snap2",
+            "snap3",
+        ]
+        assert [record["spec"]["client"] for record in db.list_all_exports(svm="svm1", volume="vol1")] == [
+            "10.0.0.0/24",
+            "10.0.1.0/24",
+            "10.0.2.0/24",
+        ]
+
+    def test_reserve_svm_delete_checks_later_pages_before_marking(self, db, monkeypatch):
+        monkeypatch.setattr(db_module, "_LIST_ALL_PAGE_SIZE", 2)
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.0.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        for name in ("vol1", "vol2"):
+            volume = Volume(spec=VolumeSpec(name=name, svm="svm1", size_gib=10))
+            volume.status.phase = Phase.READY
+            db.insert_volume(volume)
+        active_volume = Volume(spec=VolumeSpec(name="vol3", svm="svm1", size_gib=10))
+        assign_create_lease(active_volume.status, "owner-1")
+        db.insert_volume(active_volume)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_svm_delete("svm1", delete_volumes=True)
+
+        assert exc_info.value.details["volumes"] == ["svm1/vol3"]
+        assert db.get_svm("svm1")["status"]["phase"] == "Ready"
+
+    def test_reserve_volume_delete_checks_later_snapshot_pages_before_marking(self, db, monkeypatch):
+        monkeypatch.setattr(db_module, "_LIST_ALL_PAGE_SIZE", 2)
+        volume = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        volume.status.phase = Phase.READY
+        db.insert_volume(volume)
+        for name in ("snap1", "snap2"):
+            snapshot = Snapshot(spec=SnapshotSpec(name=name, svm="svm1", volume="vol1"))
+            snapshot.status.phase = Phase.READY
+            db.insert_snapshot(snapshot)
+        active_snapshot = Snapshot(spec=SnapshotSpec(name="snap3", svm="svm1", volume="vol1"))
+        assign_create_lease(active_snapshot.status, "owner-1")
+        db.insert_snapshot(active_snapshot)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1", force=True)
+
+        assert exc_info.value.details["snapshots"] == ["svm1/vol1/snap3"]
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
+
     def test_insert_volume_rejects_existing_key_without_overwrite(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
         db.insert_volume(vol)
@@ -454,6 +521,25 @@ class TestStateDB:
         assert exc_info.value.details["exports"] == ["svm1/vol1/10.0.0.0/24"]
         assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
         assert db.get_export("svm1", "vol1", "10.0.0.0/24")["status"]["phase"] == "Creating"
+
+    def test_reserve_volume_delete_checks_later_export_pages_before_marking(self, db, monkeypatch):
+        monkeypatch.setattr(db_module, "_LIST_ALL_PAGE_SIZE", 2)
+        vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))
+        vol.status.phase = Phase.READY
+        db.insert_volume(vol)
+        for client in ("10.0.0.0/24", "10.0.1.0/24"):
+            ready_export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client=client))
+            ready_export.status.phase = Phase.READY
+            db.upsert_export(ready_export)
+        active_export = Export(spec=ExportSpec(svm="svm1", volume="vol1", client="10.0.2.0/24"))
+        assign_create_lease(active_export.status, "owner-1")
+        db.upsert_export(active_export)
+
+        with pytest.raises(ConflictError) as exc_info:
+            db.reserve_volume_delete("svm1", "vol1")
+
+        assert exc_info.value.details["exports"] == ["svm1/vol1/10.0.2.0/24"]
+        assert db.get_volume("svm1", "vol1")["status"]["phase"] == "Ready"
 
     def test_reserve_volume_delete_blocks_active_csi_root_export_create_before_marking(self, db):
         vol = Volume(spec=VolumeSpec(name="vol1", svm="svm1", size_gib=10))

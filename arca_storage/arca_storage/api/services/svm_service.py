@@ -31,8 +31,6 @@ from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgume
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.svm import SVM, SVMSpec
 
-_LIST_ALL_LIMIT = 1_000_000
-
 
 def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     """Create a new SVM via the reconciler."""
@@ -123,7 +121,7 @@ def get_svm_capacity(name: str) -> Dict[str, Any]:
     cfg = ctx.settings.to_reconciler_config()
     vg_name = cfg["vg_name"]
     vg_capacity = ctx.adapters.lvm.get_vg_capacity(vg_name)
-    volumes = ctx.db.list_volumes(svm=name, limit=_LIST_ALL_LIMIT)
+    volumes = ctx.db.list_all_volumes(svm=name)
     provisioned_gb = float(sum(int(v.get("spec", {}).get("size_gib") or 0) for v in volumes))
     total_gb = float(vg_capacity["total_gb"])
     free_gb = float(vg_capacity["free_gb"])
@@ -165,7 +163,7 @@ def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> 
 
     cascade_volumes = delete_volumes or force
     try:
-        volumes = ctx.db.list_volumes(svm=name, limit=_LIST_ALL_LIMIT)
+        volumes = ctx.db.list_all_volumes(svm=name)
         if cascade_volumes:
             from arca_storage.api.services import volume_service
 
@@ -324,7 +322,7 @@ def _reconcile_svm_create(ctx: Any, svm: SVM, owner: str) -> SVM:
 
 
 def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: bool) -> None:
-    snapshots = ctx.db.list_snapshots(svm=svm_name, limit=_LIST_ALL_LIMIT)
+    snapshots = ctx.db.list_all_snapshots(svm=svm_name)
     if snapshots:
         if not force:
             raise PreconditionFailedError(
@@ -343,7 +341,7 @@ def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: b
             spec = snapshot["spec"]
             snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
 
-    exports = ctx.db.list_exports(svm=svm_name, limit=_LIST_ALL_LIMIT)
+    exports = ctx.db.list_all_exports(svm=svm_name)
     if exports:
         if not force:
             raise PreconditionFailedError(

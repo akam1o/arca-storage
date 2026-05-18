@@ -33,6 +33,7 @@ from arca_storage.models.base import Phase
 _SCHEMA_VERSION = 3
 _SNAPSHOT_CLEANUP_RESERVATION_DURATION = timedelta(minutes=5)
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
+_LIST_ALL_PAGE_SIZE = 500
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -514,7 +515,7 @@ class StateDB:
             if self._create_lease_active(record):
                 self._raise_active_create_conflict(record, "SVM", name)
 
-            volumes = self._list_volumes_conn(conn, svm=name, limit=1_000_000)
+            volumes = self._list_all_volumes_conn(conn, svm=name)
             creating_volumes = [volume for volume in volumes if self._create_lease_active(volume)]
             if creating_volumes:
                 raise ConflictError(
@@ -548,7 +549,7 @@ class StateDB:
                     },
                 )
 
-            snapshots = self._list_snapshots_conn(conn, svm=name, limit=1_000_000)
+            snapshots = self._list_all_snapshots_conn(conn, svm=name)
             creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
             if creating_snapshots:
                 raise ConflictError(
@@ -583,7 +584,7 @@ class StateDB:
                     },
                 )
 
-            all_exports = self._list_exports_conn(conn, svm=name, limit=1_000_000)
+            all_exports = self._list_all_exports_conn(conn, svm=name)
             creating_exports = [export for export in all_exports if self._create_lease_active(export)]
             if creating_exports:
                 raise ConflictError(
@@ -873,6 +874,21 @@ class StateDB:
         conn = self._conn()
         return self._list_volumes_conn(conn, svm=svm, name=name, limit=limit, cursor=cursor)
 
+    def list_all_volumes(self, svm: Optional[str] = None, name: Optional[str] = None) -> list[dict[str, Any]]:
+        conn = self._conn()
+        return self._list_all_volumes_conn(conn, svm=svm, name=name)
+
+    def _list_all_volumes_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_all_pages_conn(
+            lambda cursor: self._list_volumes_conn(conn, svm=svm, name=name, limit=_LIST_ALL_PAGE_SIZE, cursor=cursor),
+            lambda record: [str(record["spec"]["svm"]), str(record["spec"]["name"])],
+        )
+
     def _list_volumes_conn(
         self,
         conn: sqlite3.Connection,
@@ -927,7 +943,7 @@ class StateDB:
                         "resize_target_size_gib": status.get("resize_target_size_gib"),
                     },
                 )
-            snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
+            snapshots = self._list_all_snapshots_conn(conn, svm=svm, volume=name)
             creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
             if creating_snapshots:
                 raise ConflictError(
@@ -1167,6 +1183,38 @@ class StateDB:
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         return self._list_snapshots_conn(conn, svm=svm, volume=volume, name=name, limit=limit, cursor=cursor)
+
+    def list_all_snapshots(
+        self,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._conn()
+        return self._list_all_snapshots_conn(conn, svm=svm, volume=volume, name=name)
+
+    def _list_all_snapshots_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_all_pages_conn(
+            lambda cursor: self._list_snapshots_conn(
+                conn,
+                svm=svm,
+                volume=volume,
+                name=name,
+                limit=_LIST_ALL_PAGE_SIZE,
+                cursor=cursor,
+            ),
+            lambda record: [
+                str(record["spec"]["svm"]),
+                str(record["spec"]["volume"]),
+                str(record["spec"]["name"]),
+            ],
+        )
 
     def _list_snapshots_conn(
         self,
@@ -1456,6 +1504,15 @@ class StateDB:
         conn = self._conn()
         return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit, cursor=cursor)
 
+    def list_all_exports(
+        self,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        client: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._conn()
+        return self._list_all_exports_conn(conn, svm=svm, volume=volume, client=client)
+
     def get_export(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
         conn = self._conn()
         return self._get_export_conn(conn, svm, volume, client)
@@ -1563,6 +1620,29 @@ class StateDB:
         params.append(limit)
         cur = conn.execute(sql, params)
         return [self._row_to_resource(row) for row in cur.fetchall()]
+
+    def _list_all_exports_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        client: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_all_pages_conn(
+            lambda cursor: self._list_exports_conn(
+                conn,
+                svm=svm,
+                volume=volume,
+                client=client,
+                limit=_LIST_ALL_PAGE_SIZE,
+                cursor=cursor,
+            ),
+            lambda record: [
+                str(record["spec"]["svm"]),
+                str(record["spec"]["volume"]),
+                str(record["spec"]["client"]),
+            ],
+        )
 
     def delete_export(self, svm: str, volume: str, client: str) -> bool:
         with self.transaction() as conn:
@@ -1847,16 +1927,14 @@ class StateDB:
         svm: str,
         volume: str,
     ) -> list[dict[str, Any]]:
-        exports = self._list_exports_conn(conn, svm=svm, volume=volume, limit=1_000_000)
+        exports = self._list_all_exports_conn(conn, svm=svm, volume=volume)
         has_other_csi_volume = any(
             export.get("spec", {}).get("owner") == "csi"
             and export.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
-            for export in self._list_exports_conn(conn, svm=svm, limit=1_000_000)
+            for export in self._list_all_exports_conn(conn, svm=svm)
         )
         if not has_other_csi_volume:
-            exports.extend(
-                self._list_exports_conn(conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME, limit=1_000_000)
-            )
+            exports.extend(self._list_all_exports_conn(conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME))
         return exports
 
     def _blocking_exports_for_svm_delete(
@@ -1870,7 +1948,7 @@ class StateDB:
         if force:
             return []
 
-        exports = self._list_exports_conn(conn, svm=svm, limit=1_000_000)
+        exports = self._list_all_exports_conn(conn, svm=svm)
         volume_names = {str(volume.get("spec", {}).get("name") or "") for volume in volumes}
         if not volume_names:
             return exports
@@ -1885,6 +1963,29 @@ class StateDB:
                 continue
             blocking.append(export)
         return blocking
+
+    def _list_all_pages_conn(
+        self,
+        fetch_page: Callable[[Optional[str]], list[dict[str, Any]]],
+        cursor_values: Callable[[dict[str, Any]], list[str]],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        cursor: Optional[str] = None
+        seen_cursors: set[str] = set()
+
+        while True:
+            page = fetch_page(cursor)
+            if not page:
+                return records
+
+            records.extend(page)
+            if len(page) < _LIST_ALL_PAGE_SIZE:
+                return records
+
+            cursor = encode_cursor(cursor_values(page[-1]))
+            if cursor in seen_cursors:
+                raise RuntimeError("repeated pagination cursor while listing resources")
+            seen_cursors.add(cursor)
 
     @staticmethod
     def _resize_lease_active(record: dict[str, Any]) -> bool:

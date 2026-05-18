@@ -31,7 +31,6 @@ from arca_storage.models.volume import Volume, VolumeSpec
 from arca_storage.cli.lib.validators import validate_name, validate_svm_ip_cidr, volume_lv_name
 from arca_storage.api.services.svm_service import require_svm_ready_record
 
-_LIST_ALL_LIMIT = 1_000_000
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
@@ -158,7 +157,7 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
         raise NotFoundError("Volume", f"{svm}/{name}")
 
     try:
-        snapshots = ctx.db.list_snapshots(svm=svm, volume=name, limit=_LIST_ALL_LIMIT)
+        snapshots = ctx.db.list_all_snapshots(svm=svm, volume=name)
         _delete_exports_for_volume(ctx, svm, name)
 
         if snapshots:
@@ -400,7 +399,7 @@ def _delete_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
     """Remove DB-backed and CSI-only Ganesha exports before deleting a volume."""
     from arca_storage.api.services import export_service
 
-    exports = ctx.db.list_exports(svm=svm, volume=volume, limit=_LIST_ALL_LIMIT)
+    exports = ctx.db.list_all_exports(svm=svm, volume=volume)
     for export in exports:
         spec = export["spec"]
         export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
@@ -414,10 +413,10 @@ def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
     has_other_csi_volume = any(
         e.get("spec", {}).get("owner") == "csi"
         and e.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
-        for e in ctx.db.list_exports(svm=svm, limit=_LIST_ALL_LIMIT)
+        for e in ctx.db.list_all_exports(svm=svm)
     )
     if not has_other_csi_volume:
-        for export in ctx.db.list_exports(svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME, limit=_LIST_ALL_LIMIT):
+        for export in ctx.db.list_all_exports(svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME):
             spec = export.get("spec", {})
             if spec.get("owner") == "csi":
                 export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, spec["client"])
