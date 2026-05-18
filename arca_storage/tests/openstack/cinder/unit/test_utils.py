@@ -228,6 +228,25 @@ class TestUtilityFunctions(unittest.TestCase):
 
             assert result == volume_file
 
+    def test_create_volume_file_adoption_rejects_symlink_after_path_prechecks(self):
+        """Retry adoption must not trust path checks that can race before stat."""
+        with tempfile.TemporaryDirectory() as mount_point:
+            target_path = os.path.join(mount_point, "target")
+            volume_file = os.path.join(mount_point, "test-volume")
+            with open(target_path, "wb") as handle:
+                handle.truncate(1024**3)
+            os.symlink(target_path, volume_file)
+
+            with patch("arca_storage.openstack.cinder.utils.os.path.islink", return_value=False):
+                with patch("arca_storage.openstack.cinder.utils.os.path.isfile", return_value=True):
+                    with pytest.raises(arca_exceptions.ArcaStorageException, match="not a regular file"):
+                        arca_utils.create_volume_file(
+                            mount_point,
+                            "test-volume",
+                            1,
+                            adopt_existing=True,
+                        )
+
     def test_create_volume_file_rejects_mismatched_existing_file(self):
         """Retry adoption rejects stale files with the wrong size."""
         with tempfile.TemporaryDirectory() as mount_point:

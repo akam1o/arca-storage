@@ -423,9 +423,8 @@ def _adopt_existing_volume_file(volume_file: str, size_gb: int) -> str:
     """Return an existing volume file only when it matches the requested shape."""
     expected_size = size_gb * 1024 * 1024 * 1024
     try:
-        if os.path.islink(volume_file) or not os.path.isfile(volume_file):
-            raise ArcaStorageException(f"Existing volume path is not a regular file: {volume_file}")
-        actual_size = os.path.getsize(volume_file)
+        file_stat = _stat_regular_file_no_follow(volume_file, "existing volume path")
+        actual_size = file_stat.st_size
     except ArcaStorageException:
         raise
     except OSError as e:
@@ -436,6 +435,34 @@ def _adopt_existing_volume_file(volume_file: str, size_gb: int) -> str:
             f"Existing volume file has size {actual_size} bytes, expected {expected_size}: {volume_file}"
         )
     return volume_file
+
+
+def _stat_regular_file_no_follow(path: str, description: str) -> os.stat_result:
+    """Stat a regular file through an fd opened without following symlinks."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ArcaStorageException("Secure existing file opening is not supported on this platform")
+
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow)
+    except FileNotFoundError as e:
+        raise ArcaStorageException(f"{description.capitalize()} does not exist: {path}") from e
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ArcaStorageException(f"{description.capitalize()} is not a regular file: {path}") from e
+        raise ArcaStorageException(f"Failed to open {description} {path}: {e}") from e
+
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ArcaStorageException(f"{description.capitalize()} is not a regular file: {path}")
+        return file_stat
+    except ArcaStorageException:
+        raise
+    except OSError as e:
+        raise ArcaStorageException(f"Failed to inspect {description} {path}: {e}") from e
+    finally:
+        os.close(fd)
 
 
 def delete_volume_file(mount_point: str, volume_name: str) -> None:
