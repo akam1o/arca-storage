@@ -90,10 +90,17 @@ func main() {
 		klog.V(2).Infof("Node ID: %s", cfg.Driver.NodeID)
 	}
 
-	// Create Kubernetes client and config
-	k8sConfig, k8sClient, err := createKubernetesClient(*kubeconfig)
-	if err != nil {
-		klog.Fatalf("Failed to create Kubernetes client: %v", err)
+	var k8sConfig *rest.Config
+	var k8sClient *kubernetes.Clientset
+	var lockManager *lock.Manager
+
+	if isControllerMode {
+		// Controller mode uses Kubernetes for leader-election sidecars, CRD-backed
+		// metadata, and distributed SVM/volume lifecycle locks.
+		k8sConfig, k8sClient, err = createKubernetesClient(*kubeconfig)
+		if err != nil {
+			klog.Fatalf("Failed to create Kubernetes client: %v", err)
+		}
 	}
 
 	// Create ARCA API client
@@ -111,12 +118,9 @@ func main() {
 		}
 	}
 
-	// Create lock manager
-	// Use pod name for controller, node ID for node plugin
-	lockIdentity := cfg.Driver.NodeID
-	if lockIdentity == "" {
-		// Controller mode - use pod name for unique identity
-		lockIdentity = os.Getenv("POD_NAME")
+	if isControllerMode {
+		// Create lock manager. Controller mode uses pod name for unique identity.
+		lockIdentity := os.Getenv("POD_NAME")
 		if lockIdentity == "" {
 			// Fallback to hostname if POD_NAME not set
 			lockIdentity, err = os.Hostname()
@@ -125,8 +129,8 @@ func main() {
 			}
 		}
 		klog.V(2).Infof("Using lock identity (controller mode): %s", lockIdentity)
+		lockManager = lock.NewManager(k8sClient, "kube-system", lockIdentity)
 	}
-	lockManager := lock.NewManager(k8sClient, "kube-system", lockIdentity)
 
 	var svmManager *arca.SVMManager
 	if isControllerMode {

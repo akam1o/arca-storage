@@ -64,3 +64,19 @@ def test_csi_node_sidecars_drop_privileges(repo_root):
         assert manifest.count("allowPrivilegeEscalation: false") == 2
         assert manifest.count("readOnlyRootFilesystem: true") == 2
         assert manifest.count("- ALL") == 2
+
+
+def test_csi_node_rbac_does_not_grant_cluster_permissions(repo_root):
+    rbac_manifests = [
+        repo_root / "csi-arca-storage/deploy/rbac-node.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/rbac-node.yaml",
+    ]
+
+    for manifest_path in rbac_manifests:
+        manifest = manifest_path.read_text(encoding="utf-8")
+        assert "kind: ServiceAccount" in manifest
+        assert "automountServiceAccountToken: false" in manifest
+        assert "kind: ClusterRole" not in manifest
+        assert "kind: ClusterRoleBinding" not in manifest
+        assert "resources:" not in manifest
+        assert "verbs:" not in manifest
