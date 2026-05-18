@@ -8,11 +8,11 @@ import os
 import posixpath
 from typing import Any, Dict, Optional
 
-from oslo_log import log as logging
+from oslo_log import log as logging  # type: ignore[import-untyped]
 
-from cinder import exception
-from cinder.i18n import _
-from cinder.volume.drivers import remotefs as remotefs_drv
+from cinder import exception  # type: ignore[import-not-found]
+from cinder.i18n import _  # type: ignore[import-not-found]
+from cinder.volume.drivers import remotefs as remotefs_drv  # type: ignore[import-not-found]
 
 from . import client as arca_client
 from . import configuration as arca_config
@@ -1358,7 +1358,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             - arca_storage:write_bytes_sec
             - arca_storage:total_iops_sec (applied to both read and write)
         """
-        qos_specs = {}
+        qos_specs: Dict[str, int] = {}
 
         if not volume.volume_type:
             return qos_specs

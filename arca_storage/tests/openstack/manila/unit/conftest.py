@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def _configure_oslo_lock_path(tmp_path):
     try:
-        from oslo_concurrency import lockutils
+        from oslo_concurrency import lockutils  # type: ignore[import-untyped]
     except ImportError:
         return
     lockutils.set_defaults(str(tmp_path))

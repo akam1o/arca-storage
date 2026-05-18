@@ -10,14 +10,14 @@ import time
 from typing import Any, Dict, List, Optional, Tuple
 
 try:
-    from oslo_log import log as logging
+    from oslo_log import log as logging  # type: ignore[import-untyped]
     _HAS_OSLO_LOG = True
 except ImportError:
     import logging
     _HAS_OSLO_LOG = False
 
 try:
-    from oslo_concurrency import lockutils
+    from oslo_concurrency import lockutils  # type: ignore[import-untyped]
     _HAS_OSLO_CONCURRENCY = True
 except ImportError:
     # oslo_concurrency is optional - degrades to thread-local locking
@@ -25,8 +25,8 @@ except ImportError:
     lockutils = None
 
 try:
-    from manila import exception as manila_exception
-    from manila.share import driver as manila_driver
+    from manila import exception as manila_exception  # type: ignore[import-not-found]
+    from manila.share import driver as manila_driver  # type: ignore[import-not-found]
     _HAS_MANILA = True
 except ImportError:
     # Manila is optional for standalone development
@@ -57,11 +57,13 @@ except ImportError:
     manila_exception = _ManilaExceptionModule()
 
     # Create a dummy base class for development without Manila
-    class manila_driver:  # noqa: F811
+    class _FallbackManilaDriverModule:
         class ShareDriver:
             """Dummy ShareDriver for development without Manila."""
             def __init__(self, *args, **kwargs):
                 pass
+
+    manila_driver = _FallbackManilaDriverModule()
 
 from . import client as arca_client
 from . import configuration as arca_config
@@ -306,6 +308,13 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             raise manila_exception.ManilaException(
                 f"Failed to connect to ARCA Storage API: {str(e)}"
             )
+
+    def _require_arca_client(self) -> arca_client.ArcaManilaClient:
+        if self.arca_client is None:
+            raise manila_exception.ShareBackendException(
+                "ARCA Storage API client not initialized"
+            )
+        return self.arca_client
 
     def _update_share_stats(self, data=None):
         """Update share statistics for Manila scheduler.
@@ -1173,6 +1182,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         Raises:
             manila.exception.ShareBackendException: If SVM allocation fails
         """
+        arca_client_obj = self._require_arca_client()
+
         # Double-check cache after acquiring lock (another thread may have allocated)
         if project_id in self._per_project_svm_cache:
             return self._per_project_svm_cache[project_id]["svm_name"]
@@ -1182,7 +1193,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         # Check if SVM already exists
         try:
-            svm_info = self.arca_client.get_svm(svm_name)
+            svm_info = arca_client_obj.get_svm(svm_name)
             LOG.info("Found existing SVM %s for project %s", svm_name, project_id)
 
             # Cache the existing SVM
@@ -1211,7 +1222,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     )
 
                     # Create SVM via API
-                    svm_info = self.arca_client.create_svm(
+                    svm_info = arca_client_obj.create_svm(
                         name=svm_name,
                         vlan_id=allocation.vlan_id,
                         ip_cidr=allocation.ip_cidr,
@@ -1258,7 +1269,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                                 cleanup_error,
                             )
 
-                    svm_info = self.arca_client.get_svm(svm_name)
+                    svm_info = arca_client_obj.get_svm(svm_name)
                     self._per_project_svm_cache[project_id] = {
                         "svm_name": svm_name,
                         "vlan_id": svm_info.get("vlan_id"),
@@ -1351,6 +1362,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     raise manila_exception.ShareBackendException(
                         f"Failed to create SVM for project: {str(e)}"
                     )
+
+            raise manila_exception.ShareBackendException(
+                f"Failed to allocate network for SVM {svm_name} after {max_retries} attempts"
+            )
 
     # Share Lifecycle Methods
 
@@ -1970,6 +1985,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         Uses backend-returned raw client strings for delete operations to avoid
         format mismatches, while normalizing for comparison.
         """
+        arca_client_obj = self._require_arca_client()
         desired: Dict[str, str] = {}
 
         for rule in access_rules or []:
@@ -1999,7 +2015,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         # Map: normalized_client -> (raw_client, access_level)
         current: Dict[str, tuple] = {}
         try:
-            exports = self.arca_client.list_exports(svm=svm_name, volume=volume_name)
+            exports = arca_client_obj.list_exports(svm=svm_name, volume=volume_name)
         except Exception as e:
             raise manila_exception.ShareBackendException(
                 f"Failed to list current exports: {str(e)}"
@@ -2032,7 +2048,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         for client_norm in to_delete + to_update:
             client_raw = current[client_norm][0]
             try:
-                self.arca_client.delete_export(svm=svm_name, volume=volume_name, client=client_raw)
+                arca_client_obj.delete_export(svm=svm_name, volume=volume_name, client=client_raw)
             except Exception as e:
                 LOG.warning(
                     "Failed to delete export for %s (raw: %s) on %s/%s: %s",
@@ -2048,7 +2064,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         # Use normalized strings for create operations (backend will normalize)
         for client_norm in to_add + to_update:
             try:
-                self.arca_client.create_export(
+                arca_client_obj.create_export(
                     svm=svm_name,
                     volume=volume_name,
                     client=client_norm,

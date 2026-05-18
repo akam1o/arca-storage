@@ -6,12 +6,12 @@ integration with OpenStack Neutron for IP/VLAN allocation.
 
 import threading
 
-from neutronclient.v2_0 import client as neutron_client
-from neutronclient.common import exceptions as neutron_exceptions
+from neutronclient.v2_0 import client as neutron_client  # type: ignore[import-untyped]
+from neutronclient.common import exceptions as neutron_exceptions  # type: ignore[import-untyped]
 from keystoneauth1 import loading as ks_loading
 from keystoneauth1 import exceptions as ks_exceptions
-from oslo_config import cfg
-from oslo_log import log as logging
+from oslo_config import cfg  # type: ignore[import-untyped]
+from oslo_log import log as logging  # type: ignore[import-untyped]
 
 from arca_storage.openstack.http_errors import safe_error_detail
 

@@ -10,7 +10,7 @@ import random
 import time
 from typing import Any, Dict, List, Set
 
-from oslo_log import log as logging
+from oslo_log import log as logging  # type: ignore[import-untyped]
 
 from ..exceptions import (
     ArcaNetworkConflict,
@@ -215,7 +215,7 @@ class StandaloneAllocator(NetworkAllocator):
                     raise ValueError(f"Invalid IP CIDR '{cidr_str}': {e}")
 
                 # Validate IPv4 only
-                if ip_network.version != 4:
+                if not isinstance(ip_network, ipaddress.IPv4Network):
                     raise ValueError(
                         f"Only IPv4 pools are supported, got IPv{ip_network.version} "
                         f"in '{pool_config}'"
@@ -238,10 +238,10 @@ class StandaloneAllocator(NetworkAllocator):
                     raise ValueError(f"Invalid IP address in range: {e}")
 
                 # Validate IPs are IPv4
-                if start_ip.version != 4 or end_ip.version != 4:
-                    raise ValueError(
-                        "Only IPv4 addresses are supported in range"
-                    )
+                if not isinstance(start_ip, ipaddress.IPv4Address):
+                    raise ValueError("Only IPv4 addresses are supported in range")
+                if not isinstance(end_ip, ipaddress.IPv4Address):
+                    raise ValueError("Only IPv4 addresses are supported in range")
 
                 # Validate IPs are within CIDR
                 if start_ip not in ip_network:
@@ -281,7 +281,7 @@ class StandaloneAllocator(NetworkAllocator):
                     gateway = str(ip_network.network_address + 1)
 
                 # Validate gateway is not in allocatable range
-                gateway_ip = ipaddress.ip_address(gateway)
+                gateway_ip = ipaddress.IPv4Address(gateway)
                 if gateway_ip >= start_ip and gateway_ip <= end_ip:
                     raise ValueError(
                         f"Gateway IP {gateway} is within allocatable range "
@@ -405,7 +405,7 @@ class StandaloneAllocator(NetworkAllocator):
         Returns:
             Set of used IP addresses (as ipaddress.IPv4Address objects)
         """
-        used_ips = set()
+        used_ips: Set[ipaddress.IPv4Address] = set()
 
         try:
             svms = self.arca_client.list_svms()
@@ -434,7 +434,10 @@ class StandaloneAllocator(NetworkAllocator):
                                 ip_addr = ipaddress.ip_interface(vip).ip
                             else:
                                 ip_addr = ipaddress.ip_address(vip)
-                            used_ips.add(ip_addr)
+                            if isinstance(ip_addr, ipaddress.IPv4Address):
+                                used_ips.add(ip_addr)
+                            else:
+                                LOG.warning("Ignoring IPv6 VIP in SVM %s: %s", svm["name"], vip)
                         except ValueError:
                             LOG.warning("Invalid VIP format in SVM %s: %s", svm["name"], vip)
 
@@ -442,7 +445,10 @@ class StandaloneAllocator(NetworkAllocator):
                     elif ip_cidr:
                         try:
                             ip_addr = ipaddress.ip_interface(ip_cidr).ip
-                            used_ips.add(ip_addr)
+                            if isinstance(ip_addr, ipaddress.IPv4Address):
+                                used_ips.add(ip_addr)
+                            else:
+                                LOG.warning("Ignoring IPv6 ip_cidr in SVM %s: %s", svm["name"], ip_cidr)
                         except ValueError:
                             LOG.warning("Invalid ip_cidr format in SVM %s: %s", svm["name"], ip_cidr)
 

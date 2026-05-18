@@ -1,7 +1,7 @@
 """Configuration options for ARCA Storage Manila Driver."""
 
 try:
-    from oslo_config import cfg
+    from oslo_config import cfg  # type: ignore[import-untyped]
 
     _HAS_OSLO = True
 except ImportError:

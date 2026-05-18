@@ -8,7 +8,7 @@ from __future__ import annotations
 import os
 import subprocess
 
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages  # type: ignore[import-untyped]
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -53,7 +53,7 @@ def _resolve_version() -> str:
 
 _setup_kwargs: dict[str, object] = {}
 try:
-    import setuptools_scm  # noqa: F401
+    import setuptools_scm  # type: ignore[import-not-found]  # noqa: F401
 
     # Keep versioning consistent with pyproject.toml (setuptools-scm).
     _setup_kwargs["use_scm_version"] = True
