@@ -87,6 +87,7 @@ func NewClient(config *ClientConfig) (*Client, error) {
 // buildTLSConfig builds TLS configuration from file paths
 func buildTLSConfig(config *TLSConfig) (*tls.Config, error) {
 	tlsConfig := &tls.Config{
+		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: config.InsecureSkip,
 	}
 

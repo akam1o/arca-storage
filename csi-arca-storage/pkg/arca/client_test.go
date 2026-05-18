@@ -2,6 +2,7 @@ package arca
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
@@ -11,6 +12,16 @@ import (
 	"testing"
 	"time"
 )
+
+func TestBuildTLSConfigEnforcesModernTLSMinimum(t *testing.T) {
+	tlsConfig, err := buildTLSConfig(&TLSConfig{})
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error = %v", err)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %v, want TLS 1.2", tlsConfig.MinVersion)
+	}
+}
 
 func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
