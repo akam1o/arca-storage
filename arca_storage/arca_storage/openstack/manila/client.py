@@ -106,6 +106,8 @@ class ArcaManilaClient:
             raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
 
         # Configure mTLS (client certificate)
+        if client_key and not client_cert:
+            raise ValueError("client_key requires client_cert")
         if client_cert:
             if client_key:
                 self.session.cert = (client_cert, client_key)

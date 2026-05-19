@@ -55,6 +55,24 @@ class TestArcaStorageManilaDriverSharedStrategy:
         ):
             drv.do_setup(Mock())
 
+    def test_do_setup_rejects_client_key_without_client_cert(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
+        with patch(
+            "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
+        ) as mock_client_class:
+            mock_client_class.return_value = mock_arca_client
+
+            drv = manila_driver.ArcaStorageManilaDriver()
+            drv.configuration = mock_manila_driver_config
+            drv.configuration.arca_storage_api_client_key = "/etc/arca/client.key"
+
+            with pytest.raises(
+                manila_driver.manila_exception.ManilaException,
+                match="arca_storage_api_client_key",
+            ):
+                drv.do_setup(Mock())
+
     def test_update_share_stats_includes_pool_capabilities(self, driver):
         stats = driver._update_share_stats()
         assert stats["storage_protocol"] == "NFS"

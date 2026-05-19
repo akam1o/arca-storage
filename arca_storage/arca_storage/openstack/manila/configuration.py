@@ -89,13 +89,19 @@ def _get_arca_manila_opts():
         cfg.StrOpt(
             "arca_storage_api_client_cert",
             default=None,
-            help="Path to client certificate file for mTLS (optional)",
+            help=(
+                "Path to client certificate file for mTLS. May point to a combined "
+                "certificate/key PEM when arca_storage_api_client_key is unset."
+            ),
         ),
         cfg.StrOpt(
             "arca_storage_api_client_key",
             default=None,
             secret=True,
-            help="Path to client private key file for mTLS (optional)",
+            help=(
+                "Path to client private key file for mTLS. Requires "
+                "arca_storage_api_client_cert."
+            ),
         ),
         # Multi-tenancy Configuration
         cfg.StrOpt(

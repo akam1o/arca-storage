@@ -252,6 +252,16 @@ class TestAuthenticationEdgeCases:
         )
         assert client.session.cert == "/path/to/client.pem"
 
+    def test_client_key_without_cert_rejected(self):
+        """Test that a private key without a certificate fails closed."""
+        with pytest.raises(ValueError, match="client_key requires client_cert"):
+            manila_client.ArcaManilaClient(
+                api_endpoint="https://192.168.10.5:8443",
+                client_key="/path/to/client.key",
+                verify_ssl=False,
+                auth_type="none",
+            )
+
     def test_invalid_auth_type(self):
         """Test that invalid auth type raises ValueError."""
         with pytest.raises(ValueError, match="Invalid auth_type"):
