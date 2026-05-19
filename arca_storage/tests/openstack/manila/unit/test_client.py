@@ -33,7 +33,7 @@ class TestArcaManilaClientInit:
 
     def test_init_with_token_auth(self):
         client = manila_client.ArcaManilaClient(
-            api_endpoint="http://192.168.10.5:8080",
+            api_endpoint="https://192.168.10.5:8443",
             auth_type="token",
             api_token="test-token-123",
             verify_ssl=False,
@@ -47,6 +47,26 @@ class TestArcaManilaClientInit:
                 auth_type="token",
                 verify_ssl=False,
             )
+
+    def test_init_rejects_remote_http_token_without_opt_in(self):
+        with pytest.raises(ValueError, match="remote plain HTTP"):
+            manila_client.ArcaManilaClient(
+                api_endpoint="http://192.168.10.5:8080",
+                auth_type="token",
+                api_token="test-token-123",
+                verify_ssl=False,
+            )
+
+    def test_init_allows_remote_http_token_with_explicit_opt_in(self):
+        client = manila_client.ArcaManilaClient(
+            api_endpoint="http://192.168.10.5:8080",
+            auth_type="token",
+            api_token="test-token-123",
+            verify_ssl=False,
+            allow_insecure_token_transport=True,
+        )
+
+        assert client.session.headers["Authorization"] == "Bearer test-token-123"
 
 
 class TestArcaManilaClientMakeRequest:

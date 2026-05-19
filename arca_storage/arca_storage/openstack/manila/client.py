@@ -1,7 +1,8 @@
 """REST API client for ARCA Storage Manila Driver."""
 
+import ipaddress
 from typing import Any, Dict, List, Optional
-from urllib.parse import quote, unquote
+from urllib.parse import quote, unquote, urlparse
 
 from arca_storage.openstack.http_errors import redact_sensitive, response_error_message, safe_error_detail
 
@@ -42,6 +43,34 @@ def _quote_path_segment(value: str) -> str:
     return quote(str(value), safe="")
 
 
+def _is_loopback_hostname(hostname: Optional[str]) -> bool:
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_token_transport(
+    api_endpoint: str,
+    auth_type: Optional[str],
+    allow_insecure_token_transport: bool = False,
+) -> None:
+    """Reject bearer tokens over remote plain HTTP unless explicitly allowed."""
+    if auth_type != "token" or allow_insecure_token_transport:
+        return
+
+    parsed = urlparse(api_endpoint)
+    if parsed.scheme.lower() == "http" and not _is_loopback_hostname(parsed.hostname):
+        raise ValueError(
+            "token authentication over remote plain HTTP requires "
+            "allow_insecure_token_transport=True"
+        )
+
+
 class ArcaManilaClient:
     """REST API client for ARCA Storage Manila operations.
 
@@ -60,6 +89,7 @@ class ArcaManilaClient:
         ca_bundle: Optional[str] = None,
         client_cert: Optional[str] = None,
         client_key: Optional[str] = None,
+        allow_insecure_token_transport: bool = False,
     ):
         """Initialize ARCA Storage Manila API client.
 
@@ -73,6 +103,7 @@ class ArcaManilaClient:
             ca_bundle: Path to CA bundle file for SSL verification
             client_cert: Path to client certificate file for mTLS
             client_key: Path to client private key file for mTLS
+            allow_insecure_token_transport: Allow bearer tokens over non-loopback HTTP
 
         Raises:
             ImportError: If requests library is not installed
@@ -101,6 +132,11 @@ class ArcaManilaClient:
         if auth_type == "token":
             if not api_token:
                 raise ValueError("api_token is required when auth_type='token'")
+            validate_token_transport(
+                api_endpoint,
+                auth_type,
+                allow_insecure_token_transport,
+            )
             self.session.headers.update({"Authorization": f"Bearer {api_token}"})
         elif auth_type and auth_type != "none":
             raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")

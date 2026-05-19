@@ -41,6 +41,7 @@ class TestDriverNetworkAllocators:
         config.arca_storage_verify_ssl = True
         config.arca_storage_api_auth_type = "token"
         config.arca_storage_api_token = "test-token"
+        config.arca_storage_allow_insecure_api_token_transport = False
         config.arca_storage_api_ca_bundle = None
         config.arca_storage_api_client_cert = None
         config.arca_storage_api_client_key = None

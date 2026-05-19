@@ -175,6 +175,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         return ca_bundle, client_cert, client_key
 
+    def _allow_insecure_api_token_transport(self):
+        return bool(
+            getattr(
+                self.configuration,
+                "arca_storage_allow_insecure_api_token_transport",
+                False,
+            )
+        )
+
     @property
     def driver_handles_share_servers(self):
         """Driver does not manage share servers.
@@ -211,6 +220,14 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
             auth_type, api_token = self._get_api_auth_config()
             ca_bundle, client_cert, client_key = self._get_api_tls_config()
+            try:
+                arca_client.validate_token_transport(
+                    self.configuration.arca_storage_api_endpoint,
+                    auth_type,
+                    self._allow_insecure_api_token_transport(),
+                )
+            except ValueError as e:
+                raise manila_exception.ManilaException(str(e)) from e
 
             # Initialize ARCA Storage API client
             self.arca_client = arca_client.ArcaManilaClient(
@@ -223,6 +240,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 ca_bundle=ca_bundle,
                 client_cert=client_cert,
                 client_key=client_key,
+                allow_insecure_token_transport=self._allow_insecure_api_token_transport(),
             )
 
             # Validate SVM configuration

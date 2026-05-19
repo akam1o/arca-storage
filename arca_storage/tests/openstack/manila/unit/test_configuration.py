@@ -25,6 +25,16 @@ def test_api_auth_defaults_to_token():
     assert auth_opt.default == "token"
 
 
+def test_insecure_api_token_transport_requires_opt_in():
+    opts = configuration.get_arca_manila_opts()
+    opt = next(
+        opt
+        for opt in opts
+        if opt.name == "arca_storage_allow_insecure_api_token_transport"
+    )
+    assert opt.default is False
+
+
 def test_per_project_ip_pools_is_multistr():
     opts = configuration.get_arca_manila_opts()
     pools_opt = next(opt for opt in opts if opt.name == "arca_storage_per_project_ip_pools")

@@ -41,6 +41,7 @@ class TestArcaStorageManilaDriverSharedStrategy:
 
         assert mock_client_class.call_args.kwargs["auth_type"] == "token"
         assert mock_client_class.call_args.kwargs["api_token"] == "test-token"
+        assert mock_client_class.call_args.kwargs["allow_insecure_token_transport"] is True
 
     def test_do_setup_rejects_token_auth_without_token(
         self, mock_manila_driver_config
@@ -72,6 +73,24 @@ class TestArcaStorageManilaDriverSharedStrategy:
                 match="arca_storage_api_client_key",
             ):
                 drv.do_setup(Mock())
+
+    def test_do_setup_rejects_remote_http_token_without_opt_in(
+        self, mock_manila_driver_config
+    ):
+        drv = manila_driver.ArcaStorageManilaDriver()
+        drv.configuration = mock_manila_driver_config
+        drv.configuration.arca_storage_allow_insecure_api_token_transport = False
+
+        with patch(
+            "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
+        ) as mock_client_class:
+            with pytest.raises(
+                manila_driver.manila_exception.ManilaException,
+                match="remote plain HTTP",
+            ):
+                drv.do_setup(Mock())
+
+        mock_client_class.assert_not_called()
 
     def test_update_share_stats_includes_pool_capabilities(self, driver):
         stats = driver._update_share_stats()

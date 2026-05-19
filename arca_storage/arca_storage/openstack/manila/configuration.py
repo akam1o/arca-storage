@@ -81,6 +81,14 @@ def _get_arca_manila_opts():
             secret=True,
             help="API authentication token (for auth_type=token)",
         ),
+        cfg.BoolOpt(
+            "arca_storage_allow_insecure_api_token_transport",
+            default=False,
+            help=(
+                "Allow Bearer token authentication over non-loopback plain HTTP. "
+                "Only use for explicitly trusted development networks."
+            ),
+        ),
         cfg.StrOpt(
             "arca_storage_api_ca_bundle",
             default=None,
