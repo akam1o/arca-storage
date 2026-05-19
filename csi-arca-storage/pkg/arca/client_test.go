@@ -378,6 +378,56 @@ func TestClientMapsFastAPIResourceErrorDetails(t *testing.T) {
 	}
 }
 
+func TestClientRedactsStructuredAPIErrorMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"VALIDATION_ERROR","message":"backend rejected token=structured-token password=structured-password Authorization: Bearer structured-bearer","details":{"resource":"SVM"}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSVMs(context.Background())
+	assertErrorRedactsSecrets(t, err, "structured-token", "structured-password", "structured-bearer")
+}
+
+func TestClientRedactsLegacyAPIErrorMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"proxy rejected auth_token=legacy-token client_secret=legacy-secret Authorization: Bearer legacy-bearer"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSVMs(context.Background())
+	assertErrorRedactsSecrets(t, err, "legacy-token", "legacy-secret", "legacy-bearer")
+}
+
+func assertErrorRedactsSecrets(t *testing.T, err error, secrets ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want failure")
+	}
+	rendered := err.Error()
+	for _, secret := range secrets {
+		if strings.Contains(rendered, secret) {
+			t.Fatalf("error = %q, leaked secret %q", rendered, secret)
+		}
+	}
+	if !strings.Contains(rendered, redactedSecret) {
+		t.Fatalf("error = %q, want redacted marker", rendered)
+	}
+}
+
 func TestMapErrorCodeToErrorUsesStructuredResourceDetails(t *testing.T) {
 	tests := []struct {
 		name       string
