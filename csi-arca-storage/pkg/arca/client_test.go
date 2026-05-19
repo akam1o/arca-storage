@@ -56,6 +56,40 @@ func TestBuildTLSConfigRejectsPartialClientCertificatePair(t *testing.T) {
 	}
 }
 
+func TestNewClientRejectsRemoteHTTPTokenWithoutOptIn(t *testing.T) {
+	_, err := NewClient(&ClientConfig{
+		BaseURL:   "http://192.0.2.10:8080",
+		AuthToken: "secret-token",
+	})
+	if err == nil {
+		t.Fatal("NewClient() error = nil, want remote HTTP token transport error")
+	}
+	if !strings.Contains(err.Error(), "remote plain HTTP") {
+		t.Fatalf("NewClient() error = %v, want remote plain HTTP error", err)
+	}
+}
+
+func TestNewClientAllowsRemoteHTTPTokenWithExplicitOptIn(t *testing.T) {
+	_, err := NewClient(&ClientConfig{
+		BaseURL:                     "http://192.0.2.10:8080",
+		AuthToken:                   "secret-token",
+		AllowInsecureTokenTransport: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+}
+
+func TestNewClientAllowsLoopbackHTTPToken(t *testing.T) {
+	_, err := NewClient(&ClientConfig{
+		BaseURL:   "http://127.0.0.1:8080",
+		AuthToken: "secret-token",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+}
+
 func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")

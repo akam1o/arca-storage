@@ -30,11 +30,12 @@ type Config struct {
 
 // ArcaConfig holds ARCA API configuration
 type ArcaConfig struct {
-	BaseURL   string    `yaml:"base_url"`
-	Timeout   Duration  `yaml:"timeout"`
-	AuthType  string    `yaml:"auth_type"`
-	AuthToken string    `yaml:"auth_token"`
-	TLS       TLSConfig `yaml:"tls"`
+	BaseURL                     string    `yaml:"base_url"`
+	Timeout                     Duration  `yaml:"timeout"`
+	AuthType                    string    `yaml:"auth_type"`
+	AuthToken                   string    `yaml:"auth_token"`
+	AllowInsecureTokenTransport bool      `yaml:"allow_insecure_token_transport"`
+	TLS                         TLSConfig `yaml:"tls"`
 }
 
 // TLSConfig holds TLS configuration
@@ -136,6 +137,13 @@ func (c *Config) ValidateForMode(mode string) error {
 		if c.ARCA.AuthToken == "" {
 			return fmt.Errorf("arca.auth_token is required when arca.auth_type is %q", AuthTypeToken)
 		}
+		if err := arca.ValidateTokenTransport(
+			c.ARCA.BaseURL,
+			c.ARCA.AuthToken,
+			c.ARCA.AllowInsecureTokenTransport,
+		); err != nil {
+			return fmt.Errorf("arca.base_url: %w", err)
+		}
 	case AuthTypeNone:
 	default:
 		return fmt.Errorf("arca.auth_type must be %q or %q", AuthTypeToken, AuthTypeNone)
@@ -228,10 +236,11 @@ func (c *Config) ToArcaClientConfig() *arca.ClientConfig {
 		authToken = ""
 	}
 	return &arca.ClientConfig{
-		BaseURL:    c.ARCA.BaseURL,
-		Timeout:    c.ARCA.Timeout.Duration,
-		RetryCount: 3,
-		AuthToken:  authToken,
+		BaseURL:                     c.ARCA.BaseURL,
+		Timeout:                     c.ARCA.Timeout.Duration,
+		RetryCount:                  3,
+		AuthToken:                   authToken,
+		AllowInsecureTokenTransport: c.ARCA.AllowInsecureTokenTransport,
 		TLSConfig: &arca.TLSConfig{
 			CACertPath:     c.ARCA.TLS.CACertPath,
 			ClientCertPath: c.ARCA.TLS.ClientCertPath,

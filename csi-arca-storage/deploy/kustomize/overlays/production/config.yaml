@@ -4,6 +4,7 @@ arca:
   timeout: "60s"
   auth_type: "token"
   auth_token: ""  # Set via Secret
+  allow_insecure_token_transport: false
   tls:
     ca_cert_path: ""  # Optional: mount CA cert if using custom CA
     insecure_skip_verify: false

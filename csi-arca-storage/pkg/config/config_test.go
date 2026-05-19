@@ -149,6 +149,29 @@ func TestValidateForModeRejectsInvalidAuthType(t *testing.T) {
 	}
 }
 
+func TestValidateForModeRejectsRemoteHTTPTokenWithoutOptIn(t *testing.T) {
+	cfg := minimalConfigWithoutPools()
+	cfg.ARCA.BaseURL = "http://192.0.2.10:8080"
+
+	err := cfg.ValidateForMode("node")
+	if err == nil {
+		t.Fatal("ValidateForMode(node) error = nil, want remote HTTP token transport error")
+	}
+	if !strings.Contains(err.Error(), "remote plain HTTP") {
+		t.Fatalf("ValidateForMode(node) error = %v, want remote plain HTTP error", err)
+	}
+}
+
+func TestValidateForModeAllowsRemoteHTTPTokenWithExplicitOptIn(t *testing.T) {
+	cfg := minimalConfigWithoutPools()
+	cfg.ARCA.BaseURL = "http://192.0.2.10:8080"
+	cfg.ARCA.AllowInsecureTokenTransport = true
+
+	if err := cfg.ValidateForMode("node"); err != nil {
+		t.Fatalf("ValidateForMode(node) error = %v", err)
+	}
+}
+
 func TestValidateForModeRejectsPartialClientCertificatePair(t *testing.T) {
 	tests := []struct {
 		name   string
@@ -191,5 +214,15 @@ func TestToArcaClientConfigOmitsTokenWhenAuthDisabled(t *testing.T) {
 	clientConfig := cfg.ToArcaClientConfig()
 	if clientConfig.AuthToken != "" {
 		t.Fatalf("AuthToken = %q, want empty token for auth_type none", clientConfig.AuthToken)
+	}
+}
+
+func TestToArcaClientConfigPropagatesInsecureTokenTransportOptIn(t *testing.T) {
+	cfg := minimalConfigWithoutPools()
+	cfg.ARCA.AllowInsecureTokenTransport = true
+
+	clientConfig := cfg.ToArcaClientConfig()
+	if !clientConfig.AllowInsecureTokenTransport {
+		t.Fatal("AllowInsecureTokenTransport = false, want true")
 	}
 }

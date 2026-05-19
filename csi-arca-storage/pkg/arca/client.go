@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -36,11 +37,12 @@ type Client struct {
 
 // ClientConfig holds configuration for the ARCA client
 type ClientConfig struct {
-	BaseURL    string
-	Timeout    time.Duration
-	RetryCount int
-	AuthToken  string
-	TLSConfig  *TLSConfig
+	BaseURL                     string
+	Timeout                     time.Duration
+	RetryCount                  int
+	AuthToken                   string
+	AllowInsecureTokenTransport bool
+	TLSConfig                   *TLSConfig
 }
 
 // TLSConfig holds TLS configuration
@@ -58,6 +60,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	}
 	if config.RetryCount == 0 {
 		config.RetryCount = 3
+	}
+	if err := ValidateTokenTransport(config.BaseURL, config.AuthToken, config.AllowInsecureTokenTransport); err != nil {
+		return nil, err
 	}
 
 	httpClient := &http.Client{
@@ -82,6 +87,33 @@ func NewClient(config *ClientConfig) (*Client, error) {
 		retryCount: config.RetryCount,
 		authToken:  config.AuthToken,
 	}, nil
+}
+
+// ValidateTokenTransport rejects bearer tokens over remote plain HTTP unless explicitly allowed.
+func ValidateTokenTransport(baseURL, authToken string, allowInsecureTokenTransport bool) error {
+	if authToken == "" || allowInsecureTokenTransport {
+		return nil
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid ARCA base URL: %w", err)
+	}
+	if strings.EqualFold(parsed.Scheme, "http") && !isLoopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("token authentication over remote plain HTTP requires allow_insecure_token_transport=true")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
 }
 
 // buildTLSConfig builds TLS configuration from file paths

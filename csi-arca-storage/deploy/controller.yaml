@@ -12,6 +12,7 @@ data:
       timeout: "30s"
       auth_type: "token"
       auth_token: ""  # Set via Secret
+      allow_insecure_token_transport: false
       tls:
         # Optional custom CA path; empty uses the system CA bundle.
         ca_cert_path: ""
