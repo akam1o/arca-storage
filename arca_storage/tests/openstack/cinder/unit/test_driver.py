@@ -28,6 +28,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         config.arca_storage_verify_ssl = False
         config.arca_storage_api_auth_type = "token"
         config.arca_storage_api_token = "test-token"
+        config.arca_storage_allow_insecure_api_token_transport = True
         config.arca_storage_driver_ssl_cert_path = None
         config.arca_storage_svm_strategy = "shared"
         config.arca_storage_default_svm = "test-svm"
@@ -61,6 +62,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert mock_client.call_args.kwargs["ca_bundle"] == "/etc/ssl/certs/arca-ca.pem"
         assert mock_client.call_args.kwargs["auth_type"] == "token"
         assert mock_client.call_args.kwargs["api_token"] == "test-token"
+        assert mock_client.call_args.kwargs["allow_insecure_token_transport"] is True
         mock_super_setup.assert_called_once_with(self.driver._context)
 
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
@@ -69,6 +71,19 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.configuration.arca_storage_api_token = None
 
         with pytest.raises(exception.VolumeBackendAPIException, match="arca_storage_api_token"):
+            self.driver.do_setup(self.driver._context)
+
+        mock_super_setup.assert_not_called()
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    def test_do_setup_rejects_remote_http_token_without_opt_in(self, mock_super_setup):
+        """Remote HTTP API endpoints must not carry bearer tokens by default."""
+        self.driver.configuration.arca_storage_allow_insecure_api_token_transport = False
+
+        with pytest.raises(
+            exception.VolumeBackendAPIException,
+            match="remote plain HTTP",
+        ):
             self.driver.do_setup(self.driver._context)
 
         mock_super_setup.assert_not_called()

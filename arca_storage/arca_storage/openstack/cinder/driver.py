@@ -99,6 +99,15 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         return auth_type, api_token
 
+    def _allow_insecure_api_token_transport(self):
+        return bool(
+            getattr(
+                self.configuration,
+                "arca_storage_allow_insecure_api_token_transport",
+                False,
+            )
+        )
+
     def do_setup(self, context):
         """Perform driver setup and validation.
 
@@ -120,6 +129,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     data=_("arca_storage_api_endpoint must be set when arca_storage_use_api is True")
                 )
             auth_type, api_token = self._get_api_auth_config()
+            try:
+                arca_client.validate_token_transport(
+                    self.configuration.arca_storage_api_endpoint,
+                    auth_type,
+                    self._allow_insecure_api_token_transport(),
+                )
+            except ValueError as e:
+                raise exception.VolumeBackendAPIException(data=_(str(e))) from e
 
         super(ArcaStorageNFSDriver, self).do_setup(context)
         self._context = context
@@ -135,6 +152,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     auth_type=auth_type,
                     api_token=api_token,
                     ca_bundle=getattr(self.configuration, "arca_storage_driver_ssl_cert_path", None),
+                    allow_insecure_token_transport=self._allow_insecure_api_token_transport(),
                 )
 
             # Mount options alignment: Support standard RemoteFSDriver nfs_mount_options
