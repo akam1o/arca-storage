@@ -149,6 +149,41 @@ func TestValidateForModeRejectsInvalidAuthType(t *testing.T) {
 	}
 }
 
+func TestValidateForModeRejectsPartialClientCertificatePair(t *testing.T) {
+	tests := []struct {
+		name   string
+		mutate func(*Config)
+	}{
+		{
+			name: "cert without key",
+			mutate: func(cfg *Config) {
+				cfg.ARCA.TLS.ClientCertPath = "/etc/csi-arca-storage/tls/client.crt"
+			},
+		},
+		{
+			name: "key without cert",
+			mutate: func(cfg *Config) {
+				cfg.ARCA.TLS.ClientKeyPath = "/etc/csi-arca-storage/tls/client.key"
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			cfg := minimalConfigWithoutPools()
+			tt.mutate(cfg)
+
+			err := cfg.ValidateForMode("node")
+			if err == nil {
+				t.Fatal("ValidateForMode(node) error = nil, want TLS pair validation error")
+			}
+			if !strings.Contains(err.Error(), "arca.tls.client_cert_path and arca.tls.client_key_path") {
+				t.Fatalf("ValidateForMode(node) error = %v, want TLS pair validation error", err)
+			}
+		})
+	}
+}
+
 func TestToArcaClientConfigOmitsTokenWhenAuthDisabled(t *testing.T) {
 	cfg := minimalConfigWithoutPools()
 	cfg.ARCA.AuthType = AuthTypeNone

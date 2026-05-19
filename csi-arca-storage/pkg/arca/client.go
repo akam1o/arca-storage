@@ -86,6 +86,12 @@ func NewClient(config *ClientConfig) (*Client, error) {
 
 // buildTLSConfig builds TLS configuration from file paths
 func buildTLSConfig(config *TLSConfig) (*tls.Config, error) {
+	hasClientCert := config.ClientCertPath != ""
+	hasClientKey := config.ClientKeyPath != ""
+	if hasClientCert != hasClientKey {
+		return nil, fmt.Errorf("client cert and key paths must be set together")
+	}
+
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
 		InsecureSkipVerify: config.InsecureSkip,

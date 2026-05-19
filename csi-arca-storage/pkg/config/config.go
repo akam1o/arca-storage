@@ -140,6 +140,9 @@ func (c *Config) ValidateForMode(mode string) error {
 	default:
 		return fmt.Errorf("arca.auth_type must be %q or %q", AuthTypeToken, AuthTypeNone)
 	}
+	if err := c.validateTLSConfig(); err != nil {
+		return err
+	}
 
 	switch mode {
 	case "controller":
@@ -158,6 +161,15 @@ func (c *Config) ValidateForMode(mode string) error {
 		return fmt.Errorf("driver.endpoint is required")
 	}
 
+	return nil
+}
+
+func (c *Config) validateTLSConfig() error {
+	hasClientCert := c.ARCA.TLS.ClientCertPath != ""
+	hasClientKey := c.ARCA.TLS.ClientKeyPath != ""
+	if hasClientCert != hasClientKey {
+		return fmt.Errorf("arca.tls.client_cert_path and arca.tls.client_key_path must be set together")
+	}
 	return nil
 }
 

@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
@@ -20,6 +21,38 @@ func TestBuildTLSConfigEnforcesModernTLSMinimum(t *testing.T) {
 	}
 	if tlsConfig.MinVersion != tls.VersionTLS12 {
 		t.Fatalf("MinVersion = %v, want TLS 1.2", tlsConfig.MinVersion)
+	}
+}
+
+func TestBuildTLSConfigRejectsPartialClientCertificatePair(t *testing.T) {
+	tests := []struct {
+		name   string
+		config TLSConfig
+	}{
+		{
+			name: "cert without key",
+			config: TLSConfig{
+				ClientCertPath: "/etc/csi-arca-storage/tls/client.crt",
+			},
+		},
+		{
+			name: "key without cert",
+			config: TLSConfig{
+				ClientKeyPath: "/etc/csi-arca-storage/tls/client.key",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildTLSConfig(&tt.config)
+			if err == nil {
+				t.Fatal("buildTLSConfig() error = nil, want client certificate pair error")
+			}
+			if !strings.Contains(err.Error(), "client cert and key paths must be set together") {
+				t.Fatalf("buildTLSConfig() error = %v, want client certificate pair error", err)
+			}
+		})
 	}
 }
 
