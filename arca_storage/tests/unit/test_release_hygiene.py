@@ -70,6 +70,20 @@ def test_csi_controller_manifests_wire_liveness_probe(repo_root):
         assert "- --health-port=9808" in manifest
 
 
+def test_csi_deployment_configs_include_node_paths(repo_root):
+    config_sources = [
+        repo_root / "csi-arca-storage/deploy/controller.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/config.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/overlays/development/config.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/overlays/production/config.yaml",
+    ]
+
+    for config_path in config_sources:
+        config = config_path.read_text(encoding="utf-8")
+        assert 'state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"' in config
+        assert 'base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"' in config
+
+
 def test_csi_node_sidecars_drop_privileges(repo_root):
     node_manifests = [
         repo_root / "csi-arca-storage/deploy/node.yaml",

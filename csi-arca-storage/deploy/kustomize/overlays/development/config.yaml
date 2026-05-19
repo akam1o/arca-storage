@@ -1,3 +1,4 @@
+---
 arca:
   base_url: "https://arca-api.dev.example.com"
   timeout: "30s"
@@ -18,3 +19,5 @@ network:
 
 driver:
   endpoint: "unix:///csi/csi.sock"
+  state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
+  base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
