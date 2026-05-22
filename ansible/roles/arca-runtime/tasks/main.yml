@@ -1,4 +1,98 @@
 ---
+- name: Validate arca runtime settings
+  ansible.builtin.assert:
+    that:
+      - arca_runtime_svms is sequence
+      - arca_runtime_svms is not string
+      - arca_runtime_volumes is sequence
+      - arca_runtime_volumes is not string
+      - arca_runtime_exports is sequence
+      - arca_runtime_exports is not string
+      - >-
+        (arca_cli_bin_path | default('/usr/bin/arca') | string)
+        is match('^/(?!$)(?!.*(^|/)\.\.?($|/))[A-Za-z0-9._/+:-]+$')
+      - (arca_runtime_api_service_name | string) is match('^[A-Za-z0-9][A-Za-z0-9_.@:-]{0,127}$')
+    fail_msg: >-
+      arca runtime inputs must be lists, use an absolute arca binary path,
+      and use a safe API service name.
+  when: arca_runtime_enabled | bool
+
+- name: Validate arca runtime SVM inputs
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name is string
+      - (item.name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - item.ip_cidr is defined
+      - item.ip_cidr is string
+      - >-
+        (item.ip_cidr | string)
+        is match('^(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])/(?:[1-9]|[12][0-9]|3[0-2])$')
+      - item.vlan_id is not defined or item.vlan_id is none or (item.vlan_id | string) is match('^[0-9]{1,4}$')
+      - item.vlan_id is not defined or item.vlan_id is none or (item.vlan_id | int) >= 1
+      - item.vlan_id is not defined or item.vlan_id is none or (item.vlan_id | int) <= 4094
+      - >-
+        item.gateway is not defined or not item.gateway or
+        ((item.gateway | string) is match('^(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$'))
+      - item.mtu is not defined or item.mtu is none or (item.mtu | string) is match('^[0-9]{2,4}$')
+      - item.mtu is not defined or item.mtu is none or (item.mtu | int) >= 68
+      - item.mtu is not defined or item.mtu is none or (item.mtu | int) <= 9000
+    fail_msg: >-
+      arca_runtime_svms entries must define a safe name, SVM IPv4/CIDR,
+      optional VLAN 1-4094, optional IPv4 gateway, and optional MTU 68-9000.
+  loop: "{{ arca_runtime_svms }}"
+  loop_control:
+    label: "{{ item.name | default('<missing>') }}"
+  when: arca_runtime_enabled | bool
+
+- name: Validate arca runtime volume inputs
+  ansible.builtin.assert:
+    that:
+      - item.name is defined
+      - item.name is string
+      - (item.name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - item.svm is defined
+      - item.svm is string
+      - (item.svm | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - item.size_gib is defined
+      - (item.size_gib | string) is match('^[1-9][0-9]{0,8}$')
+      - >-
+        item.thin is not defined or item.thin is boolean or
+        ((item.thin | string | lower) in ['true', 'false', 'yes', 'no', '1', '0'])
+    fail_msg: >-
+      arca_runtime_volumes entries must define safe names, an SVM,
+      a positive GiB size, and an optional boolean thin flag.
+  loop: "{{ arca_runtime_volumes }}"
+  loop_control:
+    label: "{{ item.svm | default('<missing>') }}/{{ item.name | default('<missing>') }}"
+  when: arca_runtime_enabled | bool
+
+- name: Validate arca runtime export inputs
+  ansible.builtin.assert:
+    that:
+      - item.svm is defined
+      - item.svm is string
+      - (item.svm | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - item.volume is defined
+      - item.volume is string
+      - (item.volume | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - item.client is defined
+      - item.client is string
+      - >-
+        (item.client | string)
+        is match('^(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])/(?:[1-9]|[12][0-9]|3[0-2])$')
+      - item.access is not defined or not item.access or item.access in ['rw', 'ro']
+      - >-
+        item.root_squash is not defined or item.root_squash is boolean or
+        ((item.root_squash | string | lower) in ['true', 'false', 'yes', 'no', '1', '0'])
+    fail_msg: >-
+      arca_runtime_exports entries must define safe SVM and volume names,
+      a non-default IPv4 client CIDR, optional access rw/ro, and an optional boolean root_squash flag.
+  loop: "{{ arca_runtime_exports }}"
+  loop_control:
+    label: "{{ item.svm | default('<missing>') }}/{{ item.volume | default('<missing>') }}"
+  when: arca_runtime_enabled | bool
+
 - name: Ensure arca CLI is available
   ansible.builtin.command:
     argv:
