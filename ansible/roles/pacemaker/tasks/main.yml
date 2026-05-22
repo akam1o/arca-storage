@@ -1,4 +1,23 @@
 ---
+- name: Validate Pacemaker cluster identifiers
+  ansible.builtin.assert:
+    that:
+      - pacemaker_cluster_name is string
+      - (pacemaker_cluster_name | string | length) > 0
+      - (pacemaker_cluster_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - pacemaker_nodes is sequence
+      - (pacemaker_nodes | length) >= 2
+      - (pacemaker_nodes | map(attribute='name') | select('defined') | list | length) == (pacemaker_nodes | length)
+      - (pacemaker_nodes | map(attribute='name') | select('string') | list | length) == (pacemaker_nodes | length)
+      - >-
+        (pacemaker_nodes | map(attribute='name') | select('defined') | select('string') | reject('match',
+        '^[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?(?:\.[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?)*$') | list | length) == 0
+      - (pacemaker_nodes | map(attribute='name') | select('defined') | select('string') | reject('match', '^.{254,}$') | list | length) == 0
+      - (pacemaker_nodes | map(attribute='name') | unique | list | length) == (pacemaker_nodes | length)
+    fail_msg: >-
+      pacemaker_cluster_name must be a single safe path component, and pacemaker_nodes
+      must contain at least two unique DNS hostnames.
+
 - name: Validate Pacemaker RA vendor
   ansible.builtin.assert:
     that:
@@ -33,9 +52,13 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
   block:
     - name: Authenticate nodes for pcs
-      ansible.builtin.command: >-
-        pcs host auth {{ pacemaker_nodes | map(attribute='name') | join(' ') }}
-        -u hacluster
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['pcs', 'host', 'auth']
+            + (pacemaker_nodes | map(attribute='name') | list)
+            + ['-u', 'hacluster']
+          }}
       args:
         stdin: "{{ pacemaker_hacluster_password }}"
       register: pacemaker_pcs_host_auth
@@ -48,9 +71,12 @@
       register: pacemaker_authkey
 
     - name: Create cluster configuration if missing
-      ansible.builtin.command: >-
-        pcs cluster setup --name {{ pacemaker_cluster_name }}
-        {{ pacemaker_nodes | map(attribute='name') | join(' ') }}
+      ansible.builtin.command:
+        argv: >-
+          {{
+            ['pcs', 'cluster', 'setup', '--name', pacemaker_cluster_name]
+            + (pacemaker_nodes | map(attribute='name') | list)
+          }}
       when: not pacemaker_authkey.stat.exists
       register: pacemaker_pcs_cluster_setup
       changed_when: pacemaker_pcs_cluster_setup.rc == 0
@@ -114,24 +140,43 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
   block:
     - name: Start cluster on all nodes
-      ansible.builtin.command: pcs cluster start --all
+      ansible.builtin.command:
+        argv:
+          - pcs
+          - cluster
+          - start
+          - --all
       register: pacemaker_pcs_cluster_start
       changed_when: pacemaker_pcs_cluster_start.stdout is not search("already running")
 
     - name: Enable cluster to start on boot
-      ansible.builtin.command: pcs cluster enable --all
+      ansible.builtin.command:
+        argv:
+          - pcs
+          - cluster
+          - enable
+          - --all
       register: pacemaker_pcs_cluster_enable
       changed_when: pacemaker_pcs_cluster_enable.stdout is not search("already enabled")
 
     - name: Ensure STONITH property matches desired state
-      ansible.builtin.command: pcs property show stonith-enabled
+      ansible.builtin.command:
+        argv:
+          - pcs
+          - property
+          - show
+          - stonith-enabled
       register: pacemaker_pcs_stonith_property
       changed_when: false
       failed_when: false
 
     - name: Configure STONITH enabled property
-      ansible.builtin.command: >-
-        pcs property set stonith-enabled={{ pacemaker_enable_stonith | default(false) | bool | ternary('true', 'false') }}
+      ansible.builtin.command:
+        argv:
+          - pcs
+          - property
+          - set
+          - "stonith-enabled={{ pacemaker_enable_stonith | default(false) | bool | ternary('true', 'false') }}"
       when: >-
         (pacemaker_enable_stonith | default(false) | bool and 'stonith-enabled: true' not in pacemaker_pcs_stonith_property.stdout) or
         (not (pacemaker_enable_stonith | default(false) | bool) and 'stonith-enabled: false' not in pacemaker_pcs_stonith_property.stdout)
