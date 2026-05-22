@@ -1,4 +1,30 @@
 ---
+- name: Validate LVM inputs
+  ansible.builtin.assert:
+    that:
+      - lvm_pv_devices is sequence
+      - lvm_pv_devices is not string
+      - (lvm_pv_devices | length) > 0
+      - (lvm_pv_devices | select('string') | list | length) == (lvm_pv_devices | length)
+      - (lvm_pv_devices | reject('match', '^/dev/[A-Za-z0-9._/+:-]+$') | list | length) == 0
+      - (lvm_pv_devices | select('search', '/\\.\\.?(/|$)') | list | length) == 0
+      - lvm_vg_name is string
+      - (lvm_vg_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$')
+      - lvm_thinpool_name is string
+      - (lvm_thinpool_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$')
+      - (lvm_thin_volume_name | default('vol_tenant_a') | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,126}$')
+      - >-
+        (lvm_thinpool_size | string) is match('^(?:(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)[bBsSkKmMgGtTpPeE]|(?:[1-9][0-9]?|100)%(?:VG|FREE))$')
+      - >-
+        (lvm_thinpool_chunk_size | default('256K') | string) is match('^(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)[bBsSkKmMgGtTpPeE]$')
+      - >-
+        (lvm_thinpool_metadata_size | default('15.8G') | string) is match('^(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)[bBsSkKmMgGtTpPeE]$')
+      - >-
+        (lvm_thin_volume_size | default('100G') | string) is match('^(?:[1-9][0-9]*(?:\.[0-9]+)?|0\.[0-9]*[1-9][0-9]*)[bBsSkKmMgGtTpPeE]$')
+    fail_msg: >-
+      LVM inputs must use absolute /dev paths, safe VG/LV names, and positive
+      LVM size values.
+
 - name: Install LVM packages
   ansible.builtin.package:
     name: lvm2
