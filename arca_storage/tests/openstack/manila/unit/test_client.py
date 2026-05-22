@@ -40,11 +40,29 @@ class TestArcaManilaClientInit:
         )
         assert client.session.headers["Authorization"] == "Bearer test-token-123"
 
+    def test_init_with_token_auth_trims_token(self):
+        client = manila_client.ArcaManilaClient(
+            api_endpoint="https://192.168.10.5:8443",
+            auth_type="token",
+            api_token=" test-token-123 \n",
+            verify_ssl=False,
+        )
+        assert client.session.headers["Authorization"] == "Bearer test-token-123"
+
     def test_init_token_auth_missing_token(self):
         with pytest.raises(ValueError, match="api_token is required"):
             manila_client.ArcaManilaClient(
                 api_endpoint="http://192.168.10.5:8080",
                 auth_type="token",
+                verify_ssl=False,
+            )
+
+    def test_init_token_auth_rejects_blank_token(self):
+        with pytest.raises(ValueError, match="api_token is required"):
+            manila_client.ArcaManilaClient(
+                api_endpoint="http://127.0.0.1:8080",
+                auth_type="token",
+                api_token=" \t\n ",
                 verify_ssl=False,
             )
 

@@ -7,4 +7,7 @@ _CINDER_AVAILABLE = find_spec("cinder") is not None
 
 
 def pytest_ignore_collect(collection_path, config):
-    return not _CINDER_AVAILABLE
+    if _CINDER_AVAILABLE:
+        return False
+
+    return "integration" in collection_path.parts

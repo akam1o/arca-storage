@@ -10,9 +10,41 @@ from typing import Any, Dict, Optional
 
 from oslo_log import log as logging  # type: ignore[import-untyped]
 
-from cinder import exception  # type: ignore[import-not-found]
-from cinder.i18n import _  # type: ignore[import-not-found]
-from cinder.volume.drivers import remotefs as remotefs_drv  # type: ignore[import-not-found]
+try:
+    from cinder import exception  # type: ignore[import-not-found]
+    from cinder.i18n import _  # type: ignore[import-not-found]
+    from cinder.volume.drivers import remotefs as remotefs_drv  # type: ignore[import-not-found]
+    _HAS_CINDER = True
+except ImportError:
+    # Cinder is optional for standalone development and unit tests.
+    _HAS_CINDER = False
+
+    def _(message):
+        return message
+
+    class _VolumeBackendAPIException(Exception):
+        def __init__(self, data=None, message=None, *args, **kwargs):
+            detail = data if data is not None else message
+            super().__init__(detail if detail is not None else "")
+            self.data = data
+
+    class _CinderExceptionModule:
+        VolumeBackendAPIException = _VolumeBackendAPIException
+
+    exception = _CinderExceptionModule()
+
+    class _FallbackRemoteFSDriverModule:
+        class RemoteFSDriver:
+            def __init__(self, *args, **kwargs):
+                pass
+
+            def do_setup(self, context):
+                pass
+
+            def check_for_setup_error(self):
+                pass
+
+    remotefs_drv = _FallbackRemoteFSDriverModule()
 
 from . import client as arca_client
 from . import configuration as arca_config
@@ -84,6 +116,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             or "token"
         )
         api_token = getattr(self.configuration, "arca_storage_api_token", None)
+        if isinstance(api_token, str):
+            api_token = api_token.strip()
 
         if auth_type not in ("token", "none"):
             raise exception.VolumeBackendAPIException(

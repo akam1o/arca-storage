@@ -5,10 +5,11 @@ import unittest
 from unittest.mock import Mock, patch
 
 import pytest
-from cinder import exception
 
 from arca_storage.openstack.cinder import driver as arca_driver
 from arca_storage.openstack.cinder import exceptions as arca_exceptions
+
+exception = arca_driver.exception
 
 
 class TestArcaStorageNFSDriver(unittest.TestCase):
@@ -74,6 +75,27 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             self.driver.do_setup(self.driver._context)
 
         mock_super_setup.assert_not_called()
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    def test_do_setup_rejects_token_auth_with_blank_token(self, mock_super_setup):
+        """API mode must reject blank token strings."""
+        self.driver.configuration.arca_storage_api_token = " \t\n "
+
+        with pytest.raises(exception.VolumeBackendAPIException, match="arca_storage_api_token"):
+            self.driver.do_setup(self.driver._context)
+
+        mock_super_setup.assert_not_called()
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    @patch("arca_storage.openstack.cinder.driver.arca_client.ArcaStorageClient")
+    def test_do_setup_trims_api_token(self, mock_client, mock_super_setup):
+        """Configured token whitespace is stripped before creating the API client."""
+        self.driver.configuration.arca_storage_api_token = " test-token \n"
+
+        self.driver.do_setup(self.driver._context)
+
+        assert mock_client.call_args.kwargs["api_token"] == "test-token"
+        mock_super_setup.assert_called_once_with(self.driver._context)
 
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
     def test_do_setup_rejects_remote_http_token_without_opt_in(self, mock_super_setup):

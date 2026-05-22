@@ -108,14 +108,15 @@ class ArcaStorageClient:
         self.session = requests.Session()
 
         if auth_type == "token":
-            if not api_token:
+            normalized_token = api_token.strip() if isinstance(api_token, str) else ""
+            if not normalized_token:
                 raise ValueError("api_token is required when auth_type='token'")
             validate_token_transport(
                 api_endpoint,
                 auth_type,
                 allow_insecure_token_transport,
             )
-            self.session.headers.update({"Authorization": f"Bearer {api_token}"})
+            self.session.headers.update({"Authorization": f"Bearer {normalized_token}"})
         elif auth_type and auth_type != "none":
             raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
 

@@ -150,6 +150,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
     def _get_api_auth_config(self):
         auth_type = self.configuration.arca_storage_api_auth_type or "token"
         api_token = self.configuration.arca_storage_api_token
+        if isinstance(api_token, str):
+            api_token = api_token.strip()
 
         if auth_type not in ("token", "none"):
             raise manila_exception.ManilaException(
