@@ -25,7 +25,7 @@ _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 def configured_api_token() -> str:
     """Return the configured bearer token, if any."""
-    return os.environ.get("ARCA_API_TOKEN", "") or os.environ.get("ARCA_AUTH_TOKEN", "")
+    return os.environ.get("ARCA_API_TOKEN", "").strip() or os.environ.get("ARCA_AUTH_TOKEN", "").strip()
 
 
 def unauthenticated_loopback_allowed() -> bool:

@@ -6,6 +6,7 @@ from fastapi.testclient import TestClient
 
 from arca_storage.api.auth import (
     UNKNOWN_SERVER_HOST,
+    configured_api_token,
     insecure_remote_api_allowed,
     non_loopback_request_server_host,
     unauthenticated_loopback_allowed,
@@ -51,6 +52,35 @@ def test_api_auth_rejects_missing_bearer_token(monkeypatch):
 
 def test_api_auth_accepts_configured_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+
+    with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
+        with TestClient(app) as client:
+            response = client.get("/v1/svms", headers={"Authorization": "Bearer secret-token"})
+
+    assert response.status_code == 200
+
+
+def test_configured_api_token_trims_and_ignores_blank_values(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", " \n\t ")
+    monkeypatch.setenv("ARCA_AUTH_TOKEN", " fallback-token \n")
+
+    assert configured_api_token() == "fallback-token"
+
+
+def test_api_auth_rejects_blank_configured_token(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", " \t ")
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
+
+    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
+        response = client.get("/v1/svms", headers={"Authorization": "Bearer  "})
+
+    assert response.status_code == 503
+    assert response.json()["error"]["code"] == "AUTH_TOKEN_REQUIRED"
+
+
+def test_api_auth_accepts_trimmed_configured_bearer_token(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", " secret-token \n")
 
     with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
         with TestClient(app) as client:
