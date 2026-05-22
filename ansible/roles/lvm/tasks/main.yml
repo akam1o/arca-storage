@@ -5,7 +5,10 @@
     state: present
 
 - name: Check if physical volume exists
-  ansible.builtin.command: pvs {{ item }}
+  ansible.builtin.command:
+    argv:
+      - pvs
+      - "{{ item }}"
   register: lvm_pv_checks
   changed_when: false
   failed_when: false
@@ -15,7 +18,10 @@
   when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
 
 - name: Create physical volume
-  ansible.builtin.command: pvcreate {{ item.item }}
+  ansible.builtin.command:
+    argv:
+      - pvcreate
+      - "{{ item.item }}"
   when:
     - hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
     - item.rc != 0
@@ -54,7 +60,10 @@
     enabled: true
 
 - name: Check if thin pool exists
-  ansible.builtin.command: lvs {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - "{{ lvm_vg_name }}/{{ lvm_thinpool_name }}"
   register: lvm_thinpool_check
   changed_when: false
   failed_when: false
@@ -63,11 +72,19 @@
   when: hostvars[pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name)].drbd_primary | bool
 
 - name: Create thin pool
-  ansible.builtin.command: >
-    lvcreate -L {{ lvm_thinpool_size }} -T {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
-    -c {{ lvm_thinpool_chunk_size | default('256K') }}
-    --poolmetadatasize {{ lvm_thinpool_metadata_size | default('15.8G') }}
-    -Z y
+  ansible.builtin.command:
+    argv:
+      - lvcreate
+      - "-L"
+      - "{{ lvm_thinpool_size }}"
+      - "-T"
+      - "{{ lvm_vg_name }}/{{ lvm_thinpool_name }}"
+      - "-c"
+      - "{{ lvm_thinpool_chunk_size | default('256K') }}"
+      - --poolmetadatasize
+      - "{{ lvm_thinpool_metadata_size | default('15.8G') }}"
+      - "-Z"
+      - "y"
   register: lvm_thinpool_create
   changed_when: lvm_thinpool_create.rc == 0
   failed_when: lvm_thinpool_create.rc != 0 and 'already exists' not in lvm_thinpool_create.stderr
@@ -78,7 +95,10 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Check if thin volume exists
-  ansible.builtin.command: lvs {{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  ansible.builtin.command:
+    argv:
+      - lvs
+      - "{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}"
   register: lvm_thinvol_check
   changed_when: false
   failed_when: false
@@ -96,9 +116,15 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Create thin volume
-  ansible.builtin.command: >
-    lvcreate -V {{ lvm_thin_volume_size | default('100G') }} -T {{ lvm_vg_name }}/{{ lvm_thinpool_name }}
-    -n {{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  ansible.builtin.command:
+    argv:
+      - lvcreate
+      - "-V"
+      - "{{ lvm_thin_volume_size | default('100G') }}"
+      - "-T"
+      - "{{ lvm_vg_name }}/{{ lvm_thinpool_name }}"
+      - "-n"
+      - "{{ lvm_thin_volume_name | default('vol_tenant_a') }}"
   register: lvm_thinvol_create
   changed_when: lvm_thinvol_create.rc == 0
   failed_when: lvm_thinvol_create.rc != 0 and 'already exists' not in lvm_thinvol_create.stderr
@@ -110,7 +136,10 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Check if filesystem exists
-  ansible.builtin.command: blkid /dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  ansible.builtin.command:
+    argv:
+      - blkid
+      - "/dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}"
   register: lvm_fs_check
   changed_when: false
   failed_when: false
@@ -131,8 +160,11 @@
   delegate_to: "{{ pacemaker_cluster_bootstrap_node | default(pacemaker_nodes[0].name) }}"
 
 - name: Create XFS filesystem
-  ansible.builtin.command: >
-    mkfs.xfs -f /dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}
+  ansible.builtin.command:
+    argv:
+      - mkfs.xfs
+      - "-f"
+      - "/dev/{{ lvm_vg_name }}/{{ lvm_thin_volume_name | default('vol_tenant_a') }}"
   register: lvm_mkfs_result
   changed_when: lvm_mkfs_result.rc == 0
   when:
