@@ -103,7 +103,9 @@ nfs_ganesha_render_tenant_configs: false
 arca_cli_package_name: arca-storage
 arca_cli_install_method: package  # package|url
 arca_cli_download_url: ""
+# Required for url installs unless explicitly disabled for trusted local development artifacts.
 arca_cli_download_checksum: ""
+arca_cli_allow_unverified_download: false
 arca_cli_bin_path: /usr/bin/arca
 arca_cli_archive_dest: /tmp/arca-cli.tgz
 arca_cli_extract_dir: /opt/arca-cli
