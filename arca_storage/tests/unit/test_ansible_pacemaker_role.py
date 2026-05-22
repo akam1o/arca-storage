@@ -23,3 +23,15 @@ def test_pacemaker_role_uses_argv_for_bootstrap_pcs_commands(repo_root):
     assert "['pcs', 'host', 'auth']" in content
     assert "['pcs', 'cluster', 'setup', '--name', pacemaker_cluster_name]" in content
     assert '"stonith-enabled={{ pacemaker_enable_stonith' in content
+
+
+def test_pacemaker_resources_use_argv_for_pcs_commands(repo_root):
+    resources = repo_root / "ansible/roles/pacemaker/tasks/resources.yml"
+    content = resources.read_text(encoding="utf-8")
+
+    assert "ansible.builtin.command: >" not in content
+    assert "ansible.builtin.command: pcs" not in content
+    assert content.count("argv:") == 15
+    assert "drbd_resource={{ drbd_resource_name }}" in content
+    assert "device={{ pacemaker_fs_device | default" in content
+    assert "systemd:nfs-ganesha@{{ pacemaker_ganesha_instance" in content
