@@ -68,6 +68,7 @@ except ImportError:
 from . import client as arca_client
 from . import configuration as arca_config
 from . import exceptions as arca_exceptions
+from arca_storage.openstack.http_errors import safe_error_detail
 
 LOG = logging.getLogger(__name__)
 
@@ -1510,18 +1511,21 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 # Re-raise ShareBackendException as-is
                 raise
             except Exception as fetch_error:
-                LOG.error("Failed to fetch existing share %s: %s", share_id, fetch_error)
+                details = safe_error_detail(fetch_error)
+                LOG.error("Failed to fetch existing share %s: %s", share_id, details)
                 # If fetch fails, raise backend exception to allow retry
                 raise manila_exception.ShareBackendException(
-                    f"Failed to verify existing share {share_id}: {str(fetch_error)}"
+                    f"Failed to verify existing share {share_id}: {details}"
                 )
         except arca_exceptions.ArcaSVMNotFound as e:
-            LOG.exception("SVM not found for share %s", share_id)
-            raise manila_exception.ShareBackendException(f"SVM not found: {str(e)}")
+            details = safe_error_detail(e)
+            LOG.error("SVM not found for share %s: %s", share_id, details)
+            raise manila_exception.ShareBackendException(f"SVM not found: {details}")
         except Exception as e:
-            LOG.exception("Failed to create share %s", share_id)
+            details = safe_error_detail(e)
+            LOG.error("Failed to create share %s: %s", share_id, details)
             raise manila_exception.ShareBackendException(
-                f"Failed to create share: {str(e)}"
+                f"Failed to create share: {details}"
             )
 
     def delete_share(self, context, share, share_server=None):
@@ -1568,9 +1572,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Share already deleted, consider success
             LOG.warning("Share %s not found, already deleted", share_id)
         except Exception as e:
-            LOG.exception("Failed to delete share %s", share_id)
+            details = safe_error_detail(e)
+            LOG.error("Failed to delete share %s: %s", share_id, details)
             raise manila_exception.ShareBackendException(
-                f"Failed to delete share: {str(e)}"
+                f"Failed to delete share: {details}"
             )
 
     def extend_share(self, share, new_size, share_server=None):
@@ -1607,9 +1612,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         except arca_exceptions.ArcaShareNotFound:
             raise manila_exception.ShareResourceNotFound(share_id=share_id)
         except Exception as e:
-            LOG.exception("Failed to extend share %s", share_id)
+            details = safe_error_detail(e)
+            LOG.error("Failed to extend share %s: %s", share_id, details)
             raise manila_exception.ShareBackendException(
-                f"Failed to extend share: {str(e)}"
+                f"Failed to extend share: {details}"
             )
 
     def shrink_share(self, share, new_size, share_server=None):
@@ -1683,9 +1689,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             return None
 
         except Exception as e:
-            LOG.exception("Failed to create snapshot %s", snapshot_id)
+            details = safe_error_detail(e)
+            LOG.error("Failed to create snapshot %s: %s", snapshot_id, details)
             raise manila_exception.ShareBackendException(
-                f"Failed to create snapshot: {str(e)}"
+                f"Failed to create snapshot: {details}"
             )
 
     def delete_snapshot(self, context, snapshot, share_server=None):
@@ -1737,9 +1744,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             # Snapshot already deleted, consider success
             LOG.warning("Snapshot %s not found, already deleted", snapshot_id)
         except Exception as e:
-            LOG.exception("Failed to delete snapshot %s", snapshot_id)
+            details = safe_error_detail(e)
+            LOG.error("Failed to delete snapshot %s: %s", snapshot_id, details)
             raise manila_exception.ShareBackendException(
-                f"Failed to delete snapshot: {str(e)}"
+                f"Failed to delete snapshot: {details}"
             )
 
     def create_share_from_snapshot(
@@ -1879,13 +1887,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             ]
 
         except Exception as e:
-            LOG.exception(
-                "Failed to create share %s from snapshot %s",
+            details = safe_error_detail(e)
+            LOG.error(
+                "Failed to create share %s from snapshot %s: %s",
                 share_id,
                 snapshot_id,
+                details,
             )
             raise manila_exception.ShareBackendException(
-                f"Failed to create share from snapshot: {str(e)}"
+                f"Failed to create share from snapshot: {details}"
             )
 
     # Access Rule Management
@@ -1950,7 +1960,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             "Failed to delete access rule %s for share %s: %s",
                             rule.get("id"),
                             share_id,
-                            e,
+                            safe_error_detail(e),
                         )
                         rule_failures.append(("delete", rule, e))
 
@@ -1967,13 +1977,13 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             "Failed to add access rule %s for share %s: %s",
                             rule.get("id"),
                             share_id,
-                            e,
+                            safe_error_detail(e),
                         )
                         rule_failures.append(("add", rule, e))
 
             if rule_failures:
                 details = ", ".join(
-                    f"{operation}:{self._access_rule_label(rule)} ({error})"
+                    f"{operation}:{self._access_rule_label(rule)} ({safe_error_detail(error)})"
                     for operation, rule, error in rule_failures
                 )
                 raise manila_exception.ShareBackendException(
@@ -1989,9 +1999,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             if isinstance(e, manila_exception.ShareBackendException):
                 raise
             # Systemic failure (e.g., can't determine SVM)
-            LOG.exception("Failed to update access rules for share %s", share_id)
+            details = safe_error_detail(e)
+            LOG.error("Failed to update access rules for share %s: %s", share_id, details)
             raise manila_exception.ShareBackendException(
-                f"Failed to update access rules: {str(e)}"
+                f"Failed to update access rules: {details}"
             )
         return None
 
@@ -2050,8 +2061,9 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         try:
             exports = arca_client_obj.list_exports(svm=svm_name, volume=volume_name)
         except Exception as e:
+            details = safe_error_detail(e)
             raise manila_exception.ShareBackendException(
-                f"Failed to list current exports: {str(e)}"
+                f"Failed to list current exports: {details}"
             )
 
         for export in exports or []:
@@ -2089,7 +2101,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     client_raw,
                     svm_name,
                     volume_name,
-                    e,
+                    safe_error_detail(e),
                 )
                 rule_failures.append(("delete", client_raw, e))
 
@@ -2110,13 +2122,13 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     client_norm,
                     svm_name,
                     volume_name,
-                    e,
+                    safe_error_detail(e),
                 )
                 rule_failures.append(("add", client_norm, e))
 
         if rule_failures:
             details = ", ".join(
-                f"{operation}:{self._access_rule_label(rule)} ({error})"
+                f"{operation}:{self._access_rule_label(rule)} ({safe_error_detail(error)})"
                 for operation, rule, error in rule_failures
             )
             raise manila_exception.ShareBackendException(
@@ -2183,8 +2195,9 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             LOG.debug("Access rule %s already exists", access_to)
         except Exception as e:
             # Re-raise as access rule error
+            details = safe_error_detail(e)
             raise arca_exceptions.ArcaAccessRuleError(
-                details=f"Failed to add access rule: {str(e)}"
+                details=f"Failed to add access rule: {details}"
             )
 
     def _delete_access_rule(self, svm_name, volume_name, rule):
@@ -2233,8 +2246,9 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             LOG.debug("Access rule %s not found (already deleted)", access_to)
         except Exception as e:
             # Re-raise as access rule error
+            details = safe_error_detail(e)
             raise arca_exceptions.ArcaAccessRuleError(
-                details=f"Failed to delete access rule: {str(e)}"
+                details=f"Failed to delete access rule: {details}"
             )
 
     # QoS Helper Method
@@ -2308,9 +2322,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             LOG.info("Applied QoS to share %s", share["id"])
 
         except Exception as e:
-            LOG.exception("Failed to apply QoS to share %s", share["id"])
+            details = safe_error_detail(e)
+            LOG.error("Failed to apply QoS to share %s: %s", share["id"], details)
             raise manila_exception.ShareBackendException(
-                f"Failed to apply QoS to share {share['id']}: {e}"
+                f"Failed to apply QoS to share {share['id']}: {details}"
             )
 
     # SVM Lifecycle Management

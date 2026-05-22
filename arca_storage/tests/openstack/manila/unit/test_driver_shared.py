@@ -166,6 +166,22 @@ class TestArcaStorageManilaDriverSharedStrategy:
 
         mock_arca_client.apply_qos.assert_not_called()
 
+    def test_create_share_redacts_sensitive_backend_errors(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_arca_client.create_volume.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver.create_share(Mock(), mock_manila_share, None)
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
     def test_create_share_ignores_user_supplied_svm_metadata(
         self, driver, mock_arca_client, mock_manila_share
     ):
@@ -213,6 +229,23 @@ class TestArcaStorageManilaDriverSharedStrategy:
             driver.delete_share(Mock(), mock_manila_share, None)
 
         mock_arca_client.delete_volume.assert_not_called()
+
+    def test_delete_share_redacts_sensitive_backend_errors(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.delete_volume.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver.delete_share(Mock(), mock_manila_share, None)
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
 
     def test_extend_share_calls_resize_volume(self, driver, mock_arca_client, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
@@ -339,6 +372,30 @@ class TestArcaStorageManilaDriverSharedStrategy:
 
         mock_arca_client.create_export.assert_called_once()
 
+    def test_update_access_redacts_sensitive_rule_failures(
+        self, driver, mock_arca_client, mock_manila_share, mock_access_rules
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.create_export.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver.update_access(
+                Mock(),
+                mock_manila_share,
+                [],
+                add_rules=mock_access_rules,
+                delete_rules=[],
+                share_server=None,
+            )
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
     def test_update_access_reports_delete_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
         mock_arca_client.delete_export.side_effect = RuntimeError("backend unavailable")
@@ -413,6 +470,31 @@ class TestArcaStorageManilaDriverSharedStrategy:
             driver.update_access(Mock(), mock_manila_share, desired, add_rules=[], delete_rules=[], share_server=None)
 
         mock_arca_client.create_export.assert_called_once()
+
+    def test_update_access_redacts_sensitive_reconcile_list_errors(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_arca_client.list_exports.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+        desired = [{"access_type": "ip", "access_to": "192.168.1.100"}]
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver.update_access(
+                Mock(),
+                mock_manila_share,
+                desired,
+                add_rules=[],
+                delete_rules=[],
+                share_server=None,
+            )
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
 
     def test_update_access_rejects_unsupported_access_type(self, driver, mock_manila_share):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
