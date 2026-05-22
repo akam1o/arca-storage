@@ -35,3 +35,18 @@ def test_pacemaker_resources_use_argv_for_pcs_commands(repo_root):
     assert "drbd_resource={{ drbd_resource_name }}" in content
     assert "device={{ pacemaker_fs_device | default" in content
     assert "systemd:nfs-ganesha@{{ pacemaker_ganesha_instance" in content
+
+
+def test_pacemaker_resources_validate_variable_inputs(repo_root):
+    resources = repo_root / "ansible/roles/pacemaker/tasks/resources.yml"
+    content = resources.read_text(encoding="utf-8")
+
+    assert "Validate Pacemaker resource inputs" in content
+    assert "pacemaker_fs_device | default" in content
+    assert "^/dev/" in content
+    assert "pacemaker_fs_directory | default('/exports/tenant_a')" in content
+    assert "pacemaker_netnsvlan_vlan_id | default(100)" in content
+    assert "pacemaker_netnsvlan_ip | default('192.168.10.5')" in content
+    assert "pacemaker_netnsvlan_mtu | default(9000)" in content
+    assert "pacemaker_ganesha_instance | default('tenant_a')" in content
+    assert "safe systemd instance names" in content

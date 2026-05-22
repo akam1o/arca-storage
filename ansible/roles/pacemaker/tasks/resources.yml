@@ -2,6 +2,39 @@
 # Create Pacemaker resources for Arca Storage
 # This file is included from main.yml after cluster is started
 
+- name: Validate Pacemaker resource inputs
+  ansible.builtin.assert:
+    that:
+      - drbd_resource_name is string
+      - (drbd_resource_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - >-
+        (pacemaker_fs_device | default('/dev/' ~ lvm_vg_name ~ '/' ~ (lvm_thin_volume_name | default('vol_tenant_a'))) | string)
+        is match('^/dev/(?!.*(^|/)\.\.?($|/))[A-Za-z0-9._/+:-]+$')
+      - >-
+        (pacemaker_fs_directory | default('/exports/tenant_a') | string)
+        is match('^/(?!$)(?!.*(^|/)\.\.?($|/))[A-Za-z0-9._/+:-]+$')
+      - (pacemaker_netnsvlan_ns | default('tenant_a') | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+      - (pacemaker_netnsvlan_vlan_id | default(100) | string) is match('^[0-9]{1,4}$')
+      - (pacemaker_netnsvlan_vlan_id | default(100) | int) >= 1
+      - (pacemaker_netnsvlan_vlan_id | default(100) | int) <= 4094
+      - (pacemaker_netnsvlan_parent_if | default('bond0') | string) is match('^[A-Za-z0-9][A-Za-z0-9_.:@-]{0,63}$')
+      - >-
+        (pacemaker_netnsvlan_ip | default('192.168.10.5') | string)
+        is match('^(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$')
+      - (pacemaker_netnsvlan_prefix | default(24) | string) is match('^[0-9]{1,2}$')
+      - (pacemaker_netnsvlan_prefix | default(24) | int) >= 1
+      - (pacemaker_netnsvlan_prefix | default(24) | int) <= 32
+      - >-
+        (pacemaker_netnsvlan_gw | default('192.168.10.1') | string)
+        is match('^(?:(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])\.){3}(?:25[0-5]|2[0-4][0-9]|1?[0-9]?[0-9])$')
+      - (pacemaker_netnsvlan_mtu | default(9000) | string) is match('^[0-9]{2,5}$')
+      - (pacemaker_netnsvlan_mtu | default(9000) | int) >= 68
+      - (pacemaker_netnsvlan_mtu | default(9000) | int) <= 65535
+      - (pacemaker_ganesha_instance | default('tenant_a') | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+    fail_msg: >-
+      Pacemaker resource inputs must use safe resource names, /dev devices,
+      absolute export paths, IPv4 network settings, and safe systemd instance names.
+
 - name: Check if DRBD master resource exists
   ansible.builtin.command:
     argv:
