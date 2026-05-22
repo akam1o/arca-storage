@@ -1,4 +1,34 @@
 ---
+- name: Validate NFS-Ganesha inputs
+  ansible.builtin.assert:
+    that:
+      - nfs_ganesha_config_dir is string
+      - (nfs_ganesha_config_dir | string) is match('^/(?!$)(?!.*(^|/)\.\.?($|/))[A-Za-z0-9._/+:-]+$')
+      - nfs_ganesha_export_dir is string
+      - (nfs_ganesha_export_dir | string) is match('^/(?!$)(?!.*(^|/)\.\.?($|/))[A-Za-z0-9._/+:-]+$')
+      - (nfs_ganesha_export_id | string) is match('^[1-9][0-9]{0,9}$')
+      - nfs_ganesha_protocols is sequence
+      - nfs_ganesha_protocols is not string
+      - (nfs_ganesha_protocols | length) > 0
+      - (nfs_ganesha_protocols | map('int') | difference([3, 4]) | list | length) == 0
+      - nfs_ganesha_transports is sequence
+      - nfs_ganesha_transports is not string
+      - (nfs_ganesha_transports | length) > 0
+      - (nfs_ganesha_transports | reject('match', '^(TCP|UDP)$') | list | length) == 0
+      - (nfs_ganesha_mountd_port | string) is match('^[1-9][0-9]{0,4}$')
+      - (nfs_ganesha_mountd_port | int) <= 65535
+      - (nfs_ganesha_nlm_port | string) is match('^[1-9][0-9]{0,4}$')
+      - (nfs_ganesha_nlm_port | int) <= 65535
+      - nfs_ganesha_tenants is sequence
+      - nfs_ganesha_tenants is not string
+      - (nfs_ganesha_tenants | length) > 0
+      - (nfs_ganesha_tenants | reject('match', '^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$') | list | length) == 0
+      - >-
+        (nfs_ganesha_export_clients | string) is match('^(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}/[0-9]{1,2}|[0-9A-Fa-f:]+/[0-9]{1,3})(?:\s*,\s*(?:[0-9]{1,3}(?:\.[0-9]{1,3}){3}/[0-9]{1,2}|[0-9A-Fa-f:]+/[0-9]{1,3}))*$')
+    fail_msg: >-
+      NFS-Ganesha inputs must use safe absolute paths, valid protocol/transport
+      values, safe tenant names, and CIDR-only export clients.
+
 - name: Install NFS-Ganesha packages
   ansible.builtin.package:
     name: "{{ nfs_ganesha_packages }}"
