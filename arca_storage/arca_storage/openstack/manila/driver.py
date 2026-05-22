@@ -230,7 +230,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     self._allow_insecure_api_token_transport(),
                 )
             except ValueError as e:
-                raise manila_exception.ManilaException(str(e)) from e
+                raise manila_exception.ManilaException(safe_error_detail(e)) from e
 
             # Initialize ARCA Storage API client
             self.arca_client = arca_client.ArcaManilaClient(
@@ -317,9 +317,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             LOG.info("ARCA Storage Manila driver initialized successfully")
 
         except Exception as e:
-            LOG.exception("Failed to initialize ARCA Storage Manila driver: %s", e)
+            details = safe_error_detail(e)
+            LOG.error("Failed to initialize ARCA Storage Manila driver: %s", details)
             raise manila_exception.ManilaException(
-                f"Driver initialization failed: {str(e)}"
+                f"Driver initialization failed: {details}"
             )
 
     def check_for_setup_error(self):
@@ -339,8 +340,9 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             self.arca_client.list_svms()
             LOG.debug("API connectivity test passed")
         except Exception as e:
+            details = safe_error_detail(e)
             raise manila_exception.ManilaException(
-                f"Failed to connect to ARCA Storage API: {str(e)}"
+                f"Failed to connect to ARCA Storage API: {details}"
             )
 
     def _require_arca_client(self) -> arca_client.ArcaManilaClient:
@@ -1300,7 +1302,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             LOG.error(
                                 "Failed to cleanup allocation %s: %s",
                                 allocation.allocation_id,
-                                cleanup_error,
+                                safe_error_detail(cleanup_error),
                             )
 
                     svm_info = arca_client_obj.get_svm(svm_name)
@@ -1314,10 +1316,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
                 except (arca_exceptions.ArcaNetworkPoolExhausted, arca_exceptions.ArcaNetworkConfigurationError) as e:
                     # Non-retryable network error (pool exhausted or config error)
+                    details = safe_error_detail(e)
                     LOG.error(
                         "Non-retryable network error for SVM %s: %s",
                         svm_name,
-                        e,
+                        details,
                     )
 
                     # Cleanup allocated network resource if it exists (though unlikely for these errors)
@@ -1332,22 +1335,23 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             LOG.error(
                                 "Failed to cleanup allocation %s: %s",
                                 allocation.allocation_id,
-                                cleanup_error,
+                                safe_error_detail(cleanup_error),
                             )
 
                     # Don't retry - raise immediately
                     raise manila_exception.ShareBackendException(
-                        f"Failed to allocate network for SVM {svm_name}: {str(e)}"
+                        f"Failed to allocate network for SVM {svm_name}: {details}"
                     )
 
                 except arca_exceptions.ArcaNetworkConflict as e:
                     # Network conflict - cleanup allocated port if it exists and retry
+                    details = safe_error_detail(e)
                     LOG.warning(
                         "Network conflict on attempt %d/%d for SVM %s: %s",
                         attempt + 1,
                         max_retries,
                         svm_name,
-                        e,
+                        details,
                     )
 
                     # Cleanup allocated network resource if it exists
@@ -1362,7 +1366,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             LOG.error(
                                 "Failed to cleanup allocation %s: %s",
                                 allocation.allocation_id,
-                                cleanup_error,
+                                safe_error_detail(cleanup_error),
                             )
 
                     if attempt < max_retries - 1:
@@ -1371,12 +1375,18 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                         # All retries exhausted
                         raise manila_exception.ShareBackendException(
                             f"Failed to allocate network for SVM {svm_name} "
-                            f"after {max_retries} attempts: {str(e)}"
+                            f"after {max_retries} attempts: {details}"
                         )
 
                 except Exception as e:
                     # Unexpected error - cleanup and raise
-                    LOG.exception("Failed to create SVM %s for project %s", svm_name, project_id)
+                    details = safe_error_detail(e)
+                    LOG.error(
+                        "Failed to create SVM %s for project %s: %s",
+                        svm_name,
+                        project_id,
+                        details,
+                    )
 
                     # Cleanup allocated network resource if it exists
                     if allocation and allocation.allocation_id:
@@ -1390,11 +1400,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                             LOG.error(
                                 "Failed to cleanup allocation %s: %s",
                                 allocation.allocation_id,
-                                cleanup_error,
+                                safe_error_detail(cleanup_error),
                             )
 
                     raise manila_exception.ShareBackendException(
-                        f"Failed to create SVM for project: {str(e)}"
+                        f"Failed to create SVM for project: {details}"
                     )
 
             raise manila_exception.ShareBackendException(

@@ -122,6 +122,44 @@ class TestArcaStorageManilaDriverSharedStrategy:
 
         mock_client_class.assert_not_called()
 
+    def test_do_setup_redacts_sensitive_client_init_errors(
+        self, mock_manila_driver_config
+    ):
+        drv = manila_driver.ArcaStorageManilaDriver()
+        drv.configuration = mock_manila_driver_config
+
+        with patch(
+            "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
+        ) as mock_client_class:
+            mock_client_class.side_effect = RuntimeError(
+                "Authorization: Bearer secret-token password=hunter2"
+            )
+
+            with pytest.raises(
+                manila_driver.manila_exception.ManilaException
+            ) as exc_info:
+                drv.do_setup(Mock())
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    def test_check_for_setup_error_redacts_sensitive_api_errors(
+        self, driver, mock_arca_client
+    ):
+        mock_arca_client.list_svms.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(
+            manila_driver.manila_exception.ManilaException
+        ) as exc_info:
+            driver.check_for_setup_error()
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
     def test_update_share_stats_includes_pool_capabilities(self, driver):
         stats = driver._update_share_stats()
         assert stats["storage_protocol"] == "NFS"

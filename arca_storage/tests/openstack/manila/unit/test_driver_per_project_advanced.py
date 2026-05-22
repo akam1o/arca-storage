@@ -86,6 +86,93 @@ class TestPerProjectNetworkConflictRetry:
         # Note: Implementation uses max_retries=3 in retry loop
         assert mock_arca_client.create_svm.call_count >= 3
 
+    def test_create_svm_redacts_sensitive_conflict_after_retries(
+        self, driver, mock_arca_client
+    ):
+        def get_svm_side_effect(name):
+            if name == "manila_test-project-id":
+                raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
+            return {"name": name}
+
+        driver._network_allocator.allocate = Mock(
+            return_value=Mock(
+                vlan_id=100,
+                ip_cidr="192.168.100.10/24",
+                gateway="192.168.100.1",
+                allocation_id="alloc-123",
+            )
+        )
+        driver._network_allocator.deallocate = Mock()
+        mock_arca_client.get_svm.side_effect = get_svm_side_effect
+        mock_arca_client.create_svm.side_effect = arca_exceptions.ArcaNetworkConflict(
+            details="Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver._allocate_per_project_svm("test-project-id")
+
+        assert mock_arca_client.create_svm.call_count == 3
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    def test_create_svm_redacts_sensitive_non_retryable_network_errors(
+        self, driver, mock_arca_client
+    ):
+        def get_svm_side_effect(name):
+            if name == "manila_test-project-id":
+                raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
+            return {"name": name}
+
+        driver._network_allocator.allocate = Mock(
+            side_effect=arca_exceptions.ArcaNetworkPoolExhausted(
+                details="Authorization: Bearer secret-token password=hunter2"
+            )
+        )
+        mock_arca_client.get_svm.side_effect = get_svm_side_effect
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver._allocate_per_project_svm("test-project-id")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    def test_create_svm_redacts_sensitive_unexpected_backend_errors(
+        self, driver, mock_arca_client
+    ):
+        def get_svm_side_effect(name):
+            if name == "manila_test-project-id":
+                raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
+            return {"name": name}
+
+        driver._network_allocator.allocate = Mock(
+            return_value=Mock(
+                vlan_id=100,
+                ip_cidr="192.168.100.10/24",
+                gateway="192.168.100.1",
+                allocation_id="alloc-123",
+            )
+        )
+        driver._network_allocator.deallocate = Mock()
+        mock_arca_client.get_svm.side_effect = get_svm_side_effect
+        mock_arca_client.create_svm.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException
+        ) as exc_info:
+            driver._allocate_per_project_svm("test-project-id")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
     def test_create_svm_handles_vlan_conflict(self, driver, mock_arca_client, mock_manila_share):
         """Test that VLAN conflicts are also retried."""
         def get_svm_side_effect(name):
