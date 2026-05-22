@@ -110,13 +110,24 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
 
 
 @pytest.mark.unit
-def test_load_settings_rejects_world_open_csi_client_cidr(monkeypatch, temp_dir):
+@pytest.mark.parametrize(
+    "cidr, match",
+    [
+        ("0.0.0.0/0", "default route"),
+        ("10.0.0.1/0", "default route"),
+        ("127.0.0.0/8", "loopback"),
+        ("169.254.0.0/16", "link-local"),
+        ("224.0.0.0/4", "multicast"),
+        ("240.0.0.0/4", "reserved"),
+    ],
+)
+def test_load_settings_rejects_unsafe_csi_client_cidr(monkeypatch, temp_dir, cidr, match):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
         "\n".join(
             [
                 "[csi]",
-                'client_cidrs = ["0.0.0.0/0"]',
+                f"client_cidrs = [{cidr!r}]",
             ]
         ),
         encoding="utf-8",
@@ -125,7 +136,7 @@ def test_load_settings_rejects_world_open_csi_client_cidr(monkeypatch, temp_dir)
 
     from arca_storage.config import load_settings
 
-    with pytest.raises(ValueError, match="IPv4 default route"):
+    with pytest.raises(ValueError, match=match):
         load_settings()
 
 

@@ -2,6 +2,8 @@
 Integration tests for CSI compatibility endpoints.
 """
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
@@ -321,6 +323,47 @@ def test_csi_directory_normalizes_configured_client_cidrs(fake_context):
     )
     assert response.status_code == 201
     assert len(fake_context.adapters.ganesha.exports[svm_name]) == 2
+
+
+@pytest.mark.parametrize(
+    "cidr, message",
+    [
+        ("127.0.0.0/8", "loopback"),
+        ("169.254.0.0/16", "link-local"),
+        ("224.0.0.0/4", "multicast"),
+        ("240.0.0.0/4", "reserved"),
+    ],
+)
+def test_csi_directory_rejects_unsafe_configured_client_cidrs(fake_context, cidr, message):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+    fake_context.settings.csi.client_cidrs = [cidr]
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert message in response.json()["error"]["message"]
+    assert fake_context.db.get_volume(svm_name, volume_path) is None
+    assert fake_context.adapters.ganesha.exports.get(svm_name, []) == []
 
 
 def test_csi_directory_requires_configured_client_cidrs(fake_context):

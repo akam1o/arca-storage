@@ -2,13 +2,14 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
 import re
 from pathlib import Path, PurePosixPath
 from typing import Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+
+from arca_storage.cli.lib.validators import normalize_nfs_client_cidr
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
@@ -176,14 +177,9 @@ class CSIConfig(BaseModel):
         seen: set[str] = set()
         for raw in value:
             try:
-                network = ipaddress.ip_network(str(raw).strip(), strict=False)
+                normalized = normalize_nfs_client_cidr(str(raw).strip())
             except Exception as e:
                 raise ValueError(f"invalid CSI client CIDR {raw!r}: {e}") from e
-            if network.version != 4:
-                raise ValueError(f"CSI client CIDR must be IPv4: {raw!r}")
-            if network.prefixlen == 0:
-                raise ValueError("CSI client CIDRs must not include the IPv4 default route")
-            normalized = str(network)
             if normalized not in seen:
                 seen.add(normalized)
                 cidrs.append(normalized)
