@@ -1,6 +1,8 @@
 package config
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -126,6 +128,19 @@ func TestValidateForModeRequiresTokenByDefault(t *testing.T) {
 	}
 }
 
+func TestValidateForModeRejectsBlankAuthToken(t *testing.T) {
+	cfg := minimalConfigWithoutPools()
+	cfg.ARCA.AuthToken = " \t\n "
+
+	err := cfg.ValidateForMode("node")
+	if err == nil {
+		t.Fatal("ValidateForMode(node) error = nil, want blank auth token error")
+	}
+	if !strings.Contains(err.Error(), "arca.auth_token is required") {
+		t.Fatalf("ValidateForMode(node) error = %v, want auth token error", err)
+	}
+}
+
 func TestValidateForModeAllowsExplicitNoAuth(t *testing.T) {
 	cfg := minimalConfigWithoutPools()
 	cfg.ARCA.AuthType = AuthTypeNone
@@ -217,6 +232,16 @@ func TestToArcaClientConfigOmitsTokenWhenAuthDisabled(t *testing.T) {
 	}
 }
 
+func TestToArcaClientConfigTrimsAuthToken(t *testing.T) {
+	cfg := minimalConfigWithoutPools()
+	cfg.ARCA.AuthToken = " test-token \n"
+
+	clientConfig := cfg.ToArcaClientConfig()
+	if clientConfig.AuthToken != "test-token" {
+		t.Fatalf("AuthToken = %q, want trimmed token", clientConfig.AuthToken)
+	}
+}
+
 func TestToArcaClientConfigPropagatesInsecureTokenTransportOptIn(t *testing.T) {
 	cfg := minimalConfigWithoutPools()
 	cfg.ARCA.AllowInsecureTokenTransport = true
@@ -225,4 +250,54 @@ func TestToArcaClientConfigPropagatesInsecureTokenTransportOptIn(t *testing.T) {
 	if !clientConfig.AllowInsecureTokenTransport {
 		t.Fatal("AllowInsecureTokenTransport = false, want true")
 	}
+}
+
+func TestLoadConfigTrimsAuthTokenAndIgnoresBlankEnvOverride(t *testing.T) {
+	configPath := writeConfigFile(t, `
+arca:
+  base_url: "https://arca-api.example.com"
+  auth_token: " file-token "
+driver:
+  endpoint: "unix:///csi/csi.sock"
+`)
+
+	t.Setenv("ARCA_AUTH_TOKEN", " \t\n ")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.ARCA.AuthToken != "file-token" {
+		t.Fatalf("AuthToken = %q, want file token preserved and trimmed", cfg.ARCA.AuthToken)
+	}
+}
+
+func TestLoadConfigTrimsEnvAuthTokenOverride(t *testing.T) {
+	configPath := writeConfigFile(t, `
+arca:
+  base_url: "https://arca-api.example.com"
+  auth_token: "file-token"
+driver:
+  endpoint: "unix:///csi/csi.sock"
+`)
+
+	t.Setenv("ARCA_AUTH_TOKEN", " env-token \n")
+
+	cfg, err := LoadConfig(configPath)
+	if err != nil {
+		t.Fatalf("LoadConfig() error = %v", err)
+	}
+	if cfg.ARCA.AuthToken != "env-token" {
+		t.Fatalf("AuthToken = %q, want trimmed env token", cfg.ARCA.AuthToken)
+	}
+}
+
+func writeConfigFile(t *testing.T, content string) string {
+	t.Helper()
+
+	configPath := filepath.Join(t.TempDir(), "config.yaml")
+	if err := os.WriteFile(configPath, []byte(content), 0o600); err != nil {
+		t.Fatalf("failed to write test config: %v", err)
+	}
+	return configPath
 }

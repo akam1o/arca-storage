@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -112,9 +113,10 @@ func LoadConfig(path string) (*Config, error) {
 	if config.ARCA.AuthType == "" {
 		config.ARCA.AuthType = AuthTypeToken
 	}
+	config.ARCA.AuthToken = strings.TrimSpace(config.ARCA.AuthToken)
 
 	// Override auth token from environment if set
-	if envToken := os.Getenv("ARCA_AUTH_TOKEN"); envToken != "" {
+	if envToken := strings.TrimSpace(os.Getenv("ARCA_AUTH_TOKEN")); envToken != "" {
 		config.ARCA.AuthToken = envToken
 	}
 
@@ -132,14 +134,15 @@ func (c *Config) ValidateForMode(mode string) error {
 		return fmt.Errorf("arca.base_url is required")
 	}
 	authType := normalizedAuthType(c.ARCA.AuthType)
+	authToken := strings.TrimSpace(c.ARCA.AuthToken)
 	switch authType {
 	case AuthTypeToken:
-		if c.ARCA.AuthToken == "" {
+		if authToken == "" {
 			return fmt.Errorf("arca.auth_token is required when arca.auth_type is %q", AuthTypeToken)
 		}
 		if err := arca.ValidateTokenTransport(
 			c.ARCA.BaseURL,
-			c.ARCA.AuthToken,
+			authToken,
 			c.ARCA.AllowInsecureTokenTransport,
 		); err != nil {
 			return fmt.Errorf("arca.base_url: %w", err)
@@ -231,7 +234,7 @@ func (c *Config) validateNetworkPools() error {
 
 // ToArcaClientConfig converts to ARCA client configuration
 func (c *Config) ToArcaClientConfig() *arca.ClientConfig {
-	authToken := c.ARCA.AuthToken
+	authToken := strings.TrimSpace(c.ARCA.AuthToken)
 	if normalizedAuthType(c.ARCA.AuthType) == AuthTypeNone {
 		authToken = ""
 	}
