@@ -133,7 +133,7 @@ metadata:
 spec:
   containers:
     - name: app
-      image: nginx:latest
+      image: nginx:1.27.5-alpine
       volumeMounts:
         - name: data
           mountPath: /data

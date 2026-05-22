@@ -144,3 +144,16 @@ def test_csi_controller_rbac_limits_crd_discovery(repo_root):
         assert "arcasnapshots.storage.arca.io" in crd_rule
         assert 'verbs: ["get"]' in crd_rule
         assert 'verbs: ["get", "list"]' not in crd_rule
+
+
+def test_csi_example_workloads_do_not_use_latest_image_tag(repo_root):
+    example_sources = [
+        repo_root / "csi-arca-storage/deploy/examples/pod.yaml",
+        repo_root / "csi-arca-storage/docs/quickstart.md",
+        repo_root / "csi-arca-storage/docs/quickstart.ja.md",
+    ]
+
+    for source_path in example_sources:
+        content = source_path.read_text(encoding="utf-8")
+        assert ":latest" not in content
+        assert "nginx:1.27.5-alpine" in content
