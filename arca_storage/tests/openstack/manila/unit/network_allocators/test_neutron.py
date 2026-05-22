@@ -210,6 +210,26 @@ class TestNeutronAllocator:
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
+    def test_validate_config_redacts_sensitive_neutron_errors(
+        self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
+    ):
+        """Network validation errors should not leak credentials."""
+        mock_ks_loading.load_auth_from_conf_options.return_value = Mock()
+        mock_ks_loading.load_session_from_conf_options.return_value = Mock()
+        mock_neutron_module.Client.return_value = mock_neutron_client
+        mock_neutron_client.show_network.side_effect = Exception(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(ValueError) as exc_info:
+            allocator.validate_config()
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_allocate_creates_port(
         self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
     ):

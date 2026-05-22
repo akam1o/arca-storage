@@ -519,8 +519,9 @@ class NeutronAllocator(NetworkAllocator):
             }
 
         except Exception as e:
-            LOG.exception("Network validation failed for %s", net_id)
-            raise ValueError(f"Network {net_id} validation failed: {e}")
+            details = safe_error_detail(e)
+            LOG.error("Network validation failed for %s: %s", net_id, details)
+            raise ValueError(f"Network {net_id} validation failed: {details}") from e
 
     def _create_neutron_client(self):
         """Create Neutron client using [neutron] section auth configuration.

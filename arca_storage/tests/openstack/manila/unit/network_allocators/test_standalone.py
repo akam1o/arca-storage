@@ -178,6 +178,20 @@ class TestStandaloneAllocator:
         assert isinstance(allocation, NetworkAllocation)
         assert allocation.vlan_id in [100, 101]
 
+    def test_allocate_redacts_sensitive_unexpected_errors(self, allocator):
+        """Unexpected allocation errors should not leak credentials."""
+        allocator.validate_config()
+        allocator._allocate_from_multi_pool = Mock(
+            side_effect=Exception("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
+            allocator.allocate("project-123", "manila_project-123")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+
     def test_deallocate_is_noop(self, allocator):
         """Test deallocate is a no-op for standalone mode."""
         allocator.validate_config()

@@ -12,6 +12,8 @@ from typing import Any, Dict, List, Set
 
 from oslo_log import log as logging  # type: ignore[import-untyped]
 
+from arca_storage.openstack.http_errors import safe_error_detail
+
 from ..exceptions import (
     ArcaNetworkConflict,
     ArcaNetworkConfigurationError,
@@ -132,14 +134,15 @@ class StandaloneAllocator(NetworkAllocator):
             raise
         except Exception as e:
             # Unknown error - treat as retryable conflict
+            details = safe_error_detail(e)
             LOG.error(
                 "Failed to allocate network for project %s (attempt %d): %s",
                 project_id,
                 retry_attempt,
-                e,
+                details,
             )
             raise ArcaNetworkConflict(
-                details=f"Network allocation failed: {str(e)}"
+                details=f"Network allocation failed: {details}"
             )
 
     def deallocate(self, allocation_id: str) -> None:
@@ -381,7 +384,11 @@ class StandaloneAllocator(NetworkAllocator):
                 continue
             except Exception as e:
                 # Unknown error in this pool - log and try next pool
-                LOG.warning("Pool %d allocation failed with unexpected error: %s", pool_idx, e)
+                LOG.warning(
+                    "Pool %d allocation failed with unexpected error: %s",
+                    pool_idx,
+                    safe_error_detail(e),
+                )
                 continue
 
         # All pools exhausted or failed - raise non-retryable error
@@ -453,7 +460,7 @@ class StandaloneAllocator(NetworkAllocator):
                             LOG.warning("Invalid ip_cidr format in SVM %s: %s", svm["name"], ip_cidr)
 
         except Exception as e:
-            LOG.warning("Failed to get used IPs in VLAN %d: %s", vlan_id, e)
+            LOG.warning("Failed to get used IPs in VLAN %d: %s", vlan_id, safe_error_detail(e))
             # Return empty set and let allocation proceed
             # (will rely on backend to detect conflicts)
 
