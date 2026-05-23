@@ -10,6 +10,34 @@ def _ganesha_service_files(repo_root):
     ]
 
 
+def _api_service_file(repo_root):
+    return repo_root / "arca_storage/arca_storage/resources/systemd/arca-storage-api.service"
+
+
+def test_api_unit_has_baseline_hardening(repo_root):
+    content = _api_service_file(repo_root).read_text(encoding="utf-8")
+
+    for directive in [
+        "NoNewPrivileges=true",
+        "PrivateTmp=true",
+        "ProtectSystem=full",
+        "ProtectHome=true",
+        "LockPersonality=true",
+        "RestrictRealtime=true",
+        "RestrictSUIDSGID=true",
+        "ProtectClock=true",
+        "ProtectHostname=true",
+        "ProtectKernelLogs=true",
+        "SystemCallArchitectures=native",
+    ]:
+        assert directive in content
+
+    assert "ReadWritePaths=/etc/arca-storage /etc/ganesha /var/lib/arca-storage /run /var/run /exports" in content
+    assert "CapabilityBoundingSet=" in content
+    assert "CAP_SYS_ADMIN" in content
+    assert "CAP_NET_ADMIN" in content
+
+
 def test_ganesha_units_pass_configured_pid_file(repo_root):
     for service_file in _ganesha_service_files(repo_root):
         content = service_file.read_text(encoding="utf-8")
