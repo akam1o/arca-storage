@@ -2,6 +2,7 @@ package arca
 
 import (
 	"context"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -100,5 +101,33 @@ func TestStandaloneAllocatorSkipsGateway(t *testing.T) {
 	}
 	if allocation.IPCIDR != "10.0.0.2/30" {
 		t.Fatalf("Allocate() IPCIDR = %q, want 10.0.0.2/30", allocation.IPCIDR)
+	}
+}
+
+func TestRandomHostOffsetRejectsInvalidHostCount(t *testing.T) {
+	if _, err := randomHostOffset(0); err == nil {
+		t.Fatal("randomHostOffset() error = nil, want invalid host count error")
+	}
+}
+
+func TestRandomHostOffsetSingleHost(t *testing.T) {
+	offset, err := randomHostOffset(1)
+	if err != nil {
+		t.Fatalf("randomHostOffset() error = %v", err)
+	}
+	if offset != 0 {
+		t.Fatalf("randomHostOffset() = %d, want 0", offset)
+	}
+}
+
+func TestIncrementIPClampsWithinIPv4Range(t *testing.T) {
+	if got := incrementIP(net.ParseIP("0.0.0.0").To4(), -1); got.String() != "0.0.0.0" {
+		t.Fatalf("incrementIP() = %s, want 0.0.0.0", got)
+	}
+	if got := incrementIP(net.ParseIP("255.255.255.255").To4(), 1); got.String() != "255.255.255.255" {
+		t.Fatalf("incrementIP() = %s, want 255.255.255.255", got)
+	}
+	if got := incrementIP(net.ParseIP("10.0.0.1").To4(), 1); got.String() != "10.0.0.2" {
+		t.Fatalf("incrementIP() = %s, want 10.0.0.2", got)
 	}
 }

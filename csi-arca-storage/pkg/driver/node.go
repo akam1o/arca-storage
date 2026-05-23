@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"path/filepath"
@@ -36,6 +37,26 @@ func nodeInternalError(message string, err error) error {
 		klog.V(4).Infof("%s: %T", message, err)
 	}
 	return status.Error(codes.Internal, message)
+}
+
+func statfsBlocksToBytes(blocks uint64, blockSize int64, label string) (int64, error) {
+	if blockSize < 0 {
+		return 0, fmt.Errorf("%s block size is negative", label)
+	}
+	if blocks == 0 || blockSize == 0 {
+		return 0, nil
+	}
+	if blocks > uint64(math.MaxInt64)/uint64(blockSize) {
+		return 0, fmt.Errorf("%s exceeds int64 range", label)
+	}
+	return int64(blocks) * blockSize, nil // #nosec G115 -- checked against math.MaxInt64 before conversion.
+}
+
+func statfsValueToInt64(value uint64, label string) (int64, error) {
+	if value > uint64(math.MaxInt64) {
+		return 0, fmt.Errorf("%s exceeds int64 range", label)
+	}
+	return int64(value), nil
 }
 
 func nodeLogWarning(message string, err error) {
@@ -735,11 +756,26 @@ func (d *Driver) NodeGetVolumeStats(ctx context.Context, req *csi.NodeGetVolumeS
 	if fs.Blocks > fs.Bfree {
 		usedBlocks = fs.Blocks - fs.Bfree
 	}
-	totalBytes := int64(fs.Blocks) * blockSize
-	availableBytes := int64(fs.Bavail) * blockSize
-	usedBytes := int64(usedBlocks) * blockSize
-	totalInodes := int64(fs.Files)
-	availableInodes := int64(fs.Ffree)
+	totalBytes, err := statfsBlocksToBytes(fs.Blocks, blockSize, "total bytes")
+	if err != nil {
+		return nil, nodeInternalError("failed to convert total filesystem size", err)
+	}
+	availableBytes, err := statfsBlocksToBytes(fs.Bavail, blockSize, "available bytes")
+	if err != nil {
+		return nil, nodeInternalError("failed to convert available filesystem size", err)
+	}
+	usedBytes, err := statfsBlocksToBytes(usedBlocks, blockSize, "used bytes")
+	if err != nil {
+		return nil, nodeInternalError("failed to convert used filesystem size", err)
+	}
+	totalInodes, err := statfsValueToInt64(fs.Files, "total inodes")
+	if err != nil {
+		return nil, nodeInternalError("failed to convert total inode count", err)
+	}
+	availableInodes, err := statfsValueToInt64(fs.Ffree, "available inodes")
+	if err != nil {
+		return nil, nodeInternalError("failed to convert available inode count", err)
+	}
 	usedInodes := totalInodes - availableInodes
 	if usedInodes < 0 {
 		usedInodes = 0

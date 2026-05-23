@@ -73,7 +73,7 @@ jobs:
       - name: Run gosec
         run: |
           go install github.com/securego/gosec/v2/cmd/gosec@latest
-          "$(go env GOPATH)/bin/gosec" -exclude-dir=.gomodcache -exclude=G115,G304,G402,G404 ./...
+          "$(go env GOPATH)/bin/gosec" -exclude-dir=.gomodcache ./...
 
       - name: Build CSI image
         run: docker build -t csi-arca-storage:ci .

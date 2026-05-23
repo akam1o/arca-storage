@@ -126,7 +126,7 @@ func buildTLSConfig(config *TLSConfig) (*tls.Config, error) {
 
 	tlsConfig := &tls.Config{
 		MinVersion:         tls.VersionTLS12,
-		InsecureSkipVerify: config.InsecureSkip,
+		InsecureSkipVerify: config.InsecureSkip, // #nosec G402 -- explicit operator opt-out for private ARCA endpoints.
 	}
 
 	// Load CA certificate

@@ -93,7 +93,7 @@ func (d Duration) MarshalYAML() (interface{}, error) {
 
 // LoadConfig loads configuration from a file
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is an operator-provided config file.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}

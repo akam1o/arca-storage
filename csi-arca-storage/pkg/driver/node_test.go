@@ -360,6 +360,26 @@ func TestNodeGetVolumeStatsReturnsFilesystemUsage(t *testing.T) {
 	}
 }
 
+func TestStatfsBlocksToBytesRejectsOverflow(t *testing.T) {
+	_, err := statfsBlocksToBytes(uint64(1<<63), 2, "total bytes")
+	if err == nil {
+		t.Fatal("statfsBlocksToBytes() error = nil, want overflow error")
+	}
+	if !strings.Contains(err.Error(), "total bytes exceeds int64 range") {
+		t.Fatalf("statfsBlocksToBytes() error = %v, want overflow message", err)
+	}
+}
+
+func TestStatfsValueToInt64RejectsOverflow(t *testing.T) {
+	_, err := statfsValueToInt64(uint64(1<<63), "total inodes")
+	if err == nil {
+		t.Fatal("statfsValueToInt64() error = nil, want overflow error")
+	}
+	if !strings.Contains(err.Error(), "total inodes exceeds int64 range") {
+		t.Fatalf("statfsValueToInt64() error = %v, want overflow message", err)
+	}
+}
+
 func TestNodeStageSerializesSVMMountLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	ensureStarted := make(chan struct{})
