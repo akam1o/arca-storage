@@ -15,6 +15,10 @@ from arca_storage.openstack.cinder import exceptions as arca_exceptions
 class TestUtilityFunctions(unittest.TestCase):
     """Test utility functions."""
 
+    def _assert_redacted(self, rendered: str, *forbidden_values: str) -> None:
+        for forbidden in forbidden_values:
+            assert forbidden not in rendered
+
     def _fake_sparse_cp(self, command, **kwargs):
         """Stand in for GNU cp --sparse=always in platform-neutral unit tests."""
         with open(command[-2], "rb") as source:
@@ -286,10 +290,10 @@ class TestUtilityFunctions(unittest.TestCase):
             with open(volume_file, "wb"):
                 pass
 
-            with pytest.raises(
-                arca_exceptions.ArcaStorageException, match="already exists"
-            ):
+            with pytest.raises(arca_exceptions.ArcaStorageException, match="already exists") as exc_info:
                 arca_utils.create_volume_file(mount_point, "test-volume", 10)
+
+            self._assert_redacted(str(exc_info.value), mount_point, volume_file)
 
     def test_create_volume_file_adopts_matching_existing_file(self):
         """Retry adoption accepts an existing file only when its size matches."""
@@ -335,13 +339,15 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="expected"
-            ):
+            ) as exc_info:
                 arca_utils.create_volume_file(
                     mount_point,
                     "test-volume",
                     1,
                     adopt_existing=True,
                 )
+
+            self._assert_redacted(str(exc_info.value), mount_point, volume_file)
 
     def test_ensure_volume_file_reports_adopted_existing_file(self):
         """ensure_volume_file tells callers whether cleanup owns the file."""
@@ -369,9 +375,10 @@ class TestUtilityFunctions(unittest.TestCase):
                 with pytest.raises(
                     arca_exceptions.ArcaStorageException,
                     match="Failed to create volume file",
-                ):
+                ) as exc_info:
                     arca_utils.ensure_volume_file(mount_point, "test-volume", 1)
 
+            self._assert_redacted(str(exc_info.value), mount_point, volume_file, "truncate failed")
             assert not os.path.exists(volume_file)
 
     def test_volume_file_helpers_reject_unsafe_names(self):
@@ -435,8 +442,10 @@ class TestUtilityFunctions(unittest.TestCase):
         mock_remove.side_effect = PermissionError("denied")
 
         with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
-            with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to delete volume file"):
+            with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to delete volume file") as exc_info:
                 arca_utils.delete_volume_file("/mnt/test", "test-volume")
+
+        self._assert_redacted(str(exc_info.value), "/mnt/test", "denied")
 
     def test_extend_volume_file_success(self):
         """Test volume file extension."""
@@ -459,9 +468,10 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="Refusing to shrink volume file"
-            ):
+            ) as exc_info:
                 arca_utils.extend_volume_file(temp_dir, "test-volume", 1)
 
+            self._assert_redacted(str(exc_info.value), temp_dir, volume_path)
             assert os.path.getsize(volume_path) == original_size
 
     def test_extend_volume_file_not_exists(self):
@@ -469,8 +479,10 @@ class TestUtilityFunctions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as temp_dir:
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="does not exist"
-            ):
+            ) as exc_info:
                 arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
+
+            self._assert_redacted(str(exc_info.value), temp_dir)
 
     def test_extend_volume_file_rejects_symlink(self):
         """Volume extension must not follow symlinked volume paths."""
@@ -483,8 +495,10 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="not a regular file"
-            ):
+            ) as exc_info:
                 arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, link_path, target_path)
 
     def test_copy_sparse_file_rejects_symlink_source(self):
         """Sparse copy must not follow a symlinked source path."""
@@ -498,8 +512,10 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="not a symlink"
-            ):
+            ) as exc_info:
                 arca_utils.copy_sparse_file(source_path, dest_path)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, source_path, target_path)
 
     def test_copy_sparse_file_reads_open_source_after_path_replacement(self):
         """Sparse copy reads the validated fd even if the path is replaced later."""
@@ -603,9 +619,10 @@ class TestUtilityFunctions(unittest.TestCase):
                         with pytest.raises(
                             arca_exceptions.ArcaStorageException,
                             match="created by another worker",
-                        ):
+                        ) as exc_info:
                             arca_utils.copy_sparse_file(source_path, dest_path)
 
+            self._assert_redacted(str(exc_info.value), temp_dir, dest_path)
             with open(dest_path, "rb") as dest:
                 assert dest.read() == b"concurrent-data"
 
@@ -627,14 +644,53 @@ class TestUtilityFunctions(unittest.TestCase):
                 ):
                     with pytest.raises(
                         arca_exceptions.ArcaStorageException,
-                        match="dir sync failed",
-                    ):
+                        match="Failed during file copy operation",
+                    ) as exc_info:
                         arca_utils.copy_sparse_file(source_path, dest_path)
 
+            self._assert_redacted(str(exc_info.value), temp_dir, source_path, dest_path, "dir sync failed")
             assert not os.path.exists(dest_path)
             assert not [
                 name for name in os.listdir(temp_dir) if name.startswith(".dest.tmp.")
             ]
+
+    def test_copy_sparse_file_timeout_redacts_source_and_dest(self):
+        """Sparse copy timeouts must not surface source or destination paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("cp", timeout=5),
+            ):
+                with pytest.raises(arca_exceptions.ArcaStorageException, match="File copy timed out") as exc_info:
+                    arca_utils.copy_sparse_file(source_path, dest_path, timeout=5)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, source_path, dest_path)
+
+    def test_copy_sparse_file_failure_redacts_command_stderr(self):
+        """Sparse copy command failures must not surface paths or subprocess stderr."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=subprocess.CalledProcessError(
+                    1,
+                    "cp",
+                    stderr=f"copy failed for {source_path} -> {dest_path}: token=secret-token",
+                ),
+            ):
+                with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to copy file") as exc_info:
+                    arca_utils.copy_sparse_file(source_path, dest_path)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, source_path, dest_path, "secret-token")
 
     @patch("arca_storage.openstack.cinder.utils.os.rmdir")
     def test_cleanup_mount_point_success(self, mock_rmdir):
