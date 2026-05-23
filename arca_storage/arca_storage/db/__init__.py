@@ -226,6 +226,10 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
         """CREATE INDEX IF NOT EXISTS idx_operation_log_created_at
            ON operation_log(created_at)"""
     )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_exports_svm_owner
+           ON exports(svm, json_extract(spec, '$.owner'))"""
+    )
 
 
 def _register_backend_lv_conn(
@@ -532,6 +536,21 @@ class StateDB:
         try:
             if immediate:
                 conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @contextmanager
+    def _read_transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = self._conn()
+        if conn.in_transaction:
+            yield conn
+            return
+
+        try:
+            conn.execute("BEGIN")
             yield conn
             conn.commit()
         except Exception:
@@ -1193,8 +1212,8 @@ class StateDB:
     def list_all_volumes(
         self, svm: Optional[str] = None, name: Optional[str] = None
     ) -> list[dict[str, Any]]:
-        conn = self._conn()
-        return self._list_all_volumes_conn(conn, svm=svm, name=name)
+        with self._read_transaction() as conn:
+            return self._list_all_volumes_conn(conn, svm=svm, name=name)
 
     def _list_all_volumes_conn(
         self,
@@ -1553,8 +1572,10 @@ class StateDB:
         volume: Optional[str] = None,
         name: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        conn = self._conn()
-        return self._list_all_snapshots_conn(conn, svm=svm, volume=volume, name=name)
+        with self._read_transaction() as conn:
+            return self._list_all_snapshots_conn(
+                conn, svm=svm, volume=volume, name=name
+            )
 
     def _list_all_snapshots_conn(
         self,
@@ -1886,12 +1907,19 @@ class StateDB:
         svm: Optional[str] = None,
         volume: Optional[str] = None,
         client: Optional[str] = None,
+        owner: Optional[str] = None,
         limit: int = 100,
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         return self._list_exports_conn(
-            conn, svm=svm, volume=volume, client=client, limit=limit, cursor=cursor
+            conn,
+            svm=svm,
+            volume=volume,
+            client=client,
+            owner=owner,
+            limit=limit,
+            cursor=cursor,
         )
 
     def list_all_exports(
@@ -1899,9 +1927,12 @@ class StateDB:
         svm: Optional[str] = None,
         volume: Optional[str] = None,
         client: Optional[str] = None,
+        owner: Optional[str] = None,
     ) -> list[dict[str, Any]]:
-        conn = self._conn()
-        return self._list_all_exports_conn(conn, svm=svm, volume=volume, client=client)
+        with self._read_transaction() as conn:
+            return self._list_all_exports_conn(
+                conn, svm=svm, volume=volume, client=client, owner=owner
+            )
 
     def get_export(
         self, svm: str, volume: str, client: str
@@ -1994,6 +2025,7 @@ class StateDB:
         svm: Optional[str] = None,
         volume: Optional[str] = None,
         client: Optional[str] = None,
+        owner: Optional[str] = None,
         limit: int = 100,
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
@@ -2008,6 +2040,9 @@ class StateDB:
         if client:
             sql += " AND client = ?"
             params.append(client)
+        if owner:
+            sql += " AND json_extract(spec, '$.owner') = ?"
+            params.append(owner)
         cursor_values = _decode_cursor(cursor, 3)
         if cursor_values:
             cursor_svm, cursor_volume, cursor_client = cursor_values
@@ -2036,6 +2071,7 @@ class StateDB:
         svm: Optional[str] = None,
         volume: Optional[str] = None,
         client: Optional[str] = None,
+        owner: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         return self._list_all_pages_conn(
             lambda cursor: self._list_exports_conn(
@@ -2043,6 +2079,7 @@ class StateDB:
                 svm=svm,
                 volume=volume,
                 client=client,
+                owner=owner,
                 limit=_LIST_ALL_PAGE_SIZE,
                 cursor=cursor,
             ),

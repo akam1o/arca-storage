@@ -151,7 +151,7 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) 
 
 
 def _remove_stale_csi_exports(ctx: Any, svm: str, desired_clients: set[str]) -> None:
-    for export in ctx.db.list_all_exports(svm=svm):
+    for export in ctx.db.list_all_exports(svm=svm, owner="csi"):
         spec = export.get("spec", {})
         volume = spec.get("volume")
         client = spec.get("client")

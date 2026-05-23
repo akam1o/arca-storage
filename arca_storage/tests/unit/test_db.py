@@ -511,6 +511,47 @@ class TestStateDB:
             "10.0.2.0/24",
         ]
 
+    def test_list_all_volumes_uses_consistent_snapshot(self, db, monkeypatch):
+        monkeypatch.setattr(db_module, "_LIST_ALL_PAGE_SIZE", 1)
+        for name in ("vol-a", "vol-c"):
+            volume = Volume(spec=VolumeSpec(name=name, svm="svm1", size_gib=10))
+            volume.status.phase = Phase.READY
+            db.insert_volume(volume)
+
+        observer = StateDB(db._db_path)
+        inserted = False
+        original_list_page = db._list_volumes_conn
+
+        def list_page_with_concurrent_insert(
+            conn,
+            svm=None,
+            name=None,
+            limit=100,
+            cursor=None,
+        ):
+            nonlocal inserted
+            page = original_list_page(
+                conn, svm=svm, name=name, limit=limit, cursor=cursor
+            )
+            if not inserted and cursor is None:
+                inserted = True
+                volume = Volume(spec=VolumeSpec(name="vol-b", svm="svm1", size_gib=10))
+                volume.status.phase = Phase.READY
+                observer.insert_volume(volume)
+            return page
+
+        monkeypatch.setattr(db, "_list_volumes_conn", list_page_with_concurrent_insert)
+        try:
+            names = [
+                record["spec"]["name"] for record in db.list_all_volumes(svm="svm1")
+            ]
+        finally:
+            observer.close()
+
+        assert inserted
+        assert names == ["vol-a", "vol-c"]
+        assert db.get_volume("svm1", "vol-b") is not None
+
     def test_reserve_svm_delete_checks_later_pages_before_marking(
         self, db, monkeypatch
     ):
@@ -1178,6 +1219,37 @@ class TestStateDB:
             svm="svm1", limit=2, cursor=encode_cursor(["svm1", "vol1", "10.0.0.0/24"])
         )
         assert [item["spec"]["client"] for item in page] == [
+            "10.0.1.0/24",
+            "10.0.2.0/24",
+        ]
+
+    def test_list_exports_filters_owner(self, db):
+        for client, owner in (
+            ("10.0.0.0/24", "api"),
+            ("10.0.1.0/24", "csi"),
+            ("10.0.2.0/24", "csi"),
+        ):
+            export = Export(
+                spec=ExportSpec(
+                    svm="svm1",
+                    volume="vol1",
+                    client=client,
+                    owner=owner,
+                )
+            )
+            export.status.phase = Phase.READY
+            db.upsert_export(export)
+
+        assert [
+            record["spec"]["client"] for record in db.list_exports(owner="csi")
+        ] == [
+            "10.0.1.0/24",
+            "10.0.2.0/24",
+        ]
+        assert [
+            record["spec"]["client"]
+            for record in db.list_all_exports(svm="svm1", owner="csi")
+        ] == [
             "10.0.1.0/24",
             "10.0.2.0/24",
         ]
