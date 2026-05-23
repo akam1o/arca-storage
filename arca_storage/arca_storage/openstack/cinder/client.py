@@ -227,7 +227,7 @@ class ArcaStorageClient:
             if not next_cursor:
                 return items
             if next_cursor in seen_cursors:
-                raise ArcaAPIError(f"Repeated pagination cursor from ARCA API: {next_cursor}")
+                raise ArcaAPIError("Repeated pagination cursor from ARCA API")
             seen_cursors.add(next_cursor)
 
     # Volume operations

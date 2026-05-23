@@ -424,9 +424,10 @@ class TestArcaStorageClient(unittest.TestCase):
 
         client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
 
-        with pytest.raises(arca_exceptions.ArcaAPIError, match="Repeated pagination cursor"):
+        with pytest.raises(arca_exceptions.ArcaAPIError, match="Repeated pagination cursor") as exc:
             client.list_volumes(svm="test-svm", limit=1)
 
+        assert "cursor-1" not in str(exc.value)
         assert mock_session.request.call_count == 2
 
     @patch("arca_storage.openstack.cinder.client.requests")
