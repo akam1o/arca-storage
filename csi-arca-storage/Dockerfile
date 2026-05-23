@@ -14,8 +14,9 @@ RUN go mod download
 COPY . .
 
 # Build the binary
+ARG VERSION=v1.0.0
 RUN CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build \
-    -ldflags="-s -w" \
+    -ldflags="-s -w -X github.com/akam1o/csi-arca-storage/pkg/driver.DriverVersion=${VERSION}" \
     -o /csi-driver \
     ./cmd/csi-driver
 

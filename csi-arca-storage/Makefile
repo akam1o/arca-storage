@@ -2,8 +2,9 @@
 
 # Variables
 BINARY_NAME=csi-driver
+VERSION?=v1.0.0
 DOCKER_IMAGE?=csi-arca-storage
-DOCKER_TAG?=latest
+DOCKER_TAG?=$(VERSION)
 GOBASE=$(shell pwd)
 GOBIN=$(GOBASE)/bin
 
@@ -18,7 +19,8 @@ GOFMT=$(GOCMD) fmt
 GOVET=$(GOCMD) vet
 
 # Build flags
-LDFLAGS=-ldflags "-s -w"
+VERSION_PACKAGE=github.com/akam1o/csi-arca-storage/pkg/driver
+LDFLAGS=-ldflags "-s -w -X $(VERSION_PACKAGE).DriverVersion=$(VERSION)"
 
 all: fmt vet build
 
@@ -56,7 +58,7 @@ tidy:
 
 docker-build:
 	@echo "Building Docker image $(DOCKER_IMAGE):$(DOCKER_TAG)..."
-	docker build -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
+	docker build --build-arg VERSION=$(VERSION) -t $(DOCKER_IMAGE):$(DOCKER_TAG) .
 	@echo "Docker build complete"
 
 docker-push:

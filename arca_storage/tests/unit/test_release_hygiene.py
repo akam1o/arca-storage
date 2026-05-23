@@ -75,6 +75,38 @@ def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):
     assert "FROM alpine:3.19" not in dockerfile
 
 
+def test_csi_driver_version_matches_manifest_tag_and_build_flags(repo_root):
+    dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
+    makefile = (repo_root / "csi-arca-storage/Makefile").read_text(encoding="utf-8")
+    version_go = (repo_root / "csi-arca-storage/pkg/driver/version.go").read_text(
+        encoding="utf-8"
+    )
+    manifests = [
+        repo_root / "csi-arca-storage/deploy/controller.yaml",
+        repo_root / "csi-arca-storage/deploy/controller-statefulset.yaml",
+        repo_root / "csi-arca-storage/deploy/node.yaml",
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/node.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/kustomization.yaml",
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/overlays/production/kustomization.yaml",
+    ]
+
+    assert 'DriverVersion = "v1.0.0"' in version_go
+    assert "VERSION?=v1.0.0" in makefile
+    assert "DOCKER_TAG?=$(VERSION)" in makefile
+    assert "-X $(VERSION_PACKAGE).DriverVersion=$(VERSION)" in makefile
+    assert "docker build --build-arg VERSION=$(VERSION)" in makefile
+    assert "ARG VERSION=v1.0.0" in dockerfile
+    assert (
+        "-X github.com/akam1o/csi-arca-storage/pkg/driver.DriverVersion=${VERSION}"
+        in dockerfile
+    )
+    for manifest_path in manifests:
+        assert "v1.0.0" in manifest_path.read_text(encoding="utf-8")
+
+
 def test_ansible_site_rejects_default_cluster_secrets(repo_root):
     playbook = (repo_root / "ansible/site.yml").read_text(encoding="utf-8")
 
