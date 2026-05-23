@@ -872,6 +872,35 @@ class TestSnapshots:
         }
 
     @pytest.mark.integration
+    def test_create_snapshot_rejects_unavailable_size_without_ready_record(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        def fail_get_lv_size_gib(_vg_name, _lv_name):
+            raise RuntimeError("lvs failed")
+
+        fake_context.adapters.lvm.get_lv_size_gib = fail_get_lv_size_gib
+
+        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        assert response.status_code == 500
+        assert response.json()["error"] == {
+            "code": "INTERNAL",
+            "message": "Snapshot 'tenant_a/vol1/snap1' reconcile failed",
+            "details": {
+                "resource": "Snapshot",
+                "name": "tenant_a/vol1/snap1",
+                "reason": "Create failed: Snapshot size is unavailable",
+            },
+        }
+        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", snapshot_lv_name("tenant_a", "vol1", "snap1"))
+        record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert record["status"]["phase"] == "Failed"
+        assert record["status"]["lv_created"] is False
+        assert record["status"]["size_gib"] is None
+
+    @pytest.mark.integration
     def test_create_snapshot_recovers_expired_cleanup_reservation(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)

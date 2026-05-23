@@ -62,10 +62,11 @@ class SnapshotReconciler:
                 )
                 created_snap_lv = snap_result.created
                 snap_path = snap_result.path
+                snap_size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
                 snapshot.status.lv_created = True
                 snapshot.status.lv_path = snap_path
                 snapshot.status.lv_name = snap_lv
-                snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
+                snapshot.status.size_gib = snap_size_gib
                 self._persist(
                     snapshot,
                     "snapshot LV created",
@@ -95,7 +96,16 @@ class SnapshotReconciler:
                 return snapshot
 
         if snapshot.status.size_gib is None:
-            snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
+            try:
+                snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
+            except Exception as e:
+                snapshot.status.phase = Phase.FAILED
+                expected_owner = create_owner
+                clear_create_lease(snapshot.status)
+                snapshot.status.message = f"Create failed: {e}"
+                self._persist(snapshot, snapshot.status.message, expected_create_owner=expected_owner)
+                logger.error("Snapshot %s/%s/%s create failed: %s", spec.svm, spec.volume, spec.name, e)
+                return snapshot
 
         snapshot.status.phase = Phase.READY
         expected_owner = create_owner
@@ -149,12 +159,12 @@ class SnapshotReconciler:
     def _is_failed_delete(snapshot: Snapshot) -> bool:
         return snapshot.status.message.startswith("Delete failed:")
 
-    def _snapshot_lv_size_gib(self, vg_name: str, snap_lv: str) -> Optional[int]:
+    def _snapshot_lv_size_gib(self, vg_name: str, snap_lv: str) -> int:
         try:
             return int(ceil(float(self.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
         except Exception as e:
             logger.warning("Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e)
-            return None
+            raise RuntimeError("Snapshot size is unavailable") from e
 
     def _source_volume_lv_name(self, svm: str, volume: str) -> str:
         record = self.db.get_volume(svm, volume)

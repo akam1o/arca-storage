@@ -482,6 +482,32 @@ class TestSnapshotReconciler:
         assert result.status.lv_created is True
         assert result.status.lv_path is not None
 
+    def test_create_snapshot_fails_when_size_unavailable(self, db, adapters, config):
+        source_lv = _insert_ready_volume(db, "svm1", "data")
+        adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
+
+        def fail_get_lv_size_gib(_vg_name, _lv_name):
+            raise RuntimeError("lvs failed")
+
+        adapters.lvm.get_lv_size_gib = fail_get_lv_size_gib
+        rec = SnapshotReconciler(db, adapters, config=config)
+        snap = Snapshot(
+            spec=SnapshotSpec(name="snap-size", svm="svm1", volume="data"),
+        )
+
+        result = rec.reconcile(snap)
+
+        snap_lv = snapshot_lv_name("svm1", "data", "snap-size")
+        assert result.status.phase == Phase.FAILED
+        assert result.status.lv_created is False
+        assert result.status.lv_path is None
+        assert result.status.size_gib is None
+        assert result.status.message == "Create failed: Snapshot size is unavailable"
+        assert not adapters.lvm.lv_exists("vg_arca", snap_lv)
+        record = db.list_snapshots(svm="svm1", volume="data", name="snap-size")[0]
+        assert record["status"]["phase"] == Phase.FAILED.value
+        assert record["status"]["size_gib"] is None
+
     def test_create_snapshot_accepts_matching_existing_lv(self, db, adapters, config):
         source_lv = _insert_ready_volume(db, "svm1", "data")
         adapters.lvm.create_thin_lv("vg_arca", "thinpool", source_lv, 10)
