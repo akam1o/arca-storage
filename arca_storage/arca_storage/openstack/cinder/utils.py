@@ -78,7 +78,7 @@ def ensure_mount_point_exists(mount_point: str) -> None:
     try:
         os.makedirs(mount_point, mode=0o750, exist_ok=True)
     except OSError as e:
-        raise ArcaStorageException(f"Failed to create mount point {mount_point}: {e}")
+        raise ArcaStorageException("Failed to create mount point") from e
 
 
 def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
@@ -102,9 +102,7 @@ def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
             # Already mounted correctly - this is the normal case for per-SVM exports
             return
         else:
-            raise ArcaStorageException(
-                f"Mount point {mount_point} already has different export: {current_mount['device']}"
-            )
+            raise ArcaStorageException("Mount point already has different export")
 
     # Determine NFS type from mount options
     # Default to nfs4, but allow override via mount options
@@ -123,8 +121,8 @@ def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
             check=True,
             timeout=30,
         )
-    except subprocess.TimeoutExpired:
-        raise ArcaStorageException(f"Mount operation timed out for {export_path}")
+    except subprocess.TimeoutExpired as e:
+        raise ArcaStorageException("Mount operation timed out") from e
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr or e.stdout or str(e)
         # Check if "already mounted" error (race condition with another worker)
@@ -134,7 +132,7 @@ def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
             if current_mount and current_mount["device"] == export_path:
                 # Another worker mounted it - this is OK
                 return
-        raise ArcaStorageException(f"Failed to mount {export_path}: {error_msg}")
+        raise ArcaStorageException("Failed to mount NFS export") from e
 
 
 def unmount_nfs(mount_point: str, force: bool = False) -> None:
@@ -161,12 +159,12 @@ def unmount_nfs(mount_point: str, force: bool = False) -> None:
             check=True,
             timeout=10,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         if force:
             # Try lazy unmount
             lazy_unmount(mount_point)
         else:
-            raise ArcaStorageException(f"Unmount operation timed out for {mount_point}")
+            raise ArcaStorageException("Unmount operation timed out") from e
     except subprocess.CalledProcessError as e:
         error_msg = (e.stderr or e.stdout or str(e)).lower()
         # Ignore "not mounted" errors
@@ -177,11 +175,11 @@ def unmount_nfs(mount_point: str, force: bool = False) -> None:
             # Try lazy unmount on failure
             try:
                 lazy_unmount(mount_point)
-            except ArcaStorageException:
+            except ArcaStorageException as lazy_error:
                 # If lazy unmount also fails, raise the original error
-                raise ArcaStorageException(f"Failed to unmount {mount_point}: {error_msg}")
+                raise ArcaStorageException("Failed to unmount NFS export") from lazy_error
         else:
-            raise ArcaStorageException(f"Failed to unmount {mount_point}: {error_msg}")
+            raise ArcaStorageException("Failed to unmount NFS export") from e
 
 
 def lazy_unmount(mount_point: str) -> None:
@@ -203,13 +201,13 @@ def lazy_unmount(mount_point: str) -> None:
             check=True,
             timeout=5,
         )
-    except subprocess.TimeoutExpired:
-        raise ArcaStorageException(f"Lazy unmount operation timed out for {mount_point}")
+    except subprocess.TimeoutExpired as e:
+        raise ArcaStorageException("Lazy unmount operation timed out") from e
     except subprocess.CalledProcessError as e:
         error_msg = (e.stderr or e.stdout or str(e)).lower()
         # Ignore "not mounted" errors
         if "not mounted" not in error_msg:
-            raise ArcaStorageException(f"Failed to lazy unmount {mount_point}: {error_msg}")
+            raise ArcaStorageException("Failed to lazy unmount NFS export") from e
 
 
 def is_mounted(mount_point: str) -> bool:

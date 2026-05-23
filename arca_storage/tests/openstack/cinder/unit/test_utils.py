@@ -1,6 +1,7 @@
 """Unit tests for ARCA Storage Cinder utilities."""
 
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch, mock_open
@@ -112,6 +113,50 @@ class TestUtilityFunctions(unittest.TestCase):
             )
 
     @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    @patch("arca_storage.openstack.cinder.utils.get_nfs_share_info")
+    @patch("arca_storage.openstack.cinder.utils.ensure_mount_point_exists")
+    def test_mount_nfs_failure_redacts_export_details(self, mock_ensure, mock_share_info, mock_run):
+        """Mount failures must not surface export paths, mount paths, or command stderr."""
+        mock_share_info.return_value = None
+        mock_run.side_effect = subprocess.CalledProcessError(
+            32,
+            "mount",
+            stderr="mount failed for 192.168.100.5:/exports/secret: token=secret-token",
+        )
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.mount_nfs(
+                export_path="192.168.100.5:/exports/secret",
+                mount_point="/mnt/secret",
+                mount_options="rw,noatime,vers=4.1",
+            )
+
+        rendered = str(exc_info.value)
+        assert "Failed to mount NFS export" in rendered
+        for forbidden in ("192.168.100.5", "/exports/secret", "/mnt/secret", "secret-token"):
+            assert forbidden not in rendered
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    @patch("arca_storage.openstack.cinder.utils.get_nfs_share_info")
+    @patch("arca_storage.openstack.cinder.utils.ensure_mount_point_exists")
+    def test_mount_nfs_timeout_redacts_export_details(self, mock_ensure, mock_share_info, mock_run):
+        """Mount timeout errors must not include the requested export path."""
+        mock_share_info.return_value = None
+        mock_run.side_effect = subprocess.TimeoutExpired("mount", timeout=30)
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.mount_nfs(
+                export_path="192.168.100.5:/exports/secret",
+                mount_point="/mnt/secret",
+                mount_options="rw,noatime,vers=4.1",
+            )
+
+        rendered = str(exc_info.value)
+        assert "Mount operation timed out" in rendered
+        for forbidden in ("192.168.100.5", "/exports/secret", "/mnt/secret"):
+            assert forbidden not in rendered
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
     @patch("arca_storage.openstack.cinder.utils.is_mounted")
     def test_unmount_nfs_success(self, mock_is_mounted, mock_run):
         """Test successful NFS unmount."""
@@ -137,8 +182,6 @@ class TestUtilityFunctions(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.utils.is_mounted")
     def test_unmount_nfs_force_on_failure(self, mock_is_mounted, mock_run, mock_lazy):
         """Test force unmount on failure."""
-        import subprocess
-
         mock_is_mounted.return_value = True
         # Use CalledProcessError which is what subprocess.run raises
         mock_run.side_effect = subprocess.CalledProcessError(1, "umount", stderr="busy")
@@ -146,6 +189,42 @@ class TestUtilityFunctions(unittest.TestCase):
         arca_utils.unmount_nfs("/mnt/test", force=True)
 
         mock_lazy.assert_called_once_with("/mnt/test")
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    @patch("arca_storage.openstack.cinder.utils.is_mounted")
+    def test_unmount_nfs_failure_redacts_mount_details(self, mock_is_mounted, mock_run):
+        """Unmount failures must not surface local mount paths or command stderr."""
+        mock_is_mounted.return_value = True
+        mock_run.side_effect = subprocess.CalledProcessError(
+            32,
+            "umount",
+            stderr="umount failed for /mnt/secret: token=secret-token",
+        )
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.unmount_nfs("/mnt/secret")
+
+        rendered = str(exc_info.value)
+        assert "Failed to unmount NFS export" in rendered
+        for forbidden in ("/mnt/secret", "secret-token"):
+            assert forbidden not in rendered
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    def test_lazy_unmount_failure_redacts_mount_details(self, mock_run):
+        """Lazy unmount failures must not surface local mount paths or command stderr."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            32,
+            "umount -l",
+            stderr="lazy unmount failed for /mnt/secret: token=secret-token",
+        )
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.lazy_unmount("/mnt/secret")
+
+        rendered = str(exc_info.value)
+        assert "Failed to lazy unmount NFS export" in rendered
+        for forbidden in ("/mnt/secret", "secret-token"):
+            assert forbidden not in rendered
 
     @patch("arca_storage.openstack.cinder.utils.subprocess.run")
     def test_is_mounted_via_proc(self, mock_run):
