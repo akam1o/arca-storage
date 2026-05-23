@@ -14,6 +14,22 @@ import (
 
 var svmNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
 
+func mountLogWarning(message string, err error) {
+	if err == nil {
+		klog.Warning(message)
+		return
+	}
+	klog.Warningf("%s: %T", message, err)
+}
+
+func mountLogError(message string, err error) {
+	if err == nil {
+		klog.Error(message)
+		return
+	}
+	klog.Errorf("%s: %T", message, err)
+}
+
 // SVMMount represents an SVM mount point
 type SVMMount struct {
 	SVMName         string
@@ -85,21 +101,21 @@ func (m *MountManager) reconcile() error {
 		// Check if already mounted
 		isMounted, err := m.isMountPoint(mountPath)
 		if err != nil {
-			klog.Warningf("Failed to check mount point %s: %v", mountPath, err)
+			mountLogWarning(fmt.Sprintf("Failed to check mount point while reconciling SVM %s", svmName), err)
 			continue
 		}
 
 		if !isMounted {
 			// Mount is missing - restore it
-			klog.Infof("Restoring missing mount for SVM %s (VIP: %s)", svmName, info.VIP)
+			klog.Infof("Restoring missing mount for SVM %s", svmName)
 			if err := m.mountSVMLocked(svmName, info.VIP, info.ExportRoot, info.NFSMountOptions); err != nil {
-				klog.Errorf("Failed to restore mount for SVM %s: %v", svmName, err)
+				mountLogError(fmt.Sprintf("Failed to restore mount for SVM %s", svmName), err)
 				// Continue with other SVMs
 				continue
 			}
 		} else {
 			if err := m.validateSVMMountSource(mountPath, svmName, info.VIP, info.ExportRoot); err != nil {
-				return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
+				return fmt.Errorf("existing SVM mount is not safe to reuse")
 			}
 			// Mount exists - record it
 			m.mounts[svmName] = &SVMMount{
@@ -109,7 +125,7 @@ func (m *MountManager) reconcile() error {
 				MountPath:       mountPath,
 				NFSMountOptions: cloneMountOptions(info.NFSMountOptions),
 			}
-			klog.V(4).Infof("Found existing mount for SVM %s at %s", svmName, mountPath)
+			klog.V(4).Infof("Found existing mount for SVM %s", svmName)
 		}
 	}
 
@@ -143,20 +159,15 @@ func (m *MountManager) EnsureSVMMount(
 		}
 		if isMounted {
 			if err := m.validateSVMMountSource(mount.MountPath, svmName, vip, exportRoot); err != nil {
-				return "", fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mount.MountPath, err)
+				return "", fmt.Errorf("existing SVM mount is not safe to reuse")
 			}
 			if mount.ExportRoot != "" && mount.ExportRoot != exportRoot {
-				return "", fmt.Errorf("SVM %s already mounted with different export root: active=%s requested=%s", svmName, mount.ExportRoot, exportRoot)
+				return "", fmt.Errorf("SVM %s already mounted with different export root", svmName)
 			}
 			if !sameMountOptions(mount.NFSMountOptions, nfsMountOptions) {
-				return "", fmt.Errorf(
-					"SVM %s already mounted with different NFS options: active=%v requested=%v",
-					svmName,
-					normalizeNFSMountOptions(mount.NFSMountOptions),
-					normalizeNFSMountOptions(nfsMountOptions),
-				)
+				return "", fmt.Errorf("SVM %s already mounted with different NFS options", svmName)
 			}
-			klog.V(4).Infof("SVM %s already mounted at %s", svmName, mount.MountPath)
+			klog.V(4).Infof("SVM %s already mounted", svmName)
 			return mount.MountPath, nil
 		}
 
@@ -197,7 +208,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 	}
 	if isMounted {
 		if err := m.validateSVMMountSource(mountPath, svmName, vip, exportRoot); err != nil {
-			return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
+			return fmt.Errorf("existing SVM mount is not safe to reuse")
 		}
 		m.mounts[svmName] = &SVMMount{
 			SVMName:         svmName,
@@ -209,7 +220,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 		return nil
 	}
 
-	klog.Infof("Mounting NFS: %s -> %s", nfsSource, mountPath)
+	klog.Infof("Mounting NFS for SVM %s", svmName)
 
 	// Perform NFS mount
 	if err := m.mounter.Mount(nfsSource, mountPath, "nfs4", options); err != nil {
@@ -225,7 +236,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 		NFSMountOptions: cloneMountOptions(options),
 	}
 
-	klog.Infof("Successfully mounted SVM %s at %s", svmName, mountPath)
+	klog.Infof("Successfully mounted SVM %s", svmName)
 	return nil
 }
 
@@ -274,7 +285,7 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 		return fmt.Errorf("cannot unmount SVM %s: refcount is %d (not zero)", svmName, refcount)
 	}
 
-	klog.Infof("Unmounting SVM %s from %s", svmName, mount.MountPath)
+	klog.Infof("Unmounting SVM %s", svmName)
 
 	// Unmount
 	if err := m.mounter.Unmount(mount.MountPath); err != nil {
@@ -283,7 +294,7 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 
 	// Remove mount point directory
 	if err := os.Remove(mount.MountPath); err != nil {
-		klog.Warningf("Failed to remove mount point directory %s: %v", mount.MountPath, err)
+		mountLogWarning(fmt.Sprintf("Failed to remove mount point directory for SVM %s", svmName), err)
 	}
 
 	// Remove from tracked mounts

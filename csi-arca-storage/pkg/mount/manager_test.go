@@ -1,7 +1,9 @@
 package mount
 
 import (
+	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/klog/v2"
 	mountutils "k8s.io/mount-utils"
 )
 
@@ -39,6 +42,34 @@ func (v *fakeMountSourceValidator) ValidateMountSource(targetPath, expectedSourc
 		expectedSource: expectedSource,
 	})
 	return v.err
+}
+
+func captureKlogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	state := klog.CaptureState()
+	defer state.Restore()
+
+	var out bytes.Buffer
+	fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+	klog.InitFlags(fs)
+	for name, value := range map[string]string{
+		"logtostderr":     "false",
+		"alsologtostderr": "false",
+		"one_output":      "true",
+		"skip_headers":    "true",
+		"v":               "4",
+	} {
+		if err := fs.Set(name, value); err != nil {
+			t.Fatalf("failed to set klog flag %s: %v", name, err)
+		}
+	}
+	klog.SetOutput(&out)
+
+	fn()
+	klog.Flush()
+
+	return out.String()
 }
 
 func TestNewMountManagerRejectsUnsafeBaseMountPath(t *testing.T) {
@@ -135,6 +166,9 @@ func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
 	if !strings.Contains(err.Error(), "different NFS options") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	if strings.Contains(err.Error(), "nconnect=16") {
+		t.Fatalf("conflicting options error leaked requested option: %v", err)
+	}
 }
 
 func TestEnsureSVMMountUsesConfiguredExportRoot(t *testing.T) {
@@ -184,8 +218,44 @@ func TestEnsureSVMMountRejectsWrongExistingSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "not safe to reuse") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	for _, forbidden := range []string{mountPath, "192.0.2.99", "192.0.2.10", "/exports/tenant-a"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("wrong source error leaked %q: %v", forbidden, err)
+		}
+	}
 	if len(validator.calls) != 1 || validator.calls[0].expectedSource != "192.0.2.10:/exports/tenant-a" {
 		t.Fatalf("unexpected validator calls: %#v", validator.calls)
+	}
+}
+
+func TestMountManagerLogsDoNotEchoMountDetails(t *testing.T) {
+	baseMountPath := filepath.Join(t.TempDir(), "secret-base-mount")
+	manager := &MountManager{
+		mounts:        make(map[string]*SVMMount),
+		nodeState:     &NodeState{data: &NodeStateData{Volumes: make(map[string]*VolumeStaging)}},
+		baseMountPath: baseMountPath,
+		mounter:       mountutils.NewFakeMounter(nil),
+		validator:     &fakeMountSourceValidator{},
+	}
+	ctx := context.Background()
+	vip := "192.0.2.10"
+	exportRoot := "/secret-export-root"
+	mountPath := filepath.Join(baseMountPath, "tenant-a")
+	nfsSource := vip + ":" + exportRoot
+
+	logOutput := captureKlogOutput(t, func() {
+		if _, err := manager.EnsureSVMMount(ctx, "tenant-a", vip, exportRoot, []string{"nconnect=8"}); err != nil {
+			t.Fatalf("EnsureSVMMount failed: %v", err)
+		}
+		if err := manager.UnmountSVM(ctx, "tenant-a"); err != nil {
+			t.Fatalf("UnmountSVM failed: %v", err)
+		}
+	})
+
+	for _, forbidden := range []string{baseMountPath, mountPath, vip, exportRoot, nfsSource} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Fatalf("mount manager logs leaked %q in:\n%s", forbidden, logOutput)
+		}
 	}
 }
 
