@@ -248,12 +248,86 @@ class TestArcaManilaClientOperations:
             auth_type="none",
         )
 
+    def _render_log_calls(self, *mock_logs):
+        rendered = []
+        for mock_log in mock_logs:
+            rendered.extend(str(call.args) for call in mock_log.call_args_list)
+        return " ".join(rendered)
+
     def test_create_volume_returns_volume(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.return_value = {"data": {"volume": {"name": "share-123", "export_path": "vip:/path"}}}
             vol = client.create_volume(name="share-123", svm="svm1", size_gib=10)
             assert vol["name"] == "share-123"
             assert vol["export_path"] == "vip:/path"
+
+    def test_create_volume_log_redacts_resource_identifiers(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.return_value = {"data": {"volume": {"name": "share-secret-token"}}}
+            with patch.object(manila_client.LOG, "info") as mock_info:
+                client.create_volume(name="share-secret-token", svm="svm-private-id", size_gib=10)
+
+        rendered_calls = self._render_log_calls(mock_info)
+        assert "share-secret-token" not in rendered_calls
+        assert "svm-private-id" not in rendered_calls
+        assert "Created volume through ARCA API" in rendered_calls
+
+    def test_delete_volume_timeout_log_redacts_resource_identifiers(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = exceptions.ArcaAPITimeout(timeout=30)
+            with patch.object(client, "get_volume", side_effect=exceptions.ArcaShareNotFound(share_id="share-secret-token")):
+                with patch.object(manila_client.LOG, "warning") as mock_warning:
+                    with patch.object(manila_client.LOG, "info") as mock_info:
+                        client.delete_volume(name="share-secret-token", svm="svm-private-id")
+
+        rendered_calls = self._render_log_calls(mock_warning, mock_info)
+        assert "share-secret-token" not in rendered_calls
+        assert "svm-private-id" not in rendered_calls
+        assert "Timeout deleting volume; checking actual state" in rendered_calls
+        assert "Volume was deleted despite timeout" in rendered_calls
+
+    def test_create_svm_log_redacts_network_identifiers(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.return_value = {"data": {"svm": {"name": "svm-secret-token"}}}
+            with patch.object(manila_client.LOG, "info") as mock_info:
+                client.create_svm(
+                    name="svm-secret-token",
+                    vlan_id=123,
+                    ip_cidr="192.168.100.10/24",
+                    gateway="192.168.100.1",
+                )
+
+        rendered_calls = self._render_log_calls(mock_info)
+        assert "svm-secret-token" not in rendered_calls
+        assert "192.168.100.10" not in rendered_calls
+        assert "192.168.100.1" not in rendered_calls
+        assert "Created SVM through ARCA API" in rendered_calls
+
+    def test_create_snapshot_timeout_log_redacts_identifiers_and_errors(self, client):
+        with patch.object(client, "_make_request") as mock_make:
+            mock_make.side_effect = exceptions.ArcaAPITimeout(timeout=30)
+            with patch.object(
+                client,
+                "list_snapshots",
+                side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2"),
+            ):
+                with patch.object(manila_client.LOG, "warning") as mock_warning:
+                    with patch.object(manila_client.LOG, "error") as mock_error:
+                        with pytest.raises(exceptions.ArcaAPITimeout):
+                            client.create_snapshot(
+                                name="snapshot-secret-token",
+                                svm="svm-private-id",
+                                volume="share-private-id",
+                            )
+
+        rendered_calls = self._render_log_calls(mock_warning, mock_error)
+        assert "snapshot-secret-token" not in rendered_calls
+        assert "svm-private-id" not in rendered_calls
+        assert "share-private-id" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Timeout creating snapshot; checking actual state" in rendered_calls
+        assert "Failed to check snapshot state after timeout" in rendered_calls
 
     def test_resource_path_segments_are_url_quoted(self, client):
         with patch.object(client, "_make_request") as mock_make:

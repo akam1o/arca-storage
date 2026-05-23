@@ -457,18 +457,18 @@ class ArcaManilaClient:
         }
         try:
             response = self._make_request("POST", "/v1/volumes", json_data=data)
-            LOG.info(f"Created volume {name} on SVM {svm}")
+            LOG.info("Created volume through ARCA API")
             return response.get("data", {}).get("volume", {})
         except ArcaAPITimeout as timeout_exc:
             # Timeout occurred - check if volume was actually created
-            LOG.warning(f"Timeout creating volume {name}, checking actual state...")
+            LOG.warning("Timeout creating volume; checking actual state")
             try:
                 volume = self.get_volume(name, svm)
-                LOG.info(f"Volume {name} was created despite timeout")
+                LOG.info("Volume was created despite timeout")
                 return volume
             except ArcaShareNotFound:
                 # Volume doesn't exist, re-raise original timeout
-                LOG.error(f"Volume {name} was not created after timeout")
+                LOG.error("Volume was not created after timeout")
                 raise timeout_exc
 
     def delete_volume(self, name: str, svm: str, force: bool = False) -> None:
@@ -486,18 +486,18 @@ class ArcaManilaClient:
         params = {"svm": svm, "force": str(force).lower()}
         try:
             self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(name)}", params=params)
-            LOG.info(f"Deleted volume {name} from SVM {svm}")
+            LOG.info("Deleted volume through ARCA API")
         except ArcaAPITimeout:
             # Timeout occurred - check if volume was actually deleted
-            LOG.warning(f"Timeout deleting volume {name}, checking actual state...")
+            LOG.warning("Timeout deleting volume; checking actual state")
             try:
                 self.get_volume(name, svm)
                 # Volume still exists, re-raise timeout
-                LOG.error(f"Volume {name} still exists after timeout")
+                LOG.error("Volume still exists after timeout")
                 raise
             except ArcaShareNotFound:
                 # Volume successfully deleted, return normally
-                LOG.info(f"Volume {name} was deleted despite timeout")
+                LOG.info("Volume was deleted despite timeout")
                 pass
 
     def resize_volume(self, name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
@@ -662,7 +662,7 @@ class ArcaManilaClient:
             data["root_volume_size_gib"] = root_volume_size_gib
 
         response = self._make_request("POST", "/v1/svms", json_data=data)
-        LOG.info("Created SVM %s with VLAN %s and IP %s", name, vlan_id if vlan_id is not None else "none", ip_cidr)
+        LOG.info("Created SVM through ARCA API")
         return response.get("data", {}).get("svm", {})
 
     # Snapshot operations (LVM thin snapshots)
@@ -684,23 +684,23 @@ class ArcaManilaClient:
         data = {"name": name, "svm": svm, "volume": volume}
         try:
             response = self._make_request("POST", "/v1/snapshots", json_data=data)
-            LOG.info(f"Created snapshot {name} for volume {volume} on SVM {svm}")
+            LOG.info("Created snapshot through ARCA API")
             return response.get("data", {}).get("snapshot", {})
         except ArcaAPITimeout as timeout_exc:
             # Timeout occurred - check if snapshot was actually created
-            LOG.warning(f"Timeout creating snapshot {name}, checking actual state...")
+            LOG.warning("Timeout creating snapshot; checking actual state")
             try:
                 snapshots = self.list_snapshots(svm=svm, volume=volume)
                 for snapshot in snapshots:
                     if snapshot.get("name") == name:
-                        LOG.info(f"Snapshot {name} was created despite timeout")
+                        LOG.info("Snapshot was created despite timeout")
                         return snapshot
                 # Snapshot doesn't exist, re-raise original timeout
-                LOG.error(f"Snapshot {name} was not created after timeout")
+                LOG.error("Snapshot was not created after timeout")
                 raise timeout_exc
-            except Exception as e:
+            except Exception:
                 # If list fails, re-raise original timeout
-                LOG.error(f"Failed to check snapshot state after timeout: {e}")
+                LOG.error("Failed to check snapshot state after timeout")
                 raise timeout_exc
 
     def delete_snapshot(self, name: str, svm: str, volume: str) -> None:
