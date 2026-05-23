@@ -3,6 +3,7 @@ FastAPI main application.
 """
 
 import logging
+import re
 import secrets
 import uuid
 from typing import Any, Dict, Optional
@@ -45,6 +46,12 @@ from arca_storage.errors import ArcaError, InvalidArgumentError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
 logger = logging.getLogger(__name__)
+_VALIDATION_INPUT_PART_RE = re.compile(r"[^\s/,:;=]+")
+_VALUE_ERROR_QUOTED_TEXT_RE = re.compile(r"(['\"])[^'\"]+\1")
+_VALUE_ERROR_BEARER_RE = re.compile(r"(?i)\b(authorization\s*:\s*bearer|bearer)\s+([^\s,;]+)")
+_VALUE_ERROR_ASSIGNMENT_RE = re.compile(
+    r"(?i)\b(api[_-]?token|auth[_-]?token|token|password|secret|client[_-]?key)=([^\s,;]+)"
+)
 
 
 @app.middleware("http")
@@ -110,7 +117,7 @@ async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
 @app.exception_handler(ValueError)
 async def value_error_handler(request: Request, exc: ValueError) -> JSONResponse:
     """Return client errors for validation failures raised below FastAPI."""
-    return await arca_error_handler(request, InvalidArgumentError(str(exc)))
+    return await arca_error_handler(request, InvalidArgumentError(_redact_value_error_message(str(exc))))
 
 
 @app.exception_handler(RequestValidationError)
@@ -138,10 +145,18 @@ def _request_validation_errors_without_inputs(exc: RequestValidationError) -> li
     return errors
 
 
+def _redact_value_error_message(message: str) -> str:
+    message = _VALUE_ERROR_BEARER_RE.sub(r"\1 <redacted>", message)
+    message = _VALUE_ERROR_ASSIGNMENT_RE.sub(r"\1=<redacted>", message)
+    return _VALUE_ERROR_QUOTED_TEXT_RE.sub(lambda match: f"{match.group(1)}<redacted>{match.group(1)}", message)
+
+
 def _validation_input_strings(value: Any) -> set[str]:
     if isinstance(value, str):
         stripped = value.strip()
-        return {candidate for candidate in (value, stripped) if candidate}
+        candidates = {candidate for candidate in (value, stripped) if candidate}
+        candidates.update(part for part in _VALIDATION_INPUT_PART_RE.findall(stripped) if len(part) >= 4)
+        return candidates
     if isinstance(value, list):
         values: set[str] = set()
         for item in value:

@@ -92,6 +92,39 @@ def test_request_validation_error_messages_do_not_echo_nested_input_values():
 
 
 @pytest.mark.integration
+def test_request_validation_error_messages_do_not_echo_derived_input_values():
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/exports",
+        json={
+            "svm": "tenant_a",
+            "volume": "vol1",
+            "client": "secret-token/24",
+        },
+    )
+
+    payload = response.json()
+    errors = payload["error"]["details"]["errors"]
+    assert response.status_code == 400
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "input" not in errors[0]
+    assert "secret-token" not in str(payload)
+
+
+@pytest.mark.integration
+def test_value_error_messages_do_not_echo_derived_query_values():
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=secret-token/24")
+
+    payload = response.json()
+    assert response.status_code == 400
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "secret-token" not in str(payload)
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "path",
     [
