@@ -14,6 +14,12 @@ def _completed(cmd: list[str], returncode: int = 0, stdout: str = "", stderr: st
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
+def _assert_redacted(error, *values: str) -> None:
+    rendered = str(error.to_dict() if hasattr(error, "to_dict") else error)
+    for value in values:
+        assert value not in rendered
+
+
 def test_format_skips_existing_xfs_filesystem(monkeypatch):
     calls: list[list[str]] = []
 
@@ -48,11 +54,8 @@ def test_format_rejects_existing_non_xfs_filesystem(monkeypatch):
     with pytest.raises(PreconditionFailedError) as exc_info:
         adapter.format_xfs("/dev/vg_pool_01/vol1")
 
-    assert exc_info.value.details == {
-        "resource": "Device",
-        "name": "/dev/vg_pool_01/vol1",
-        "blkid": '/dev/vg_pool_01/vol1: UUID="abc" TYPE="ext4"',
-    }
+    assert exc_info.value.details == {"resource": "Device"}
+    _assert_redacted(exc_info.value, "/dev/vg_pool_01/vol1", "UUID", "ext4")
     assert calls == [["blkid", "/dev/vg_pool_01/vol1"]]
 
 
@@ -122,11 +125,8 @@ def test_mount_rejects_existing_mount_from_different_device(monkeypatch):
     with pytest.raises(PreconditionFailedError) as exc_info:
         adapter.mount("/dev/vg_pool_01/vol1", "/exports/tenant_a/vol1")
 
-    assert exc_info.value.details == {
-        "mount_point": "/exports/tenant_a/vol1",
-        "mounted_source": "/dev/vg_pool_01/other",
-        "expected_device": "/dev/vg_pool_01/vol1",
-    }
+    assert exc_info.value.details == {"resource": "MountPoint"}
+    _assert_redacted(exc_info.value, "/exports/tenant_a/vol1", "/dev/vg_pool_01/other", "/dev/vg_pool_01/vol1")
     assert calls == [
         ["findmnt", "--mountpoint", "/exports/tenant_a/vol1", "--noheadings", "--output", "SOURCE"]
     ]
@@ -159,3 +159,18 @@ def test_mount_runs_mount_when_mountpoint_is_free(monkeypatch):
             "/exports/tenant_a/vol1",
         ],
     ]
+
+
+def test_grow_unmounted_redacts_mount_path(monkeypatch):
+    def fake_run_cmd(cmd, **_kwargs):
+        if cmd[0] == "mountpoint":
+            return _completed(cmd, returncode=1)
+        raise AssertionError(f"unexpected command: {cmd}")
+
+    monkeypatch.setattr(xfs, "run_cmd", fake_run_cmd)
+
+    adapter = xfs.SubprocessXFSAdapter()
+    with pytest.raises(RuntimeError, match="Mount point is not mounted") as exc_info:
+        adapter.grow("/exports/tenant_a/vol1")
+
+    _assert_redacted(exc_info.value, "/exports/tenant_a/vol1")

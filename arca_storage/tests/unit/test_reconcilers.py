@@ -384,6 +384,7 @@ class TestVolumeReconciler:
 
         assert result.status.phase == Phase.FAILED
         assert "not thin-provisioned" in result.status.message
+        assert "/dev/" not in result.status.message
         assert db.get_volume("svm1", "vol1")["status"]["phase"] == Phase.FAILED.value
 
     def test_create_volume_lost_lease_does_not_persist_stale_status(self, db, adapters, config):

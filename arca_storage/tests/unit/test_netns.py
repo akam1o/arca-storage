@@ -8,7 +8,7 @@ import pytest
 
 from arca_storage.cli.lib import netns as legacy_netns
 from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, make_vlan_ifname
-from arca_storage.adapters.netns import SubprocessNetNSAdapter
+from arca_storage.adapters.netns import FakeNetNSAdapter, SubprocessNetNSAdapter
 
 
 def _assert_redacted(error: BaseException, *values: str) -> None:
@@ -216,3 +216,14 @@ class TestSubprocessNetNSAdapter:
         adapter = SubprocessNetNSAdapter()
 
         assert adapter.namespace_exists("tenant") is False
+
+
+class TestFakeNetNSAdapter:
+    @pytest.mark.unit
+    def test_attach_vlan_missing_namespace_redacts_namespace_name(self):
+        adapter = FakeNetNSAdapter()
+
+        with pytest.raises(RuntimeError, match="Namespace does not exist") as exc_info:
+            adapter.attach_vlan("tenant_secret", "bond0", 100, "192.168.10.5/24")
+
+        _assert_redacted(exc_info.value, "tenant_secret")

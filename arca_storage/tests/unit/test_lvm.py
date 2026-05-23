@@ -9,11 +9,11 @@ import pytest
 from arca_storage.adapters.lvm import SubprocessLVMAdapter
 from arca_storage.cli.lib import lvm as legacy_lvm
 from arca_storage.cli.lib.lvm import create_lv, create_snapshot_lv, delete_lv, resize_lv
-from arca_storage.errors import PreconditionFailedError
+from arca_storage.errors import AlreadyExistsError, PreconditionFailedError
 
 
 def _assert_redacted(error: BaseException, *values: str) -> None:
-    rendered = str(error)
+    rendered = str(error.to_dict() if hasattr(error, "to_dict") else error)
     for value in values:
         assert value not in rendered
 
@@ -259,11 +259,44 @@ class TestSubprocessLVMAdapter:
             MagicMock(returncode=0, stdout="250.00\n"),  # lvs current size
         ]
 
-        with pytest.raises(PreconditionFailedError):
+        with pytest.raises(PreconditionFailedError) as exc_info:
             SubprocessLVMAdapter().resize_lv("vg_pool_01", "vol1", 200)
 
+        _assert_redacted(exc_info.value, "/dev/vg_pool_01/vol1", "vg_pool_01", "vol1")
+        assert exc_info.value.details == {
+            "resource": "LogicalVolume",
+            "current_size_gib": 250.0,
+            "requested_size_gib": 200,
+        }
         calls = [c.args[0] for c in mock_subprocess.call_args_list]
         assert ["lvextend", "-L", "200G", "/dev/vg_pool_01/vol1"] not in calls
+
+    @pytest.mark.unit
+    def test_create_thin_lv_already_exists_redacts_lv_path(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0)
+
+        with pytest.raises(AlreadyExistsError) as exc_info:
+            SubprocessLVMAdapter().create_thin_lv("vg_pool_01", "pool", "vol1", 100)
+
+        _assert_redacted(exc_info.value, "/dev/vg_pool_01/vol1", "vg_pool_01", "vol1")
+
+    @pytest.mark.unit
+    def test_get_lv_info_empty_output_redacts_lv_path(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="")
+
+        with pytest.raises(RuntimeError, match="Unexpected lvs output") as exc_info:
+            SubprocessLVMAdapter().get_lv_info("vg_pool_01", "vol1")
+
+        _assert_redacted(exc_info.value, "/dev/vg_pool_01/vol1", "vg_pool_01", "vol1")
+
+    @pytest.mark.unit
+    def test_get_lv_info_invalid_size_redacts_backend_output(self, mock_subprocess):
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="secret-output,,,\n")
+
+        with pytest.raises(RuntimeError, match="Unexpected lvs output") as exc_info:
+            SubprocessLVMAdapter().get_lv_info("vg_pool_01", "vol1")
+
+        _assert_redacted(exc_info.value, "secret-output", "/dev/vg_pool_01/vol1")
 
     @pytest.mark.unit
     def test_get_vg_capacity_parses_approximate_values(self, mock_subprocess):
@@ -273,3 +306,13 @@ class TestSubprocessLVMAdapter:
         result = SubprocessLVMAdapter().get_vg_capacity("vg_pool_01")
 
         assert result == {"total_gb": 931.51, "free_gb": 123.45}
+
+    @pytest.mark.unit
+    def test_get_vg_capacity_invalid_output_redacts_backend_output(self, mock_subprocess):
+        """Test malformed vgs output does not expose backend output or VG name."""
+        mock_subprocess.return_value = MagicMock(returncode=0, stdout="secret-output\n")
+
+        with pytest.raises(RuntimeError, match="Unexpected vgs output") as exc_info:
+            SubprocessLVMAdapter().get_vg_capacity("vg_pool_01")
+
+        _assert_redacted(exc_info.value, "secret-output", "vg_pool_01")

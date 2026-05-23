@@ -162,7 +162,7 @@ class FakeNetNSAdapter:
     ) -> str:
         resolved = ifname or f"v{vlan_id}-fake"
         if namespace not in self.namespaces:
-            raise RuntimeError(f"Namespace {namespace} does not exist")
+            raise RuntimeError("Namespace does not exist")
         self.namespaces[namespace]["vlans"].append(
             {"ifname": resolved, "vlan_id": vlan_id, "ip_cidr": ip_cidr, "gateway": gateway}
         )

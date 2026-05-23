@@ -28,19 +28,15 @@ class SubprocessXFSAdapter:
 
     def format_xfs(self, device: str) -> None:
         if not os.path.exists(device):
-            raise NotFoundError("Device", device)
+            raise NotFoundError("Device", "<device>")
         # Check if already formatted
         result = run_cmd(["blkid", device], timeout=self._timeout, check=False)
         if result.returncode == 0:
             if 'type="xfs"' in result.stdout.lower():
                 return  # idempotent
             raise PreconditionFailedError(
-                f"Device {device} already contains a non-XFS filesystem",
-                {
-                    "resource": "Device",
-                    "name": device,
-                    "blkid": result.stdout.strip(),
-                },
+                "Device already contains a non-XFS filesystem",
+                {"resource": "Device"},
             )
         run_cmd(
             [
@@ -61,12 +57,8 @@ class SubprocessXFSAdapter:
             if self._same_device(mounted_source, device):
                 return  # idempotent
             raise PreconditionFailedError(
-                f"Mount point {mount_point} is already mounted from {mounted_source}, expected {device}",
-                {
-                    "mount_point": mount_point,
-                    "mounted_source": mounted_source,
-                    "expected_device": device,
-                },
+                "Mount point is already mounted from a different source",
+                {"resource": "MountPoint"},
             )
         options = ["rw", "noatime", "nodiratime", "logbsize=256k", "inode64"]
         for option in extra_options or []:
@@ -85,7 +77,7 @@ class SubprocessXFSAdapter:
 
     def grow(self, mount_point: str) -> None:
         if not self.is_mounted(mount_point):
-            raise RuntimeError(f"Mount point {mount_point} is not mounted")
+            raise RuntimeError("Mount point is not mounted")
         run_cmd(["xfs_growfs", mount_point], timeout=self._timeout)
 
     def is_mounted(self, mount_point: str) -> bool:
@@ -136,7 +128,7 @@ class FakeXFSAdapter:
 
     def grow(self, mount_point: str) -> None:
         if mount_point not in self.mounts:
-            raise RuntimeError(f"Mount point {mount_point} is not mounted")
+            raise RuntimeError("Mount point is not mounted")
 
     def is_mounted(self, mount_point: str) -> bool:
         return mount_point in self.mounts
