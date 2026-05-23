@@ -433,19 +433,6 @@ def _persist_volume_qos(
         raise NotFoundError("Volume", f"{svm}/{volume}")
 
 
-def _persist_reapplied_qos(
-    ctx: Any,
-    svm: str,
-    volume: str,
-    qos_settings: dict[str, Any],
-) -> None:
-    try:
-        _persist_volume_qos(ctx, svm, volume, qos_settings)
-    except NotFoundError:
-        _clear_qos_limit_best_effort(svm, volume, qos_settings, ctx)
-        raise
-
-
 def _attach_ganesha_process(ctx: Any, svm: str, cgroup_path: Path) -> None:
     pid = _get_ganesha_pid(ctx, svm)
     _write_cgroup_file(cgroup_path, "cgroup.procs", str(pid))
@@ -553,29 +540,14 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     volume_info = _require_qos_volume_record(ctx, svm, volume)
     lv_path = _qos_volume_lv_path(volume_info, svm, volume)
     persisted = volume_info.get("status", {}).get("qos")
-    persisted_limits = (
-        _qos_limits_from_settings(persisted) if isinstance(persisted, dict) else {}
-    )
     cgroup_path = _get_cgroup_path(svm, volume)
     if not cgroup_path.exists():
-        if persisted_limits:
-            qos_settings = _write_qos_limits(
-                ctx, svm, volume, lv_path, persisted_limits
-            )
-            _persist_reapplied_qos(ctx, svm, volume, qos_settings)
-            return qos_settings
         return _disabled_qos_settings(svm, volume, persisted)
 
     device_id = _get_device_id(lv_path)
     io_max_file = cgroup_path / "io.max"
 
     if not io_max_file.exists():
-        if persisted_limits:
-            qos_settings = _write_qos_limits(
-                ctx, svm, volume, lv_path, persisted_limits
-            )
-            _persist_reapplied_qos(ctx, svm, volume, qos_settings)
-            return qos_settings
         return _disabled_qos_settings(svm, volume, persisted)
 
     settings: Dict[str, Any] = {
@@ -605,11 +577,4 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
                 elif key == "wiops":
                     settings["write_iops"] = int(value)
 
-    if not settings["qos_enabled"] and persisted_limits:
-        qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
-        _persist_reapplied_qos(ctx, svm, volume, qos_settings)
-        return qos_settings
-    if settings["qos_enabled"]:
-        _attach_ganesha_process(ctx, svm, cgroup_path)
-        _persist_volume_qos(ctx, svm, volume, settings)
     return settings

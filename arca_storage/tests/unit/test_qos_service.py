@@ -598,7 +598,7 @@ def test_remove_qos_restores_previous_limits_when_persist_raises(
     ]
 
 
-def test_get_qos_reapplies_persisted_limits_when_cgroup_is_missing(
+def test_get_qos_reports_disabled_when_persisted_cgroup_is_missing(
     monkeypatch, tmp_path
 ):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
@@ -620,22 +620,19 @@ def test_get_qos_reapplies_persisted_limits_when_cgroup_is_missing(
 
     monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
     monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
-    monkeypatch.setattr(
-        qos_service,
-        "_ensure_cgroup_hierarchy",
-        lambda: cgroup_base.mkdir(parents=True, exist_ok=True),
-    )
-    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
-    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    def fail_write(*args, **kwargs):
+        raise AssertionError("GET should not repair missing QoS cgroups")
+
+    monkeypatch.setattr(qos_service, "_write_qos_limits", fail_write)
 
     result = qos_service.get_qos_settings("tenant-a", "test-vol")
 
     cgroup_path = cgroup_base / "svm_tenant-a"
-    assert result["qos_enabled"] is True
+    assert result["qos_enabled"] is False
     assert result["read_iops"] == 1000
-    assert (cgroup_path / "cgroup.procs").read_text(encoding="utf-8") == "4242"
-    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
-    assert ctx.db.persisted_qos == result
+    assert not cgroup_path.exists()
+    assert ctx.db.persisted_qos is None
 
 
 def test_get_qos_ignores_invalid_persisted_limits_when_cgroup_is_missing(
@@ -678,7 +675,7 @@ def test_get_qos_ignores_invalid_persisted_limits_when_cgroup_is_missing(
     assert ctx.db.persisted_qos is None
 
 
-def test_get_qos_reapplies_only_valid_persisted_limits_when_cgroup_is_missing(
+def test_get_qos_reports_only_valid_persisted_limits_when_cgroup_is_missing(
     monkeypatch,
     tmp_path,
 ):
@@ -705,25 +702,23 @@ def test_get_qos_reapplies_only_valid_persisted_limits_when_cgroup_is_missing(
 
     monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
     monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
-    monkeypatch.setattr(
-        qos_service,
-        "_ensure_cgroup_hierarchy",
-        lambda: cgroup_base.mkdir(parents=True, exist_ok=True),
-    )
-    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
-    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    def fail_write(*args, **kwargs):
+        raise AssertionError("GET should not repair missing QoS cgroups")
+
+    monkeypatch.setattr(qos_service, "_write_qos_limits", fail_write)
 
     result = qos_service.get_qos_settings("tenant-a", "test-vol")
 
     cgroup_path = cgroup_base / "svm_tenant-a"
-    assert result["qos_enabled"] is True
+    assert result["qos_enabled"] is False
     assert result["read_iops"] == 1000
     assert "write_iops" not in result
-    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
-    assert ctx.db.persisted_qos == result
+    assert not cgroup_path.exists()
+    assert ctx.db.persisted_qos is None
 
 
-def test_get_qos_keeps_reapplied_limits_when_persist_raises(monkeypatch, tmp_path):
+def test_get_qos_does_not_persist_when_observing_missing_cgroup(monkeypatch, tmp_path):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
     ctx = SimpleNamespace(
         db=FailingPersistDB(
@@ -743,22 +738,25 @@ def test_get_qos_keeps_reapplied_limits_when_persist_raises(monkeypatch, tmp_pat
 
     monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
     monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
-    monkeypatch.setattr(
-        qos_service,
-        "_ensure_cgroup_hierarchy",
-        lambda: cgroup_base.mkdir(parents=True, exist_ok=True),
-    )
-    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
-    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
 
-    with pytest.raises(RuntimeError, match="persist failed"):
-        qos_service.get_qos_settings("tenant-a", "test-vol")
+    def fail_write(*args, **kwargs):
+        raise AssertionError("GET should not repair missing QoS cgroups")
+
+    monkeypatch.setattr(qos_service, "_write_qos_limits", fail_write)
+
+    result = qos_service.get_qos_settings("tenant-a", "test-vol")
 
     cgroup_path = cgroup_base / "svm_tenant-a"
-    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
+    assert result == {
+        "svm": "tenant-a",
+        "volume": "test-vol",
+        "qos_enabled": False,
+        "read_iops": 1000,
+    }
+    assert not cgroup_path.exists()
 
 
-def test_get_qos_reattaches_current_ganesha_pid_when_limits_are_active(
+def test_get_qos_reports_active_limits_without_reattaching_ganesha(
     monkeypatch, tmp_path
 ):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
@@ -780,15 +778,14 @@ def test_get_qos_reattaches_current_ganesha_pid_when_limits_are_active(
 
     monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
     monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
-    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
     monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
 
     result = qos_service.get_qos_settings("tenant-a", "test-vol")
 
     assert result["qos_enabled"] is True
     assert result["read_iops"] == 1000
-    assert (cgroup_path / "cgroup.procs").read_text(encoding="utf-8") == "4242"
-    assert ctx.db.persisted_qos == result
+    assert (cgroup_path / "cgroup.procs").read_text(encoding="utf-8") == "1111"
+    assert ctx.db.persisted_qos is None
 
 
 @pytest.mark.parametrize(
