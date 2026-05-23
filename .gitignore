@@ -53,12 +53,16 @@ htmlcov/
 .coverage
 coverage.xml
 .pytest_cache/
+.mypy_cache/
+.ruff_cache/
 
 # Arca Storage package build artifacts
 arca_storage/build/
 arca_storage/dist/
 arca_storage/*.egg-info/
 arca_storage/.pytest_cache/
+arca_storage/.mypy_cache/
+arca_storage/.ruff_cache/
 arca_storage/htmlcov/
 arca_storage/.coverage
 arca_storage/coverage.xml

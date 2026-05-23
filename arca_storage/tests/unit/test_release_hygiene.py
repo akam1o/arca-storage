@@ -207,6 +207,18 @@ def test_development_kustomize_overlay_requires_external_secret_env(repo_root):
     )
 
 
+def test_python_tool_caches_are_gitignored(repo_root):
+    gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
+
+    for ignored_path in (
+        ".mypy_cache/",
+        ".ruff_cache/",
+        "arca_storage/.mypy_cache/",
+        "arca_storage/.ruff_cache/",
+    ):
+        assert ignored_path in gitignore
+
+
 def test_csi_node_sidecars_drop_privileges(repo_root):
     node_manifests = [
         repo_root / "csi-arca-storage/deploy/node.yaml",
