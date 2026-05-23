@@ -46,6 +46,48 @@ jobs:
       - name: Build CSI driver
         run: go build -o /tmp/csi-driver ./cmd/csi-driver
 
+  security:
+    name: CSI Security Gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./csi-arca-storage
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: csi-arca-storage/go.mod
+          cache-dependency-path: csi-arca-storage/go.sum
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          set +e
+          "$(go env GOPATH)/bin/govulncheck" -format json ./... > /tmp/govulncheck.json
+          set -e
+          python3 ../.github/scripts/filter-govulncheck.py ../.github/govulncheck-ignore.txt < /tmp/govulncheck.json
+
+      - name: Run gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          "$(go env GOPATH)/bin/gosec" -exclude-dir=.gomodcache -exclude=G115,G304,G402,G404 ./...
+
+      - name: Build CSI image
+        run: docker build -t csi-arca-storage:ci .
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@0.28.0
+        with:
+          image-ref: csi-arca-storage:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
   manifests:
     name: Manifest Validation
     runs-on: ubuntu-latest

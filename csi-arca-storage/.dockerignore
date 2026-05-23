@@ -1,0 +1,8 @@
+.git
+.gocache
+.gomodcache
+bin
+csi-driver
+coverage.out
+dist
+tmp

@@ -44,6 +44,9 @@ dev = [
     "httpx>=0.25.0",
     "requests>=2.28.0",
     "ruff>=0.8.0",
+    "mypy>=1.14.0",
+    "bandit[toml]>=1.8.0",
+    "pip-audit>=2.7.0",
 ]
 
 # OpenStack driver dependencies
@@ -76,3 +79,6 @@ version_scheme = "no-guess-dev"
 local_scheme = "no-local-version"
 tag_regex = "^v(?P<version>.*)$"
 fallback_version = "0.0.0"
+
+[tool.bandit]
+exclude_dirs = ["tests", "htmlcov", "arca_storage.egg-info"]

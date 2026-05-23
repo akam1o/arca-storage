@@ -1,0 +1,9 @@
+# Temporary allowlist for REVIEW-057. Keep one vulnerability ID per line.
+PYSEC-2026-161
+GHSA-6w46-j5rx-g56g
+GHSA-gc5v-m9x4-r6x2
+PYSEC-2026-142
+PYSEC-2026-141
+GHSA-w853-jp5j-5j7f
+GHSA-qmgc-5h2g-mvrw
+GHSA-mf9w-mj56-hr94
