@@ -25,6 +25,11 @@ def build_parser() -> argparse.ArgumentParser:
     parser.add_argument("--host", default=None, help="Bind host (default: from config or 127.0.0.1)")
     parser.add_argument("--port", type=int, default=None, help="Bind port (default: from config or 8080)")
     parser.add_argument("--log-level", default="info", help="Uvicorn log level (default: info)")
+    parser.add_argument(
+        "--access-log",
+        action="store_true",
+        help="Enable Uvicorn access logs (disabled by default to avoid logging request paths)",
+    )
     parser.add_argument("--ssl-certfile", default=None, help="TLS certificate file for HTTPS")
     parser.add_argument("--ssl-keyfile", default=None, help="TLS private key file for HTTPS")
     return parser
@@ -59,6 +64,7 @@ def main(argv: Optional[list[str]] = None) -> int:
         host=host,
         port=port,
         log_level=args.log_level,
+        access_log=args.access_log,
         ssl_certfile=args.ssl_certfile,
         ssl_keyfile=args.ssl_keyfile,
     )

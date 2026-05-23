@@ -51,6 +51,20 @@ def test_loopback_bind_allows_explicit_unauthenticated_opt_out(monkeypatch):
     assert server.main([]) == 0
 
     assert calls[0][1]["host"] == "127.0.0.1"
+    assert calls[0][1]["access_log"] is False
+
+
+def test_access_log_requires_explicit_opt_in(monkeypatch):
+    calls = []
+    monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+    monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+    monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
+    monkeypatch.setattr(server, "load_settings", lambda: _settings())
+    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+
+    assert server.main(["--access-log"]) == 0
+
+    assert calls[0][1]["access_log"] is True
 
 
 def test_non_loopback_bind_requires_token(monkeypatch, capsys):
