@@ -12,7 +12,7 @@ from typing import Any, Dict, Optional
 from fastapi import FastAPI, Query, Request
 from fastapi.encoders import jsonable_encoder
 from fastapi.exceptions import RequestValidationError
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, PlainTextResponse
 
 from arca_storage.api.models import (
     CSI_VOLUME_PATH_DESCRIPTION,
@@ -44,6 +44,7 @@ from arca_storage.api.auth import (
     non_loopback_request_server_host,
     unauthenticated_loopback_allowed,
 )
+from arca_storage.context import get_context
 from arca_storage.errors import ArcaError, InvalidArgumentError
 
 app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage SVM management", version="0.1.0")
@@ -254,6 +255,49 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
             "status": "error",
             "error": {"code": "INTERNAL", "message": "Internal server error", "details": {}},
         },
+    )
+
+
+@app.get("/healthz")
+def healthz() -> Dict[str, Any]:
+    request_id = str(uuid.uuid4())
+    return {"request_id": request_id, "status": "ok", "data": {"state": "live"}}
+
+
+@app.get("/readyz")
+def readyz() -> JSONResponse:
+    request_id = str(uuid.uuid4())
+    checks = {"db": "ok"}
+    try:
+        ctx = get_context()
+        ctx.db.list_svms(limit=1)
+    except Exception as e:
+        checks["db"] = "error"
+        logger.warning("Readiness check failed (request_id=%s, check=db): %s", request_id, e)
+        return JSONResponse(
+            status_code=503,
+            content={
+                "request_id": request_id,
+                "status": "error",
+                "error": {
+                    "code": "UNAVAILABLE",
+                    "message": "Readiness check failed",
+                    "details": {"checks": checks},
+                },
+            },
+        )
+    return JSONResponse(
+        status_code=200,
+        content={"request_id": request_id, "status": "ok", "data": {"checks": checks}},
+    )
+
+
+@app.get("/metrics", response_class=PlainTextResponse)
+def metrics() -> PlainTextResponse:
+    return PlainTextResponse(
+        "# HELP arca_storage_api_up Arca Storage API process liveness\n"
+        "# TYPE arca_storage_api_up gauge\n"
+        "arca_storage_api_up 1\n"
     )
 
 

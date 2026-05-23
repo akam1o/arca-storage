@@ -98,6 +98,16 @@ def test_api_auth_protects_openapi_schema(monkeypatch):
     assert response.status_code == 401
 
 
+def test_api_auth_protects_monitoring_endpoints(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+
+    with TestClient(app) as client:
+        for path in ("/healthz", "/readyz", "/metrics"):
+            response = client.get(path)
+            assert response.status_code == 401
+            assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
 def test_api_auth_accepts_openapi_schema_with_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
