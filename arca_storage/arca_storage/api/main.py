@@ -126,7 +126,52 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
 
 
 def _request_validation_errors_without_inputs(exc: RequestValidationError) -> list[Dict[str, Any]]:
-    return [jsonable_encoder({key: value for key, value in error.items() if key != "input"}) for error in exc.errors()]
+    errors: list[Dict[str, Any]] = []
+    for error in exc.errors():
+        input_values = _validation_input_strings(error.get("input"))
+        sanitized = {
+            key: _redact_validation_error_field(key, value, input_values)
+            for key, value in error.items()
+            if key != "input"
+        }
+        errors.append(jsonable_encoder(sanitized))
+    return errors
+
+
+def _validation_input_strings(value: Any) -> set[str]:
+    if isinstance(value, str):
+        stripped = value.strip()
+        return {candidate for candidate in (value, stripped) if candidate}
+    if isinstance(value, list):
+        values: set[str] = set()
+        for item in value:
+            values.update(_validation_input_strings(item))
+        return values
+    if isinstance(value, dict):
+        values = set()
+        for item in value.values():
+            values.update(_validation_input_strings(item))
+        return values
+    return set()
+
+
+def _redact_validation_error_field(key: str, value: Any, input_values: set[str]) -> Any:
+    if key not in {"msg", "ctx"}:
+        return value
+    return _redact_validation_input_strings(value, input_values)
+
+
+def _redact_validation_input_strings(value: Any, input_values: set[str]) -> Any:
+    if isinstance(value, str):
+        redacted = value
+        for input_value in sorted(input_values, key=len, reverse=True):
+            redacted = redacted.replace(input_value, "<redacted>")
+        return redacted
+    if isinstance(value, list):
+        return [_redact_validation_input_strings(item, input_values) for item in value]
+    if isinstance(value, dict):
+        return {key: _redact_validation_input_strings(item, input_values) for key, item in value.items()}
+    return value
 
 
 @app.exception_handler(Exception)

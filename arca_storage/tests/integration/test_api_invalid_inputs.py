@@ -70,6 +70,28 @@ def test_request_validation_errors_do_not_echo_invalid_inputs():
 
 
 @pytest.mark.integration
+def test_request_validation_error_messages_do_not_echo_nested_input_values():
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/exports",
+        json={
+            "svm": "tenant_a",
+            "volume": "vol1",
+            "client": "10.0.0.0/24",
+            "sec": ["sys", "secret-token"],
+        },
+    )
+
+    payload = response.json()
+    errors = payload["error"]["details"]["errors"]
+    assert response.status_code == 400
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "input" not in errors[0]
+    assert "secret-token" not in str(payload)
+
+
+@pytest.mark.integration
 @pytest.mark.parametrize(
     "path",
     [
