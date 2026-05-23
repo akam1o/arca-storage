@@ -50,3 +50,20 @@ def test_body_name_validation_rejects_trailing_newline():
 
     assert response.status_code == 400
     assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+
+
+@pytest.mark.integration
+def test_request_validation_errors_do_not_echo_invalid_inputs():
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.post(
+        "/v1/svms",
+        json={"name": "secret-token\n", "ip_cidr": "192.168.10.5/24"},
+    )
+
+    payload = response.json()
+    errors = payload["error"]["details"]["errors"]
+    assert response.status_code == 400
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert "input" not in errors[0]
+    assert "secret-token" not in str(payload)

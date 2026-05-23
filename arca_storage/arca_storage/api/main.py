@@ -120,9 +120,13 @@ async def request_validation_error_handler(request: Request, exc: RequestValidat
         request,
         InvalidArgumentError(
             "Request validation failed",
-            {"errors": jsonable_encoder(exc.errors())},
+            {"errors": _request_validation_errors_without_inputs(exc)},
         ),
     )
+
+
+def _request_validation_errors_without_inputs(exc: RequestValidationError) -> list[Dict[str, Any]]:
+    return [jsonable_encoder({key: value for key, value in error.items() if key != "input"}) for error in exc.errors()]
 
 
 @app.exception_handler(Exception)
