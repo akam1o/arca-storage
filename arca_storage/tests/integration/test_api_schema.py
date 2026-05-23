@@ -40,3 +40,15 @@ def test_csi_directory_path_schema_matches_single_component_validation():
 
 def _parameter_description(parameters, name):
     return next(parameter["description"] for parameter in parameters if parameter["name"] == name)
+
+
+def test_openapi_schema_documents_bearer_auth_for_protected_routes():
+    app.openapi_schema = None
+    schema = app.openapi()
+
+    assert schema["components"]["securitySchemes"]["BearerAuth"] == {
+        "type": "http",
+        "scheme": "bearer",
+    }
+    assert schema["paths"]["/v1/svms"]["get"]["security"] == [{"BearerAuth": []}]
+    assert schema["paths"]["/metrics"]["get"]["security"] == [{"BearerAuth": []}]
