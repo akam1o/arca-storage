@@ -18,7 +18,13 @@ from arca_storage.create_resume import (
     new_create_owner,
 )
 from arca_storage.db import encode_cursor
-from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    InternalError,
+    InvalidArgumentError,
+    NotFoundError,
+    ReconcileFailedError,
+)
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.cli.lib.validators import normalize_ip_cidr, normalize_nfs_client_cidr, validate_name
@@ -73,7 +79,11 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
     export = _reconcile_export_create(ctx, export, owner)
 
     if export.status.phase == Phase.FAILED:
-        raise RuntimeError(export.status.message)
+        raise ReconcileFailedError(
+            "Export",
+            f"{export_data.svm}/{export_data.volume}/{client}",
+            export.status.message,
+        )
 
     return _export_to_dict(export)
 
@@ -119,7 +129,7 @@ def ensure_internal_export(
     ctx = get_context()
     export = ctx.export_reconciler.reconcile(export, allow_update=True)
     if export.status.phase == Phase.FAILED:
-        raise RuntimeError(export.status.message)
+        raise ReconcileFailedError("Export", f"{svm}/{volume}/{client}", export.status.message)
     return _export_to_dict(export)
 
 
@@ -243,7 +253,11 @@ def _resume_export_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
     export.status.message = ""
     export = _reconcile_export_create(ctx, export, owner)
     if export.status.phase == Phase.FAILED:
-        raise RuntimeError(export.status.message)
+        raise ReconcileFailedError(
+            "Export",
+            f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}",
+            export.status.message,
+        )
     return _export_to_dict(export)
 
 

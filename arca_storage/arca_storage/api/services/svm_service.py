@@ -27,7 +27,14 @@ from arca_storage.create_resume import (
     new_create_owner,
 )
 from arca_storage.db import encode_cursor
-from arca_storage.errors import AlreadyExistsError, InternalError, InvalidArgumentError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    InternalError,
+    InvalidArgumentError,
+    NotFoundError,
+    PreconditionFailedError,
+    ReconcileFailedError,
+)
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.svm import SVM, SVMSpec
 
@@ -81,7 +88,7 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     svm = _reconcile_svm_create(ctx, svm, owner)
 
     if svm.status.phase == Phase.FAILED:
-        raise RuntimeError(svm.status.message)
+        raise ReconcileFailedError("SVM", svm_data.name, svm.status.message)
 
     return _svm_to_dict(svm, ctx)
 
@@ -307,7 +314,7 @@ def _resume_svm_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str
     svm.status.message = ""
     svm = _reconcile_svm_create(ctx, svm, owner)
     if svm.status.phase == Phase.FAILED:
-        raise RuntimeError(svm.status.message)
+        raise ReconcileFailedError("SVM", svm.spec.name, svm.status.message)
     return _svm_to_dict(svm, ctx)
 
 

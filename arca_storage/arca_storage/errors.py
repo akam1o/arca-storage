@@ -127,6 +127,15 @@ class InternalError(ArcaError):
         super().__init__(ErrorCode.INTERNAL, message, details)
 
 
+class ReconcileFailedError(InternalError):
+    def __init__(self, resource: str, name: str, reason: Optional[str]) -> None:
+        message = f"{resource} '{name}' reconcile failed"
+        details: dict[str, Any] = {"resource": resource, "name": name}
+        if reason:
+            details["reason"] = reason
+        super().__init__(message, details)
+
+
 class TimeoutError(ArcaError):
     def __init__(self, operation: str, timeout_seconds: int) -> None:
         super().__init__(

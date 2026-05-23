@@ -214,6 +214,29 @@ class TestCreateVolume:
         assert response.json()["data"]["volume"]["status"] == "Ready"
         assert fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context))
 
+    @pytest.mark.integration
+    def test_create_volume_returns_structured_reconcile_failure(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+
+        def fail_mount(*args, **kwargs):
+            raise RuntimeError("mount failed")
+
+        fake_context.adapters.xfs.mount = fail_mount
+
+        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        assert response.status_code == 500
+        assert response.json()["error"] == {
+            "code": "INTERNAL",
+            "message": "Volume 'tenant_a/vol1' reconcile failed",
+            "details": {
+                "resource": "Volume",
+                "name": "tenant_a/vol1",
+                "reason": "Step 'mounted' failed: mount failed",
+            },
+        }
+
 
 class TestResizeVolume:
     """Tests for PATCH /v1/volumes/{name}."""
@@ -822,6 +845,30 @@ class TestSnapshots:
         assert response.json()["error"]["details"]["phase"] == "Pending"
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", snapshot_lv_name("tenant_a", "vol1", "snap1"))
+
+    @pytest.mark.integration
+    def test_create_snapshot_returns_structured_reconcile_failure(self, fake_context):
+        client = TestClient(app)
+        create_test_svm(client)
+        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+
+        def fail_create_snapshot(*args, **kwargs):
+            raise RuntimeError("snapshot failed")
+
+        fake_context.adapters.lvm.create_snapshot = fail_create_snapshot
+
+        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+
+        assert response.status_code == 500
+        assert response.json()["error"] == {
+            "code": "INTERNAL",
+            "message": "Snapshot 'tenant_a/vol1/snap1' reconcile failed",
+            "details": {
+                "resource": "Snapshot",
+                "name": "tenant_a/vol1/snap1",
+                "reason": "Create failed: snapshot failed",
+            },
+        }
 
     @pytest.mark.integration
     def test_create_snapshot_recovers_expired_cleanup_reservation(self, fake_context):

@@ -25,6 +25,7 @@ from arca_storage.errors import (
     InvalidArgumentError,
     NotFoundError,
     PreconditionFailedError,
+    ReconcileFailedError,
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
@@ -75,7 +76,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     volume = _reconcile_volume_create(ctx, volume, owner)
 
     if volume.status.phase == Phase.FAILED:
-        raise RuntimeError(volume.status.message)
+        raise ReconcileFailedError("Volume", f"{volume_data.svm}/{volume_data.name}", volume.status.message)
 
     return _volume_to_dict(volume, ctx)
 
@@ -376,7 +377,7 @@ def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
     volume.status.message = ""
     volume = _reconcile_volume_create(ctx, volume, owner)
     if volume.status.phase == Phase.FAILED:
-        raise RuntimeError(volume.status.message)
+        raise ReconcileFailedError("Volume", f"{volume.spec.svm}/{volume.spec.name}", volume.status.message)
     return _volume_to_dict(volume, ctx)
 
 

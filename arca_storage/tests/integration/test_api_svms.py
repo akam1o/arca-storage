@@ -131,6 +131,31 @@ class TestCreateSVM:
         assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
         assert fake_context.adapters.ganesha.host_network["tenant_a"] is True
 
+    @pytest.mark.integration
+    def test_create_svm_returns_structured_reconcile_failure(self, fake_context):
+        client = TestClient(app)
+
+        def fail_create_group(*args, **kwargs):
+            raise RuntimeError("pcs failed")
+
+        fake_context.adapters.pacemaker.create_group = fail_create_group
+
+        response = client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"},
+        )
+
+        assert response.status_code == 500
+        assert response.json()["error"] == {
+            "code": "INTERNAL",
+            "message": "SVM 'tenant_a' reconcile failed",
+            "details": {
+                "resource": "SVM",
+                "name": "tenant_a",
+                "reason": "Step 'pacemaker_group_created' failed: pcs failed",
+            },
+        }
+
 
 class TestListSVMs:
     """Tests for GET /v1/svms."""

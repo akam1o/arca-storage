@@ -27,6 +27,7 @@ from arca_storage.errors import (
     InvalidArgumentError,
     NotFoundError,
     PreconditionFailedError,
+    ReconcileFailedError,
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
@@ -109,7 +110,11 @@ def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
     snapshot = _reconcile_snapshot_create(ctx, snapshot, owner)
 
     if snapshot.status.phase == Phase.FAILED:
-        raise RuntimeError(snapshot.status.message)
+        raise ReconcileFailedError(
+            "Snapshot",
+            f"{snapshot_data.svm}/{snapshot_data.volume}/{snapshot_data.name}",
+            snapshot.status.message,
+        )
 
     return _snapshot_to_dict(snapshot)
 
@@ -247,7 +252,7 @@ def _clone_volume_from_reserved_snapshot(
         snapshot_lv,
     )
     if volume.status.phase == Phase.FAILED:
-        raise RuntimeError(volume.status.message)
+        raise ReconcileFailedError("Volume", f"{clone_data.svm}/{clone_data.name}", volume.status.message)
     return _clone_volume_to_dict(volume, ctx)
 
 
@@ -437,7 +442,7 @@ def _resume_clone_volume_from_snapshot(
         snapshot_lv,
     )
     if volume.status.phase == Phase.FAILED:
-        raise RuntimeError(volume.status.message)
+        raise ReconcileFailedError("Volume", f"{volume.spec.svm}/{volume.spec.name}", volume.status.message)
     return _clone_volume_to_dict(volume, ctx)
 
 
@@ -631,7 +636,11 @@ def _resume_snapshot_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dic
     snapshot.status.message = ""
     snapshot = _reconcile_snapshot_create(ctx, snapshot, owner)
     if snapshot.status.phase == Phase.FAILED:
-        raise RuntimeError(snapshot.status.message)
+        raise ReconcileFailedError(
+            "Snapshot",
+            f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+            snapshot.status.message,
+        )
     return _snapshot_to_dict(snapshot)
 
 
