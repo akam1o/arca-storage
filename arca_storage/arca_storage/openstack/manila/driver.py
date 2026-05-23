@@ -1244,7 +1244,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
         # Check if SVM already exists
         try:
             svm_info = arca_client_obj.get_svm(svm_name)
-            LOG.info("Found existing SVM %s for project %s", svm_name, project_id)
+            LOG.info("Found existing per-project SVM")
 
             # Cache the existing SVM
             self._per_project_svm_cache[project_id] = {
@@ -1256,7 +1256,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
         except arca_exceptions.ArcaSVMNotFound:
             # SVM doesn't exist, create it
-            LOG.info("Creating new SVM %s for project %s", svm_name, project_id)
+            LOG.info("Creating new per-project SVM")
 
             # Retry loop for network conflicts (multi-process race conditions)
             max_retries = 3
@@ -1281,14 +1281,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                         root_volume_size_gib=self.configuration.arca_storage_per_project_root_volume_size_gib,
                     )
 
-                    LOG.info(
-                        "Created SVM %s for project %s (VLAN: %d, IP: %s, allocation_id: %s)",
-                        svm_name,
-                        project_id,
-                        allocation.vlan_id,
-                        allocation.ip_cidr,
-                        allocation.allocation_id,
-                    )
+                    LOG.info("Created per-project SVM")
 
                     # Cache the new SVM
                     self._per_project_svm_cache[project_id] = {
@@ -1301,23 +1294,16 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
 
                 except arca_exceptions.ArcaSVMAlreadyExists:
                     # Race condition: another process created SVM with same name
-                    LOG.info("SVM %s was created by another process", svm_name)
+                    LOG.info("Per-project SVM was created by another process")
 
                     # Cleanup allocated network resource if it exists
                     # (the SVM created by the other process has its own network allocation)
                     if allocation and allocation.allocation_id:
                         try:
                             self._network_allocator.deallocate(allocation.allocation_id)
-                            LOG.info(
-                                "Cleaned up allocation %s after concurrent SVM creation",
-                                allocation.allocation_id,
-                            )
-                        except Exception as cleanup_error:
-                            LOG.error(
-                                "Failed to cleanup allocation %s: %s",
-                                allocation.allocation_id,
-                                safe_error_detail(cleanup_error),
-                            )
+                            LOG.info("Cleaned up network allocation after concurrent SVM creation")
+                        except Exception:
+                            LOG.error("Failed to cleanup network allocation after concurrent SVM creation")
 
                     svm_info = arca_client_obj.get_svm(svm_name)
                     self._per_project_svm_cache[project_id] = {
@@ -1331,26 +1317,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 except (arca_exceptions.ArcaNetworkPoolExhausted, arca_exceptions.ArcaNetworkConfigurationError) as e:
                     # Non-retryable network error (pool exhausted or config error)
                     details = safe_error_detail(e)
-                    LOG.error(
-                        "Non-retryable network error for SVM %s: %s",
-                        svm_name,
-                        details,
-                    )
+                    LOG.error("Non-retryable network error during per-project SVM allocation")
 
                     # Cleanup allocated network resource if it exists (though unlikely for these errors)
                     if allocation and allocation.allocation_id:
                         try:
                             self._network_allocator.deallocate(allocation.allocation_id)
-                            LOG.info(
-                                "Cleaned up allocation %s after non-retryable error",
-                                allocation.allocation_id,
-                            )
-                        except Exception as cleanup_error:
-                            LOG.error(
-                                "Failed to cleanup allocation %s: %s",
-                                allocation.allocation_id,
-                                safe_error_detail(cleanup_error),
-                            )
+                            LOG.info("Cleaned up network allocation after non-retryable error")
+                        except Exception:
+                            LOG.error("Failed to cleanup network allocation after non-retryable error")
 
                     # Don't retry - raise immediately
                     raise manila_exception.ShareBackendException(
@@ -1361,27 +1336,18 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                     # Network conflict - cleanup allocated port if it exists and retry
                     details = safe_error_detail(e)
                     LOG.warning(
-                        "Network conflict on attempt %d/%d for SVM %s: %s",
+                        "Network conflict on attempt %d/%d during per-project SVM allocation",
                         attempt + 1,
                         max_retries,
-                        svm_name,
-                        details,
                     )
 
                     # Cleanup allocated network resource if it exists
                     if allocation and allocation.allocation_id:
                         try:
                             self._network_allocator.deallocate(allocation.allocation_id)
-                            LOG.info(
-                                "Cleaned up allocation %s after network conflict",
-                                allocation.allocation_id,
-                            )
-                        except Exception as cleanup_error:
-                            LOG.error(
-                                "Failed to cleanup allocation %s: %s",
-                                allocation.allocation_id,
-                                safe_error_detail(cleanup_error),
-                            )
+                            LOG.info("Cleaned up network allocation after network conflict")
+                        except Exception:
+                            LOG.error("Failed to cleanup network allocation after network conflict")
 
                     if attempt < max_retries - 1:
                         continue  # Retry with new allocation
@@ -1395,27 +1361,15 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 except Exception as e:
                     # Unexpected error - cleanup and raise
                     details = safe_error_detail(e)
-                    LOG.error(
-                        "Failed to create SVM %s for project %s: %s",
-                        svm_name,
-                        project_id,
-                        details,
-                    )
+                    LOG.error("Failed to create per-project SVM")
 
                     # Cleanup allocated network resource if it exists
                     if allocation and allocation.allocation_id:
                         try:
                             self._network_allocator.deallocate(allocation.allocation_id)
-                            LOG.info(
-                                "Cleaned up allocation %s after SVM creation failure",
-                                allocation.allocation_id,
-                            )
-                        except Exception as cleanup_error:
-                            LOG.error(
-                                "Failed to cleanup allocation %s: %s",
-                                allocation.allocation_id,
-                                safe_error_detail(cleanup_error),
-                            )
+                            LOG.info("Cleaned up network allocation after SVM creation failure")
+                        except Exception:
+                            LOG.error("Failed to cleanup network allocation after SVM creation failure")
 
                     raise manila_exception.ShareBackendException(
                         f"Failed to create SVM for project: {details}"
