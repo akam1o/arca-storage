@@ -1,5 +1,7 @@
 """Regression tests for release and CI guardrails."""
 
+import tomli
+
 
 def test_top_level_ci_runs_on_main_and_develop(repo_root):
     workflow = (repo_root / ".github/workflows/ci.yml").read_text(encoding="utf-8")
@@ -47,6 +49,23 @@ def test_python_slow_tests_run_on_schedule(repo_root):
     assert "workflow_dispatch:" in workflow
     assert "python -m pytest tests/unit tests/integration -v -m slow" in workflow
     assert "not slow" not in workflow
+
+
+def test_runtime_dependencies_use_single_requirements_source(repo_root):
+    pyproject = tomli.loads(
+        (repo_root / "arca_storage/pyproject.toml").read_text(encoding="utf-8")
+    )
+    vendor_script = (repo_root / "packaging/vendor-wheels.sh").read_text(
+        encoding="utf-8"
+    )
+
+    assert "dependencies" in pyproject["project"]["dynamic"]
+    assert pyproject["tool"]["setuptools"]["dynamic"]["dependencies"] == {
+        "file": ["requirements.txt"]
+    }
+    assert "$ROOT/arca_storage/requirements.txt" in vendor_script
+    assert "requirements-runtime.txt" not in vendor_script
+    assert not (repo_root / "packaging/requirements-runtime.txt").exists()
 
 
 def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):

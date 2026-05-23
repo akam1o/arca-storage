@@ -23,8 +23,8 @@ rm -rf "$ROOT/arca_storage/dist"
 (cd "$ROOT/arca_storage" && "$VENV/bin/python" -m build --wheel)
 cp -f "$ROOT/arca_storage/dist/"*.whl "$WHEELHOUSE/"
 
-# Build wheels for runtime deps (avoid sdists at install time)
-"$VENV/bin/python" -m pip wheel --wheel-dir "$WHEELHOUSE" -r "$ROOT/packaging/requirements-runtime.txt"
+# Build wheels for runtime deps (avoid sdists at install time).
+"$VENV/bin/python" -m pip wheel --wheel-dir "$WHEELHOUSE" -r "$ROOT/arca_storage/requirements.txt"
 
 # Validate the offline wheelhouse against the built package metadata. Use
 # --ignore-installed so build-tool dependencies in this temporary venv cannot
