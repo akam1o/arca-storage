@@ -2,6 +2,8 @@
 Integration tests for CLI volume commands.
 """
 
+import json
+
 import pytest
 from typer.testing import CliRunner
 
@@ -95,3 +97,43 @@ class TestVolumeList:
         assert "tenant_a/vol_000" in result.stdout
         assert "tenant_a/vol_104" in result.stdout
         assert result.stdout.count("tenant_a/vol_") == 105
+
+    @pytest.mark.integration
+    def test_list_volumes_supports_json_cursor_page(self, fake_context):
+        """List an explicit volume page as JSON with a follow-up cursor."""
+        for i in range(3):
+            volume = Volume(spec=VolumeSpec(name=f"vol_{i:03d}", svm="tenant_a", size_gib=1))
+            volume.status.phase = Phase.READY
+            fake_context.db.insert_volume(volume)
+
+        runner = CliRunner()
+        result = runner.invoke(
+            app, ["volume", "list", "--svm", "tenant_a", "--limit", "2", "--format", "json"]
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert [item["spec"]["name"] for item in payload["items"]] == [
+            "vol_000",
+            "vol_001",
+        ]
+        assert payload["next_cursor"]
+
+        result = runner.invoke(
+            app,
+            [
+                "volume",
+                "list",
+                "--svm",
+                "tenant_a",
+                "--cursor",
+                payload["next_cursor"],
+                "--format",
+                "json",
+            ],
+        )
+
+        assert result.exit_code == 0
+        payload = json.loads(result.stdout)
+        assert [item["spec"]["name"] for item in payload["items"]] == ["vol_002"]
+        assert payload["next_cursor"] is None
