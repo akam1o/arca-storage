@@ -38,6 +38,22 @@ func nodeInternalError(message string, err error) error {
 	return status.Error(codes.Internal, message)
 }
 
+func nodeLogWarning(message string, err error) {
+	if err != nil {
+		klog.Warningf("%s: %T", message, err)
+		return
+	}
+	klog.Warning(message)
+}
+
+func nodeLogError(message string, err error) {
+	if err != nil {
+		klog.Errorf("%s: %T", message, err)
+		return
+	}
+	klog.Error(message)
+}
+
 // validateSVMName validates SVM names sourced from CSI volume context.
 func validateSVMName(name string) error {
 	if name == "" {
@@ -242,7 +258,7 @@ func (d *Driver) cleanupUnusedSVMMount(ctx context.Context, svmName string) {
 
 	shouldUnmount, err := d.mountManager.ShouldUnmountSVM(ctx, svmName)
 	if err != nil {
-		klog.Warningf("Failed to check if SVM %s should be unmounted: %v", svmName, err)
+		nodeLogWarning("Failed to check if SVM should be unmounted", err)
 		return
 	}
 	if !shouldUnmount {
@@ -251,7 +267,7 @@ func (d *Driver) cleanupUnusedSVMMount(ctx context.Context, svmName string) {
 
 	klog.V(4).Infof("Unmounting SVM %s (no more staged volumes)", svmName)
 	if err := d.mountManager.UnmountSVM(ctx, svmName); err != nil {
-		klog.Warningf("Failed to unmount SVM %s: %v", svmName, err)
+		nodeLogWarning("Failed to unmount SVM", err)
 	}
 }
 
@@ -356,7 +372,7 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	unlockSVM := d.lockNodeSVM(svmName)
 	defer unlockSVM()
 
-	klog.V(4).Infof("Staging volume %s (SVM: %s, VIP: %s, Path: %s) to %s", volumeID, svmName, vip, volumePath, stagingTargetPath)
+	klog.V(4).Infof("Staging volume %s", volumeID)
 
 	// Ensure per-SVM shared mount exists
 	nfsMountOptions := nfsMountOptionsFromCapability(req.GetVolumeCapability())
@@ -394,12 +410,12 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 			d.cleanupUnusedSVMMount(ctx, svmName)
 			return nil, status.Error(codes.FailedPrecondition, "staging path is already mounted but does not match requested volume")
 		}
-		klog.V(4).Infof("Volume %s already staged at %s", volumeID, stagingTargetPath)
+		klog.V(4).Infof("Volume %s already staged", volumeID)
 		return &csi.NodeStageVolumeResponse{}, nil
 	}
 
 	// Create bind mount from SVM mount to staging path
-	klog.V(4).Infof("Creating bind mount from %s to %s", sourcePath, stagingTargetPath)
+	klog.V(4).Infof("Creating staging bind mount for volume %s", volumeID)
 
 	if err := mounter.Mount(sourcePath, stagingTargetPath, "", bindMountOptions()); err != nil {
 		d.cleanupUnusedSVMMount(ctx, svmName)
@@ -408,26 +424,26 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 
 	// Record volume staging in NodeState
 	if err := d.nodeState.RecordVolumeStaging(volumeID, svmName, vip, exportRoot, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
-		klog.Warningf("Failed to record volume staging in node state, rolling back mount: %v", err)
+		nodeLogWarning("Failed to record volume staging in node state, rolling back mount", err)
 
 		// Best-effort: revert in-memory state (may also fail to persist)
 		if rmErr := d.nodeState.RemoveVolumeStaging(volumeID); rmErr != nil {
-			klog.Warningf("Failed to remove volume staging from node state during rollback: %v", rmErr)
+			nodeLogWarning("Failed to remove volume staging from node state during rollback", rmErr)
 		}
 
 		// Best-effort: unmount and remove staging directory
 		if umErr := mounter.Unmount(stagingTargetPath); umErr != nil {
-			klog.Warningf("Failed to unmount staging target path %s during rollback: %v", stagingTargetPath, umErr)
+			nodeLogWarning("Failed to unmount staging target path during rollback", umErr)
 		}
 		if rmDirErr := os.Remove(stagingTargetPath); rmDirErr != nil && !os.IsNotExist(rmDirErr) {
-			klog.Warningf("Failed to remove staging target directory %s during rollback: %v", stagingTargetPath, rmDirErr)
+			nodeLogWarning("Failed to remove staging target directory during rollback", rmDirErr)
 		}
 
 		d.cleanupUnusedSVMMount(ctx, svmName)
 		return nil, nodeInternalError("failed to persist node state for volume staging", err)
 	}
 
-	klog.Infof("Volume %s staged successfully at %s", volumeID, stagingTargetPath)
+	klog.Infof("Volume %s staged successfully", volumeID)
 
 	return &csi.NodeStageVolumeResponse{}, nil
 }
@@ -450,12 +466,12 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 		return nil, status.Error(codes.InvalidArgument, "staging target path is required")
 	}
 
-	klog.V(4).Infof("Unstaging volume %s from %s", volumeID, stagingTargetPath)
+	klog.V(4).Infof("Unstaging volume %s", volumeID)
 
 	// Get SVM name from NodeState
 	svmName, err := d.nodeState.GetSVMForVolumeFresh(volumeID)
 	if err != nil {
-		klog.Warningf("Volume %s not found in node state: %v", volumeID, err)
+		nodeLogWarning("Volume not found in node state", err)
 		// Continue with unmount attempt
 		svmName = ""
 	}
@@ -467,10 +483,10 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			klog.V(4).Infof("Staging path %s does not exist, considering volume unstaged", stagingTargetPath)
+			klog.V(4).Infof("Staging path does not exist, considering volume unstaged")
 			// Clean up NodeState
 			if err := d.nodeState.RemoveVolumeStaging(volumeID); err != nil {
-				klog.Warningf("Failed to remove volume staging from node state: %v", err)
+				nodeLogWarning("Failed to remove volume staging from node state", err)
 			}
 			if svmName != "" {
 				d.cleanupUnusedSVMMount(ctx, svmName)
@@ -481,7 +497,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 	}
 
 	if !notMnt {
-		klog.V(4).Infof("Unmounting %s", stagingTargetPath)
+		klog.V(4).Infof("Unmounting staging path for volume %s", volumeID)
 		if err := mounter.Unmount(stagingTargetPath); err != nil {
 			return nil, nodeInternalError("failed to unmount", err)
 		}
@@ -489,12 +505,12 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 
 	// Remove staging directory
 	if err := os.Remove(stagingTargetPath); err != nil && !os.IsNotExist(err) {
-		klog.Warningf("Failed to remove staging directory %s: %v", stagingTargetPath, err)
+		nodeLogWarning("Failed to remove staging directory", err)
 	}
 
 	// Remove from NodeState
 	if err := d.nodeState.RemoveVolumeStaging(volumeID); err != nil {
-		klog.Warningf("Failed to remove volume staging from node state: %v", err)
+		nodeLogWarning("Failed to remove volume staging from node state", err)
 	}
 
 	// Check if SVM mount should be unmounted (derived refcount check)
@@ -502,7 +518,7 @@ func (d *Driver) NodeUnstageVolume(ctx context.Context, req *csi.NodeUnstageVolu
 		d.cleanupUnusedSVMMount(ctx, svmName)
 	}
 
-	klog.Infof("Volume %s unstaged successfully from %s", volumeID, stagingTargetPath)
+	klog.Infof("Volume %s unstaged successfully", volumeID)
 
 	return &csi.NodeUnstageVolumeResponse{}, nil
 }
@@ -538,7 +554,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		return nil, status.Errorf(codes.InvalidArgument, "invalid volume capability: %v", err)
 	}
 
-	klog.V(4).Infof("Publishing volume %s from %s to %s", volumeID, stagingTargetPath, targetPath)
+	klog.V(4).Infof("Publishing volume %s", volumeID)
 	readonly := req.GetReadonly()
 
 	// Check if already mounted
@@ -564,7 +580,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 		if err := validateExistingPublishReadOnly(mounter, targetPath, readonly); err != nil {
 			return nil, status.Errorf(codes.FailedPrecondition, "target path is already mounted but cannot be reused: %v", err)
 		}
-		klog.V(4).Infof("Volume %s already published at %s", volumeID, targetPath)
+		klog.V(4).Infof("Volume %s already published", volumeID)
 		return &csi.NodePublishVolumeResponse{}, nil
 	}
 
@@ -579,7 +595,7 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 
 	// Step 1: Create initial bind mount
 	mountOptions := bindMountOptions()
-	klog.V(4).Infof("Creating bind mount from %s to %s with options: %v", stagingTargetPath, targetPath, mountOptions)
+	klog.V(4).Infof("Creating publish bind mount for volume %s", volumeID)
 	if err := mounter.Mount(stagingTargetPath, targetPath, "", mountOptions); err != nil {
 		return nil, nodeInternalError("failed to bind mount", err)
 	}
@@ -587,15 +603,15 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 	// Step 2: If read-only is requested, remount with 'ro' flag to enforce it
 	// (Linux requires separate remount to properly enforce read-only on bind mounts)
 	if readonly {
-		klog.V(4).Infof("Remounting %s as read-only", targetPath)
+		klog.V(4).Infof("Remounting published volume %s as read-only", volumeID)
 		if err := mounter.Mount(stagingTargetPath, targetPath, "", readonlyBindRemountOptions()); err != nil {
 			// Rollback: unmount the initial bind mount
-			klog.Errorf("Failed to remount as read-only, rolling back: %v", err)
+			nodeLogError("Failed to remount as read-only, rolling back", err)
 			if unmountErr := mounter.Unmount(targetPath); unmountErr != nil {
-				klog.Errorf("Failed to rollback bind mount: %v", unmountErr)
+				nodeLogError("Failed to rollback bind mount", unmountErr)
 			}
 			if rmErr := os.Remove(targetPath); rmErr != nil && !os.IsNotExist(rmErr) {
-				klog.Warningf("Failed to remove target path %s during rollback: %v", targetPath, rmErr)
+				nodeLogWarning("Failed to remove target path during rollback", rmErr)
 			}
 			return nil, nodeInternalError("failed to remount as read-only", err)
 		}
@@ -603,25 +619,25 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 
 	// Record volume publish in NodeState
 	if err := d.nodeState.RecordVolumePublish(volumeID, targetPath, readonly); err != nil {
-		klog.Warningf("Failed to record volume publish in node state, rolling back mount: %v", err)
+		nodeLogWarning("Failed to record volume publish in node state, rolling back mount", err)
 
 		// Best-effort: revert in-memory state (may also fail to persist)
 		if rmErr := d.nodeState.RemoveVolumePublish(volumeID, targetPath); rmErr != nil {
-			klog.Warningf("Failed to remove volume publish from node state during rollback: %v", rmErr)
+			nodeLogWarning("Failed to remove volume publish from node state during rollback", rmErr)
 		}
 
 		// Best-effort: unmount and remove target directory
 		if umErr := mounter.Unmount(targetPath); umErr != nil {
-			klog.Warningf("Failed to unmount target path %s during rollback: %v", targetPath, umErr)
+			nodeLogWarning("Failed to unmount target path during rollback", umErr)
 		}
 		if rmDirErr := os.Remove(targetPath); rmDirErr != nil && !os.IsNotExist(rmDirErr) {
-			klog.Warningf("Failed to remove target directory %s during rollback: %v", targetPath, rmDirErr)
+			nodeLogWarning("Failed to remove target directory during rollback", rmDirErr)
 		}
 
 		return nil, nodeInternalError("failed to persist node state for volume publish", err)
 	}
 
-	klog.Infof("Volume %s published successfully at %s", volumeID, targetPath)
+	klog.Infof("Volume %s published successfully", volumeID)
 
 	return &csi.NodePublishVolumeResponse{}, nil
 }
@@ -644,17 +660,17 @@ func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublish
 		return nil, status.Error(codes.InvalidArgument, "target path is required")
 	}
 
-	klog.V(4).Infof("Unpublishing volume %s from %s", volumeID, targetPath)
+	klog.V(4).Infof("Unpublishing volume %s", volumeID)
 
 	// Unmount the target path
 	mounter := d.mounter()
 	notMnt, err := mounter.IsLikelyNotMountPoint(targetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			klog.V(4).Infof("Target path %s does not exist, considering volume unpublished", targetPath)
+			klog.V(4).Infof("Target path does not exist, considering volume unpublished")
 			// Clean up NodeState
 			if err := d.nodeState.RemoveVolumePublish(volumeID, targetPath); err != nil {
-				klog.Warningf("Failed to remove volume publish from node state: %v", err)
+				nodeLogWarning("Failed to remove volume publish from node state", err)
 			}
 			return &csi.NodeUnpublishVolumeResponse{}, nil
 		}
@@ -662,7 +678,7 @@ func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublish
 	}
 
 	if !notMnt {
-		klog.V(4).Infof("Unmounting %s", targetPath)
+		klog.V(4).Infof("Unmounting target path for volume %s", volumeID)
 		if err := mounter.Unmount(targetPath); err != nil {
 			return nil, nodeInternalError("failed to unmount", err)
 		}
@@ -670,15 +686,15 @@ func (d *Driver) NodeUnpublishVolume(ctx context.Context, req *csi.NodeUnpublish
 
 	// Remove target directory
 	if err := os.Remove(targetPath); err != nil && !os.IsNotExist(err) {
-		klog.Warningf("Failed to remove target directory %s: %v", targetPath, err)
+		nodeLogWarning("Failed to remove target directory", err)
 	}
 
 	// Remove from NodeState
 	if err := d.nodeState.RemoveVolumePublish(volumeID, targetPath); err != nil {
-		klog.Warningf("Failed to remove volume publish from node state: %v", err)
+		nodeLogWarning("Failed to remove volume publish from node state", err)
 	}
 
-	klog.Infof("Volume %s unpublished successfully from %s", volumeID, targetPath)
+	klog.Infof("Volume %s unpublished successfully", volumeID)
 
 	return &csi.NodeUnpublishVolumeResponse{}, nil
 }

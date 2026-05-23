@@ -1,8 +1,10 @@
 package driver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 	mountutils "k8s.io/mount-utils"
 
 	arcamount "github.com/akam1o/csi-arca-storage/pkg/mount"
@@ -191,6 +194,33 @@ func assertInternalErrorOmits(t *testing.T, err error, wantMessage string, value
 		t.Fatalf("error = %v, want %q", err, wantMessage)
 	}
 	assertErrorOmits(t, err, values...)
+}
+
+func captureKlogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	state := klog.CaptureState()
+	defer state.Restore()
+
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	for name, value := range map[string]string{
+		"alsologtostderr": "false",
+		"logtostderr":     "false",
+		"one_output":      "true",
+		"skip_headers":    "true",
+		"v":               "4",
+	} {
+		if err := fs.Set(name, value); err != nil {
+			t.Fatalf("failed to set klog flag %s: %v", name, err)
+		}
+	}
+
+	var out bytes.Buffer
+	klog.SetOutput(&out)
+	fn()
+	klog.Flush()
+	return out.String()
 }
 
 func TestNFSMountOptionsFromCapabilityUsesMountFlags(t *testing.T) {
@@ -419,6 +449,83 @@ func TestNodeStageSerializesSVMMountLifecycle(t *testing.T) {
 	}
 	if got := nodeState.CountStagedVolumesForSVM("svm-a"); got != 2 {
 		t.Fatalf("staged volumes for svm-a = %d, want 2", got)
+	}
+}
+
+func TestNodeOperationLogsDoNotEchoHostPaths(t *testing.T) {
+	tmp := t.TempDir()
+	stagingPath := filepath.Join(tmp, "secret-staging-path")
+	targetPath := filepath.Join(tmp, "secret-target-path")
+	svmMountPath := filepath.Join(tmp, "secret-svm-mount")
+	volumePath := "volumes/secret-volume-path"
+	vip := "10.0.0.1"
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	driver := &Driver{
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         &fakeNodeMountManager{mountPath: svmMountPath, shouldUnmount: true},
+		nodeMounter:          mountutils.NewFakeMounter(nil),
+		mountSourceValidator: fakeMountSourceValidator{},
+	}
+
+	logOutput := captureKlogOutput(t, func() {
+		_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          "vol-a",
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  testMountCapability(),
+			VolumeContext: map[string]string{
+				volumeContextSVM:        "svm-a",
+				volumeContextVIP:        vip,
+				volumeContextVolumePath: volumePath,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NodeStageVolume() error = %v", err)
+		}
+
+		_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+			VolumeId:          "vol-a",
+			StagingTargetPath: stagingPath,
+			TargetPath:        targetPath,
+			VolumeCapability:  testMountCapability(),
+		})
+		if err != nil {
+			t.Fatalf("NodePublishVolume() error = %v", err)
+		}
+
+		_, err = driver.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+			VolumeId:   "vol-a",
+			TargetPath: targetPath,
+		})
+		if err != nil {
+			t.Fatalf("NodeUnpublishVolume() error = %v", err)
+		}
+
+		_, err = driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+			VolumeId:          "vol-a",
+			StagingTargetPath: stagingPath,
+		})
+		if err != nil {
+			t.Fatalf("NodeUnstageVolume() error = %v", err)
+		}
+	})
+
+	for _, value := range []string{
+		stagingPath,
+		targetPath,
+		svmMountPath,
+		filepath.Join(svmMountPath, volumePath),
+		volumePath,
+		vip,
+	} {
+		if strings.Contains(logOutput, value) {
+			t.Fatalf("node operation logs %q contain %q", logOutput, value)
+		}
 	}
 }
 

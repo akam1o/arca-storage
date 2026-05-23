@@ -66,9 +66,9 @@ func NewNodeState(stateFilePath string) (*NodeState, error) {
 		if os.IsNotExist(err) {
 			klog.Infof("No existing state file found, starting with empty state")
 		} else {
-			klog.Warningf("Failed to load state file, quarantining and starting fresh: %v", err)
+			klog.Warningf("Failed to load state file, quarantining and starting fresh: %T", err)
 			if err := ns.quarantineCorruptState(); err != nil {
-				klog.Warningf("Failed to quarantine corrupt state: %v", err)
+				klog.Warningf("Failed to quarantine corrupt state: %T", err)
 			}
 		}
 	}
@@ -443,7 +443,7 @@ func (ns *NodeState) persistLocked() error {
 
 func removeTempStateFile(tempPath string) {
 	if err := os.Remove(tempPath); err != nil && !os.IsNotExist(err) {
-		klog.Warningf("Failed to remove temp state file %s: %v", tempPath, err)
+		klog.Warningf("Failed to remove temp state file: %T", err)
 	}
 }
 
@@ -455,7 +455,7 @@ func (ns *NodeState) quarantineCorruptState() error {
 		return fmt.Errorf("failed to quarantine corrupt state: %w", err)
 	}
 
-	klog.Warningf("Quarantined corrupt state file to %s", backupPath)
+	klog.Warningf("Quarantined corrupt state file")
 	return nil
 }
 
@@ -480,7 +480,7 @@ func (ns *NodeState) Lock() error {
 	}
 	if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_EX); err != nil {
 		if closeErr := lockFile.Close(); closeErr != nil {
-			klog.Warningf("Failed to close state lock file after lock error: %v", closeErr)
+			klog.Warningf("Failed to close state lock file after lock error: %T", closeErr)
 		}
 		ns.mu.Unlock()
 		return fmt.Errorf("failed to lock state file: %w", err)
@@ -514,7 +514,7 @@ func (ns *NodeState) reloadFromDiskWithFileLock(lockType int) error {
 	}
 	defer func() {
 		if err := lockFile.Close(); err != nil {
-			klog.Warningf("Failed to close state lock file: %v", err)
+			klog.Warningf("Failed to close state lock file: %T", err)
 		}
 	}()
 
@@ -523,7 +523,7 @@ func (ns *NodeState) reloadFromDiskWithFileLock(lockType int) error {
 	}
 	defer func() {
 		if err := syscall.Flock(int(lockFile.Fd()), syscall.LOCK_UN); err != nil {
-			klog.Warningf("Failed to unlock state file: %v", err)
+			klog.Warningf("Failed to unlock state file: %T", err)
 		}
 	}()
 
@@ -541,10 +541,10 @@ func (ns *NodeState) reloadFromDiskWithFileLock(lockType int) error {
 func (ns *NodeState) Unlock() {
 	if ns.lockFile != nil {
 		if err := syscall.Flock(int(ns.lockFile.Fd()), syscall.LOCK_UN); err != nil {
-			klog.Warningf("Failed to unlock state file: %v", err)
+			klog.Warningf("Failed to unlock state file: %T", err)
 		}
 		if err := ns.lockFile.Close(); err != nil {
-			klog.Warningf("Failed to close state lock file: %v", err)
+			klog.Warningf("Failed to close state lock file: %T", err)
 		}
 		ns.lockFile = nil
 	}
@@ -584,7 +584,7 @@ func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string, readOnly b
 					return fmt.Errorf("failed to persist state: %w", err)
 				}
 			}
-			klog.V(4).Infof("Volume %s already published to %s", volumeID, targetPath)
+			klog.V(4).Infof("Volume %s already published", volumeID)
 			return nil
 		}
 	}
@@ -598,7 +598,7 @@ func (ns *NodeState) RecordVolumePublish(volumeID, targetPath string, readOnly b
 		return fmt.Errorf("failed to persist state: %w", err)
 	}
 
-	klog.V(4).Infof("Recorded volume %s publish to %s", volumeID, targetPath)
+	klog.V(4).Infof("Recorded volume %s publish", volumeID)
 	return nil
 }
 
@@ -678,6 +678,6 @@ func (ns *NodeState) RemoveVolumePublish(volumeID, targetPath string) error {
 		return fmt.Errorf("failed to persist state: %w", err)
 	}
 
-	klog.V(4).Infof("Removed volume %s publish from %s", volumeID, targetPath)
+	klog.V(4).Infof("Removed volume %s publish", volumeID)
 	return nil
 }
