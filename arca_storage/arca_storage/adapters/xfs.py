@@ -51,6 +51,7 @@ class SubprocessXFSAdapter:
         )
 
     def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None:
+        self._ensure_safe_mount_point(mount_point)
         os.makedirs(mount_point, exist_ok=True)
         mounted_source = self._mounted_source(mount_point)
         if mounted_source:
@@ -98,6 +99,18 @@ class SubprocessXFSAdapter:
             return None
         source = result.stdout.strip()
         return source or None
+
+    @staticmethod
+    def _ensure_safe_mount_point(mount_point: str) -> None:
+        try:
+            os.lstat(mount_point)
+        except FileNotFoundError:
+            return
+        if os.path.islink(mount_point) or not os.path.isdir(mount_point):
+            raise PreconditionFailedError(
+                "Mount point must be a real directory",
+                {"resource": "MountPoint"},
+            )
 
     @staticmethod
     def _same_device(mounted_source: str, expected_device: str) -> bool:

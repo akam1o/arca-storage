@@ -132,6 +132,34 @@ def test_mount_rejects_existing_mount_from_different_device(monkeypatch):
     ]
 
 
+def test_mount_rejects_symlink_mount_point(tmp_path, monkeypatch):
+    target = tmp_path / "target"
+    target.mkdir()
+    mount_point = tmp_path / "mount-point"
+    mount_point.symlink_to(target, target_is_directory=True)
+    monkeypatch.setattr(xfs, "run_cmd", lambda *_args, **_kwargs: pytest.fail("run_cmd should not be called"))
+
+    adapter = xfs.SubprocessXFSAdapter()
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        adapter.mount("/dev/vg_pool_01/vol1", str(mount_point))
+
+    assert exc_info.value.details == {"resource": "MountPoint"}
+    _assert_redacted(exc_info.value, str(mount_point), str(target))
+
+
+def test_mount_rejects_non_directory_mount_point(tmp_path, monkeypatch):
+    mount_point = tmp_path / "mount-point"
+    mount_point.write_text("not a directory", encoding="utf-8")
+    monkeypatch.setattr(xfs, "run_cmd", lambda *_args, **_kwargs: pytest.fail("run_cmd should not be called"))
+
+    adapter = xfs.SubprocessXFSAdapter()
+    with pytest.raises(PreconditionFailedError) as exc_info:
+        adapter.mount("/dev/vg_pool_01/vol1", str(mount_point))
+
+    assert exc_info.value.details == {"resource": "MountPoint"}
+    _assert_redacted(exc_info.value, str(mount_point))
+
+
 def test_mount_runs_mount_when_mountpoint_is_free(monkeypatch):
     calls: list[list[str]] = []
 
