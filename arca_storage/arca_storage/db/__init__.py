@@ -801,6 +801,59 @@ class StateDB:
             )
             return cur.rowcount > 0
 
+    def recover_volume_size_from_backend(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        recovered_size_gib: int,
+    ) -> Optional[dict[str, Any]]:
+        """Recover DB volume size after the backend LV was already extended."""
+        now = _now_iso()
+        with self.transaction(immediate=True) as conn:
+            self._require_ready_svm_conn(conn, svm)
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return None
+            current_status = record["status"]
+            if str(current_status.get("phase") or "") != Phase.READY.value:
+                return None
+            if current_status.get("resize_owner") != owner:
+                return None
+
+            spec = dict(record["spec"])
+            current_size = int(spec.get("size_gib") or 0)
+            status = dict(current_status)
+            self._clear_resize_lease(status)
+            if recovered_size_gib > current_size:
+                spec["size_gib"] = recovered_size_gib
+                generation = int(record.get("generation") or 0) + 1
+                conn.execute(
+                    """UPDATE volumes
+                       SET spec = ?, status = ?, generation = ?, updated_at = ?
+                       WHERE svm = ? AND name = ?
+                    """,
+                    (
+                        json.dumps(spec),
+                        json.dumps(status),
+                        generation,
+                        now,
+                        svm,
+                        name,
+                    ),
+                )
+                self._log_operation_conn(
+                    conn,
+                    "Volume",
+                    record["id"],
+                    "resize",
+                    "recovered",
+                    f"Recovered DB size to {recovered_size_gib} GiB from backend LV",
+                )
+            else:
+                self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            return self._get_volume_conn(conn, svm, name)
+
     def release_volume_resize(self, svm: str, name: str, owner: str) -> None:
         with self.transaction(immediate=True) as conn:
             record = self._get_volume_conn(conn, svm, name)

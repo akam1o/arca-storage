@@ -399,9 +399,10 @@ class TestResizeVolume:
 
         response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30})
         assert response.status_code == 412
+        assert response.json()["error"]["details"]["current_size_gib"] == 40
         assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 40
-        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
-        assert grow_calls["count"] == 1
+        assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 40
+        assert grow_calls["count"] == 2
 
         response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
 

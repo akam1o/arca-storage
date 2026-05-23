@@ -6,6 +6,7 @@ Delegates to the Volume reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
+from math import ceil
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import VolumeCreate
@@ -126,7 +127,33 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
             return ctx.db.refresh_volume_resize_lease(svm, name, owner)
 
         with create_lease_heartbeat(refresh):
-            ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
+            try:
+                ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
+            except PreconditionFailedError as e:
+                recovered_size = _recoverable_backend_resize_size(e, current_size, new_size_gib)
+                if recovered_size is None:
+                    raise
+                ctx.adapters.xfs.grow(mount_path)
+                if not ctx.db.recover_volume_size_from_backend(svm, name, owner, recovered_size):
+                    raise ConflictError(
+                        f"Volume '{svm}/{name}' changed during resize recovery",
+                        {
+                            "resource": "Volume",
+                            "name": f"{svm}/{name}",
+                            "recovered_size_gib": recovered_size,
+                            "requested_size_gib": new_size_gib,
+                        },
+                    )
+                completed = True
+                raise PreconditionFailedError(
+                    f"Volume '{svm}/{name}' cannot be shrunk",
+                    {
+                        "resource": "Volume",
+                        "name": f"{svm}/{name}",
+                        "current_size_gib": recovered_size,
+                        "requested_size_gib": new_size_gib,
+                    },
+                ) from e
             ctx.adapters.xfs.grow(mount_path)
 
         vol.spec = VolumeSpec(**{**vol.spec.model_dump(), "size_gib": new_size_gib})
@@ -238,6 +265,25 @@ def _volume_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) ->
         "status": status.get("phase"),
         "created_at": record.get("created_at"),
     }
+
+
+def _recoverable_backend_resize_size(
+    error: PreconditionFailedError,
+    db_size_gib: int,
+    requested_size_gib: int,
+) -> Optional[int]:
+    if error.details.get("resource") != "LogicalVolume":
+        return None
+    raw_size = error.details.get("current_size_gib")
+    if raw_size is None:
+        return None
+    try:
+        backend_size_gib = int(ceil(float(raw_size)))
+    except (TypeError, ValueError):
+        return None
+    if backend_size_gib <= db_size_gib or backend_size_gib <= requested_size_gib:
+        return None
+    return backend_size_gib
 
 
 def build_volume_export_path(
