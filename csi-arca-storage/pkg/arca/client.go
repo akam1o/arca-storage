@@ -20,7 +20,10 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const bytesPerGiB = int64(1024 * 1024 * 1024)
+const (
+	bytesPerGiB          = int64(1024 * 1024 * 1024)
+	maxResponseBodyBytes = 8 * 1024 * 1024
+)
 
 func pathSegment(value string) string {
 	return url.PathEscape(value)
@@ -243,9 +246,9 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 	}()
 
 	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
 	// Check status code
@@ -267,6 +270,17 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 	return respBody, nil
 }
 
+func readResponseBody(body io.Reader) ([]byte, error) {
+	respBody, err := io.ReadAll(io.LimitReader(body, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if len(respBody) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("%w: response body exceeds %d bytes", ErrInvalidResponse, maxResponseBodyBytes)
+	}
+	return respBody, nil
+}
+
 // isNonRetryableError checks if an error should not be retried
 func isNonRetryableError(err error) bool {
 	// Don't retry on 4xx errors except 408 (timeout) and 429 (rate limit)
@@ -282,6 +296,8 @@ func isNonRetryableError(err error) bool {
 	case errors.Is(err, ErrSVMAlreadyExists), errors.Is(err, ErrDirectoryAlreadyExists), errors.Is(err, ErrVolumeAlreadyExists), errors.Is(err, ErrSnapshotAlreadyExists), errors.Is(err, ErrExportAlreadyExists):
 		return true
 	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrVolumeNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrExportNotFound), errors.Is(err, ErrQuotaNotFound):
+		return true
+	case errors.Is(err, ErrInvalidResponse):
 		return true
 	}
 

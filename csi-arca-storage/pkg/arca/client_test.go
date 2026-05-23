@@ -319,6 +319,27 @@ func TestClientRetriesReadRequests(t *testing.T) {
 	}
 }
 
+func TestClientRejectsOversizedResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(strings.Repeat("x", maxResponseBodyBytes+1)))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.GetSVM(context.Background(), "k8s-default")
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("GetSVM() error = %v, want ErrInvalidResponse", err)
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("GetSVM() error = %v, want response body limit detail", err)
+	}
+}
+
 func TestClientDoesNotRetryMutatingRequests(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
