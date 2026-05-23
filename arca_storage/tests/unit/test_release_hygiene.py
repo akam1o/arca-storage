@@ -28,6 +28,18 @@ def test_python_workflow_enforces_coverage_floor(repo_root):
     assert "--cov-fail-under=50" in workflow
 
 
+def test_python_slow_tests_run_on_schedule(repo_root):
+    workflow = (repo_root / ".github/workflows/python-slow-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "name: Python Slow Tests" in workflow
+    assert "schedule:" in workflow
+    assert "workflow_dispatch:" in workflow
+    assert "python -m pytest tests/unit tests/integration -v -m slow" in workflow
+    assert "not slow" not in workflow
+
+
 def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):
     dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
 
