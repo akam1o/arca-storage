@@ -11,13 +11,21 @@ spec:
       app: csi-arca-storage-node
   template:
     metadata:
+      annotations:
+        arca.storage.io/pod-security-exception: "privileged CSI node mount operations"
       labels:
         app: csi-arca-storage-node
     spec:
       serviceAccountName: csi-arca-storage-node
+      automountServiceAccountToken: false
       priorityClassName: system-node-critical
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       tolerations:
         - operator: Exists
       containers:
@@ -50,9 +58,6 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
-            - name: plugin-dir
-              mountPath: /var/lib/kubelet/plugins/csi.arca-storage.io
-              mountPropagation: Bidirectional
             - name: pods-mount-dir
               mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
@@ -132,10 +137,6 @@ spec:
 
       volumes:
         - name: socket-dir
-          hostPath:
-            path: /var/lib/kubelet/plugins/csi.arca-storage.io
-            type: DirectoryOrCreate
-        - name: plugin-dir
           hostPath:
             path: /var/lib/kubelet/plugins/csi.arca-storage.io
             type: DirectoryOrCreate

@@ -97,6 +97,14 @@ def test_csi_node_sidecars_drop_privileges(repo_root):
         assert manifest.count("allowPrivilegeEscalation: false") == 2
         assert manifest.count("readOnlyRootFilesystem: true") == 2
         assert manifest.count("- ALL") == 2
+        assert "automountServiceAccountToken: false" in manifest
+        assert "kubernetes.io/os: linux" in manifest
+        assert "seccompProfile:" in manifest
+        assert "type: RuntimeDefault" in manifest
+        assert "arca.storage.io/pod-security-exception" in manifest
+        assert "name: plugin-dir" not in manifest
+        assert manifest.count("hostPath:") == 5
+        assert manifest.count("mountPropagation: Bidirectional") == 2
 
 
 def test_csi_node_rbac_does_not_grant_cluster_permissions(repo_root):
