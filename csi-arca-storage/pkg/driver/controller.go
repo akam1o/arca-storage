@@ -191,7 +191,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	// Generate stable volume ID (idempotent)
 	volumeID := d.volumeIDGen.GenerateVolumeID(req.GetName())
 
-	releaseVolumeCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
+	ctx, releaseVolumeCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, status.FromContextError(ctxErr).Err()
@@ -411,7 +411,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 			return nil, status.Errorf(codes.OutOfRange, "requested volume capacity exceeds limit")
 		}
 
-		releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, arca.SVMNameForNamespace(namespace))
+		ctx, releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, arca.SVMNameForNamespace(namespace))
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, status.FromContextError(ctxErr).Err()
@@ -804,7 +804,7 @@ func (d *Driver) cleanupUnusedControllerSVM(ctx context.Context, deletedVolume *
 		return
 	}
 
-	releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, deletedVolume.SVMName)
+	ctx, releaseControllerSVMLock, err := d.acquireControllerSVMLock(ctx, deletedVolume.SVMName)
 	if err != nil {
 		klog.Warningf("Failed to acquire SVM lifecycle lock for %s: %v", deletedVolume.SVMName, err)
 		return
@@ -858,7 +858,7 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 		return nil, status.Error(codes.InvalidArgument, "volume ID is required")
 	}
 
-	releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, volumeID, "delete")
+	ctx, releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, volumeID, "delete")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, status.FromContextError(ctxErr).Err()
@@ -1097,7 +1097,7 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	// Include source volume ID to avoid cross-namespace collisions
 	snapshotID := d.snapshotIDGen.GenerateSnapshotID(sourceVolumeID + "/" + req.GetName())
 
-	releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, sourceVolumeID, "snapshot-create")
+	ctx, releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, sourceVolumeID, "snapshot-create")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, status.FromContextError(ctxErr).Err()
@@ -1287,7 +1287,7 @@ func (d *Driver) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequ
 	}
 
 	if snapshotInfo.SourceVolumeID != "" {
-		releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, snapshotInfo.SourceVolumeID, "snapshot-delete")
+		ctx, releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, snapshotInfo.SourceVolumeID, "snapshot-delete")
 		if err != nil {
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, status.FromContextError(ctxErr).Err()
@@ -1412,7 +1412,7 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 		return nil, status.Errorf(codes.OutOfRange, "requested expansion capacity exceeds limit")
 	}
 
-	releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, volumeID, "expand")
+	ctx, releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, volumeID, "expand")
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, status.FromContextError(ctxErr).Err()

@@ -5,8 +5,10 @@ import (
 	"crypto/rand"
 	"crypto/sha256"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"strings"
+	"sync"
 	"time"
 
 	coordinationv1 "k8s.io/api/coordination/v1"
@@ -23,6 +25,8 @@ const (
 	leaseNameHashBytes = 6
 )
 
+var ErrLockLost = errors.New("distributed lock lost")
+
 // Manager manages distributed locks using Kubernetes Leases
 type Manager struct {
 	clientset kubernetes.Interface
@@ -38,6 +42,10 @@ type Lock struct {
 	leaseUID       types.UID
 	ctx            context.Context
 	cancel         context.CancelFunc
+	lost           chan struct{}
+	lostOnce       sync.Once
+	lostMu         sync.Mutex
+	lostErr        error
 }
 
 // NewManager creates a new lock manager
@@ -58,6 +66,7 @@ func (m *Manager) AcquireLock(ctx context.Context, resourceName string, ttl time
 		manager:        m,
 		leaseName:      leaseName,
 		holderIdentity: holderIdentity,
+		lost:           make(chan struct{}),
 	}
 
 	// Try to acquire the lease
@@ -167,14 +176,61 @@ func (l *Lock) renewLoop(ttl time.Duration) {
 	for {
 		select {
 		case <-ticker.C:
-			_, _, err := l.manager.tryAcquireLease(l.ctx, l.leaseName, l.holderIdentity, ttl)
+			renewed, _, err := l.manager.tryAcquireLease(l.ctx, l.leaseName, l.holderIdentity, ttl)
 			if err != nil {
-				klog.Warningf("Failed to renew lease %s: %v", l.leaseName, err)
+				l.markLost(fmt.Errorf("%w: failed to renew lease %s: %v", ErrLockLost, l.leaseName, err))
+				klog.Warningf("Lost lease %s after renew failure: %v", l.leaseName, err)
+				return
+			}
+			if !renewed {
+				l.markLost(fmt.Errorf("%w: lease %s is no longer held by this controller", ErrLockLost, l.leaseName))
+				klog.Warningf("Lost lease %s because it is no longer held by this controller", l.leaseName)
+				return
 			}
 		case <-l.ctx.Done():
 			return
 		}
 	}
+}
+
+// Done is closed when the lock is lost before Release is called.
+func (l *Lock) Done() <-chan struct{} {
+	return l.lost
+}
+
+// Err returns the reason the lock was lost, if any.
+func (l *Lock) Err() error {
+	l.lostMu.Lock()
+	defer l.lostMu.Unlock()
+	return l.lostErr
+}
+
+// Context returns a child context that is canceled if the lock is lost.
+func (l *Lock) Context(parent context.Context) (context.Context, context.CancelFunc) {
+	ctx, cancel := context.WithCancel(parent)
+	go func() {
+		select {
+		case <-l.Done():
+			cancel()
+		case <-ctx.Done():
+		}
+	}()
+	return ctx, cancel
+}
+
+func (l *Lock) markLost(err error) {
+	if err == nil {
+		err = ErrLockLost
+	}
+	l.lostOnce.Do(func() {
+		l.lostMu.Lock()
+		l.lostErr = err
+		l.lostMu.Unlock()
+		close(l.lost)
+		if l.cancel != nil {
+			l.cancel()
+		}
+	})
 }
 
 // Release releases the lock

@@ -15,23 +15,25 @@ type controllerSVMLock struct {
 	refCount int
 }
 
-func (d *Driver) acquireControllerSVMLock(ctx context.Context, svmName string) (func(), error) {
+func (d *Driver) acquireControllerSVMLock(ctx context.Context, svmName string) (context.Context, func(), error) {
 	releaseLocalLock, err := d.acquireLocalControllerSVMLock(ctx, svmName)
 	if err != nil {
-		return nil, err
+		return ctx, nil, err
 	}
 
 	if d.lockManager == nil {
-		return releaseLocalLock, nil
+		return ctx, releaseLocalLock, nil
 	}
 
 	distributedLock, err := d.lockManager.AcquireLock(ctx, "controller-svm-"+svmName, controllerSVMLockTTL)
 	if err != nil {
 		releaseLocalLock()
-		return nil, fmt.Errorf("failed to acquire distributed SVM lifecycle lock: %w", err)
+		return ctx, nil, fmt.Errorf("failed to acquire distributed SVM lifecycle lock: %w", err)
 	}
 
-	return func() {
+	lockedCtx, cancelLockedCtx := distributedLock.Context(ctx)
+	return lockedCtx, func() {
+		cancelLockedCtx()
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := distributedLock.Release(releaseCtx); err != nil {

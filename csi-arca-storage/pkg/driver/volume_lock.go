@@ -18,18 +18,18 @@ type volumeCreateLock struct {
 	refCount int
 }
 
-func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (func(), error) {
+func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (context.Context, func(), error) {
 	return d.acquireVolumeLifecycleLock(ctx, volumeID, "create")
 }
 
-func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, operation string) (func(), error) {
+func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, operation string) (context.Context, func(), error) {
 	releaseLocalLock, err := d.acquireLocalVolumeCreateLock(ctx, volumeID)
 	if err != nil {
-		return nil, err
+		return ctx, nil, err
 	}
 
 	if d.lockManager == nil {
-		return releaseLocalLock, nil
+		return ctx, releaseLocalLock, nil
 	}
 
 	distributedLock, err := d.lockManager.AcquireLock(
@@ -39,10 +39,12 @@ func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, opera
 	)
 	if err != nil {
 		releaseLocalLock()
-		return nil, fmt.Errorf("failed to acquire distributed volume %s lock: %w", operation, err)
+		return ctx, nil, fmt.Errorf("failed to acquire distributed volume %s lock: %w", operation, err)
 	}
 
-	return func() {
+	lockedCtx, cancelLockedCtx := distributedLock.Context(ctx)
+	return lockedCtx, func() {
+		cancelLockedCtx()
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := distributedLock.Release(releaseCtx); err != nil {
