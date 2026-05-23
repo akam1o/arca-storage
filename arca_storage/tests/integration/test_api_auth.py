@@ -33,7 +33,10 @@ def test_api_auth_allows_loopback_without_token_when_explicitly_enabled(monkeypa
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
 
-    with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
+    with patch(
+        "arca_storage.api.services.svm_service.list_svms",
+        return_value={"items": [], "next_cursor": None},
+    ):
         with TestClient(app, base_url="http://127.0.0.1:8080") as client:
             response = client.get("/v1/svms")
 
@@ -44,18 +47,26 @@ def test_api_auth_rejects_missing_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
     with TestClient(app) as client:
-        response = client.get("/v1/svms")
+        response = client.get("/v1/svms", headers={"X-Request-ID": "auth-trace-1"})
 
     assert response.status_code == 401
-    assert response.json()["error"]["code"] == "UNAUTHORIZED"
+    payload = response.json()
+    assert payload["request_id"] == "auth-trace-1"
+    assert response.headers["x-request-id"] == "auth-trace-1"
+    assert payload["error"]["code"] == "UNAUTHORIZED"
 
 
 def test_api_auth_accepts_configured_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
-    with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
+    with patch(
+        "arca_storage.api.services.svm_service.list_svms",
+        return_value={"items": [], "next_cursor": None},
+    ):
         with TestClient(app) as client:
-            response = client.get("/v1/svms", headers={"Authorization": "Bearer secret-token"})
+            response = client.get(
+                "/v1/svms", headers={"Authorization": "Bearer secret-token"}
+            )
 
     assert response.status_code == 200
 
@@ -82,9 +93,14 @@ def test_api_auth_rejects_blank_configured_token(monkeypatch):
 def test_api_auth_accepts_trimmed_configured_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", " secret-token \n")
 
-    with patch("arca_storage.api.services.svm_service.list_svms", return_value={"items": [], "next_cursor": None}):
+    with patch(
+        "arca_storage.api.services.svm_service.list_svms",
+        return_value={"items": [], "next_cursor": None},
+    ):
         with TestClient(app) as client:
-            response = client.get("/v1/svms", headers={"Authorization": "Bearer secret-token"})
+            response = client.get(
+                "/v1/svms", headers={"Authorization": "Bearer secret-token"}
+            )
 
     assert response.status_code == 200
 
@@ -112,7 +128,9 @@ def test_api_auth_accepts_openapi_schema_with_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
     with TestClient(app) as client:
-        response = client.get("/openapi.json", headers={"Authorization": "Bearer secret-token"})
+        response = client.get(
+            "/openapi.json", headers={"Authorization": "Bearer secret-token"}
+        )
 
     assert response.status_code == 200
 

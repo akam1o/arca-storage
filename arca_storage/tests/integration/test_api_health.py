@@ -16,6 +16,26 @@ def test_healthz_returns_liveness_payload():
     assert payload["status"] == "ok"
     assert payload["data"] == {"state": "live"}
     assert payload["request_id"]
+    assert response.headers["x-request-id"] == payload["request_id"]
+
+
+def test_external_request_id_is_reused_in_response_body_and_header():
+    with TestClient(app) as client:
+        response = client.get("/healthz", headers={"X-Request-ID": "trace-123"})
+
+    assert response.status_code == 200
+    assert response.json()["request_id"] == "trace-123"
+    assert response.headers["x-request-id"] == "trace-123"
+
+
+def test_invalid_external_request_id_is_replaced():
+    with TestClient(app) as client:
+        response = client.get("/healthz", headers={"X-Request-ID": "bad id"})
+
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["request_id"] != "bad id"
+    assert response.headers["x-request-id"] == payload["request_id"]
 
 
 def test_readyz_checks_database(fake_context):
