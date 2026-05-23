@@ -154,6 +154,27 @@ def test_csi_deployment_configs_include_node_paths(repo_root):
         )
 
 
+def test_development_kustomize_overlay_requires_external_secret_env(repo_root):
+    overlay = (
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/overlays/development/kustomization.yaml"
+    ).read_text(encoding="utf-8")
+    gitignore = (repo_root / ".gitignore").read_text(encoding="utf-8")
+
+    assert "envs:" in overlay
+    assert "- secrets.env" in overlay
+    assert "literals:" not in overlay
+    assert "auth-token=dev-token" not in overlay
+    assert (
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/overlays/development/secrets.env.example"
+    ).exists()
+    assert (
+        "csi-arca-storage/deploy/kustomize/overlays/development/secrets.env"
+        in gitignore
+    )
+
+
 def test_csi_node_sidecars_drop_privileges(repo_root):
     node_manifests = [
         repo_root / "csi-arca-storage/deploy/node.yaml",

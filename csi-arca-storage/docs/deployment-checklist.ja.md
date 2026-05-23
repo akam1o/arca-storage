@@ -125,6 +125,10 @@ CSI ARCA Storage driver を安全にデプロイするためのチェックリ�
 
 - [ ] Development:
   ```bash
+  cd deploy/kustomize/overlays/development
+  cp secrets.env.example secrets.env
+  printf 'auth-token=%s\n' '<your-development-token>' > secrets.env
+  cd ../../../..
   kubectl apply -k deploy/kustomize/overlays/development
   ```
 - [ ] Production:

@@ -137,6 +137,10 @@ Choose your deployment method:
 
 - [ ] For development:
   ```bash
+  cd deploy/kustomize/overlays/development
+  cp secrets.env.example secrets.env
+  printf 'auth-token=%s\n' '<your-development-token>' > secrets.env
+  cd ../../../..
   kubectl apply -k deploy/kustomize/overlays/development
   ```
 - [ ] For production:

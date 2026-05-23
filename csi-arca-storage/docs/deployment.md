@@ -215,9 +215,14 @@ Use Kustomize for production or repeatable environment-specific deployment. The 
 
 ### Development Overlay
 
-Edit `deploy/kustomize/overlays/development/config.yaml`, then deploy:
+Edit `deploy/kustomize/overlays/development/config.yaml`, prepare `secrets.env`, then deploy:
 
 ```bash
+cd deploy/kustomize/overlays/development
+cp secrets.env.example secrets.env
+printf 'auth-token=%s\n' '<your-development-token>' > secrets.env
+cd ../../../..
+
 kubectl apply -k deploy/kustomize/overlays/development
 ```
 
@@ -225,7 +230,7 @@ The development overlay:
 
 - Uses `csi-arca-storage:dev`
 - Generates `csi-arca-storage-config` from `config.yaml`
-- Generates `csi-arca-storage-secret` with `auth-token=dev-token`
+- Generates `csi-arca-storage-secret` from the local `secrets.env`
 - Enables `tls.insecure_skip_verify: true` in the example config
 
 ### Production Overlay

@@ -19,8 +19,8 @@ configMapGenerator:
 
 secretGenerator:
   - name: csi-arca-storage-secret
-    literals:
-      - auth-token=dev-token
+    envs:
+      - secrets.env
 
 generatorOptions:
   disableNameSuffixHash: true

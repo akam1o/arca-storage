@@ -45,6 +45,7 @@ Thumbs.db
 /.arca-state/
 *.log
 packaging/wheelhouse/
+csi-arca-storage/deploy/kustomize/overlays/development/secrets.env
 csi-arca-storage/deploy/kustomize/overlays/production/secrets.env
 
 # Test coverage
