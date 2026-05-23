@@ -67,3 +67,25 @@ def test_request_validation_errors_do_not_echo_invalid_inputs():
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert "input" not in errors[0]
     assert "secret-token" not in str(payload)
+
+
+@pytest.mark.integration
+@pytest.mark.parametrize(
+    "path",
+    [
+        "/v1/svms?cursor=secret-token",
+        "/v1/volumes?cursor=secret-token",
+        "/v1/exports?cursor=secret-token",
+        "/v1/snapshots?cursor=secret-token",
+    ],
+)
+def test_invalid_cursor_errors_do_not_echo_cursor(fake_context, path: str):
+    client = TestClient(app, raise_server_exceptions=False)
+
+    response = client.get(path)
+
+    payload = response.json()
+    assert response.status_code == 400
+    assert payload["error"]["code"] == "INVALID_ARGUMENT"
+    assert payload["error"]["details"] == {"field": "cursor"}
+    assert "secret-token" not in str(payload)

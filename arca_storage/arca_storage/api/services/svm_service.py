@@ -92,7 +92,7 @@ def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Optional[str
     try:
         records = ctx.db.list_svms(name=name, limit=limit + 1, cursor=cursor)
     except ValueError as e:
-        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+        raise InvalidArgumentError(str(e), {"field": "cursor"}) from e
     next_cursor = None
     if len(records) > limit:
         next_cursor = encode_cursor([records[limit - 1]["name"]])

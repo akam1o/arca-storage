@@ -163,7 +163,7 @@ def list_exports(
     try:
         records = ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit + 1, cursor=cursor)
     except ValueError as e:
-        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+        raise InvalidArgumentError(str(e), {"field": "cursor"}) from e
     next_cursor = None
     if len(records) > limit:
         spec = records[limit - 1]["spec"]

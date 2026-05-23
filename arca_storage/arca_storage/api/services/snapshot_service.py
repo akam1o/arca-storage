@@ -263,7 +263,7 @@ def list_snapshots(
     try:
         records = ctx.db.list_snapshots(svm=svm, volume=volume, name=name, limit=limit + 1, cursor=cursor)
     except ValueError as e:
-        raise InvalidArgumentError(str(e), {"cursor": cursor}) from e
+        raise InvalidArgumentError(str(e), {"field": "cursor"}) from e
     next_cursor = None
     if len(records) > limit:
         spec = records[limit - 1]["spec"]
