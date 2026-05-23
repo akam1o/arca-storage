@@ -131,13 +131,28 @@ func validateExistingPublishReadOnly(mounter mountutils.Interface, targetPath st
 
 	mountPoint, ok := findMountPoint(mountPoints, targetPath)
 	if !ok {
-		return fmt.Errorf("target path %s is mounted but no mount record was found", targetPath)
+		return fmt.Errorf("target path is mounted but no mount record was found")
 	}
 	activeReadOnly := mountPointHasOption(mountPoint, "ro")
 	if activeReadOnly != readOnly {
-		return fmt.Errorf("target path %s readonly mismatch: active=%t requested=%t", targetPath, activeReadOnly, readOnly)
+		return fmt.Errorf("readonly mismatch: active=%t requested=%t", activeReadOnly, readOnly)
 	}
 	return nil
+}
+
+func publishReuseFailureReason(err error) string {
+	if err == nil {
+		return "state mismatch"
+	}
+	message := err.Error()
+	switch {
+	case strings.Contains(message, "not recorded for volume"):
+		return "not recorded for volume"
+	case strings.Contains(message, "readonly mismatch"):
+		return "readonly mismatch"
+	default:
+		return "state mismatch"
+	}
 }
 
 func findMountPoint(mountPoints []mountutils.MountPoint, targetPath string) (mountutils.MountPoint, bool) {
@@ -236,28 +251,25 @@ func (d *Driver) cleanupUnusedSVMMount(ctx context.Context, svmName string) {
 func (d *Driver) validateStagedMountForPublish(volumeID, stagingTargetPath string, mounter mountutils.Interface) error {
 	staging, err := d.nodeState.GetVolumeStaging(volumeID)
 	if err != nil {
-		return status.Errorf(codes.FailedPrecondition, "staging path %s cannot be used for volume %s: %v", stagingTargetPath, volumeID, err)
+		return status.Errorf(codes.FailedPrecondition, "staging path cannot be used for volume %s: not recorded for volume", volumeID)
 	}
 	if staging.StagingPath != stagingTargetPath {
 		return status.Errorf(
 			codes.FailedPrecondition,
-			"staging path %s cannot be used for volume %s: staging path mismatch: recorded=%s requested=%s",
-			stagingTargetPath,
+			"staging path cannot be used for volume %s: staging path mismatch",
 			volumeID,
-			staging.StagingPath,
-			stagingTargetPath,
 		)
 	}
 
 	notMnt, err := mounter.IsLikelyNotMountPoint(stagingTargetPath)
 	if err != nil {
 		if os.IsNotExist(err) {
-			return status.Errorf(codes.FailedPrecondition, "staging path %s is not mounted", stagingTargetPath)
+			return status.Error(codes.FailedPrecondition, "staging path is not mounted")
 		}
 		return status.Errorf(codes.Internal, "failed to check staging mount point: %v", err)
 	}
 	if notMnt {
-		return status.Errorf(codes.FailedPrecondition, "staging path %s is not mounted", stagingTargetPath)
+		return status.Error(codes.FailedPrecondition, "staging path is not mounted")
 	}
 
 	if err := validateSVMName(staging.SVMName); err != nil {
@@ -273,7 +285,7 @@ func (d *Driver) validateStagedMountForPublish(volumeID, stagingTargetPath strin
 	}
 	expectedSource := filepath.Join(svmMountPath, staging.VolumePath)
 	if err := d.sourceValidator().ValidateMountSource(stagingTargetPath, expectedSource); err != nil {
-		return status.Errorf(codes.FailedPrecondition, "staging path %s does not match recorded source: %v", stagingTargetPath, err)
+		return status.Error(codes.FailedPrecondition, "staging path does not match recorded source")
 	}
 
 	return nil
@@ -369,11 +381,11 @@ func (d *Driver) NodeStageVolume(ctx context.Context, req *csi.NodeStageVolumeRe
 	if !notMnt {
 		if err := d.sourceValidator().ValidateMountSource(stagingTargetPath, sourcePath); err != nil {
 			d.cleanupUnusedSVMMount(ctx, svmName)
-			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested source: %v", stagingTargetPath, err)
+			return nil, status.Error(codes.FailedPrecondition, "staging path is already mounted but does not match requested source: mount source mismatch")
 		}
 		if err := d.nodeState.ValidateVolumeStaging(volumeID, svmName, vip, exportRoot, volumePath, stagingTargetPath, nfsMountOptions); err != nil {
 			d.cleanupUnusedSVMMount(ctx, svmName)
-			return nil, status.Errorf(codes.FailedPrecondition, "staging path %s is already mounted but does not match requested volume: %v", stagingTargetPath, err)
+			return nil, status.Error(codes.FailedPrecondition, "staging path is already mounted but does not match requested volume")
 		}
 		klog.V(4).Infof("Volume %s already staged at %s", volumeID, stagingTargetPath)
 		return &csi.NodeStageVolumeResponse{}, nil
@@ -534,16 +546,16 @@ func (d *Driver) NodePublishVolume(ctx context.Context, req *csi.NodePublishVolu
 
 	if !notMnt {
 		if err := d.sourceValidator().ValidateMountSource(targetPath, stagingTargetPath); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but does not match requested source: %v", targetPath, err)
+			return nil, status.Error(codes.FailedPrecondition, "target path is already mounted but does not match requested source: mount source mismatch")
 		}
 		if err := d.nodeState.ValidateVolumePublish(volumeID, targetPath, readonly); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
+			return nil, status.Errorf(codes.FailedPrecondition, "target path is already mounted but cannot be reused: %s", publishReuseFailureReason(err))
 		}
 		if err := d.validateStagedMountForPublish(volumeID, stagingTargetPath, mounter); err != nil {
 			return nil, err
 		}
 		if err := validateExistingPublishReadOnly(mounter, targetPath, readonly); err != nil {
-			return nil, status.Errorf(codes.FailedPrecondition, "target path %s is already mounted but cannot be reused: %v", targetPath, err)
+			return nil, status.Errorf(codes.FailedPrecondition, "target path is already mounted but cannot be reused: %v", err)
 		}
 		klog.V(4).Infof("Volume %s already published at %s", volumeID, targetPath)
 		return &csi.NodePublishVolumeResponse{}, nil

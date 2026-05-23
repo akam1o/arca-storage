@@ -131,6 +131,20 @@ func testBlockCapability() *csi.VolumeCapability {
 	}
 }
 
+func assertErrorOmits(t *testing.T, err error, values ...string) {
+	t.Helper()
+
+	rendered := err.Error()
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if strings.Contains(rendered, value) {
+			t.Fatalf("error %q contains %q", rendered, value)
+		}
+	}
+}
+
 func TestNFSMountOptionsFromCapabilityUsesMountFlags(t *testing.T) {
 	capability := &csi.VolumeCapability{
 		AccessType: &csi.VolumeCapability_Mount{
@@ -407,6 +421,61 @@ func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T
 	}
 }
 
+func TestNodeStageExistingMountSourceMismatchDoesNotEchoPaths(t *testing.T) {
+	tmp := t.TempDir()
+	stagingPath := filepath.Join(tmp, "staging")
+	svmMountPath := filepath.Join(tmp, "svm")
+	volumePath := "volumes/vol-a"
+	sourcePath := filepath.Join(svmMountPath, volumePath)
+	staleSource := filepath.Join(tmp, "stale-volume")
+	if err := os.MkdirAll(stagingPath, 0750); err != nil {
+		t.Fatalf("failed to create staging path: %v", err)
+	}
+	mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+	if err != nil {
+		t.Fatalf("failed to resolve staging path: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	validator := fakeMountSourceValidator{
+		err: fmt.Errorf("mount source mismatch: active=%s requested=%s", staleSource, sourcePath),
+	}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    nodeState,
+		mountManager: &fakeNodeMountManager{mountPath: svmMountPath},
+		nodeMounter: mountutils.NewFakeMounter([]mountutils.MountPoint{
+			{Device: staleSource, Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+		}),
+		mountSourceValidator: validator,
+	}
+
+	_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  testMountCapability(),
+		VolumeContext: map[string]string{
+			volumeContextSVM:        "svm-a",
+			volumeContextVIP:        "10.0.0.1",
+			volumeContextVolumePath: volumePath,
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "mount source mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertErrorOmits(t, err, stagingPath, staleSource, sourcePath)
+	if nodeState.CountStagedVolumesForSVM("svm-a") != 0 {
+		t.Fatal("staging should not be recorded after source mismatch")
+	}
+}
+
 func TestNodeStageInvalidVolumeContextDoesNotEchoInput(t *testing.T) {
 	tests := []struct {
 		name      string
@@ -636,6 +705,7 @@ func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	if !strings.Contains(err.Error(), "not recorded for volume") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath, mountedTargetPath, mountedStagingPath)
 }
 
 func TestNodePublishRejectsBlockCapability(t *testing.T) {
@@ -717,6 +787,7 @@ func TestNodePublishRejectsFirstPublishWithMismatchedStagingPath(t *testing.T) {
 	if !strings.Contains(err.Error(), "staging path mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, recordedStagingPath, requestedStagingPath)
 	if nodeState.HasVolumePublish("vol-a", targetPath) {
 		t.Fatal("target should not be recorded after rejected publish")
 	}
@@ -759,6 +830,7 @@ func TestNodePublishRejectsFirstPublishWhenStagingPathIsNotMounted(t *testing.T)
 	if !strings.Contains(err.Error(), "is not mounted") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, stagingPath)
 	if nodeState.HasVolumePublish("vol-a", targetPath) {
 		t.Fatal("target should not be recorded after rejected publish")
 	}
@@ -770,6 +842,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 	stagingPath := filepath.Join(tmp, "staging")
 	svmMountPath := filepath.Join(tmp, "svm")
 	volumePath := "volumes/vol-a"
+	staleSource := filepath.Join(tmp, "stale-volume")
 	if err := os.MkdirAll(stagingPath, 0750); err != nil {
 		t.Fatalf("failed to create staging path: %v", err)
 	}
@@ -788,7 +861,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 
 	expectedSource := filepath.Join(svmMountPath, volumePath)
 	validator := &recordingMountSourceValidator{
-		err: fmt.Errorf("mount source mismatch: active=%s requested=%s", filepath.Join(tmp, "stale-volume"), expectedSource),
+		err: fmt.Errorf("mount source mismatch: active=%s requested=%s", staleSource, expectedSource),
 	}
 	driver := &Driver{
 		mode:         "node",
@@ -796,7 +869,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 		nodeState:    nodeState,
 		mountManager: &fakeNodeMountManager{mountPath: svmMountPath},
 		nodeMounter: mountutils.NewFakeMounter([]mountutils.MountPoint{
-			{Device: filepath.Join(tmp, "stale-volume"), Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+			{Device: staleSource, Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
 		}),
 		mountSourceValidator: validator,
 	}
@@ -813,6 +886,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match recorded source") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, stagingPath, staleSource, expectedSource)
 	if !reflect.DeepEqual(validator.calls, []mountSourceValidationCall{{targetPath: stagingPath, expectedSource: expectedSource}}) {
 		t.Fatalf("unexpected source validation calls: %#v", validator.calls)
 	}
@@ -874,6 +948,7 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "mount source mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath)
 }
 
 func TestNodePublishRejectsExistingMountWithWrongStagingSource(t *testing.T) {
@@ -940,6 +1015,7 @@ func TestNodePublishRejectsExistingMountWithWrongStagingSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match recorded source") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath, staleSource, expectedSource)
 
 	wantCalls := []mountSourceValidationCall{
 		{targetPath: targetPath, expectedSource: stagingPath},
@@ -1025,4 +1101,5 @@ func TestNodePublishRejectsExistingMountWithReadonlyMismatch(t *testing.T) {
 	if !strings.Contains(err.Error(), "readonly mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath, sourcePath)
 }
