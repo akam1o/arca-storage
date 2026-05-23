@@ -345,6 +345,44 @@ def test_apply_qos_rejects_empty_limits(monkeypatch):
     assert "At least one QoS limit" in str(exc.value)
 
 
+@pytest.mark.parametrize(
+    ("kwargs", "field"),
+    [
+        ({"read_iops": 0}, "read_iops"),
+        ({"write_iops": -1}, "write_iops"),
+        ({"read_bps": True}, "read_bps"),
+        ({"write_bps": "fast"}, "write_bps"),
+    ],
+)
+def test_apply_qos_rejects_invalid_limit_values_before_cgroup_write(
+    monkeypatch,
+    kwargs,
+    field,
+):
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {"phase": "Ready", "lv_path": "/dev/vg_arca/test-vol"},
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    def fail_hierarchy():
+        raise AssertionError("invalid QoS patch should not touch cgroups")
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_ensure_cgroup_hierarchy", fail_hierarchy)
+
+    with pytest.raises(InvalidArgumentError) as exc:
+        qos_service.apply_qos_to_volume("tenant-a", "test-vol", **kwargs)
+
+    assert exc.value.details == {"field": field, "minimum": 1}
+
+
 def test_qos_updates_preserve_other_device_limits(monkeypatch, tmp_path):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
     cgroup_path = cgroup_base / "svm_tenant-a"
@@ -458,6 +496,91 @@ def test_get_qos_reapplies_persisted_limits_when_cgroup_is_missing(monkeypatch, 
     assert result["qos_enabled"] is True
     assert result["read_iops"] == 1000
     assert (cgroup_path / "cgroup.procs").read_text(encoding="utf-8") == "4242"
+    assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
+    assert ctx.db.persisted_qos == result
+
+
+def test_get_qos_ignores_invalid_persisted_limits_when_cgroup_is_missing(
+    monkeypatch,
+    tmp_path,
+):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {
+                        "phase": "Ready",
+                        "lv_path": "/dev/vg_arca/test-vol",
+                        "qos": {
+                            "qos_enabled": True,
+                            "read_iops": 0,
+                            "write_iops": -1,
+                            "read_bps": True,
+                            "write_bps": "fast",
+                        },
+                    },
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    def fail_reapply(*args, **kwargs):
+        raise AssertionError("invalid persisted QoS limits should not be reapplied")
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(qos_service, "_write_qos_limits", fail_reapply)
+
+    result = qos_service.get_qos_settings("tenant-a", "test-vol")
+
+    assert result == {"svm": "tenant-a", "volume": "test-vol", "qos_enabled": False}
+    assert ctx.db.persisted_qos is None
+
+
+def test_get_qos_reapplies_only_valid_persisted_limits_when_cgroup_is_missing(
+    monkeypatch,
+    tmp_path,
+):
+    cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
+    ctx = SimpleNamespace(
+        db=DummyDB(
+            volumes=[
+                {
+                    "spec": {},
+                    "status": {
+                        "phase": "Ready",
+                        "lv_path": "/dev/vg_arca/test-vol",
+                        "qos": {
+                            "qos_enabled": True,
+                            "read_iops": "1000",
+                            "write_iops": 0,
+                        },
+                    },
+                }
+            ],
+            svm={"spec": {"vlan_id": 100}},
+        )
+    )
+
+    monkeypatch.setattr(qos_service, "get_context", lambda: ctx)
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: cgroup_base)
+    monkeypatch.setattr(
+        qos_service,
+        "_ensure_cgroup_hierarchy",
+        lambda: cgroup_base.mkdir(parents=True, exist_ok=True),
+    )
+    monkeypatch.setattr(qos_service, "_get_ganesha_pid", lambda ctx_arg, svm: 4242)
+    monkeypatch.setattr(qos_service, "_get_device_id", lambda lv_path: "8:16")
+
+    result = qos_service.get_qos_settings("tenant-a", "test-vol")
+
+    cgroup_path = cgroup_base / "svm_tenant-a"
+    assert result["qos_enabled"] is True
+    assert result["read_iops"] == 1000
+    assert "write_iops" not in result
     assert (cgroup_path / "io.max").read_text(encoding="utf-8") == "8:16 riops=1000"
     assert ctx.db.persisted_qos == result
 

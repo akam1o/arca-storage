@@ -139,12 +139,47 @@ def _qos_volume_lv_path(volume_info: dict[str, Any], svm: str, volume: str) -> s
 
 
 def _qos_limits_from_settings(settings: dict[str, Any]) -> dict[str, int]:
+    return _normalize_qos_limits(settings, strict=False)
+
+
+def _normalize_qos_limits(raw_limits: dict[str, Any], *, strict: bool) -> dict[str, int]:
     limits: dict[str, int] = {}
     for field in _QOS_LIMIT_FIELDS:
-        value = settings.get(field)
-        if value is not None:
-            limits[field] = int(value)
+        value = raw_limits.get(field)
+        if value is None:
+            continue
+        try:
+            limits[field] = _normalize_qos_limit_value(field, value)
+        except InvalidArgumentError:
+            if strict:
+                raise
     return limits
+
+
+def _normalize_qos_limit_value(field: str, value: Any) -> int:
+    if isinstance(value, bool):
+        raise _invalid_qos_limit_error(field)
+    if isinstance(value, int):
+        limit = value
+    elif isinstance(value, str):
+        raw_value = value.strip()
+        signed_digits = raw_value[1:] if raw_value[:1] in {"-", "+"} else raw_value
+        if not signed_digits.isdigit():
+            raise _invalid_qos_limit_error(field)
+        limit = int(raw_value)
+    else:
+        raise _invalid_qos_limit_error(field)
+
+    if limit <= 0:
+        raise _invalid_qos_limit_error(field)
+    return limit
+
+
+def _invalid_qos_limit_error(field: str) -> InvalidArgumentError:
+    return InvalidArgumentError(
+        "QoS limit values must be positive integers",
+        {"field": field, "minimum": 1},
+    )
 
 
 def _qos_io_max_line(device_id: str, limits: dict[str, int]) -> str:
@@ -167,6 +202,7 @@ def _write_qos_limits(
     lv_path: str,
     limits: dict[str, int],
 ) -> Dict[str, Any]:
+    limits = _normalize_qos_limits(limits, strict=True)
     _ensure_cgroup_hierarchy()
 
     cgroup_path = _get_cgroup_path(svm, volume)
@@ -368,15 +404,15 @@ def apply_qos_to_volume(
             {"fields": list(_QOS_LIMIT_FIELDS)},
         )
 
-    limits: dict[str, int] = {}
-    if read_bps is not None:
-        limits["read_bps"] = read_bps
-    if write_bps is not None:
-        limits["write_bps"] = write_bps
-    if read_iops is not None:
-        limits["read_iops"] = read_iops
-    if write_iops is not None:
-        limits["write_iops"] = write_iops
+    limits = _normalize_qos_limits(
+        {
+            "read_iops": read_iops,
+            "write_iops": write_iops,
+            "read_bps": read_bps,
+            "write_bps": write_bps,
+        },
+        strict=True,
+    )
 
     qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, limits)
     try:
