@@ -17,6 +17,7 @@ import (
 	"k8s.io/klog/v2"
 	mountutils "k8s.io/mount-utils"
 
+	"github.com/akam1o/csi-arca-storage/pkg/logredact"
 	arcamount "github.com/akam1o/csi-arca-storage/pkg/mount"
 )
 
@@ -34,7 +35,7 @@ func (d *Driver) ensureNodeServiceConfigured() error {
 
 func nodeInternalError(message string, err error) error {
 	if err != nil {
-		klog.V(4).Infof("%s: %T", message, err)
+		klog.V(4).Infof("%s: %T: %s", message, err, logredact.Error(err))
 	}
 	return status.Error(codes.Internal, message)
 }
@@ -62,6 +63,7 @@ func statfsValueToInt64(value uint64, label string) (int64, error) {
 func nodeLogWarning(message string, err error) {
 	if err != nil {
 		klog.Warningf("%s: %T", message, err)
+		klog.V(4).Infof("%s details: %s", message, logredact.Error(err))
 		return
 	}
 	klog.Warning(message)
@@ -70,6 +72,7 @@ func nodeLogWarning(message string, err error) {
 func nodeLogError(message string, err error) {
 	if err != nil {
 		klog.Errorf("%s: %T", message, err)
+		klog.V(4).Infof("%s details: %s", message, logredact.Error(err))
 		return
 	}
 	klog.Error(message)

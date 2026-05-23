@@ -10,6 +10,8 @@ import (
 
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
+
+	"github.com/akam1o/csi-arca-storage/pkg/logredact"
 )
 
 var svmNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
@@ -20,6 +22,7 @@ func mountLogWarning(message string, err error) {
 		return
 	}
 	klog.Warningf("%s: %T", message, err)
+	klog.V(4).Infof("%s details: %s", message, logredact.Error(err))
 }
 
 func mountLogError(message string, err error) {
@@ -28,6 +31,7 @@ func mountLogError(message string, err error) {
 		return
 	}
 	klog.Errorf("%s: %T", message, err)
+	klog.V(4).Infof("%s details: %s", message, logredact.Error(err))
 }
 
 // SVMMount represents an SVM mount point

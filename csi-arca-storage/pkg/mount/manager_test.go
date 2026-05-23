@@ -72,6 +72,33 @@ func captureKlogOutput(t *testing.T, fn func()) string {
 	return out.String()
 }
 
+func TestMountLogHelpersIncludeRedactedErrorDetails(t *testing.T) {
+	err := fmt.Errorf(
+		"mount failed for 10.0.0.1:/exports/team at /var/lib/kubelet/plugins/csi.arca-storage.io/mounts/team: token=secret-token",
+	)
+
+	logOutput := captureKlogOutput(t, func() {
+		mountLogWarning("Failed to ensure SVM mount", err)
+		mountLogError("Failed to unmount SVM", err)
+	})
+
+	for _, want := range []string{"mount failed", "<redacted>", "<nfs-source>", "<path>"} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("mount logs %q do not contain %q", logOutput, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"10.0.0.1",
+		"/exports/team",
+		"/var/lib/kubelet/plugins/csi.arca-storage.io/mounts/team",
+		"secret-token",
+	} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Fatalf("mount logs %q contain %q", logOutput, forbidden)
+		}
+	}
+}
+
 func TestNewMountManagerRejectsUnsafeBaseMountPath(t *testing.T) {
 	uncleanPath := t.TempDir() + "/../mounts"
 	tests := []struct {

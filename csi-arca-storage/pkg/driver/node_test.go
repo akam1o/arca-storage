@@ -223,6 +223,35 @@ func captureKlogOutput(t *testing.T, fn func()) string {
 	return out.String()
 }
 
+func TestNodeLogHelpersIncludeRedactedErrorDetails(t *testing.T) {
+	err := fmt.Errorf(
+		"mount failed for 10.0.0.1:/exports/team at /var/lib/kubelet/pods/x: Authorization: Bearer secret-token token=another-secret",
+	)
+
+	logOutput := captureKlogOutput(t, func() {
+		_ = nodeInternalError("failed to bind mount", err)
+		nodeLogWarning("Failed to rollback node mount", err)
+		nodeLogError("Failed to clean node mount", err)
+	})
+
+	for _, want := range []string{"mount failed", "failed to bind mount", "<redacted>", "<nfs-source>", "<path>"} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("node logs %q do not contain %q", logOutput, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"10.0.0.1",
+		"/exports/team",
+		"/var/lib/kubelet/pods/x",
+		"secret-token",
+		"another-secret",
+	} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Fatalf("node logs %q contain %q", logOutput, forbidden)
+		}
+	}
+}
+
 func TestNFSMountOptionsFromCapabilityUsesMountFlags(t *testing.T) {
 	capability := &csi.VolumeCapability{
 		AccessType: &csi.VolumeCapability_Mount{
