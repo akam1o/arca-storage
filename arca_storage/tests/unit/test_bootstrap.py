@@ -21,6 +21,35 @@ def assert_redacted(error, *values: str) -> None:
         assert value not in rendered
 
 
+def _verify_settings(client_cidrs):
+    return SimpleNamespace(
+        storage=SimpleNamespace(vg_name="vg_pool_01", thinpool_name="pool"),
+        network=SimpleNamespace(parent_interface="bond0"),
+        cluster=SimpleNamespace(drbd_resource="r0", pacemaker_ra_vendor="local"),
+        ganesha=SimpleNamespace(config_dir="/etc/ganesha", export_dir="/exports"),
+        csi=SimpleNamespace(client_cidrs=client_cidrs),
+        timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60),
+    )
+
+
+def _patch_verify_files(monkeypatch, temp_dir):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text("[csi]\nclient_cidrs = []\n", encoding="utf-8")
+    monkeypatch.setattr(bootstrap, "DEFAULT_CONFIG_PATH", config_path)
+    monkeypatch.setattr(bootstrap.shutil, "which", lambda binary: f"/usr/bin/{binary}")
+    real_exists = Path.exists
+
+    def fake_exists(path):
+        rendered = str(path)
+        if rendered.startswith(
+            ("/etc/arca-storage", "/etc/systemd/system", "/usr/lib/ocf/resource.d")
+        ):
+            return True
+        return real_exists(path)
+
+    monkeypatch.setattr(Path, "exists", fake_exists)
+
+
 def test_pcs_host_auth_does_not_put_password_in_argv():
     result_process = completed([])
 
@@ -59,8 +88,14 @@ def test_parse_cluster_nodes_requires_distinct_safe_hosts():
 
 
 def test_validate_lvm_size_accepts_expected_formats():
-    assert bootstrap._validate_lvm_size("80%VG", field="size", allow_percent=True) == "80%VG"
-    assert bootstrap._validate_lvm_size("100%FREE", field="size", allow_percent=True) == "100%FREE"
+    assert (
+        bootstrap._validate_lvm_size("80%VG", field="size", allow_percent=True)
+        == "80%VG"
+    )
+    assert (
+        bootstrap._validate_lvm_size("100%FREE", field="size", allow_percent=True)
+        == "100%FREE"
+    )
     assert bootstrap._validate_lvm_size("15.8G", field="metadata_size") == "15.8G"
     assert bootstrap._validate_lvm_size("256K", field="chunk_size") == "256K"
 
@@ -97,6 +132,30 @@ def test_pacemaker_cluster_rejects_unsafe_inputs_before_commands(cluster_name, n
     run.assert_not_called()
 
 
+def test_verify_strict_rejects_empty_csi_client_cidrs(monkeypatch, temp_dir, capsys):
+    _patch_verify_files(monkeypatch, temp_dir)
+    monkeypatch.setattr(bootstrap, "load_settings", lambda: _verify_settings([]))
+
+    with pytest.raises(typer.Exit) as exc:
+        bootstrap.verify(strict=True, check_system=False)
+
+    assert exc.value.exit_code == 2
+    assert "csi.client_cidrs is empty" in capsys.readouterr().err
+
+
+def test_verify_accepts_configured_csi_client_cidrs(monkeypatch, temp_dir, capsys):
+    _patch_verify_files(monkeypatch, temp_dir)
+    monkeypatch.setattr(
+        bootstrap,
+        "load_settings",
+        lambda: _verify_settings(["10.0.0.0/24", "10.1.0.0/24"]),
+    )
+
+    bootstrap.verify(strict=True, check_system=False)
+
+    assert "OK: csi.client_cidrs=10.0.0.0/24,10.1.0.0/24" in capsys.readouterr().out
+
+
 def test_run_uses_default_timeout():
     result_process = completed(["systemctl", "status"])
 
@@ -111,9 +170,13 @@ def test_run_raises_runtime_error_on_timeout():
     with patch.object(
         bootstrap.subprocess,
         "run",
-        side_effect=subprocess.TimeoutExpired(["drbdadm", "create-md", "secret-resource"], timeout=30),
+        side_effect=subprocess.TimeoutExpired(
+            ["drbdadm", "create-md", "secret-resource"], timeout=30
+        ),
     ):
-        with pytest.raises(RuntimeError, match="drbdadm create-md timed out after 30s") as exc_info:
+        with pytest.raises(
+            RuntimeError, match="drbdadm create-md timed out after 30s"
+        ) as exc_info:
             bootstrap._run(["drbdadm", "create-md", "secret-resource"])
 
     assert_redacted(exc_info.value, "secret-resource")
@@ -123,7 +186,11 @@ def test_run_required_redacts_command_arguments_and_output():
     with patch.object(
         bootstrap,
         "_run",
-        return_value=completed(["drbdadm", "create-md", "secret-resource"], 20, stderr="bad disk secret-resource"),
+        return_value=completed(
+            ["drbdadm", "create-md", "secret-resource"],
+            20,
+            stderr="bad disk secret-resource",
+        ),
     ):
         with pytest.raises(RuntimeError, match="drbdadm create-md failed") as exc_info:
             bootstrap._run_required(["drbdadm", "create-md", "secret-resource"])
@@ -209,7 +276,9 @@ def test_apply_drbd_config_raises_on_create_md_failure():
 
 
 def test_pacemaker_cluster_auth_failure_redacts_pcs_output(capsys):
-    cfg = SimpleNamespace(timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60))
+    cfg = SimpleNamespace(
+        timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60)
+    )
 
     with (
         patch.object(bootstrap, "load_settings", return_value=cfg),
@@ -217,7 +286,9 @@ def test_pacemaker_cluster_auth_failure_redacts_pcs_output(capsys):
         patch.object(
             bootstrap,
             "_pcs_host_auth",
-            return_value=completed(["pcs", "host", "auth"], 1, stderr="secret-password node-a node-b"),
+            return_value=completed(
+                ["pcs", "host", "auth"], 1, stderr="secret-password node-a node-b"
+            ),
         ),
     ):
         with pytest.raises(typer.Exit):
@@ -229,7 +300,9 @@ def test_pacemaker_cluster_auth_failure_redacts_pcs_output(capsys):
 
 
 def test_pacemaker_cluster_setup_failure_redacts_pcs_output(capsys):
-    cfg = SimpleNamespace(timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60))
+    cfg = SimpleNamespace(
+        timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60)
+    )
 
     def fake_run(cmd, **_kwargs):
         if cmd[:3] == ["pcs", "cluster", "setup"]:
@@ -239,7 +312,9 @@ def test_pacemaker_cluster_setup_failure_redacts_pcs_output(capsys):
     with (
         patch.object(bootstrap, "load_settings", return_value=cfg),
         patch.object(bootstrap, "_run", side_effect=fake_run),
-        patch.object(bootstrap, "_pcs_host_auth", return_value=completed(["pcs", "host", "auth"])),
+        patch.object(
+            bootstrap, "_pcs_host_auth", return_value=completed(["pcs", "host", "auth"])
+        ),
         patch.object(bootstrap.Path, "exists", return_value=False),
     ):
         with pytest.raises(typer.Exit):

@@ -85,6 +85,11 @@ Use this checklist to ensure a successful deployment of the CSI ARCA Storage dri
     --from-file=client.crt=/path/to/client.crt \
     --from-file=client.key=/path/to/client.key
   ```
+- [ ] `/etc/arca-storage/config.toml` sets `[csi].client_cidrs` to the Kubernetes node CIDRs allowed to mount exports.
+- [ ] ARCA host preflight passes before installing CSI manifests:
+  ```bash
+  arca bootstrap verify --strict --no-check-system
+  ```
 
 ### Container Image
 

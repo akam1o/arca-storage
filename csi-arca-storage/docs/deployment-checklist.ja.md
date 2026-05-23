@@ -86,6 +86,11 @@ CSI ARCA Storage driver を安全にデプロイするためのチェックリ�
 - [ ] `ARCA_AUTH_TOKEN` が manifest から Secret key `auth-token` を参照している
 - [ ] Kustomize production overlay を使う場合、`secrets.env` を作成済み
 - [ ] `secrets.env` が version control 対象外である
+- [ ] `/etc/arca-storage/config.toml` の `[csi].client_cidrs` に、export mount を許可する Kubernetes node CIDR を設定済み
+- [ ] CSI manifest 適用前に ARCA host の preflight が通る:
+  ```bash
+  arca bootstrap verify --strict --no-check-system
+  ```
 
 ### Image
 

@@ -17,7 +17,11 @@ from typing import Optional
 
 import typer
 
-from arca_storage.config import DEFAULT_CONFIG_PATH, load_settings, validate_path_component
+from arca_storage.config import (
+    DEFAULT_CONFIG_PATH,
+    load_settings,
+    validate_path_component,
+)
 
 app = typer.Typer(help="Bootstrap initial system/cluster configuration")
 
@@ -25,7 +29,9 @@ _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 _DEVICE_PATH_RE = re.compile(r"/dev/[A-Za-z0-9._/+:-]+")
 _HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _LVM_SIZE_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)(?P<unit>[bBsSkKmMgGtTpPeE])")
-_LVM_PERCENT_SIZE_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)%(?P<scope>VG|FREE)", re.IGNORECASE)
+_LVM_PERCENT_SIZE_RE = re.compile(
+    r"(?P<amount>\d+(?:\.\d+)?)%(?P<scope>VG|FREE)", re.IGNORECASE
+)
 _SAFE_OPERATION_SUBCOMMANDS = {
     "drbdadm": 1,
     "pcs": 2,
@@ -62,7 +68,9 @@ def _run(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"{_safe_operation_label(cmd)} timed out after {timeout}s") from e
+        raise RuntimeError(
+            f"{_safe_operation_label(cmd)} timed out after {timeout}s"
+        ) from e
 
 
 def _resource_path(*parts: str) -> Path:
@@ -83,7 +91,9 @@ def _validate_cluster_name(cluster_name: str) -> str:
 
 
 def _parse_cluster_nodes(nodes: str) -> list[str]:
-    node_list = [_validate_host_name(node, field="nodes") for node in nodes.split() if node]
+    node_list = [
+        _validate_host_name(node, field="nodes") for node in nodes.split() if node
+    ]
     if len(node_list) < 2:
         raise ValueError("Provide at least 2 nodes")
     if len(set(node_list)) != len(node_list):
@@ -106,7 +116,9 @@ def _pcs_host_auth(
     )
 
 
-def _completed_successfully(cmd: list[str], *, timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS) -> bool:
+def _completed_successfully(
+    cmd: list[str], *, timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS
+) -> bool:
     return _run(cmd, check=False, timeout=timeout).returncode == 0
 
 
@@ -319,9 +331,15 @@ def _write_env_file(cfg) -> Path:
 
 @app.command()
 def install(
-    ra_vendor: str = typer.Option("local", help="OCF vendor directory name (default: local)"),
-    install_api_service: bool = typer.Option(True, help="Install arca-storage-api systemd unit"),
-    install_ganesha_unit: bool = typer.Option(True, help="Install nfs-ganesha@.service systemd unit"),
+    ra_vendor: str = typer.Option(
+        "local", help="OCF vendor directory name (default: local)"
+    ),
+    install_api_service: bool = typer.Option(
+        True, help="Install arca-storage-api systemd unit"
+    ),
+    install_ganesha_unit: bool = typer.Option(
+        True, help="Install nfs-ganesha@.service systemd unit"
+    ),
     install_config: bool = typer.Option(
         True, help="Install /etc/arca-storage/config.toml and api.env if missing"
     ),
@@ -360,7 +378,9 @@ def install(
         if not ra_src.exists():
             raise RuntimeError(f"Missing packaged RA: {ra_src}")
 
-        vendor = _validate_path_component(ra_vendor or cfg.cluster.pacemaker_ra_vendor, field="ra_vendor")
+        vendor = _validate_path_component(
+            ra_vendor or cfg.cluster.pacemaker_ra_vendor, field="ra_vendor"
+        )
         ra_dst_dir = Path("/usr/lib/ocf/resource.d") / vendor
         _ensure_directory(ra_dst_dir)
         ra_dst = ra_dst_dir / "NetnsVlan"
@@ -402,7 +422,11 @@ def render_env():
         cfg = load_settings()
         env_path = _write_env_file(cfg)
         typer.echo(f"Wrote {env_path}")
-        _run(["systemctl", "daemon-reload"], check=False, timeout=cfg.timeouts.subprocess_default)
+        _run(
+            ["systemctl", "daemon-reload"],
+            check=False,
+            timeout=cfg.timeouts.subprocess_default,
+        )
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
         raise typer.Exit(1)
@@ -411,7 +435,9 @@ def render_env():
 @app.command()
 def verify(
     strict: bool = typer.Option(False, help="Exit non-zero if any checks fail"),
-    check_system: bool = typer.Option(True, help="Run system/cluster status checks (pcs/drbd/lvm/systemd)"),
+    check_system: bool = typer.Option(
+        True, help="Run system/cluster status checks (pcs/drbd/lvm/systemd)"
+    ),
 ):
     """
     Verify prerequisites and installed files for bootstrap/runtime.
@@ -431,7 +457,11 @@ def verify(
             issues.append(bad)
 
     # Config file
-    check(DEFAULT_CONFIG_PATH.exists(), f"config present: {DEFAULT_CONFIG_PATH}", f"missing {DEFAULT_CONFIG_PATH}")
+    check(
+        DEFAULT_CONFIG_PATH.exists(),
+        f"config present: {DEFAULT_CONFIG_PATH}",
+        f"missing {DEFAULT_CONFIG_PATH}",
+    )
 
     # systemd env
     check(
@@ -441,11 +471,26 @@ def verify(
     )
 
     # Key binaries (presence only)
-    for binary in ["systemctl", "pcs", "drbdadm", "pvcreate", "vgcreate", "lvcreate", "ganesha.nfsd", "ip"]:
-        check(shutil.which(binary) is not None, f"found binary: {binary}", f"missing binary in PATH: {binary}")
+    for binary in [
+        "systemctl",
+        "pcs",
+        "drbdadm",
+        "pvcreate",
+        "vgcreate",
+        "lvcreate",
+        "ganesha.nfsd",
+        "ip",
+    ]:
+        check(
+            shutil.which(binary) is not None,
+            f"found binary: {binary}",
+            f"missing binary in PATH: {binary}",
+        )
 
     # Pacemaker RA
-    vendor = _validate_path_component(cfg.cluster.pacemaker_ra_vendor, field="cluster.pacemaker_ra_vendor")
+    vendor = _validate_path_component(
+        cfg.cluster.pacemaker_ra_vendor, field="cluster.pacemaker_ra_vendor"
+    )
     ra_path = Path("/usr/lib/ocf/resource.d") / vendor / "NetnsVlan"
     check(
         ra_path.exists(),
@@ -454,9 +499,21 @@ def verify(
     )
 
     # systemd unit files
-    check(Path("/etc/systemd/system/nfs-ganesha@.service").exists(), "nfs-ganesha@.service present", "missing nfs-ganesha@.service (run: arca bootstrap install)")
-    check(Path("/etc/systemd/system/nfs-ganesha-host@.service").exists(), "nfs-ganesha-host@.service present", "missing nfs-ganesha-host@.service (run: arca bootstrap install)")
-    check(Path("/etc/systemd/system/arca-storage-api.service").exists(), "arca-storage-api.service present", "missing arca-storage-api.service (run: arca bootstrap install)")
+    check(
+        Path("/etc/systemd/system/nfs-ganesha@.service").exists(),
+        "nfs-ganesha@.service present",
+        "missing nfs-ganesha@.service (run: arca bootstrap install)",
+    )
+    check(
+        Path("/etc/systemd/system/nfs-ganesha-host@.service").exists(),
+        "nfs-ganesha-host@.service present",
+        "missing nfs-ganesha-host@.service (run: arca bootstrap install)",
+    )
+    check(
+        Path("/etc/systemd/system/arca-storage-api.service").exists(),
+        "arca-storage-api.service present",
+        "missing arca-storage-api.service (run: arca bootstrap install)",
+    )
 
     # Config sanity (basic)
     check(
@@ -469,18 +526,45 @@ def verify(
         f"ganesha_config_dir={cfg.ganesha.config_dir}",
         f"ganesha_config_dir must be absolute: {cfg.ganesha.config_dir}",
     )
-    check(bool(cfg.storage.vg_name), f"vg_name={cfg.storage.vg_name}", "vg_name is empty")
-    check(bool(cfg.network.parent_interface), f"parent_if={cfg.network.parent_interface}", "parent_if is empty")
-    check(bool(cfg.cluster.drbd_resource), f"drbd_resource={cfg.cluster.drbd_resource}", "drbd_resource is empty")
+    check(
+        bool(cfg.storage.vg_name), f"vg_name={cfg.storage.vg_name}", "vg_name is empty"
+    )
+    check(
+        bool(cfg.network.parent_interface),
+        f"parent_if={cfg.network.parent_interface}",
+        "parent_if is empty",
+    )
+    check(
+        bool(cfg.cluster.drbd_resource),
+        f"drbd_resource={cfg.cluster.drbd_resource}",
+        "drbd_resource is empty",
+    )
+    check(
+        bool(cfg.csi.client_cidrs),
+        f"csi.client_cidrs={','.join(cfg.csi.client_cidrs)}",
+        "csi.client_cidrs is empty; set Kubernetes node CIDRs before using CSI directory volumes",
+    )
 
     if check_system:
         # systemd health (only if systemctl exists)
         if shutil.which("systemctl"):
             for unit in ["pcsd", "corosync", "pacemaker"]:
-                res = _run(["systemctl", "is-active", unit], check=False, timeout=default_timeout)
-                check(res.returncode == 0, f"systemd {unit} is active", f"systemd {unit} is not active")
+                res = _run(
+                    ["systemctl", "is-active", unit],
+                    check=False,
+                    timeout=default_timeout,
+                )
+                check(
+                    res.returncode == 0,
+                    f"systemd {unit} is active",
+                    f"systemd {unit} is not active",
+                )
         else:
-            check(False, "systemctl available", "systemctl not found; cannot verify services")
+            check(
+                False,
+                "systemctl available",
+                "systemctl not found; cannot verify services",
+            )
 
         # Pacemaker cluster health
         if shutil.which("pcs"):
@@ -488,14 +572,28 @@ def verify(
             check(res.returncode == 0, "pcs status ok", "pcs status failed")
 
             master = f"ms_drbd_{cfg.cluster.drbd_resource}"
-            res = _run(["pcs", "resource", "show", master], check=False, timeout=pacemaker_timeout)
-            check(res.returncode == 0, f"Pacemaker DRBD master present: {master}", f"missing Pacemaker DRBD master: {master}")
+            res = _run(
+                ["pcs", "resource", "show", master],
+                check=False,
+                timeout=pacemaker_timeout,
+            )
+            check(
+                res.returncode == 0,
+                f"Pacemaker DRBD master present: {master}",
+                f"missing Pacemaker DRBD master: {master}",
+            )
         else:
-            check(False, "pcs available", "pcs not found; cannot verify cluster resources")
+            check(
+                False, "pcs available", "pcs not found; cannot verify cluster resources"
+            )
 
         # DRBD status
         if shutil.which("drbdadm"):
-            res = _run(["drbdadm", "status", cfg.cluster.drbd_resource], check=False, timeout=default_timeout)
+            res = _run(
+                ["drbdadm", "status", cfg.cluster.drbd_resource],
+                check=False,
+                timeout=default_timeout,
+            )
             check(
                 res.returncode == 0,
                 f"drbdadm status ok: {cfg.cluster.drbd_resource}",
@@ -506,8 +604,14 @@ def verify(
 
         # LVM status
         if shutil.which("vgs") and shutil.which("lvs"):
-            res = _run(["vgs", cfg.storage.vg_name], check=False, timeout=default_timeout)
-            check(res.returncode == 0, f"VG present: {cfg.storage.vg_name}", f"missing VG: {cfg.storage.vg_name}")
+            res = _run(
+                ["vgs", cfg.storage.vg_name], check=False, timeout=default_timeout
+            )
+            check(
+                res.returncode == 0,
+                f"VG present: {cfg.storage.vg_name}",
+                f"missing VG: {cfg.storage.vg_name}",
+            )
             res = _run(
                 ["lvs", f"{cfg.storage.vg_name}/{cfg.storage.thinpool_name}"],
                 check=False,
@@ -541,7 +645,9 @@ def verify(
 def pacemaker_cluster(
     cluster_name: str = typer.Option(..., help="Cluster name"),
     nodes: str = typer.Option(..., help="Space-separated node names (must resolve)"),
-    hacluster_password: str = typer.Option(..., prompt=True, hide_input=True, confirmation_prompt=True),
+    hacluster_password: str = typer.Option(
+        ..., prompt=True, hide_input=True, confirmation_prompt=True
+    ),
     stonith_enabled: bool = typer.Option(False, help="Set stonith-enabled property"),
 ):
     """
@@ -577,14 +683,20 @@ def pacemaker_cluster(
                 check=False,
                 timeout=pacemaker_timeout,
             )
-            if setup.returncode != 0 and "already exists" not in (setup.stderr or "").lower():
+            if (
+                setup.returncode != 0
+                and "already exists" not in (setup.stderr or "").lower()
+            ):
                 raise RuntimeError("pcs cluster setup failed")
 
         _run(["pcs", "cluster", "start", "--all"], timeout=pacemaker_timeout)
         _run(["pcs", "cluster", "enable", "--all"], timeout=pacemaker_timeout)
 
         stonith_value = "true" if stonith_enabled else "false"
-        _run(["pcs", "property", "set", f"stonith-enabled={stonith_value}"], timeout=pacemaker_timeout)
+        _run(
+            ["pcs", "property", "set", f"stonith-enabled={stonith_value}"],
+            timeout=pacemaker_timeout,
+        )
 
         typer.echo("Pacemaker cluster bootstrap completed")
     except Exception as e:
@@ -595,15 +707,21 @@ def pacemaker_cluster(
 @app.command()
 def drbd_config(
     resource: str = typer.Option("r0", help="DRBD resource name (default: r0)"),
-    device: str = typer.Option("/dev/drbd0", help="DRBD device path (default: /dev/drbd0)"),
+    device: str = typer.Option(
+        "/dev/drbd0", help="DRBD device path (default: /dev/drbd0)"
+    ),
     disk: str = typer.Option(..., help="Backing disk/partition (e.g., /dev/nvme0n1p1)"),
     node1: str = typer.Option(..., help="Node1 hostname (matches uname/pcs)"),
     node1_ip: str = typer.Option(..., help="Node1 replication IP"),
     node2: str = typer.Option(..., help="Node2 hostname (matches uname/pcs)"),
     node2_ip: str = typer.Option(..., help="Node2 replication IP"),
     port: int = typer.Option(7788, help="Replication port (default: 7788)"),
-    apply: bool = typer.Option(False, help="Run drbdadm create-md/up after writing config"),
-    primary: bool = typer.Option(False, help="Promote this node to primary (requires --apply)"),
+    apply: bool = typer.Option(
+        False, help="Run drbdadm create-md/up after writing config"
+    ),
+    primary: bool = typer.Option(
+        False, help="Promote this node to primary (requires --apply)"
+    ),
 ):
     """
     Write DRBD resource configuration to /etc/drbd.d/<resource>.res.
@@ -627,7 +745,9 @@ def drbd_config(
         typer.echo(f"Wrote DRBD resource config: {res_path}")
 
         if apply:
-            _apply_drbd_config(resource, primary=primary, timeout=cfg.timeouts.subprocess_default)
+            _apply_drbd_config(
+                resource, primary=primary, timeout=cfg.timeouts.subprocess_default
+            )
             typer.echo("Applied DRBD configuration")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
@@ -637,10 +757,18 @@ def drbd_config(
 @app.command()
 def lvm_thinpool(
     pv: str = typer.Option("/dev/drbd0", help="PV device path (default: /dev/drbd0)"),
-    vg: Optional[str] = typer.Option(None, help="Volume group name (default: from config or vg_pool_01)"),
-    thinpool: Optional[str] = typer.Option(None, help="Thin pool LV name (default: from config or pool)"),
-    size: str = typer.Option("80%VG", help="Thin pool size for lvcreate -L (default: 80%VG)"),
-    metadata_size: str = typer.Option("15.8G", help="Thin pool metadata size (default: 15.8G)"),
+    vg: Optional[str] = typer.Option(
+        None, help="Volume group name (default: from config or vg_pool_01)"
+    ),
+    thinpool: Optional[str] = typer.Option(
+        None, help="Thin pool LV name (default: from config or pool)"
+    ),
+    size: str = typer.Option(
+        "80%VG", help="Thin pool size for lvcreate -L (default: 80%VG)"
+    ),
+    metadata_size: str = typer.Option(
+        "15.8G", help="Thin pool metadata size (default: 15.8G)"
+    ),
     chunk_size: str = typer.Option("256K", help="Thin pool chunk size (default: 256K)"),
 ):
     """
@@ -651,7 +779,9 @@ def lvm_thinpool(
         timeout = cfg.timeouts.subprocess_default
         pv = _validate_device_path(pv, field="pv")
         vg = _validate_path_component(vg or cfg.storage.vg_name, field="vg")
-        thinpool = _validate_path_component(thinpool or cfg.storage.thinpool_name, field="thinpool")
+        thinpool = _validate_path_component(
+            thinpool or cfg.storage.thinpool_name, field="thinpool"
+        )
         size = _validate_lvm_size(size, field="size", allow_percent=True)
         metadata_size = _validate_lvm_size(metadata_size, field="metadata_size")
         chunk_size = _validate_lvm_size(chunk_size, field="chunk_size")
@@ -687,7 +817,11 @@ def lvm_thinpool(
                 timeout=timeout,
             )
 
-        _run(["systemctl", "enable", "--now", "lvm2-monitor"], check=False, timeout=timeout)
+        _run(
+            ["systemctl", "enable", "--now", "lvm2-monitor"],
+            check=False,
+            timeout=timeout,
+        )
         typer.echo("LVM thin pool bootstrap completed")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
