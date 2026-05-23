@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 )
@@ -8,12 +10,12 @@ import (
 func TestMemoryStoreListVolumesStablePagination(t *testing.T) {
 	st := NewMemoryStore()
 	for _, volumeID := range []string{"vol-b", "vol-a", "vol-c"} {
-		if err := st.CreateVolume(&VolumeInfo{VolumeID: volumeID}); err != nil {
+		if err := st.CreateVolume(context.Background(), &VolumeInfo{VolumeID: volumeID}); err != nil {
 			t.Fatalf("CreateVolume(%q) error = %v", volumeID, err)
 		}
 	}
 
-	page, nextToken, err := st.ListVolumes("", 2)
+	page, nextToken, err := st.ListVolumes(context.Background(), "", 2)
 	if err != nil {
 		t.Fatalf("ListVolumes() error = %v", err)
 	}
@@ -22,7 +24,7 @@ func TestMemoryStoreListVolumesStablePagination(t *testing.T) {
 		t.Fatalf("nextToken = %q, want vol-b", nextToken)
 	}
 
-	page, nextToken, err = st.ListVolumes(nextToken, 2)
+	page, nextToken, err = st.ListVolumes(context.Background(), nextToken, 2)
 	if err != nil {
 		t.Fatalf("ListVolumes(second page) error = %v", err)
 	}
@@ -34,12 +36,12 @@ func TestMemoryStoreListVolumesStablePagination(t *testing.T) {
 
 func TestMemoryStoreListVolumesInvalidTokenDoesNotEchoToken(t *testing.T) {
 	st := NewMemoryStore()
-	if err := st.CreateVolume(&VolumeInfo{VolumeID: "vol-a"}); err != nil {
+	if err := st.CreateVolume(context.Background(), &VolumeInfo{VolumeID: "vol-a"}); err != nil {
 		t.Fatalf("CreateVolume() error = %v", err)
 	}
 
 	const token = "secret-volume-token"
-	_, _, err := st.ListVolumes(token, 1)
+	_, _, err := st.ListVolumes(context.Background(), token, 1)
 	if !IsNotFound(err) {
 		t.Fatalf("ListVolumes() error = %v, want not found", err)
 	}
@@ -50,21 +52,21 @@ func TestMemoryStoreListVolumesInvalidTokenDoesNotEchoToken(t *testing.T) {
 
 func TestMemoryStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
 	st := NewMemoryStore()
-	if err := st.CreateVolume(&VolumeInfo{VolumeID: "vol-a", CapacityBytes: 20 << 30}); err != nil {
+	if err := st.CreateVolume(context.Background(), &VolumeInfo{VolumeID: "vol-a", CapacityBytes: 20 << 30}); err != nil {
 		t.Fatalf("CreateVolume() error = %v", err)
 	}
 
-	stale, err := st.GetVolume("vol-a")
+	stale, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("GetVolume() error = %v", err)
 	}
 	stale.CapacityBytes = 10 << 30
 
-	if err := st.UpdateVolume(stale); err != nil {
+	if err := st.UpdateVolume(context.Background(), stale); err != nil {
 		t.Fatalf("UpdateVolume() error = %v", err)
 	}
 
-	stored, err := st.GetVolume("vol-a")
+	stored, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("GetVolume(updated) error = %v", err)
 	}
@@ -75,17 +77,17 @@ func TestMemoryStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
 
 func TestMemoryStoreListVolumesReturnsCopies(t *testing.T) {
 	st := NewMemoryStore()
-	if err := st.CreateVolume(&VolumeInfo{VolumeID: "vol-a", CapacityBytes: 20 << 30}); err != nil {
+	if err := st.CreateVolume(context.Background(), &VolumeInfo{VolumeID: "vol-a", CapacityBytes: 20 << 30}); err != nil {
 		t.Fatalf("CreateVolume() error = %v", err)
 	}
 
-	volumes, _, err := st.ListVolumes("", 0)
+	volumes, _, err := st.ListVolumes(context.Background(), "", 0)
 	if err != nil {
 		t.Fatalf("ListVolumes() error = %v", err)
 	}
 	volumes[0].CapacityBytes = 10 << 30
 
-	stored, err := st.GetVolume("vol-a")
+	stored, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("GetVolume() error = %v", err)
 	}
@@ -101,12 +103,12 @@ func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 		{SnapshotID: "snap-c", SourceVolumeID: "vol-b"},
 		{SnapshotID: "snap-a", SourceVolumeID: "vol-a"},
 	} {
-		if err := st.CreateSnapshot(snapshot); err != nil {
+		if err := st.CreateSnapshot(context.Background(), snapshot); err != nil {
 			t.Fatalf("CreateSnapshot(%q) error = %v", snapshot.SnapshotID, err)
 		}
 	}
 
-	page, nextToken, err := st.ListSnapshots("vol-a", "", 1)
+	page, nextToken, err := st.ListSnapshots(context.Background(), "vol-a", "", 1)
 	if err != nil {
 		t.Fatalf("ListSnapshots() error = %v", err)
 	}
@@ -115,7 +117,7 @@ func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 		t.Fatalf("nextToken = %q, want snap-a", nextToken)
 	}
 
-	page, nextToken, err = st.ListSnapshots("vol-a", nextToken, 1)
+	page, nextToken, err = st.ListSnapshots(context.Background(), "vol-a", nextToken, 1)
 	if err != nil {
 		t.Fatalf("ListSnapshots(second page) error = %v", err)
 	}
@@ -127,7 +129,7 @@ func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 
 func TestMemoryStoreListSnapshotsInvalidTokenDoesNotEchoToken(t *testing.T) {
 	st := NewMemoryStore()
-	if err := st.CreateSnapshot(&SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "vol-a",
 	}); err != nil {
@@ -135,7 +137,7 @@ func TestMemoryStoreListSnapshotsInvalidTokenDoesNotEchoToken(t *testing.T) {
 	}
 
 	const token = "secret-snapshot-token"
-	_, _, err := st.ListSnapshots("vol-a", token, 1)
+	_, _, err := st.ListSnapshots(context.Background(), "vol-a", token, 1)
 	if !IsNotFound(err) {
 		t.Fatalf("ListSnapshots() error = %v, want not found", err)
 	}
@@ -151,12 +153,12 @@ func TestMemoryStoreSnapshotsReturnCopies(t *testing.T) {
 		SourceVolumeID: "vol-a",
 		SizeBytes:      20 << 30,
 	}
-	if err := st.CreateSnapshot(snapshot); err != nil {
+	if err := st.CreateSnapshot(context.Background(), snapshot); err != nil {
 		t.Fatalf("CreateSnapshot() error = %v", err)
 	}
 	snapshot.SizeBytes = 10 << 30
 
-	stored, err := st.GetSnapshot("snap-a")
+	stored, err := st.GetSnapshot(context.Background(), "snap-a")
 	if err != nil {
 		t.Fatalf("GetSnapshot() error = %v", err)
 	}
@@ -165,7 +167,7 @@ func TestMemoryStoreSnapshotsReturnCopies(t *testing.T) {
 	}
 
 	stored.SizeBytes = 5 << 30
-	storedAgain, err := st.GetSnapshot("snap-a")
+	storedAgain, err := st.GetSnapshot(context.Background(), "snap-a")
 	if err != nil {
 		t.Fatalf("GetSnapshot(second) error = %v", err)
 	}
@@ -173,17 +175,38 @@ func TestMemoryStoreSnapshotsReturnCopies(t *testing.T) {
 		t.Fatalf("stored size after get mutation = %d, want %d", storedAgain.SizeBytes, int64(20<<30))
 	}
 
-	snapshots, _, err := st.ListSnapshots("", "", 0)
+	snapshots, _, err := st.ListSnapshots(context.Background(), "", "", 0)
 	if err != nil {
 		t.Fatalf("ListSnapshots() error = %v", err)
 	}
 	snapshots[0].SizeBytes = 1 << 30
-	storedAgain, err = st.GetSnapshot("snap-a")
+	storedAgain, err = st.GetSnapshot(context.Background(), "snap-a")
 	if err != nil {
 		t.Fatalf("GetSnapshot(after list) error = %v", err)
 	}
 	if storedAgain.SizeBytes != 20<<30 {
 		t.Fatalf("stored size after list mutation = %d, want %d", storedAgain.SizeBytes, int64(20<<30))
+	}
+}
+
+func TestMemoryStoreHonorsCanceledContext(t *testing.T) {
+	st := NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := st.CreateVolume(ctx, &VolumeInfo{VolumeID: "vol-a"})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateVolume() error = %v, want context.Canceled", err)
+	}
+
+	_, err = st.GetVolume(ctx, "vol-a")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetVolume() error = %v, want context.Canceled", err)
+	}
+
+	_, _, err = st.ListSnapshots(ctx, "", "", 0)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("ListSnapshots() error = %v, want context.Canceled", err)
 	}
 }
 

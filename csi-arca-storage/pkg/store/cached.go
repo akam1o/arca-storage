@@ -3,6 +3,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"sync"
 	"time"
@@ -86,8 +87,11 @@ func deepCopySnapshotInfo(s *SnapshotInfo) *SnapshotInfo {
 }
 
 // CreateVolume creates a volume and invalidates cache
-func (s *CachedStore) CreateVolume(info *VolumeInfo) error {
-	err := s.store.CreateVolume(info)
+func (s *CachedStore) CreateVolume(ctx context.Context, info *VolumeInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := s.store.CreateVolume(ctx, info)
 	if err != nil {
 		return err
 	}
@@ -101,8 +105,11 @@ func (s *CachedStore) CreateVolume(info *VolumeInfo) error {
 }
 
 // UpdateVolume updates a volume and invalidates cache
-func (s *CachedStore) UpdateVolume(info *VolumeInfo) error {
-	err := s.store.UpdateVolume(info)
+func (s *CachedStore) UpdateVolume(ctx context.Context, info *VolumeInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := s.store.UpdateVolume(ctx, info)
 	if err != nil {
 		return err
 	}
@@ -116,7 +123,10 @@ func (s *CachedStore) UpdateVolume(info *VolumeInfo) error {
 }
 
 // GetVolume retrieves a volume, using cache when possible
-func (s *CachedStore) GetVolume(volumeID string) (*VolumeInfo, error) {
+func (s *CachedStore) GetVolume(ctx context.Context, volumeID string) (*VolumeInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Check cache first (with exclusive lock for LRU safety)
 	s.mu.Lock()
 	entry, ok := s.volumeCache.Get(volumeID)
@@ -130,7 +140,7 @@ func (s *CachedStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 
 	// Cache miss or expired - fetch from store
 	klog.V(4).Infof("Volume cache miss: %s", volumeID)
-	info, err := s.store.GetVolume(volumeID)
+	info, err := s.store.GetVolume(ctx, volumeID)
 	if err != nil {
 		return nil, err
 	}
@@ -148,8 +158,11 @@ func (s *CachedStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 }
 
 // DeleteVolume deletes a volume and invalidates cache
-func (s *CachedStore) DeleteVolume(volumeID string) error {
-	err := s.store.DeleteVolume(volumeID)
+func (s *CachedStore) DeleteVolume(ctx context.Context, volumeID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := s.store.DeleteVolume(ctx, volumeID)
 	if err != nil {
 		return err
 	}
@@ -163,13 +176,19 @@ func (s *CachedStore) DeleteVolume(volumeID string) error {
 }
 
 // ListVolumes returns all volumes (no caching for list operations)
-func (s *CachedStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
-	return s.store.ListVolumes(startingToken, maxEntries)
+func (s *CachedStore) ListVolumes(ctx context.Context, startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	return s.store.ListVolumes(ctx, startingToken, maxEntries)
 }
 
 // CreateSnapshot creates a snapshot and invalidates cache
-func (s *CachedStore) CreateSnapshot(info *SnapshotInfo) error {
-	err := s.store.CreateSnapshot(info)
+func (s *CachedStore) CreateSnapshot(ctx context.Context, info *SnapshotInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := s.store.CreateSnapshot(ctx, info)
 	if err != nil {
 		return err
 	}
@@ -183,9 +202,12 @@ func (s *CachedStore) CreateSnapshot(info *SnapshotInfo) error {
 }
 
 // UpdateSnapshotStatus updates snapshot status and invalidates cache
-func (s *CachedStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) error {
+func (s *CachedStore) UpdateSnapshotStatus(ctx context.Context, snapshotID string, readyToUse bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	// Update in backing store first
-	if err := s.store.UpdateSnapshotStatus(snapshotID, readyToUse); err != nil {
+	if err := s.store.UpdateSnapshotStatus(ctx, snapshotID, readyToUse); err != nil {
 		return err
 	}
 
@@ -198,7 +220,10 @@ func (s *CachedStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) e
 }
 
 // GetSnapshot retrieves a snapshot, using cache when possible
-func (s *CachedStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
+func (s *CachedStore) GetSnapshot(ctx context.Context, snapshotID string) (*SnapshotInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	// Check cache first (with exclusive lock for LRU safety)
 	s.mu.Lock()
 	entry, ok := s.snapshotCache.Get(snapshotID)
@@ -212,7 +237,7 @@ func (s *CachedStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 
 	// Cache miss or expired - fetch from store
 	klog.V(4).Infof("Snapshot cache miss: %s", snapshotID)
-	info, err := s.store.GetSnapshot(snapshotID)
+	info, err := s.store.GetSnapshot(ctx, snapshotID)
 	if err != nil {
 		return nil, err
 	}
@@ -230,8 +255,11 @@ func (s *CachedStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 }
 
 // DeleteSnapshot deletes a snapshot and invalidates cache
-func (s *CachedStore) DeleteSnapshot(snapshotID string) error {
-	err := s.store.DeleteSnapshot(snapshotID)
+func (s *CachedStore) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	err := s.store.DeleteSnapshot(ctx, snapshotID)
 	if err != nil {
 		return err
 	}
@@ -245,6 +273,9 @@ func (s *CachedStore) DeleteSnapshot(snapshotID string) error {
 }
 
 // ListSnapshots returns all snapshots (no caching for list operations)
-func (s *CachedStore) ListSnapshots(sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
-	return s.store.ListSnapshots(sourceVolumeID, startingToken, maxEntries)
+func (s *CachedStore) ListSnapshots(ctx context.Context, sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
+	return s.store.ListSnapshots(ctx, sourceVolumeID, startingToken, maxEntries)
 }

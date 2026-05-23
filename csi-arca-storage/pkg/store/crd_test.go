@@ -1,6 +1,8 @@
 package store
 
 import (
+	"context"
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -19,7 +21,7 @@ func TestCRDStoreCreateVolumeRejectsUnsafePath(t *testing.T) {
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).Build(),
 	}
 
-	err := st.CreateVolume(&VolumeInfo{
+	err := st.CreateVolume(context.Background(), &VolumeInfo{
 		VolumeID:      testVolumeID,
 		Name:          "pvc-a",
 		SVMName:       "svm-a",
@@ -33,6 +35,36 @@ func TestCRDStoreCreateVolumeRejectsUnsafePath(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "volume path must be a relative path") {
 		t.Fatalf("CreateVolume() error = %v, want relative path validation", err)
+	}
+}
+
+func TestCRDStoreHonorsCanceledContextBeforeKubernetesCall(t *testing.T) {
+	scheme := runtime.NewScheme()
+	if err := v1alpha1.AddToScheme(scheme); err != nil {
+		t.Fatalf("AddToScheme() error = %v", err)
+	}
+	st := &CRDStore{
+		client: ctrlfake.NewClientBuilder().WithScheme(scheme).Build(),
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err := st.CreateVolume(ctx, &VolumeInfo{
+		VolumeID:      testVolumeID,
+		Name:          "pvc-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: 1 << 30,
+		CreatedAt:     time.Now(),
+	})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateVolume() error = %v, want context.Canceled", err)
+	}
+
+	_, err = st.GetVolume(ctx, testVolumeID)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("GetVolume() error = %v, want context.Canceled", err)
 	}
 }
 
@@ -56,7 +88,7 @@ func TestCRDStoreGetVolumeRejectsUnsafeStoredPath(t *testing.T) {
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
 	}
 
-	_, err := st.GetVolume(testVolumeID)
+	_, err := st.GetVolume(context.Background(), testVolumeID)
 	if err == nil {
 		t.Fatal("GetVolume() error = nil, want unsafe stored path error")
 	}
@@ -85,7 +117,7 @@ func TestCRDStoreListVolumesRejectsUnsafeStoredPath(t *testing.T) {
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
 	}
 
-	_, _, err := st.ListVolumes("", 0)
+	_, _, err := st.ListVolumes(context.Background(), "", 0)
 	if err == nil {
 		t.Fatal("ListVolumes() error = nil, want unsafe stored path error")
 	}
@@ -116,7 +148,7 @@ func TestCRDStoreGetSnapshotRejectsUnsafeStoredSourceVolumePath(t *testing.T) {
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
 	}
 
-	_, err := st.GetSnapshot(testSnapshotID)
+	_, err := st.GetSnapshot(context.Background(), testSnapshotID)
 	if err == nil {
 		t.Fatal("GetSnapshot() error = nil, want unsafe stored source path error")
 	}
@@ -144,7 +176,7 @@ func TestCRDStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
 	}
 
-	err := st.UpdateVolume(&VolumeInfo{
+	err := st.UpdateVolume(context.Background(), &VolumeInfo{
 		VolumeID:      "vol-a",
 		Name:          "pvc-a",
 		SVMName:       "svm-a",
@@ -157,7 +189,7 @@ func TestCRDStoreUpdateVolumePreservesLargerCapacity(t *testing.T) {
 		t.Fatalf("UpdateVolume() error = %v", err)
 	}
 
-	stored, err := st.GetVolume("vol-a")
+	stored, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("GetVolume() error = %v", err)
 	}
@@ -187,7 +219,7 @@ func TestCRDStoreUpdateVolumeClearsTemporaryCloneAnnotations(t *testing.T) {
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
 	}
 
-	err := st.UpdateVolume(&VolumeInfo{
+	err := st.UpdateVolume(context.Background(), &VolumeInfo{
 		VolumeID:      "vol-a",
 		Name:          "pvc-a",
 		SVMName:       "svm-a",
@@ -200,7 +232,7 @@ func TestCRDStoreUpdateVolumeClearsTemporaryCloneAnnotations(t *testing.T) {
 		t.Fatalf("UpdateVolume() error = %v", err)
 	}
 
-	stored, err := st.GetVolume("vol-a")
+	stored, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("GetVolume() error = %v", err)
 	}

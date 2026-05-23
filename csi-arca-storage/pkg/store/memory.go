@@ -1,6 +1,7 @@
 package store
 
 import (
+	"context"
 	"fmt"
 	"sort"
 	"sync"
@@ -57,7 +58,10 @@ func NewMemoryStore() *MemoryStore {
 }
 
 // CreateVolume stores volume metadata
-func (s *MemoryStore) CreateVolume(info *VolumeInfo) error {
+func (s *MemoryStore) CreateVolume(ctx context.Context, info *VolumeInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -73,7 +77,10 @@ func (s *MemoryStore) CreateVolume(info *VolumeInfo) error {
 }
 
 // UpdateVolume updates existing volume metadata
-func (s *MemoryStore) UpdateVolume(info *VolumeInfo) error {
+func (s *MemoryStore) UpdateVolume(ctx context.Context, info *VolumeInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -91,7 +98,10 @@ func (s *MemoryStore) UpdateVolume(info *VolumeInfo) error {
 }
 
 // GetVolume retrieves volume metadata
-func (s *MemoryStore) GetVolume(volumeID string) (*VolumeInfo, error) {
+func (s *MemoryStore) GetVolume(ctx context.Context, volumeID string) (*VolumeInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -104,7 +114,10 @@ func (s *MemoryStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 }
 
 // DeleteVolume removes volume metadata
-func (s *MemoryStore) DeleteVolume(volumeID string) error {
+func (s *MemoryStore) DeleteVolume(ctx context.Context, volumeID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -113,7 +126,10 @@ func (s *MemoryStore) DeleteVolume(volumeID string) error {
 }
 
 // ListVolumes returns all volumes (with optional pagination)
-func (s *MemoryStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
+func (s *MemoryStore) ListVolumes(ctx context.Context, startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -149,7 +165,10 @@ func (s *MemoryStore) ListVolumes(startingToken string, maxEntries int) ([]*Volu
 }
 
 // CreateSnapshot stores snapshot metadata
-func (s *MemoryStore) CreateSnapshot(info *SnapshotInfo) error {
+func (s *MemoryStore) CreateSnapshot(ctx context.Context, info *SnapshotInfo) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -165,7 +184,10 @@ func (s *MemoryStore) CreateSnapshot(info *SnapshotInfo) error {
 }
 
 // UpdateSnapshotStatus updates the ReadyToUse status of a snapshot
-func (s *MemoryStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) error {
+func (s *MemoryStore) UpdateSnapshotStatus(ctx context.Context, snapshotID string, readyToUse bool) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -179,7 +201,10 @@ func (s *MemoryStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) e
 }
 
 // GetSnapshot retrieves snapshot metadata
-func (s *MemoryStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
+func (s *MemoryStore) GetSnapshot(ctx context.Context, snapshotID string) (*SnapshotInfo, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 
@@ -192,7 +217,10 @@ func (s *MemoryStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 }
 
 // DeleteSnapshot removes snapshot metadata
-func (s *MemoryStore) DeleteSnapshot(snapshotID string) error {
+func (s *MemoryStore) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 
@@ -201,7 +229,10 @@ func (s *MemoryStore) DeleteSnapshot(snapshotID string) error {
 }
 
 // ListSnapshots returns all snapshots (with optional filtering and pagination)
-func (s *MemoryStore) ListSnapshots(sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
+func (s *MemoryStore) ListSnapshots(ctx context.Context, sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 

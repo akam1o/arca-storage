@@ -51,35 +51,35 @@ func requireTemporaryCloneSnapshotName(t *testing.T, name, volumeID string) {
 	}
 }
 
-func (s *failingCreateStore) CreateVolume(info *store.VolumeInfo) error {
+func (s *failingCreateStore) CreateVolume(ctx context.Context, info *store.VolumeInfo) error {
 	if s.onCreateVolume != nil {
 		s.onCreateVolume()
 	}
 	if s.failCreate {
 		return errors.New("store create failed")
 	}
-	return s.MemoryStore.CreateVolume(info)
+	return s.MemoryStore.CreateVolume(ctx, info)
 }
 
-func (s *failingCreateStore) UpdateVolume(info *store.VolumeInfo) error {
+func (s *failingCreateStore) UpdateVolume(ctx context.Context, info *store.VolumeInfo) error {
 	if s.failUpdate {
 		return errors.New("store update failed")
 	}
-	return s.MemoryStore.UpdateVolume(info)
+	return s.MemoryStore.UpdateVolume(ctx, info)
 }
 
-func (s *failingCreateStore) CreateSnapshot(info *store.SnapshotInfo) error {
+func (s *failingCreateStore) CreateSnapshot(ctx context.Context, info *store.SnapshotInfo) error {
 	if s.failCreateSnapshot {
 		return errors.New("store snapshot create failed")
 	}
-	return s.MemoryStore.CreateSnapshot(info)
+	return s.MemoryStore.CreateSnapshot(ctx, info)
 }
 
-func (s *failingCreateStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) error {
+func (s *failingCreateStore) UpdateSnapshotStatus(ctx context.Context, snapshotID string, readyToUse bool) error {
 	if s.failUpdateSnapshotStatus {
 		return errors.New("store snapshot status update failed")
 	}
-	return s.MemoryStore.UpdateSnapshotStatus(snapshotID, readyToUse)
+	return s.MemoryStore.UpdateSnapshotStatus(ctx, snapshotID, readyToUse)
 }
 
 type failingGetStore struct {
@@ -88,18 +88,18 @@ type failingGetStore struct {
 	getSnapshotErr error
 }
 
-func (s *failingGetStore) GetVolume(volumeID string) (*store.VolumeInfo, error) {
+func (s *failingGetStore) GetVolume(ctx context.Context, volumeID string) (*store.VolumeInfo, error) {
 	if s.getVolumeErr != nil {
 		return nil, s.getVolumeErr
 	}
-	return s.MemoryStore.GetVolume(volumeID)
+	return s.MemoryStore.GetVolume(ctx, volumeID)
 }
 
-func (s *failingGetStore) GetSnapshot(snapshotID string) (*store.SnapshotInfo, error) {
+func (s *failingGetStore) GetSnapshot(ctx context.Context, snapshotID string) (*store.SnapshotInfo, error) {
 	if s.getSnapshotErr != nil {
 		return nil, s.getSnapshotErr
 	}
-	return s.MemoryStore.GetSnapshot(snapshotID)
+	return s.MemoryStore.GetSnapshot(ctx, snapshotID)
 }
 
 type racingCreateStore struct {
@@ -107,14 +107,14 @@ type racingCreateStore struct {
 	existing *store.VolumeInfo
 }
 
-func (s *racingCreateStore) CreateVolume(info *store.VolumeInfo) error {
+func (s *racingCreateStore) CreateVolume(ctx context.Context, info *store.VolumeInfo) error {
 	if s.existing != nil && s.existing.VolumeID == info.VolumeID {
-		if err := s.MemoryStore.CreateVolume(s.existing); err != nil && !store.IsAlreadyExists(err) {
+		if err := s.MemoryStore.CreateVolume(ctx, s.existing); err != nil && !store.IsAlreadyExists(err) {
 			return err
 		}
 		return fmt.Errorf("%w: volume %s", store.ErrAlreadyExists, info.VolumeID)
 	}
-	return s.MemoryStore.CreateVolume(info)
+	return s.MemoryStore.CreateVolume(ctx, info)
 }
 
 type racingCreateSnapshotStore struct {
@@ -122,14 +122,14 @@ type racingCreateSnapshotStore struct {
 	existing *store.SnapshotInfo
 }
 
-func (s *racingCreateSnapshotStore) CreateSnapshot(info *store.SnapshotInfo) error {
+func (s *racingCreateSnapshotStore) CreateSnapshot(ctx context.Context, info *store.SnapshotInfo) error {
 	if s.existing != nil && s.existing.SnapshotID == info.SnapshotID {
-		if err := s.MemoryStore.CreateSnapshot(s.existing); err != nil && !store.IsAlreadyExists(err) {
+		if err := s.MemoryStore.CreateSnapshot(ctx, s.existing); err != nil && !store.IsAlreadyExists(err) {
 			return err
 		}
 		return fmt.Errorf("%w: snapshot %s", store.ErrAlreadyExists, info.SnapshotID)
 	}
-	return s.MemoryStore.CreateSnapshot(info)
+	return s.MemoryStore.CreateSnapshot(ctx, info)
 }
 
 func TestControllerExpandVolumeReturnsInternalOnStoreGetFailure(t *testing.T) {
@@ -173,7 +173,7 @@ func TestListSnapshotsReturnsInternalOnStoreGetFailure(t *testing.T) {
 
 func TestListSnapshotsWithSnapshotIDFiltersSourceVolume(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "vol-a",
 		ReadyToUse:     true,
@@ -212,7 +212,7 @@ func TestListSnapshotsWithSnapshotIDFiltersSourceVolume(t *testing.T) {
 
 func TestListSnapshotsInvalidTokenDoesNotEchoToken(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "vol-a",
 		ReadyToUse:     true,
@@ -241,7 +241,7 @@ func TestListSnapshotsInvalidTokenDoesNotEchoToken(t *testing.T) {
 
 func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -250,7 +250,7 @@ func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed source volume: %v", err)
 	}
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:       "snap-a",
 		SourceVolumeID:   "source-vol",
 		SourceVolumePath: "source-path",
@@ -274,14 +274,14 @@ func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition error, got %v", err)
 	}
-	if _, err := st.GetVolume("source-vol"); err != nil {
+	if _, err := st.GetVolume(context.Background(), "source-vol"); err != nil {
 		t.Fatalf("source volume metadata should remain after rejected delete: %v", err)
 	}
 }
 
 func TestDeleteVolumeDeletesUnusedSVM(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-a",
 		SVMName:       "k8s-ns-a",
 		VIP:           "10.0.0.10",
@@ -333,7 +333,7 @@ func TestDeleteVolumeDeletesUnusedSVM(t *testing.T) {
 	if !svmDeleted {
 		t.Fatalf("unused SVM was not deleted")
 	}
-	if _, err := st.GetVolume("vol-a"); !store.IsNotFound(err) {
+	if _, err := st.GetVolume(context.Background(), "vol-a"); !store.IsNotFound(err) {
 		t.Fatalf("volume metadata error = %v, want not found", err)
 	}
 }
@@ -341,7 +341,7 @@ func TestDeleteVolumeDeletesUnusedSVM(t *testing.T) {
 func TestDeleteVolumeKeepsSVMWithOtherVolumes(t *testing.T) {
 	st := store.NewMemoryStore()
 	for _, volumeID := range []string{"vol-a", "vol-b"} {
-		if err := st.CreateVolume(&store.VolumeInfo{
+		if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 			VolumeID:      volumeID,
 			SVMName:       "k8s-ns-a",
 			VIP:           "10.0.0.10",
@@ -386,14 +386,14 @@ func TestDeleteVolumeKeepsSVMWithOtherVolumes(t *testing.T) {
 	if svmDeleted {
 		t.Fatalf("SVM was deleted while another volume still references it")
 	}
-	if _, err := st.GetVolume("vol-b"); err != nil {
+	if _, err := st.GetVolume(context.Background(), "vol-b"); err != nil {
 		t.Fatalf("remaining volume metadata missing: %v", err)
 	}
 }
 
 func TestDeleteVolumeWaitsForInFlightCreateBeforeDeletingSVM(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-a",
 		SVMName:       "k8s-ns-a",
 		VIP:           "10.0.0.10",
@@ -492,7 +492,7 @@ func TestDeleteVolumeWaitsForInFlightCreateBeforeDeletingSVM(t *testing.T) {
 	if calls := atomic.LoadInt32(&svmDeleteCalls); calls != 0 {
 		t.Fatalf("SVM delete calls = %d, want 0", calls)
 	}
-	stored, err := st.GetVolume(newVolumeID)
+	stored, err := st.GetVolume(context.Background(), newVolumeID)
 	if err != nil {
 		t.Fatalf("new volume metadata missing: %v", err)
 	}
@@ -504,7 +504,7 @@ func TestDeleteVolumeWaitsForInFlightCreateBeforeDeletingSVM(t *testing.T) {
 func TestCreateVolumeDoesNotRestoreSnapshotWhenMetadataStoreFails(t *testing.T) {
 	memoryStore := store.NewMemoryStore()
 	st := &failingCreateStore{MemoryStore: memoryStore}
-	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+	if err := st.MemoryStore.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -513,7 +513,7 @@ func TestCreateVolumeDoesNotRestoreSnapshotWhenMetadataStoreFails(t *testing.T) 
 	}); err != nil {
 		t.Fatalf("seed source volume: %v", err)
 	}
-	if err := st.MemoryStore.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.MemoryStore.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:       "snap-a",
 		SourceVolumeID:   "source-vol",
 		SourceVolumePath: "source-path",
@@ -668,7 +668,7 @@ func TestCreateVolumeDoesNotMutateQuotaWhenCreateRaceIsIncompatible(t *testing.T
 	if quotaCalled {
 		t.Fatalf("quota endpoint was called")
 	}
-	stored, err := st.GetVolume(volumeID)
+	stored, err := st.GetVolume(context.Background(), volumeID)
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -764,7 +764,7 @@ func TestCreateVolumeWaitsForQuotaBeforeIdempotentSuccess(t *testing.T) {
 	if err := <-secondDone; status.Code(err) != codes.Internal {
 		t.Fatalf("second CreateVolume code = %v, want Internal", status.Code(err))
 	}
-	if _, err := st.GetVolume(volumeID); !store.IsNotFound(err) {
+	if _, err := st.GetVolume(context.Background(), volumeID); !store.IsNotFound(err) {
 		t.Fatalf("stored volume error = %v, want not found", err)
 	}
 	if calls := atomic.LoadInt32(&quotaCalls); calls != 2 {
@@ -873,7 +873,7 @@ func TestCreateVolumeResumesPendingMetadata(t *testing.T) {
 	st := store.NewMemoryStore()
 	volumeIDGen := idempotency.NewVolumeIDGenerator()
 	volumeID := volumeIDGen.GenerateVolumeID("pending-pvc")
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      volumeID,
 		Name:          "pending-pvc",
 		SVMName:       "k8s-ns-a",
@@ -932,7 +932,7 @@ func TestCreateVolumeResumesPendingMetadata(t *testing.T) {
 	if resp.GetVolume().GetVolumeId() != volumeID {
 		t.Fatalf("volume id = %q, want %q", resp.GetVolume().GetVolumeId(), volumeID)
 	}
-	stored, err := st.GetVolume(volumeID)
+	stored, err := st.GetVolume(context.Background(), volumeID)
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -943,7 +943,7 @@ func TestCreateVolumeResumesPendingMetadata(t *testing.T) {
 
 func TestListVolumesSkipsPendingVolumes(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-ready",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -953,7 +953,7 @@ func TestListVolumesSkipsPendingVolumes(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed ready volume: %v", err)
 	}
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-pending",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -983,7 +983,7 @@ func TestListVolumesSkipsPendingVolumes(t *testing.T) {
 
 func TestListVolumesInvalidTokenDoesNotEchoToken(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-ready",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1076,7 +1076,7 @@ func TestControllerGetCapabilitiesDoesNotAdvertiseGetCapacity(t *testing.T) {
 
 func TestValidateVolumeCapabilitiesRejectsPendingVolume(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-pending",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1104,7 +1104,7 @@ func TestValidateVolumeCapabilitiesRejectsPendingVolume(t *testing.T) {
 
 func TestCreateSnapshotRejectsPendingSourceVolume(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-pending",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1155,7 +1155,7 @@ func TestCreateSnapshotRejectsPendingSourceVolume(t *testing.T) {
 
 func TestCreateSnapshotResumesPendingMetadata(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1168,7 +1168,7 @@ func TestCreateSnapshotResumesPendingMetadata(t *testing.T) {
 
 	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
 	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     snapshotID,
 		Name:           "snap-a",
 		SourceVolumeID: "source-vol",
@@ -1220,7 +1220,7 @@ func TestCreateSnapshotResumesPendingMetadata(t *testing.T) {
 	if !resp.GetSnapshot().GetReadyToUse() {
 		t.Fatalf("snapshot response was not ready")
 	}
-	snap, err := st.GetSnapshot(snapshotID)
+	snap, err := st.GetSnapshot(context.Background(), snapshotID)
 	if err != nil {
 		t.Fatalf("get snapshot: %v", err)
 	}
@@ -1231,7 +1231,7 @@ func TestCreateSnapshotResumesPendingMetadata(t *testing.T) {
 
 func TestCreateSnapshotKeepsPendingMetadataWhenBackendAlreadyExists(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1244,7 +1244,7 @@ func TestCreateSnapshotKeepsPendingMetadataWhenBackendAlreadyExists(t *testing.T
 
 	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
 	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     snapshotID,
 		Name:           "snap-a",
 		SourceVolumeID: "source-vol",
@@ -1295,7 +1295,7 @@ func TestCreateSnapshotKeepsPendingMetadataWhenBackendAlreadyExists(t *testing.T
 	if snapshotRequests != 1 {
 		t.Fatalf("snapshot requests = %d, want 1", snapshotRequests)
 	}
-	snap, err := st.GetSnapshot(snapshotID)
+	snap, err := st.GetSnapshot(context.Background(), snapshotID)
 	if err != nil {
 		t.Fatalf("get snapshot: %v", err)
 	}
@@ -1306,7 +1306,7 @@ func TestCreateSnapshotKeepsPendingMetadataWhenBackendAlreadyExists(t *testing.T
 
 func TestCreateSnapshotResumesPendingMetadataWhenBackendAlreadyExistsReady(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1319,7 +1319,7 @@ func TestCreateSnapshotResumesPendingMetadataWhenBackendAlreadyExistsReady(t *te
 
 	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
 	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     snapshotID,
 		Name:           "snap-a",
 		SourceVolumeID: "source-vol",
@@ -1373,7 +1373,7 @@ func TestCreateSnapshotResumesPendingMetadataWhenBackendAlreadyExistsReady(t *te
 	if !resp.GetSnapshot().GetReadyToUse() {
 		t.Fatalf("snapshot response was not ready")
 	}
-	snap, err := st.GetSnapshot(snapshotID)
+	snap, err := st.GetSnapshot(context.Background(), snapshotID)
 	if err != nil {
 		t.Fatalf("get snapshot: %v", err)
 	}
@@ -1384,7 +1384,7 @@ func TestCreateSnapshotResumesPendingMetadataWhenBackendAlreadyExistsReady(t *te
 
 func TestCreateSnapshotDoesNotStoreMetadataWhenBackendAlreadyExists(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1436,14 +1436,14 @@ func TestCreateSnapshotDoesNotStoreMetadataWhenBackendAlreadyExists(t *testing.T
 	if snapshotRequests != 1 {
 		t.Fatalf("snapshot requests = %d, want 1", snapshotRequests)
 	}
-	if _, err := st.GetSnapshot(snapshotID); !store.IsNotFound(err) {
+	if _, err := st.GetSnapshot(context.Background(), snapshotID); !store.IsNotFound(err) {
 		t.Fatalf("snapshot metadata was stored, err=%v", err)
 	}
 }
 
 func TestCreateSnapshotRestoresMetadataWhenBackendAlreadyExistsReady(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1498,7 +1498,7 @@ func TestCreateSnapshotRestoresMetadataWhenBackendAlreadyExistsReady(t *testing.
 	if !resp.GetSnapshot().GetReadyToUse() {
 		t.Fatalf("snapshot response was not ready")
 	}
-	snap, err := st.GetSnapshot(snapshotID)
+	snap, err := st.GetSnapshot(context.Background(), snapshotID)
 	if err != nil {
 		t.Fatalf("get snapshot: %v", err)
 	}
@@ -1509,7 +1509,7 @@ func TestCreateSnapshotRestoresMetadataWhenBackendAlreadyExistsReady(t *testing.
 
 func TestCreateSnapshotKeepsRacedPendingMetadataWhenBackendNotReady(t *testing.T) {
 	st := &racingCreateSnapshotStore{MemoryStore: store.NewMemoryStore()}
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1582,7 +1582,7 @@ func TestCreateSnapshotKeepsRacedPendingMetadataWhenBackendNotReady(t *testing.T
 	if snapshotListRequests != 1 {
 		t.Fatalf("snapshot list requests = %d, want 1", snapshotListRequests)
 	}
-	snap, err := st.GetSnapshot(snapshotID)
+	snap, err := st.GetSnapshot(context.Background(), snapshotID)
 	if err != nil {
 		t.Fatalf("get snapshot: %v", err)
 	}
@@ -1596,7 +1596,7 @@ func TestCreateSnapshotCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 		MemoryStore:        store.NewMemoryStore(),
 		failCreateSnapshot: true,
 	}
-	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+	if err := st.MemoryStore.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1659,7 +1659,7 @@ func TestCreateSnapshotCleansUpBackendWhenStatusStoreFails(t *testing.T) {
 		MemoryStore:              store.NewMemoryStore(),
 		failUpdateSnapshotStatus: true,
 	}
-	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+	if err := st.MemoryStore.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1710,14 +1710,14 @@ func TestCreateSnapshotCleansUpBackendWhenStatusStoreFails(t *testing.T) {
 	if deletedQuery != "svm=svm-a&volume=source-path" {
 		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
 	}
-	if _, err := st.GetSnapshot(snapshotID); !store.IsNotFound(err) {
+	if _, err := st.GetSnapshot(context.Background(), snapshotID); !store.IsNotFound(err) {
 		t.Fatalf("snapshot metadata was not removed, err=%v", err)
 	}
 }
 
 func TestDeleteSnapshotUsesStoredSourceVolumePathWhenSourceMetadataIsMissing(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:       "snap-a",
 		Name:             "snap-a",
 		SourceVolumeID:   "source-vol",
@@ -1764,14 +1764,14 @@ func TestDeleteSnapshotUsesStoredSourceVolumePathWhenSourceMetadataIsMissing(t *
 	if deletedQuery != "svm=svm-a&volume=source-path" {
 		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
 	}
-	if _, err := st.GetSnapshot("snap-a"); !store.IsNotFound(err) {
+	if _, err := st.GetSnapshot(context.Background(), "snap-a"); !store.IsNotFound(err) {
 		t.Fatalf("snapshot metadata was not removed, err=%v", err)
 	}
 }
 
 func TestDeleteSnapshotRejectsLegacyMetadataWhenSourcePathIsUnavailable(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		Name:           "snap-a",
 		SourceVolumeID: "source-vol",
@@ -1795,14 +1795,14 @@ func TestDeleteSnapshotRejectsLegacyMetadataWhenSourcePathIsUnavailable(t *testi
 	if status.Code(err) != codes.FailedPrecondition {
 		t.Fatalf("expected FailedPrecondition error, got %v", err)
 	}
-	if _, err := st.GetSnapshot("snap-a"); err != nil {
+	if _, err := st.GetSnapshot(context.Background(), "snap-a"); err != nil {
 		t.Fatalf("snapshot metadata should remain after rejected delete: %v", err)
 	}
 }
 
 func TestCreateVolumeKeepsPendingTemporaryCloneSnapshotOnCloneFailure(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1892,7 +1892,7 @@ func TestCreateVolumeKeepsPendingTemporaryCloneSnapshotOnCloneFailure(t *testing
 	if deletedVolume != "" {
 		t.Fatalf("deleted snapshot volume = %q, want no cleanup", deletedVolume)
 	}
-	stored, err := st.GetVolume(targetPath)
+	stored, err := st.GetVolume(context.Background(), targetPath)
 	if err != nil {
 		t.Fatalf("pending target volume metadata was not stored: %v", err)
 	}
@@ -1906,7 +1906,7 @@ func TestCreateVolumeKeepsPendingTemporaryCloneSnapshotOnCloneFailure(t *testing
 
 func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -1999,7 +1999,7 @@ func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T)
 	if resp.GetVolume().GetVolumeId() != targetPath {
 		t.Fatalf("response volume ID = %q, want %q", resp.GetVolume().GetVolumeId(), targetPath)
 	}
-	stored, err := st.GetVolume(targetPath)
+	stored, err := st.GetVolume(context.Background(), targetPath)
 	if err != nil {
 		t.Fatalf("target volume metadata was not stored: %v", err)
 	}
@@ -2014,7 +2014,7 @@ func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T)
 func TestCreateVolumeRetriesTemporaryCloneSnapshotCleanupForReadyVolume(t *testing.T) {
 	st := store.NewMemoryStore()
 	const sourceCapacity = int64(2 << 30)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2028,7 +2028,7 @@ func TestCreateVolumeRetriesTemporaryCloneSnapshotCleanupForReadyVolume(t *testi
 	volumeIDGen := idempotency.NewVolumeIDGenerator()
 	targetPath := volumeIDGen.GenerateVolumeID("clone-pvc")
 	temporarySnapshotName := "clone-" + targetPath + "-0123456789abcdef"
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      targetPath,
 		Name:          "clone-pvc",
 		SVMName:       "svm-a",
@@ -2103,7 +2103,7 @@ func TestCreateVolumeRetriesTemporaryCloneSnapshotCleanupForReadyVolume(t *testi
 	if deletedQuery != "svm=svm-a&volume=source-path" {
 		t.Fatalf("delete query = %q, want svm=svm-a&volume=source-path", deletedQuery)
 	}
-	stored, err := st.GetVolume(targetPath)
+	stored, err := st.GetVolume(context.Background(), targetPath)
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -2118,7 +2118,7 @@ func TestCreateVolumeRetriesTemporaryCloneSnapshotCleanupForReadyVolume(t *testi
 func TestCreateVolumeIgnoresLegacyTemporaryCloneSnapshot(t *testing.T) {
 	st := store.NewMemoryStore()
 	const sourceCapacity = int64(4 << 30)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2226,7 +2226,7 @@ func TestCreateVolumeIgnoresLegacyTemporaryCloneSnapshot(t *testing.T) {
 
 func TestCreateVolumeRetriesTemporaryCloneSnapshotNameConflict(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2347,7 +2347,7 @@ func TestCreateVolumeRetriesTemporaryCloneSnapshotNameConflict(t *testing.T) {
 
 func TestCreateVolumeResumesPendingTemporaryCloneSnapshot(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2361,7 +2361,7 @@ func TestCreateVolumeResumesPendingTemporaryCloneSnapshot(t *testing.T) {
 	volumeIDGen := idempotency.NewVolumeIDGenerator()
 	targetPath := volumeIDGen.GenerateVolumeID("clone-pvc")
 	temporarySnapshotName := "clone-" + targetPath + "-0123456789abcdef"
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:                       targetPath,
 		Name:                           "clone-pvc",
 		SVMName:                        "svm-a",
@@ -2477,7 +2477,7 @@ func TestCreateVolumeResumesPendingTemporaryCloneSnapshot(t *testing.T) {
 	if !quotaSet {
 		t.Fatalf("quota was not set")
 	}
-	stored, err := st.GetVolume(targetPath)
+	stored, err := st.GetVolume(context.Background(), targetPath)
 	if err != nil {
 		t.Fatalf("target volume metadata was not stored: %v", err)
 	}
@@ -2492,7 +2492,7 @@ func TestCreateVolumeResumesPendingTemporaryCloneSnapshot(t *testing.T) {
 func TestCreateVolumeFromVolumeRecordsEffectiveSourceCapacity(t *testing.T) {
 	st := store.NewMemoryStore()
 	const sourceCapacity = int64(4 << 30)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2596,7 +2596,7 @@ func TestCreateVolumeFromVolumeRecordsEffectiveSourceCapacity(t *testing.T) {
 	if resp.GetVolume().GetCapacityBytes() != sourceCapacity {
 		t.Fatalf("response capacity = %d, want %d", resp.GetVolume().GetCapacityBytes(), sourceCapacity)
 	}
-	stored, err := st.GetVolume(resp.GetVolume().GetVolumeId())
+	stored, err := st.GetVolume(context.Background(), resp.GetVolume().GetVolumeId())
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -2610,7 +2610,7 @@ func TestCreateVolumeFromVolumeRecordsEffectiveSourceCapacity(t *testing.T) {
 
 func TestCreateVolumeFromVolumeRejectsBackendCloneConflict(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2685,7 +2685,7 @@ func TestCreateVolumeFromVolumeRejectsBackendCloneConflict(t *testing.T) {
 	if !snapshotDeleted {
 		t.Fatalf("temporary snapshot was not cleaned up after clone conflict")
 	}
-	if _, getErr := st.GetVolume(targetPath); !store.IsNotFound(getErr) {
+	if _, getErr := st.GetVolume(context.Background(), targetPath); !store.IsNotFound(getErr) {
 		t.Fatalf("target metadata lookup error = %v, want not found", getErr)
 	}
 }
@@ -2696,7 +2696,7 @@ func TestCreateVolumeFromSnapshotRecordsSnapshotCapacity(t *testing.T) {
 		sourceCapacity   = int64(8 << 30)
 		snapshotCapacity = int64(4 << 30)
 	)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2706,7 +2706,7 @@ func TestCreateVolumeFromSnapshotRecordsSnapshotCapacity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed source volume: %v", err)
 	}
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "source-vol",
 		SVMName:        "svm-a",
@@ -2798,7 +2798,7 @@ func TestCreateVolumeFromSnapshotRecordsSnapshotCapacity(t *testing.T) {
 	if resp.GetVolume().GetCapacityBytes() != snapshotCapacity {
 		t.Fatalf("response capacity = %d, want %d", resp.GetVolume().GetCapacityBytes(), snapshotCapacity)
 	}
-	stored, err := st.GetVolume(resp.GetVolume().GetVolumeId())
+	stored, err := st.GetVolume(context.Background(), resp.GetVolume().GetVolumeId())
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -2810,7 +2810,7 @@ func TestCreateVolumeFromSnapshotRecordsSnapshotCapacity(t *testing.T) {
 func TestCreateVolumeFromSnapshotKeepsPendingMetadataOnCloneFailure(t *testing.T) {
 	st := store.NewMemoryStore()
 	const snapshotCapacity = int64(4 << 30)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2820,7 +2820,7 @@ func TestCreateVolumeFromSnapshotKeepsPendingMetadataOnCloneFailure(t *testing.T
 	}); err != nil {
 		t.Fatalf("seed source volume: %v", err)
 	}
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "source-vol",
 		SVMName:        "svm-a",
@@ -2879,7 +2879,7 @@ func TestCreateVolumeFromSnapshotKeepsPendingMetadataOnCloneFailure(t *testing.T
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("expected Internal error, got %v", err)
 	}
-	stored, getErr := st.GetVolume(targetPath)
+	stored, getErr := st.GetVolume(context.Background(), targetPath)
 	if getErr != nil {
 		t.Fatalf("pending target metadata not found: %v", getErr)
 	}
@@ -2894,7 +2894,7 @@ func TestCreateVolumeFromSnapshotKeepsPendingMetadataOnCloneFailure(t *testing.T
 func TestCreateVolumeFromSnapshotResumesPendingMetadataWhenBackendAlreadyExists(t *testing.T) {
 	st := store.NewMemoryStore()
 	const snapshotCapacity = int64(4 << 30)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -2904,7 +2904,7 @@ func TestCreateVolumeFromSnapshotResumesPendingMetadataWhenBackendAlreadyExists(
 	}); err != nil {
 		t.Fatalf("seed source volume: %v", err)
 	}
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "source-vol",
 		SVMName:        "svm-a",
@@ -2917,7 +2917,7 @@ func TestCreateVolumeFromSnapshotResumesPendingMetadataWhenBackendAlreadyExists(
 
 	volumeIDGen := idempotency.NewVolumeIDGenerator()
 	targetPath := volumeIDGen.GenerateVolumeID("restore-pvc")
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      targetPath,
 		Name:          "restore-pvc",
 		SVMName:       "svm-a",
@@ -3001,7 +3001,7 @@ func TestCreateVolumeFromSnapshotResumesPendingMetadataWhenBackendAlreadyExists(
 	if quotaBody.SVMName != "svm-a" || quotaBody.Path != targetPath || quotaBody.QuotaBytes != snapshotCapacity {
 		t.Fatalf("SetQuota body = %#v", quotaBody)
 	}
-	stored, err := st.GetVolume(targetPath)
+	stored, err := st.GetVolume(context.Background(), targetPath)
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -3012,7 +3012,7 @@ func TestCreateVolumeFromSnapshotResumesPendingMetadataWhenBackendAlreadyExists(
 
 func TestCreateVolumeFromSnapshotRejectsBackendCloneConflict(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "source-vol",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -3022,7 +3022,7 @@ func TestCreateVolumeFromSnapshotRejectsBackendCloneConflict(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("seed source volume: %v", err)
 	}
-	if err := st.CreateSnapshot(&store.SnapshotInfo{
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
 		SnapshotID:     "snap-a",
 		SourceVolumeID: "source-vol",
 		SVMName:        "svm-a",
@@ -3081,7 +3081,7 @@ func TestCreateVolumeFromSnapshotRejectsBackendCloneConflict(t *testing.T) {
 	if status.Code(err) != codes.AlreadyExists {
 		t.Fatalf("expected AlreadyExists error, got %v", err)
 	}
-	if _, getErr := st.GetVolume(targetPath); !store.IsNotFound(getErr) {
+	if _, getErr := st.GetVolume(context.Background(), targetPath); !store.IsNotFound(getErr) {
 		t.Fatalf("target metadata lookup error = %v, want not found", getErr)
 	}
 }
@@ -3092,7 +3092,7 @@ func TestControllerExpandVolumeRecordsProvisionedCapacity(t *testing.T) {
 		initialCapacity  = int64(4 << 30)
 		expectedCapacity = int64(5 << 30)
 	)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-a",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -3147,7 +3147,7 @@ func TestControllerExpandVolumeRecordsProvisionedCapacity(t *testing.T) {
 	if resp.GetCapacityBytes() != expectedCapacity {
 		t.Fatalf("response capacity = %d, want %d", resp.GetCapacityBytes(), expectedCapacity)
 	}
-	stored, err := st.GetVolume("vol-a")
+	stored, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -3158,7 +3158,7 @@ func TestControllerExpandVolumeRecordsProvisionedCapacity(t *testing.T) {
 
 func TestControllerExpandVolumeWaitsForInFlightDelete(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-a",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -3244,7 +3244,7 @@ func TestControllerExpandVolumeWaitsForInFlightDelete(t *testing.T) {
 
 func TestControllerExpandVolumeRejectsPendingVolume(t *testing.T) {
 	st := store.NewMemoryStore()
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-pending",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -3295,7 +3295,7 @@ func TestControllerExpandVolumeRejectsPendingVolume(t *testing.T) {
 func TestControllerExpandVolumeRejectsProvisionedCapacityAboveLimit(t *testing.T) {
 	st := store.NewMemoryStore()
 	const initialCapacity = int64(4 << 30)
-	if err := st.CreateVolume(&store.VolumeInfo{
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-a",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",
@@ -3343,7 +3343,7 @@ func TestControllerExpandVolumeRejectsProvisionedCapacityAboveLimit(t *testing.T
 	if quotaCalled {
 		t.Fatalf("quota endpoint was called")
 	}
-	stored, err := st.GetVolume("vol-a")
+	stored, err := st.GetVolume(context.Background(), "vol-a")
 	if err != nil {
 		t.Fatalf("stored volume not found: %v", err)
 	}
@@ -3354,7 +3354,7 @@ func TestControllerExpandVolumeRejectsProvisionedCapacityAboveLimit(t *testing.T
 
 func TestControllerExpandVolumeFailsWhenMetadataUpdateFails(t *testing.T) {
 	st := &failingCreateStore{MemoryStore: store.NewMemoryStore(), failUpdate: true}
-	if err := st.MemoryStore.CreateVolume(&store.VolumeInfo{
+	if err := st.MemoryStore.CreateVolume(context.Background(), &store.VolumeInfo{
 		VolumeID:      "vol-a",
 		SVMName:       "svm-a",
 		VIP:           "10.0.0.10",

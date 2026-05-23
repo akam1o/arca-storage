@@ -96,9 +96,12 @@ func NewCRDStore(config *rest.Config, k8sClient kubernetes.Interface) (*CRDStore
 }
 
 // CreateVolume stores volume metadata as ArcaVolume CRD (idempotent)
-func (s *CRDStore) CreateVolume(info *VolumeInfo) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) CreateVolume(ctx context.Context, info *VolumeInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := validateVolumeInfo(info); err != nil {
 		volumeID := "<nil>"
@@ -129,9 +132,12 @@ func (s *CRDStore) CreateVolume(info *VolumeInfo) error {
 }
 
 // UpdateVolume updates existing volume metadata
-func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) UpdateVolume(ctx context.Context, info *VolumeInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := validateVolumeInfo(info); err != nil {
 		volumeID := "<nil>"
@@ -186,9 +192,12 @@ func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 }
 
 // GetVolume retrieves volume metadata
-func (s *CRDStore) GetVolume(volumeID string) (*VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) GetVolume(ctx context.Context, volumeID string) (*VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	av := &v1alpha1.ArcaVolume{}
 	err := s.client.Get(ctx, client.ObjectKey{Name: volumeID}, av)
@@ -205,9 +214,12 @@ func (s *CRDStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 }
 
 // DeleteVolume removes volume metadata (idempotent)
-func (s *CRDStore) DeleteVolume(volumeID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) DeleteVolume(ctx context.Context, volumeID string) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Get the volume
 	av := &v1alpha1.ArcaVolume{}
@@ -252,9 +264,12 @@ func (s *CRDStore) DeleteVolume(volumeID string) error {
 }
 
 // ListVolumes returns all volumes with optional pagination
-func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
+func (s *CRDStore) ListVolumes(ctx context.Context, startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 
 	avList := &v1alpha1.ArcaVolumeList{}
 	listOpts := &client.ListOptions{
@@ -285,9 +300,12 @@ func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeI
 }
 
 // CreateSnapshot stores snapshot metadata as ArcaSnapshot CRD (idempotent)
-func (s *CRDStore) CreateSnapshot(info *SnapshotInfo) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) CreateSnapshot(ctx context.Context, info *SnapshotInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	if err := validateSnapshotInfo(info); err != nil {
 		snapshotID := "<nil>"
@@ -318,9 +336,12 @@ func (s *CRDStore) CreateSnapshot(info *SnapshotInfo) error {
 }
 
 // UpdateSnapshotStatus updates the status subresource of a snapshot (uses /status endpoint)
-func (s *CRDStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) UpdateSnapshotStatus(ctx context.Context, snapshotID string, readyToUse bool) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
 		// Get the snapshot first to use the latest resourceVersion.
@@ -342,9 +363,12 @@ func (s *CRDStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) erro
 }
 
 // GetSnapshot retrieves snapshot metadata
-func (s *CRDStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) GetSnapshot(ctx context.Context, snapshotID string) (*SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	as := &v1alpha1.ArcaSnapshot{}
 	err := s.client.Get(ctx, client.ObjectKey{Name: snapshotID}, as)
@@ -361,9 +385,12 @@ func (s *CRDStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 }
 
 // DeleteSnapshot removes snapshot metadata (idempotent)
-func (s *CRDStore) DeleteSnapshot(snapshotID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Get the snapshot
 	as := &v1alpha1.ArcaSnapshot{}
@@ -408,9 +435,12 @@ func (s *CRDStore) DeleteSnapshot(snapshotID string) error {
 }
 
 // ListSnapshots returns all snapshots with optional filtering and pagination
-func (s *CRDStore) ListSnapshots(sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
+func (s *CRDStore) ListSnapshots(ctx context.Context, sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 
 	asList := &v1alpha1.ArcaSnapshotList{}
 	listOpts := &client.ListOptions{
