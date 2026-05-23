@@ -8,7 +8,10 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const volumeCreateLockTTL = 30 * time.Second
+const (
+	volumeLifecycleLockTTL            = 30 * time.Second
+	volumeLifecycleLockResourcePrefix = "volume-create-"
+)
 
 type volumeCreateLock struct {
 	token    chan struct{}
@@ -16,6 +19,10 @@ type volumeCreateLock struct {
 }
 
 func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (func(), error) {
+	return d.acquireVolumeLifecycleLock(ctx, volumeID, "create")
+}
+
+func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, operation string) (func(), error) {
 	releaseLocalLock, err := d.acquireLocalVolumeCreateLock(ctx, volumeID)
 	if err != nil {
 		return nil, err
@@ -25,17 +32,21 @@ func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (
 		return releaseLocalLock, nil
 	}
 
-	distributedLock, err := d.lockManager.AcquireLock(ctx, "volume-create-"+volumeID, volumeCreateLockTTL)
+	distributedLock, err := d.lockManager.AcquireLock(
+		ctx,
+		volumeLifecycleLockResourcePrefix+volumeID,
+		volumeLifecycleLockTTL,
+	)
 	if err != nil {
 		releaseLocalLock()
-		return nil, fmt.Errorf("failed to acquire distributed volume create lock: %w", err)
+		return nil, fmt.Errorf("failed to acquire distributed volume %s lock: %w", operation, err)
 	}
 
 	return func() {
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := distributedLock.Release(releaseCtx); err != nil {
-			klog.Warningf("Failed to release distributed volume create lock for %s: %v", volumeID, err)
+			klog.Warningf("Failed to release distributed volume %s lock for %s: %v", operation, volumeID, err)
 		}
 		releaseLocalLock()
 	}, nil

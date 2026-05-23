@@ -3156,6 +3156,92 @@ func TestControllerExpandVolumeRecordsProvisionedCapacity(t *testing.T) {
 	}
 }
 
+func TestControllerExpandVolumeWaitsForInFlightDelete(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-a",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "path-a",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed volume: %v", err)
+	}
+
+	deleteEntered := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	quotaCalled := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/svm-a":
+			close(deleteEntered)
+			<-releaseDelete
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/quotas":
+			quotaCalled <- struct{}{}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"quota":{}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "vol-a"})
+		deleteDone <- err
+	}()
+
+	select {
+	case <-deleteEntered:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for in-flight delete")
+	}
+
+	expandDone := make(chan error, 1)
+	go func() {
+		_, err := driver.ControllerExpandVolume(context.Background(), &csi.ControllerExpandVolumeRequest{
+			VolumeId:      "vol-a",
+			CapacityRange: &csi.CapacityRange{RequiredBytes: 2 << 30},
+		})
+		expandDone <- err
+	}()
+
+	select {
+	case <-quotaCalled:
+		close(releaseDelete)
+		t.Fatalf("quota endpoint was called while delete held the volume lifecycle lock")
+	case err := <-expandDone:
+		close(releaseDelete)
+		t.Fatalf("ControllerExpandVolume returned before in-flight delete completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseDelete)
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("DeleteVolume() error = %v", err)
+	}
+	if err := <-expandDone; status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound after delete completed, got %v", err)
+	}
+	select {
+	case <-quotaCalled:
+		t.Fatalf("quota endpoint was called after volume metadata was deleted")
+	default:
+	}
+}
+
 func TestControllerExpandVolumeRejectsPendingVolume(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{

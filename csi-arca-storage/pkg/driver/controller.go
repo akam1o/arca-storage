@@ -858,6 +858,15 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 		return nil, status.Error(codes.InvalidArgument, "volume ID is required")
 	}
 
+	releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, volumeID, "delete")
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		return nil, status.Errorf(codes.Aborted, "failed to serialize volume deletion: %v", err)
+	}
+	defer releaseVolumeLifecycleLock()
+
 	// Get volume info
 	volumeInfo, err := d.store.GetVolume(volumeID)
 	if err != nil {
@@ -1088,6 +1097,15 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 	// Include source volume ID to avoid cross-namespace collisions
 	snapshotID := d.snapshotIDGen.GenerateSnapshotID(sourceVolumeID + "/" + req.GetName())
 
+	releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, sourceVolumeID, "snapshot-create")
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		return nil, status.Errorf(codes.Aborted, "failed to serialize snapshot creation: %v", err)
+	}
+	defer releaseVolumeLifecycleLock()
+
 	// Check if snapshot already exists (idempotency)
 	existingSnap, err := d.store.GetSnapshot(snapshotID)
 	if err == nil {
@@ -1268,6 +1286,17 @@ func (d *Driver) DeleteSnapshot(ctx context.Context, req *csi.DeleteSnapshotRequ
 		return nil, status.Errorf(codes.Internal, "failed to get snapshot %s: %v", snapshotID, err)
 	}
 
+	if snapshotInfo.SourceVolumeID != "" {
+		releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, snapshotInfo.SourceVolumeID, "snapshot-delete")
+		if err != nil {
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, status.FromContextError(ctxErr).Err()
+			}
+			return nil, status.Errorf(codes.Aborted, "failed to serialize snapshot deletion: %v", err)
+		}
+		defer releaseVolumeLifecycleLock()
+	}
+
 	sourceVolumePath := snapshotInfo.SourceVolumePath
 	if sourceVolumePath == "" {
 		sourceVolume, err := d.store.GetVolume(snapshotInfo.SourceVolumeID)
@@ -1382,6 +1411,15 @@ func (d *Driver) ControllerExpandVolume(ctx context.Context, req *csi.Controller
 	if limitBytes := req.GetCapacityRange().GetLimitBytes(); limitBytes > 0 && newCapacityBytes > limitBytes {
 		return nil, status.Errorf(codes.OutOfRange, "requested expansion capacity exceeds limit")
 	}
+
+	releaseVolumeLifecycleLock, err := d.acquireVolumeLifecycleLock(ctx, volumeID, "expand")
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		return nil, status.Errorf(codes.Aborted, "failed to serialize volume expansion: %v", err)
+	}
+	defer releaseVolumeLifecycleLock()
 
 	// Get volume info
 	volumeInfo, err := d.store.GetVolume(volumeID)
