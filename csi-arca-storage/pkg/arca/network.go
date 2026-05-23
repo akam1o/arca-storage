@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"math/big"
 	"net"
-	"sync"
 	"sync/atomic"
 
 	"k8s.io/klog/v2"
@@ -29,7 +28,6 @@ type StandaloneAllocator struct {
 	pools       []IPPool
 	poolCounter int32
 	arcaClient  *Client
-	mu          sync.Mutex
 }
 
 // PoolConfig represents configuration for a single IP pool
@@ -174,9 +172,6 @@ func parseIPRange(rangeStr string) (net.IP, net.IP, error) {
 
 // Allocate allocates an IP address from pools (round-robin with collision detection)
 func (a *StandaloneAllocator) Allocate(ctx context.Context, namespace string, attempt int) (*NetworkAllocation, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	// Round-robin pool selection
 	startIdx := int(atomic.LoadInt32(&a.poolCounter)) % len(a.pools)
 	atomic.AddInt32(&a.poolCounter, 1)

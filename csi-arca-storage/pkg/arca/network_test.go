@@ -6,6 +6,8 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -101,6 +103,61 @@ func TestStandaloneAllocatorSkipsGateway(t *testing.T) {
 	}
 	if allocation.IPCIDR != "10.0.0.2/30" {
 		t.Fatalf("Allocate() IPCIDR = %q, want 10.0.0.2/30", allocation.IPCIDR)
+	}
+}
+
+func TestStandaloneAllocatorDoesNotSerializeRemoteListCalls(t *testing.T) {
+	var inFlight int32
+	var once sync.Once
+	bothStarted := make(chan struct{})
+	release := make(chan struct{})
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/svms" {
+			http.NotFound(w, r)
+			return
+		}
+		if atomic.AddInt32(&inFlight, 1) == 2 {
+			once.Do(func() { close(bothStarted) })
+		}
+		<-release
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[],"next_cursor":null}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	allocator, err := NewStandaloneAllocator(
+		[]PoolConfig{{CIDR: "10.0.0.0/29", VLANID: 100}},
+		client,
+	)
+	if err != nil {
+		t.Fatalf("NewStandaloneAllocator() error = %v", err)
+	}
+
+	errs := make(chan error, 2)
+	for i := 0; i < 2; i++ {
+		go func() {
+			_, err := allocator.Allocate(context.Background(), "default", 0)
+			errs <- err
+		}()
+	}
+
+	select {
+	case <-bothStarted:
+	case <-time.After(500 * time.Millisecond):
+		close(release)
+		t.Fatal("Allocate() serialized remote SVM list calls")
+	}
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errs; err != nil {
+			t.Fatalf("Allocate() error = %v", err)
+		}
 	}
 }
 
