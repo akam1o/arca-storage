@@ -226,7 +226,8 @@ def list_volumes(
         spec = records[limit - 1]["spec"]
         next_cursor = encode_cursor([spec["svm"], spec["name"]])
         records = records[:limit]
-    items = [_volume_record_to_dict(record, ctx) for record in records]
+    svm_records: dict[str, Optional[dict[str, Any]]] = {}
+    items = [_volume_record_to_dict(record, ctx, svm_records=svm_records) for record in records]
     return {"items": items, "next_cursor": next_cursor}
 
 
@@ -247,7 +248,11 @@ def _volume_to_dict(vol: Volume, ctx: Optional[Any] = None) -> Dict[str, Any]:
     }
 
 
-def _volume_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) -> Dict[str, Any]:
+def _volume_record_to_dict(
+    record: Dict[str, Any],
+    ctx: Optional[Any] = None,
+    svm_records: Optional[dict[str, Optional[dict[str, Any]]]] = None,
+) -> Dict[str, Any]:
     ctx = ctx or get_context()
     spec = record.get("spec", {})
     status = record.get("status", {})
@@ -261,7 +266,7 @@ def _volume_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) ->
         "mount_path": mount_path,
         "lv_path": status.get("lv_path"),
         "lv_name": status.get("lv_name"),
-        "export_path": build_volume_export_path(ctx, spec.get("svm"), mount_path, spec.get("name")),
+        "export_path": build_volume_export_path(ctx, spec.get("svm"), mount_path, spec.get("name"), svm_records=svm_records),
         "status": status.get("phase"),
         "created_at": record.get("created_at"),
     }
@@ -291,6 +296,7 @@ def build_volume_export_path(
     svm: Optional[str],
     mount_path: Optional[str],
     volume: Optional[str] = None,
+    svm_records: Optional[dict[str, Optional[dict[str, Any]]]] = None,
 ) -> Optional[str]:
     """Return the NFS export location for a mounted volume."""
     if not svm or not mount_path:
@@ -304,7 +310,12 @@ def build_volume_export_path(
     if not safe_mount_path:
         return None
 
-    record = ctx.db.get_svm(svm_name)
+    if svm_records is not None:
+        if svm_name not in svm_records:
+            svm_records[svm_name] = ctx.db.get_svm(svm_name)
+        record = svm_records[svm_name]
+    else:
+        record = ctx.db.get_svm(svm_name)
     if not record:
         return None
 

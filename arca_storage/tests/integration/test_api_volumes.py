@@ -1150,3 +1150,25 @@ class TestListVolumes:
 
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+
+    @pytest.mark.integration
+    def test_list_volumes_reuses_svm_lookup_for_export_paths(self, fake_context, monkeypatch):
+        client = TestClient(app)
+        create_test_svm(client)
+        for name in ("vol1", "vol2", "vol3"):
+            client.post("/v1/volumes", json={"name": name, "svm": "tenant_a", "size_gib": 10})
+
+        original_get_svm = fake_context.db.get_svm
+        svm_lookups = []
+
+        def counting_get_svm(name):
+            svm_lookups.append(name)
+            return original_get_svm(name)
+
+        monkeypatch.setattr(fake_context.db, "get_svm", counting_get_svm)
+
+        response = client.get("/v1/volumes?svm=tenant_a&limit=10")
+
+        assert response.status_code == 200
+        assert [item["name"] for item in response.json()["data"]["items"]] == ["vol1", "vol2", "vol3"]
+        assert svm_lookups == ["tenant_a"]
