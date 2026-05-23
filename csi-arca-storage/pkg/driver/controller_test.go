@@ -210,6 +210,35 @@ func TestListSnapshotsWithSnapshotIDFiltersSourceVolume(t *testing.T) {
 	}
 }
 
+func TestListSnapshotsInvalidTokenDoesNotEchoToken(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateSnapshot(&store.SnapshotInfo{
+		SnapshotID:     "snap-a",
+		SourceVolumeID: "vol-a",
+		ReadyToUse:     true,
+	}); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	const token = "secret-snapshot-token"
+	_, err := driver.ListSnapshots(context.Background(), &csi.ListSnapshotsRequest{
+		SourceVolumeId: "vol-a",
+		StartingToken:  token,
+		MaxEntries:     1,
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("ListSnapshots() error %q contains starting token", err)
+	}
+}
+
 func TestDeleteVolumeRejectsVolumeWithSnapshots(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(&store.VolumeInfo{
@@ -949,6 +978,37 @@ func TestListVolumesSkipsPendingVolumes(t *testing.T) {
 	}
 	if got := resp.GetEntries()[0].GetVolume().GetVolumeId(); got != "vol-ready" {
 		t.Fatalf("listed volume = %q, want vol-ready", got)
+	}
+}
+
+func TestListVolumesInvalidTokenDoesNotEchoToken(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(&store.VolumeInfo{
+		VolumeID:      "vol-ready",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "ready-path",
+		CapacityBytes: 1 << 30,
+		ReadyToUse:    store.VolumeReadyState(true),
+	}); err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+	driver := &Driver{
+		mode:  "controller",
+		store: st,
+	}
+
+	const token = "secret-volume-token"
+	_, err := driver.ListVolumes(context.Background(), &csi.ListVolumesRequest{
+		StartingToken: token,
+		MaxEntries:    1,
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("ListVolumes() error %q contains starting token", err)
 	}
 }
 

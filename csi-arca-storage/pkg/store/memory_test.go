@@ -1,6 +1,9 @@
 package store
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestMemoryStoreListVolumesStablePagination(t *testing.T) {
 	st := NewMemoryStore()
@@ -26,6 +29,22 @@ func TestMemoryStoreListVolumesStablePagination(t *testing.T) {
 	assertVolumeIDs(t, page, []string{"vol-c"})
 	if nextToken != "" {
 		t.Fatalf("second nextToken = %q, want empty", nextToken)
+	}
+}
+
+func TestMemoryStoreListVolumesInvalidTokenDoesNotEchoToken(t *testing.T) {
+	st := NewMemoryStore()
+	if err := st.CreateVolume(&VolumeInfo{VolumeID: "vol-a"}); err != nil {
+		t.Fatalf("CreateVolume() error = %v", err)
+	}
+
+	const token = "secret-volume-token"
+	_, _, err := st.ListVolumes(token, 1)
+	if !IsNotFound(err) {
+		t.Fatalf("ListVolumes() error = %v, want not found", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("ListVolumes() error %q contains starting token", err)
 	}
 }
 
@@ -103,6 +122,25 @@ func TestMemoryStoreListSnapshotsStableFilteredPagination(t *testing.T) {
 	assertSnapshotIDs(t, page, []string{"snap-b"})
 	if nextToken != "" {
 		t.Fatalf("second nextToken = %q, want empty", nextToken)
+	}
+}
+
+func TestMemoryStoreListSnapshotsInvalidTokenDoesNotEchoToken(t *testing.T) {
+	st := NewMemoryStore()
+	if err := st.CreateSnapshot(&SnapshotInfo{
+		SnapshotID:     "snap-a",
+		SourceVolumeID: "vol-a",
+	}); err != nil {
+		t.Fatalf("CreateSnapshot() error = %v", err)
+	}
+
+	const token = "secret-snapshot-token"
+	_, _, err := st.ListSnapshots("vol-a", token, 1)
+	if !IsNotFound(err) {
+		t.Fatalf("ListSnapshots() error = %v, want not found", err)
+	}
+	if strings.Contains(err.Error(), token) {
+		t.Fatalf("ListSnapshots() error %q contains starting token", err)
 	}
 }
 

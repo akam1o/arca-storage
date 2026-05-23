@@ -130,7 +130,7 @@ func (s *MemoryStore) ListVolumes(startingToken string, maxEntries int) ([]*Volu
 	if startingToken != "" {
 		idx := sort.SearchStrings(volumeIDs, startingToken)
 		if idx == len(volumeIDs) || volumeIDs[idx] != startingToken {
-			return nil, "", fmt.Errorf("%w: volume pagination token %s", ErrNotFound, startingToken)
+			return nil, "", fmt.Errorf("%w: volume pagination token not found", ErrNotFound)
 		}
 		start = idx + 1
 	}
@@ -221,7 +221,7 @@ func (s *MemoryStore) ListSnapshots(sourceVolumeID, startingToken string, maxEnt
 	if startingToken != "" {
 		idx := sort.SearchStrings(snapshotIDs, startingToken)
 		if idx == len(snapshotIDs) || snapshotIDs[idx] != startingToken {
-			return nil, "", fmt.Errorf("%w: snapshot pagination token %s", ErrNotFound, startingToken)
+			return nil, "", fmt.Errorf("%w: snapshot pagination token not found", ErrNotFound)
 		}
 		start = idx + 1
 	}
