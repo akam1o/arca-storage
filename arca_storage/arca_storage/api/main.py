@@ -5,6 +5,8 @@ FastAPI main application.
 import logging
 import re
 import secrets
+import threading
+import time
 import traceback
 import uuid
 from typing import Any, Dict, Optional
@@ -58,6 +60,10 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(api[_-]?token|auth[_-]?token|token|password|secret|client[_-]?key)=([^\s,;]+)"
 )
 _BEARER_AUTH_SCHEME = "BearerAuth"
+_METRICS_LOCK = threading.Lock()
+_HTTP_REQUESTS: dict[tuple[str, str, int], int] = {}
+_HTTP_FAILURES: dict[tuple[str, str, int], int] = {}
+_HTTP_LATENCY: dict[tuple[str, str], tuple[int, float]] = {}
 
 
 def custom_openapi() -> Dict[str, Any]:
@@ -91,6 +97,24 @@ def _request_log_path(request: Request) -> str:
     if isinstance(route_path, str) and route_path:
         return route_path
     return "/<unmatched>"
+
+
+@app.middleware("http")
+async def record_http_metrics(request: Request, call_next):
+    """Record low-cardinality HTTP metrics for the Prometheus endpoint."""
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        _record_http_metric(
+            request.method,
+            _request_log_path(request),
+            status_code,
+            time.perf_counter() - started,
+        )
 
 
 @app.middleware("http")
@@ -263,6 +287,65 @@ def _redacted_exception_traceback(exc: Exception) -> str:
     return _redact_sensitive_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
 
 
+def _record_http_metric(method: str, route: str, status_code: int, elapsed_seconds: float) -> None:
+    method = method.upper()
+    status = int(status_code)
+    request_key = (method, route, status)
+    latency_key = (method, route)
+    with _METRICS_LOCK:
+        _HTTP_REQUESTS[request_key] = _HTTP_REQUESTS.get(request_key, 0) + 1
+        if status >= 400:
+            _HTTP_FAILURES[request_key] = _HTTP_FAILURES.get(request_key, 0) + 1
+        count, total = _HTTP_LATENCY.get(latency_key, (0, 0.0))
+        _HTTP_LATENCY[latency_key] = (count + 1, total + max(elapsed_seconds, 0.0))
+
+
+def _prometheus_label(value: str) -> str:
+    return value.replace("\\", "\\\\").replace("\n", "\\n").replace('"', '\\"')
+
+
+def _render_prometheus_metrics() -> str:
+    with _METRICS_LOCK:
+        requests = dict(_HTTP_REQUESTS)
+        failures = dict(_HTTP_FAILURES)
+        latency = dict(_HTTP_LATENCY)
+
+    lines = [
+        "# HELP arca_storage_api_up Arca Storage API process liveness",
+        "# TYPE arca_storage_api_up gauge",
+        "arca_storage_api_up 1",
+        "# HELP arca_storage_http_requests_total Total HTTP requests by method, route, and status.",
+        "# TYPE arca_storage_http_requests_total counter",
+    ]
+    for (method, route, status), count in sorted(requests.items()):
+        lines.append(
+            f'arca_storage_http_requests_total{{method="{_prometheus_label(method)}",'
+            f'route="{_prometheus_label(route)}",status="{status}"}} {count}'
+        )
+    lines.extend(
+        [
+            "# HELP arca_storage_http_request_failures_total HTTP requests with 4xx or 5xx status.",
+            "# TYPE arca_storage_http_request_failures_total counter",
+        ]
+    )
+    for (method, route, status), count in sorted(failures.items()):
+        lines.append(
+            f'arca_storage_http_request_failures_total{{method="{_prometheus_label(method)}",'
+            f'route="{_prometheus_label(route)}",status="{status}"}} {count}'
+        )
+    lines.extend(
+        [
+            "# HELP arca_storage_http_request_latency_seconds HTTP request latency by method and route.",
+            "# TYPE arca_storage_http_request_latency_seconds summary",
+        ]
+    )
+    for (method, route), (count, total) in sorted(latency.items()):
+        labels = f'method="{_prometheus_label(method)}",route="{_prometheus_label(route)}"'
+        lines.append(f"arca_storage_http_request_latency_seconds_count{{{labels}}} {count}")
+        lines.append(f"arca_storage_http_request_latency_seconds_sum{{{labels}}} {total:.9f}")
+    return "\n".join(lines) + "\n"
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Global fallback exception handler."""
@@ -321,11 +404,7 @@ def readyz() -> JSONResponse:
 
 @app.get("/metrics", response_class=PlainTextResponse)
 def metrics() -> PlainTextResponse:
-    return PlainTextResponse(
-        "# HELP arca_storage_api_up Arca Storage API process liveness\n"
-        "# TYPE arca_storage_api_up gauge\n"
-        "arca_storage_api_up 1\n"
-    )
+    return PlainTextResponse(_render_prometheus_metrics())
 
 
 # SVM endpoints
