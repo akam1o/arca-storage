@@ -5,6 +5,7 @@ FastAPI main application.
 import logging
 import re
 import secrets
+import traceback
 import uuid
 from typing import Any, Dict, Optional
 
@@ -229,16 +230,21 @@ def _redact_validation_input_strings(value: Any, input_values: set[str]) -> Any:
     return value
 
 
+def _redacted_exception_traceback(exc: Exception) -> str:
+    return _redact_sensitive_text("".join(traceback.format_exception(type(exc), exc, exc.__traceback__)))
+
+
 @app.exception_handler(Exception)
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Global fallback exception handler."""
     request_id = str(uuid.uuid4())
     logger.error(
-        "Unhandled error (request_id=%s, path=%s, type=%s): %s",
+        "Unhandled error (request_id=%s, path=%s, type=%s): %s\n%s",
         request_id,
         _request_log_path(request),
         type(exc).__name__,
         _redact_sensitive_text(str(exc)),
+        _redacted_exception_traceback(exc),
     )
     return JSONResponse(
         status_code=500,

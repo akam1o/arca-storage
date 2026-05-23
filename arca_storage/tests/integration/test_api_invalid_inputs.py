@@ -189,6 +189,7 @@ def test_global_exception_log_redacts_sensitive_values(caplog):
     assert "hunter2" not in caplog.text
     assert "RuntimeError" in caplog.text
     assert "<redacted>" in caplog.text
+    assert "Traceback" in caplog.text
 
 
 @pytest.mark.integration
