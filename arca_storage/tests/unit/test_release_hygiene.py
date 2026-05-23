@@ -20,6 +20,15 @@ def test_python_workflow_checks_lint_and_format(repo_root):
     assert "name: Check Python formatting" in workflow
 
 
+def test_python_workflow_runs_type_check(repo_root):
+    workflow = (repo_root / ".github/workflows/python-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "name: Run type check" in workflow
+    assert "python -m mypy arca_storage" in workflow
+
+
 def test_python_workflow_enforces_coverage_floor(repo_root):
     workflow = (repo_root / ".github/workflows/python-tests.yml").read_text(
         encoding="utf-8"
