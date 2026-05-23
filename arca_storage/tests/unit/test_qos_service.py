@@ -2,12 +2,19 @@ from __future__ import annotations
 
 import os
 import stat
+import subprocess
 from types import SimpleNamespace
 
 import pytest
 
 from arca_storage.api.services import qos_service
 from arca_storage.errors import InvalidArgumentError, NotFoundError, PreconditionFailedError
+
+
+def _assert_redacted(error: BaseException, *values: str) -> None:
+    message = str(error)
+    for value in values:
+        assert value not in message
 
 
 class DummyDB:
@@ -712,3 +719,64 @@ def test_get_device_id_uses_target_block_device_rdev(monkeypatch):
     monkeypatch.setattr(qos_service.os, "stat", lambda path: device_stat)
 
     assert qos_service._get_device_id("/dev/vg_arca/test-vol") == "8:16"
+
+
+def test_enable_io_controller_redacts_cgroup_path(tmp_path):
+    cgroup_path = tmp_path / "sys" / "fs" / "cgroup" / "tenant-a"
+    cgroup_path.mkdir(parents=True)
+    (cgroup_path / "cgroup.controllers").write_text("cpu memory", encoding="utf-8")
+    (cgroup_path / "cgroup.subtree_control").write_text("", encoding="utf-8")
+
+    with pytest.raises(RuntimeError) as excinfo:
+        qos_service._enable_io_controller(cgroup_path)
+
+    _assert_redacted(excinfo.value, str(cgroup_path), "tenant-a")
+
+
+def test_get_device_id_stat_failure_redacts_lv_path(monkeypatch):
+    lv_path = "/dev/vg_arca/test-vol"
+
+    def fail_stat(path):
+        raise OSError(f"secret stat failure for {path}")
+
+    monkeypatch.setattr(qos_service.os, "stat", fail_stat)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        qos_service._get_device_id(lv_path)
+
+    _assert_redacted(excinfo.value, lv_path, "secret stat failure")
+
+
+def test_get_device_id_non_block_redacts_lv_path(monkeypatch):
+    lv_path = "/dev/vg_arca/test-vol"
+    device_stat = SimpleNamespace(st_mode=stat.S_IFREG, st_rdev=0)
+
+    monkeypatch.setattr(qos_service.os, "stat", lambda path: device_stat)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        qos_service._get_device_id(lv_path)
+
+    _assert_redacted(excinfo.value, lv_path)
+
+
+def test_get_ganesha_pid_failure_redacts_svm_name(monkeypatch):
+    svm = "tenant-a"
+    ctx = SimpleNamespace(db=DummyDB(volumes=[], svm={"spec": {"vlan_id": 100}}))
+
+    def fail_systemctl(cmd, **kwargs):
+        return subprocess.CompletedProcess(cmd, 1, "", f"missing {svm}")
+
+    class MissingPidFile:
+        def __init__(self, path):
+            self.path = path
+
+        def exists(self):
+            return False
+
+    monkeypatch.setattr(qos_service.subprocess, "run", fail_systemctl)
+    monkeypatch.setattr(qos_service, "Path", MissingPidFile)
+
+    with pytest.raises(RuntimeError) as excinfo:
+        qos_service._get_ganesha_pid(ctx, svm)
+
+    _assert_redacted(excinfo.value, svm)

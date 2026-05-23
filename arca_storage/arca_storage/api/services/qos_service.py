@@ -42,7 +42,7 @@ def _enable_io_controller(cgroup_path: Path) -> None:
 
     controllers = controllers_file.read_text(encoding="utf-8").split()
     if "io" not in controllers:
-        raise RuntimeError(f"cgroup io controller is not available under {cgroup_path}")
+        raise RuntimeError("cgroup io controller is not available")
 
     enabled = subtree_file.read_text(encoding="utf-8").split()
     if "io" not in enabled:
@@ -53,10 +53,10 @@ def _get_device_id(lv_path: str) -> str:
     try:
         device_stat = os.stat(lv_path)
     except OSError as e:
-        raise RuntimeError(f"Failed to stat device {lv_path}: {e}") from e
+        raise RuntimeError("Failed to stat device") from e
 
     if not stat.S_ISBLK(device_stat.st_mode):
-        raise RuntimeError(f"Path {lv_path} is not a block device")
+        raise RuntimeError("Path is not a block device")
 
     major = os.major(device_stat.st_rdev)
     minor = os.minor(device_stat.st_rdev)
@@ -378,7 +378,7 @@ def _get_ganesha_pid(ctx: Any, svm: str) -> int:
         if raw.isdigit() and int(raw) > 0:
             return int(raw)
 
-    raise RuntimeError(f"Unable to find running NFS-Ganesha process for SVM {svm}")
+    raise RuntimeError("Unable to find running NFS-Ganesha process")
 
 
 def apply_qos_to_volume(
