@@ -38,9 +38,34 @@ from .exceptions import (
 
 LOG = logging.getLogger(__name__)
 
+_RESOURCE_ID_PATH_SEGMENTS = frozenset({"volumes", "shares", "snapshots", "svms", "exports"})
+
 
 def _quote_path_segment(value: str) -> str:
     return quote(str(value), safe="")
+
+
+def _safe_log_path(path: str) -> str:
+    """Return an API path shape suitable for logs without resource identifiers."""
+    parsed_path = urlparse(path).path
+    parts = [p for p in parsed_path.split("/") if p]
+    if not parts:
+        return "<request>"
+
+    safe_parts: List[str] = []
+    redact_next = False
+    for part in parts:
+        decoded_part = unquote(part)
+        if redact_next:
+            safe_parts.append("<id>")
+            redact_next = False
+            continue
+
+        safe_parts.append(safe_error_detail(decoded_part))
+        if decoded_part in _RESOURCE_ID_PATH_SEGMENTS:
+            redact_next = True
+
+    return "/" + "/".join(safe_parts)
 
 
 def _is_loopback_hostname(hostname: Optional[str]) -> bool:
@@ -191,7 +216,7 @@ class ArcaManilaClient:
             endpoints like POST /v1/volumes (no resource ID in path).
         """
         # Split path and filter out empty segments
-        parts = [p for p in path.split("/") if p]
+        parts = [p for p in urlparse(path).path.split("/") if p]
 
         # Priority 1: Extract from path if resource ID exists
         # Pattern: /v1/volumes/{volume_name}[/action]
@@ -266,10 +291,12 @@ class ArcaManilaClient:
         else:
             url = f"{self.base_url}/{path}"
 
+        safe_path = _safe_log_path(path)
+
         LOG.debug(
             "Making %s request to %s with params=%s, json_data=%s",
             method,
-            path,
+            safe_path,
             redact_sensitive(params),
             redact_sensitive(json_data),
         )
@@ -292,7 +319,7 @@ class ArcaManilaClient:
 
                 # Map specific status codes to specific exceptions
                 if response.status_code == 404:
-                    LOG.warning(f"Resource not found: {path}, error: {error_msg}")
+                    LOG.warning("Resource not found: %s", safe_path)
                     # Extract resource ID intelligently based on path pattern
                     resource_id = self._extract_resource_id(path, method, json_data)
 
@@ -310,7 +337,7 @@ class ArcaManilaClient:
                         raise ArcaManilaAPIError(details=f"Resource not found: {error_msg}")
 
                 elif response.status_code == 409:
-                    LOG.warning(f"Conflict error: {path}, error: {error_msg}")
+                    LOG.warning("Conflict error: %s", safe_path)
                     # For conflicts on create, use the name from request body
                     if method == "POST" and json_data and "name" in json_data:
                         resource_id = json_data["name"]
@@ -360,7 +387,7 @@ class ArcaManilaClient:
                         raise ArcaManilaAPIError(details=f"Conflict: {error_msg}")
 
                 else:
-                    LOG.error(f"API error: HTTP {response.status_code}, {error_msg}")
+                    LOG.error("API error: HTTP %s for %s", response.status_code, safe_path)
                     raise ArcaManilaAPIError(
                         details=f"HTTP {response.status_code}: {error_msg}"
                     )
@@ -373,15 +400,15 @@ class ArcaManilaClient:
             return response.json()
 
         except requests.exceptions.Timeout:
-            LOG.error(f"Request timeout after {self.timeout}s: {path}")
+            LOG.error("Request timeout after %ss for %s", self.timeout, safe_path)
             raise ArcaAPITimeout(timeout=self.timeout)
         except requests.exceptions.ConnectionError as e:
             details = safe_error_detail(e)
-            LOG.error(f"Connection error: {path}, {details}")
+            LOG.error("Connection error for %s", safe_path)
             raise ArcaAPIConnectionError(details=details)
         except requests.exceptions.RequestException as e:
             details = safe_error_detail(e)
-            LOG.error(f"Request exception: {path}, {details}")
+            LOG.error("Request exception for %s", safe_path)
             raise ArcaManilaAPIError(details=details)
 
     def _next_page_cursor(

@@ -97,6 +97,9 @@ class TestArcaManilaClientMakeRequest:
             auth_type="none",
         )
 
+    def _render_log_calls(self, mock_log):
+        return " ".join(str(call.args) for call in mock_log.call_args_list)
+
     @patch("requests.Session.request")
     def test_timeout_maps_to_ArcaAPITimeout(self, mock_request, client):
         mock_request.side_effect = requests.exceptions.Timeout("timeout")
@@ -128,14 +131,16 @@ class TestArcaManilaClientMakeRequest:
         with patch.object(manila_client.LOG, "debug") as mock_debug:
             client._make_request(
                 "POST",
-                "/v1/svms",
+                "/v1/volumes/share-secret-token?password=hunter2",
                 json_data={"name": "svm1", "auth_token": "secret-token"},
                 params={"password": "hunter2"},
             )
 
-        rendered_calls = " ".join(str(call.args) for call in mock_debug.call_args_list)
+        rendered_calls = self._render_log_calls(mock_debug)
+        assert "share-secret-token" not in rendered_calls
         assert "secret-token" not in rendered_calls
         assert "hunter2" not in rendered_calls
+        assert "/v1/volumes/<id>" in rendered_calls
         assert "<redacted>" in rendered_calls
 
     @patch("requests.Session.request")
@@ -151,6 +156,27 @@ class TestArcaManilaClientMakeRequest:
 
     def test_extract_resource_id_decodes_url_quoted_segments(self, client):
         assert client._extract_resource_id("/v1/volumes/share%2F..%2Fqos", "GET") == "share/../qos"
+
+    def test_extract_resource_id_ignores_query_string(self, client):
+        assert client._extract_resource_id("/v1/volumes/share-123?password=hunter2", "GET") == "share-123"
+
+    @patch("requests.Session.request")
+    def test_warning_log_redacts_path_and_response_details(self, mock_request, client):
+        resp = Mock()
+        resp.status_code = 404
+        resp.text = "not found token=secret-token password=hunter2"
+        resp.json.return_value = {"detail": resp.text}
+        mock_request.return_value = resp
+
+        with patch.object(manila_client.LOG, "warning") as mock_warning:
+            with pytest.raises(exceptions.ArcaShareNotFound):
+                client._make_request("GET", "/v1/volumes/share-private-id?password=hunter2")
+
+        rendered_calls = self._render_log_calls(mock_warning)
+        assert "share-private-id" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "/v1/volumes/<id>" in rendered_calls
 
     @patch("requests.Session.request")
     def test_409_ip_conflict_maps_to_ArcaNetworkConflict(self, mock_request, client):
@@ -177,6 +203,25 @@ class TestArcaManilaClientMakeRequest:
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
         assert "<redacted>" in str(exc_info.value)
+
+    @patch("requests.Session.request")
+    def test_error_log_redacts_path_and_response_details(self, mock_request, client):
+        resp = Mock()
+        resp.status_code = 500
+        resp.text = "backend failed token=secret-token password=hunter2"
+        resp.json.return_value = {"detail": resp.text}
+        mock_request.return_value = resp
+
+        with patch.object(manila_client.LOG, "error") as mock_error:
+            with pytest.raises(exceptions.ArcaManilaAPIError):
+                client._make_request("POST", "/v1/svms/svm-private-id?password=hunter2")
+
+        rendered_calls = self._render_log_calls(mock_error)
+        assert "svm-private-id" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "backend failed" not in rendered_calls
+        assert "/v1/svms/<id>" in rendered_calls
 
     @patch("requests.Session.request")
     def test_409_network_conflict_redacts_sensitive_details(self, mock_request, client):
