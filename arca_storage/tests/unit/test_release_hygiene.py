@@ -36,7 +36,7 @@ def test_python_workflow_enforces_coverage_floor(repo_root):
         encoding="utf-8"
     )
 
-    assert "--cov-fail-under=50" in workflow
+    assert "--cov-fail-under=70" in workflow
 
 
 def test_python_slow_tests_run_on_schedule(repo_root):
@@ -262,7 +262,8 @@ def test_csi_controller_exposes_pod_namespace_to_driver(repo_root):
     controller_manifests = [
         repo_root / "csi-arca-storage/deploy/controller.yaml",
         repo_root / "csi-arca-storage/deploy/controller-statefulset.yaml",
-        repo_root / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
     ]
 
     for manifest_path in controller_manifests:
@@ -272,10 +273,14 @@ def test_csi_controller_exposes_pod_namespace_to_driver(repo_root):
 
 
 def test_csi_workflow_verifies_kubeconform_checksum(repo_root):
-    workflow = (repo_root / ".github/workflows/csi-tests.yml").read_text(encoding="utf-8")
+    workflow = (repo_root / ".github/workflows/csi-tests.yml").read_text(
+        encoding="utf-8"
+    )
 
     assert "KUBECONFORM_SHA256=" in workflow
-    assert "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73" in workflow
+    assert (
+        "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73" in workflow
+    )
     assert "sha256sum -c -" in workflow
 
 
