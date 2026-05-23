@@ -20,16 +20,20 @@ from fastapi.responses import JSONResponse, PlainTextResponse
 from arca_storage.api.models import (
     CSI_VOLUME_PATH_DESCRIPTION,
     DirectoryCreate,
+    DirectoryResponse,
+    DeletedResponse,
     ExportCreate,
     ExportListResponse,
     ExportResponse,
     QuotaExpand,
+    QuotaResponse,
     QuotaSet,
+    QoSRemovalResponse,
     SnapshotCreate,
     SnapshotListResponse,
     SnapshotResponse,
-    SuccessResponse,
     SVMCreate,
+    SVMCapacityResponse,
     SVMListResponse,
     SVMResponse,
     VolumeCloneCreate,
@@ -442,14 +446,14 @@ def get_svm(name: str) -> Dict[str, Any]:
     return {"request_id": request_id, "status": "ok", "data": result}
 
 
-@app.get("/v1/svms/{name}/capacity", response_model=SuccessResponse)
+@app.get("/v1/svms/{name}/capacity", response_model=SVMCapacityResponse)
 def get_svm_capacity(name: str) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     result = svm_service.get_svm_capacity(name)
     return {"request_id": request_id, "status": "ok", "data": {"capacity": result}}
 
 
-@app.delete("/v1/svms/{name}", response_model=SuccessResponse)
+@app.delete("/v1/svms/{name}", response_model=DeletedResponse)
 def delete_svm(
     name: str,
     force: bool = Query(False, description="Force deletion"),
@@ -463,14 +467,14 @@ def delete_svm(
 # CSI directory/quota compatibility endpoints
 
 
-@app.post("/v1/directories", response_model=SuccessResponse, status_code=201)
+@app.post("/v1/directories", response_model=DirectoryResponse, status_code=201)
 def create_directory(directory: DirectoryCreate) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     result = directory_service.create_directory(directory)
     return {"request_id": request_id, "status": "ok", "data": {"directory": result}}
 
 
-@app.delete("/v1/directories/{svm_name}", response_model=SuccessResponse)
+@app.delete("/v1/directories/{svm_name}", response_model=DeletedResponse)
 def delete_directory(
     svm_name: str,
     path: str = Query(..., description=CSI_VOLUME_PATH_DESCRIPTION),
@@ -480,21 +484,21 @@ def delete_directory(
     return {"request_id": request_id, "status": "ok", "data": {"deleted": True}}
 
 
-@app.post("/v1/quotas", response_model=SuccessResponse)
+@app.post("/v1/quotas", response_model=QuotaResponse)
 def set_quota(quota: QuotaSet) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     result = directory_service.set_quota(quota)
     return {"request_id": request_id, "status": "ok", "data": result}
 
 
-@app.patch("/v1/quotas", response_model=SuccessResponse)
+@app.patch("/v1/quotas", response_model=QuotaResponse)
 def expand_quota(quota: QuotaExpand) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     result = directory_service.expand_quota(quota)
     return {"request_id": request_id, "status": "ok", "data": result}
 
 
-@app.get("/v1/quotas/{svm_name}", response_model=SuccessResponse)
+@app.get("/v1/quotas/{svm_name}", response_model=QuotaResponse)
 def get_quota(
     svm_name: str,
     path: str = Query(..., description=CSI_VOLUME_PATH_DESCRIPTION),
@@ -521,7 +525,7 @@ def resize_volume(name: str, resize: VolumeResize) -> Dict[str, Any]:
     return {"request_id": request_id, "status": "ok", "data": {"volume": result}}
 
 
-@app.delete("/v1/volumes/{name}", response_model=SuccessResponse)
+@app.delete("/v1/volumes/{name}", response_model=DeletedResponse)
 def delete_volume(
     name: str, svm: str = Query(..., description="SVM name"), force: bool = Query(False, description="Force deletion")
 ) -> Dict[str, Any]:
@@ -559,7 +563,7 @@ def add_export(export: ExportCreate) -> Dict[str, Any]:
     return {"request_id": request_id, "status": "ok", "data": {"export": result}}
 
 
-@app.delete("/v1/exports", response_model=SuccessResponse)
+@app.delete("/v1/exports", response_model=DeletedResponse)
 def remove_export(
     svm: str = Query(..., description="SVM name"),
     volume: str = Query(..., description="Volume name"),
@@ -600,7 +604,7 @@ def create_snapshot(snapshot: SnapshotCreate) -> Dict[str, Any]:
     return {"request_id": request_id, "status": "ok", "data": {"snapshot": result}}
 
 
-@app.delete("/v1/snapshots/{name}", response_model=SuccessResponse)
+@app.delete("/v1/snapshots/{name}", response_model=DeletedResponse)
 def delete_snapshot(
     name: str,
     svm: str = Query(..., description="SVM name"),
@@ -677,7 +681,7 @@ def apply_qos_to_volume(name: str, qos: VolumeQoSApply) -> Dict[str, Any]:
     return {"request_id": request_id, "status": "ok", "data": {"qos": result}}
 
 
-@app.delete("/v1/volumes/{name}/qos", response_model=SuccessResponse)
+@app.delete("/v1/volumes/{name}/qos", response_model=QoSRemovalResponse)
 def remove_qos_from_volume(
     name: str,
     svm: str = Query(..., description="SVM name"),
