@@ -79,6 +79,7 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
                 "[state]",
                 f'db_path = "{temp_dir}/state.db"',
                 f'runtime_dir = "{temp_dir}/runtime"',
+                "operation_log_retention_days = 7",
                 "",
                 "[ganesha]",
                 f'config_dir = "{temp_dir}/ganesha"',
@@ -110,6 +111,7 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
     assert cfg.api.ssl_certfile == f"{temp_dir}/tls/api.crt"
     assert cfg.api.ssl_keyfile == f"{temp_dir}/tls/api.key"
     assert cfg.state.runtime_dir == f"{temp_dir}/runtime"
+    assert cfg.state.operation_log_retention_days == 7
     assert cfg.ganesha.protocols == [3, 4]
     assert cfg.ganesha.mountd_port == 20048
     assert cfg.ganesha.nlm_port == 32768
@@ -304,6 +306,21 @@ def test_load_settings_rejects_control_character_filesystem_paths(
     from arca_storage.config import load_settings
 
     with pytest.raises(ValueError, match="control characters"):
+        load_settings()
+
+
+@pytest.mark.unit
+def test_load_settings_rejects_invalid_operation_log_retention(monkeypatch, temp_dir):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(
+        "[state]\noperation_log_retention_days = 0\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match="operation_log_retention_days"):
         load_settings()
 
 

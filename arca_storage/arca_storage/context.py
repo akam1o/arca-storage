@@ -8,6 +8,7 @@ manually everywhere.
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from arca_storage.adapters.ganesha import SubprocessGaneshaAdapter
@@ -31,6 +32,7 @@ class AppContext:
     def __init__(self, settings: Optional[ArcaSettings] = None) -> None:
         self.settings = settings or load_settings()
         self.db = StateDB(self.settings.state.db_path)
+        self._prune_operation_log()
 
         t = self.settings.timeouts
         self.adapters = Adapters(
@@ -54,6 +56,11 @@ class AppContext:
 
     def close(self) -> None:
         self.db.close()
+
+    def _prune_operation_log(self) -> None:
+        retention_days = self.settings.state.operation_log_retention_days
+        cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+        self.db.prune_operation_log(cutoff)
 
 
 # Module-level lazy singleton

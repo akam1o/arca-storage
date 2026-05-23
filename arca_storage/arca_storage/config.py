@@ -171,6 +171,7 @@ class StateConfig(BaseModel):
 
     db_path: str = "/var/lib/arca-storage/state.db"
     runtime_dir: str = "/var/lib/arca-storage"
+    operation_log_retention_days: int = Field(default=90, ge=1, le=3650)
 
     @field_validator("db_path", "runtime_dir")
     @classmethod
