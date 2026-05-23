@@ -824,7 +824,7 @@ class StateDB:
                     },
                 )
 
-            all_exports = self._list_all_exports_conn(conn, svm=name)
+            all_exports = self.list_all_exports_conn(conn, svm=name)
             creating_exports = [
                 export for export in all_exports if self._create_lease_active(export)
             ]
@@ -1108,7 +1108,7 @@ class StateDB:
                         name,
                     ),
                 )
-                self._log_operation_conn(
+                self.log_operation_conn(
                     conn,
                     "Volume",
                     record["id"],
@@ -1835,7 +1835,7 @@ class StateDB:
     ) -> bool:
         now = _now_iso()
         with self.transaction(immediate=expected_create_owner is not None) as conn:
-            return self._upsert_export_conn(
+            return self.upsert_export_conn(
                 conn,
                 export,
                 now=now,
@@ -1845,7 +1845,7 @@ class StateDB:
                 allow_missing_create_owner=allow_missing_create_owner,
             )
 
-    def _upsert_export_conn(
+    def upsert_export_conn(
         self,
         conn: sqlite3.Connection,
         export: Any,
@@ -1912,7 +1912,7 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
-        return self._list_exports_conn(
+        return self.list_exports_conn(
             conn,
             svm=svm,
             volume=volume,
@@ -1930,7 +1930,7 @@ class StateDB:
         owner: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         with self._read_transaction() as conn:
-            return self._list_all_exports_conn(
+            return self.list_all_exports_conn(
                 conn, svm=svm, volume=volume, client=client, owner=owner
             )
 
@@ -1938,7 +1938,7 @@ class StateDB:
         self, svm: str, volume: str, client: str
     ) -> Optional[dict[str, Any]]:
         conn = self._conn()
-        return self._get_export_conn(conn, svm, volume, client)
+        return self.get_export_conn(conn, svm, volume, client)
 
     def reserve_export_delete(
         self, svm: str, volume: str, client: str
@@ -2003,7 +2003,7 @@ class StateDB:
             else None,
         )
 
-    def _get_export_conn(
+    def get_export_conn(
         self,
         conn: sqlite3.Connection,
         svm: str,
@@ -2019,7 +2019,7 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
-    def _list_exports_conn(
+    def list_exports_conn(
         self,
         conn: sqlite3.Connection,
         svm: Optional[str] = None,
@@ -2065,7 +2065,7 @@ class StateDB:
         cur = conn.execute(sql, params)
         return [self._row_to_resource(row) for row in cur.fetchall()]
 
-    def _list_all_exports_conn(
+    def list_all_exports_conn(
         self,
         conn: sqlite3.Connection,
         svm: Optional[str] = None,
@@ -2074,7 +2074,7 @@ class StateDB:
         owner: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         return self._list_all_pages_conn(
-            lambda cursor: self._list_exports_conn(
+            lambda cursor: self.list_exports_conn(
                 conn,
                 svm=svm,
                 volume=volume,
@@ -2092,9 +2092,9 @@ class StateDB:
 
     def delete_export(self, svm: str, volume: str, client: str) -> bool:
         with self.transaction() as conn:
-            return self._delete_export_conn(conn, svm, volume, client)
+            return self.delete_export_conn(conn, svm, volume, client)
 
-    def _delete_export_conn(
+    def delete_export_conn(
         self, conn: sqlite3.Connection, svm: str, volume: str, client: str
     ) -> bool:
         cur = conn.execute(
@@ -2114,7 +2114,7 @@ class StateDB:
         detail: str = "",
     ) -> None:
         with self.transaction() as conn:
-            self._log_operation_conn(
+            self.log_operation_conn(
                 conn, resource_type, resource_id, operation, phase, detail
             )
 
@@ -2181,7 +2181,7 @@ class StateDB:
             )
             return int(cur.rowcount)
 
-    def _log_operation_conn(
+    def log_operation_conn(
         self,
         conn: sqlite3.Connection,
         resource_type: str,
@@ -2457,16 +2457,16 @@ class StateDB:
         svm: str,
         volume: str,
     ) -> list[dict[str, Any]]:
-        exports = self._list_all_exports_conn(conn, svm=svm, volume=volume)
+        exports = self.list_all_exports_conn(conn, svm=svm, volume=volume)
         has_other_csi_volume = any(
             export.get("spec", {}).get("owner") == "csi"
             and export.get("spec", {}).get("volume")
             not in (volume, _CSI_ROOT_EXPORT_VOLUME)
-            for export in self._list_all_exports_conn(conn, svm=svm)
+            for export in self.list_all_exports_conn(conn, svm=svm)
         )
         if not has_other_csi_volume:
             exports.extend(
-                self._list_all_exports_conn(
+                self.list_all_exports_conn(
                     conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME
                 )
             )
@@ -2483,7 +2483,7 @@ class StateDB:
         if force:
             return []
 
-        exports = self._list_all_exports_conn(conn, svm=svm)
+        exports = self.list_all_exports_conn(conn, svm=svm)
         volume_names = {
             str(volume.get("spec", {}).get("name") or "") for volume in volumes
         }

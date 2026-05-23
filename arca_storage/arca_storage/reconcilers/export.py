@@ -15,7 +15,11 @@ from typing import Optional
 from arca_storage.cli.lib.validators import validate_svm_ip_cidr
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
 from arca_storage.db import StateDB
-from arca_storage.errors import AlreadyExistsError, CreateLeaseLostError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    CreateLeaseLostError,
+    PreconditionFailedError,
+)
 from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
 from arca_storage.reconcilers.adapters import Adapters
@@ -24,7 +28,9 @@ logger = logging.getLogger(__name__)
 
 
 class ExportReconciler:
-    def __init__(self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+    ) -> None:
         self.db = db
         self.adapters = adapters
         self._cfg = config or {}
@@ -36,7 +42,9 @@ class ExportReconciler:
         elif phase == Phase.DELETING:
             return self._reconcile_delete(export)
         elif phase == Phase.FAILED:
-            if not self._is_failed_delete(export) and self._has_pending_create_step(export):
+            if not self._is_failed_delete(export) and self._has_pending_create_step(
+                export
+            ):
                 export.status.phase = Phase.CREATING
                 return self._reconcile_create(export, allow_update=allow_update)
             return export
@@ -44,7 +52,9 @@ class ExportReconciler:
             return export
         return export
 
-    def _reconcile_create(self, export: Export, *, allow_update: bool = False) -> Export:
+    def _reconcile_create(
+        self, export: Export, *, allow_update: bool = False
+    ) -> Export:
         export.status.phase = Phase.CREATING
         create_owner = export.status.create_owner
         spec = export.spec
@@ -54,10 +64,12 @@ class ExportReconciler:
         require_ready_svm = True
 
         with self.db.transaction(immediate=True) as conn:
-            existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
+            existing = self.db.get_export_conn(conn, spec.svm, spec.volume, spec.client)
             if existing:
                 if not allow_update and not _can_resume_create_record(existing, export):
-                    raise AlreadyExistsError("Export", f"{spec.svm}/{spec.volume}/{spec.client}")
+                    raise AlreadyExistsError(
+                        "Export", f"{spec.svm}/{spec.volume}/{spec.client}"
+                    )
                 previous_export = _export_from_record(existing)
                 export.metadata = previous_export.metadata
                 previous_status = ExportStatus.model_validate(existing["status"])
@@ -66,7 +78,9 @@ class ExportReconciler:
                     previous_ready_export = previous_export
 
             if export.status.export_id is None:
-                records = self.db._list_exports_conn(conn, svm=spec.svm, limit=_all_rows_limit())
+                records = self.db.list_exports_conn(
+                    conn, svm=spec.svm, limit=_all_rows_limit()
+                )
                 export.status.export_id = _next_export_id(records)
 
             export.status.path = _export_path(spec, export_dir)
@@ -108,7 +122,9 @@ class ExportReconciler:
             except CreateLeaseLostError:
                 raise
             except PreconditionFailedError:
-                self._rollback_svm_config(spec.svm, export_dir, host_network=host_network)
+                self._rollback_svm_config(
+                    spec.svm, export_dir, host_network=host_network
+                )
                 raise
             except Exception as e:
                 return self._fail_create(
@@ -133,7 +149,9 @@ class ExportReconciler:
             except CreateLeaseLostError:
                 raise
             except PreconditionFailedError:
-                self._rollback_svm_config(spec.svm, export_dir, host_network=host_network)
+                self._rollback_svm_config(
+                    spec.svm, export_dir, host_network=host_network
+                )
                 raise
             except Exception as e:
                 return self._fail_create(
@@ -182,7 +200,9 @@ class ExportReconciler:
         else:
             self._persist(export, message, expected_create_owner=create_owner)
 
-        self._rollback_svm_config(export.spec.svm, export_dir, host_network=host_network)
+        self._rollback_svm_config(
+            export.spec.svm, export_dir, host_network=host_network
+        )
         return export
 
     def _reconcile_delete(self, export: Export) -> Export:
@@ -190,9 +210,11 @@ class ExportReconciler:
         export_dir = self._cfg.get("export_dir", "/exports")
 
         with self.db.transaction(immediate=True) as conn:
-            existing = self.db._get_export_conn(conn, spec.svm, spec.volume, spec.client)
+            existing = self.db.get_export_conn(conn, spec.svm, spec.volume, spec.client)
             if not existing:
-                self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "not_found")
+                self.db.log_operation_conn(
+                    conn, "Export", export.metadata.id, "delete", "not_found"
+                )
                 return export
 
             export = Export(
@@ -204,7 +226,9 @@ class ExportReconciler:
             self._persist_conn(conn, export, "export delete reserved")
 
         with self._svm_config_lock(spec.svm):
-            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(spec.svm, export_dir)
+            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(
+                spec.svm, export_dir
+            )
             try:
                 self.adapters.ganesha.render_config(
                     spec.svm,
@@ -214,8 +238,10 @@ class ExportReconciler:
                 )
                 self.adapters.ganesha.reload(spec.svm, host_network=host_network)
                 with self.db.transaction(immediate=True) as conn:
-                    self.db._delete_export_conn(conn, spec.svm, spec.volume, spec.client)
-                    self.db._log_operation_conn(conn, "Export", export.metadata.id, "delete", "completed")
+                    self.db.delete_export_conn(conn, spec.svm, spec.volume, spec.client)
+                    self.db.log_operation_conn(
+                        conn, "Export", export.metadata.id, "delete", "completed"
+                    )
             except Exception as e:
                 self._rollback_svm_config(
                     spec.svm,
@@ -258,7 +284,7 @@ class ExportReconciler:
         require_ready_svm: bool = False,
         allow_missing_create_owner: bool = False,
     ) -> None:
-        if not self.db._upsert_export_conn(
+        if not self.db.upsert_export_conn(
             conn,
             export,
             expected_create_owner=expected_create_owner,
@@ -266,9 +292,16 @@ class ExportReconciler:
             require_ready_svm=require_ready_svm,
             allow_missing_create_owner=allow_missing_create_owner,
         ):
-            raise CreateLeaseLostError("Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}")
-        self.db._log_operation_conn(
-            conn, "Export", export.metadata.id, "reconcile", export.status.phase.value, detail
+            raise CreateLeaseLostError(
+                "Export", f"{export.spec.svm}/{export.spec.volume}/{export.spec.client}"
+            )
+        self.db.log_operation_conn(
+            conn,
+            "Export",
+            export.metadata.id,
+            "reconcile",
+            export.status.phase.value,
+            detail,
         )
 
     def _config_entries_for_svm(
@@ -279,14 +312,18 @@ class ExportReconciler:
         *,
         include_transient_key: Optional[tuple[str, str, str]] = None,
     ) -> list[dict]:
-        records = self.db._list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
-        return _records_to_config_entries(records, export_dir, include_transient_key=include_transient_key)
+        records = self.db.list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
+        return _records_to_config_entries(
+            records, export_dir, include_transient_key=include_transient_key
+        )
 
     def sync_svm_config(self, svm_name: str) -> str:
         """Render and reload one SVM config from DB-backed exports."""
         export_dir = self._cfg.get("export_dir", "/exports")
         with self._svm_config_lock(svm_name):
-            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(svm_name, export_dir)
+            config_entries, bind_addr, host_network = self._config_snapshot_for_svm(
+                svm_name, export_dir
+            )
             path = self.adapters.ganesha.render_config(
                 svm_name,
                 config_entries,
@@ -336,10 +373,18 @@ class ExportReconciler:
             )
             self.adapters.ganesha.reload(svm_name, host_network=host_network)
         except Exception as rollback_error:
-            logger.warning("Failed to roll back Ganesha config for SVM %s: %s", svm_name, rollback_error)
+            logger.warning(
+                "Failed to roll back Ganesha config for SVM %s: %s",
+                svm_name,
+                rollback_error,
+            )
 
-    def _ganesha_network_for_svm(self, conn, svm_name: str) -> tuple[Optional[str], bool]:
-        record = conn.execute("SELECT spec FROM svms WHERE name = ?", (svm_name,)).fetchone()
+    def _ganesha_network_for_svm(
+        self, conn, svm_name: str
+    ) -> tuple[Optional[str], bool]:
+        record = conn.execute(
+            "SELECT spec FROM svms WHERE name = ?", (svm_name,)
+        ).fetchone()
         if not record:
             return None, False
 
@@ -354,7 +399,9 @@ class ExportReconciler:
     @contextmanager
     def _svm_config_lock(self, svm_name: str):
         """Serialize Ganesha config writes for one SVM without holding SQLite locks."""
-        db_path = Path(str(getattr(self.db, "_db_path", "/var/lib/arca-storage/state.db")))
+        db_path = Path(
+            str(getattr(self.db, "_db_path", "/var/lib/arca-storage/state.db"))
+        )
         lock_dir = db_path.parent / "locks"
         lock_dir.mkdir(parents=True, exist_ok=True)
         lock_path = lock_dir / f"ganesha-{svm_name}.lock"
@@ -367,7 +414,9 @@ class ExportReconciler:
 
     @staticmethod
     def _has_pending_create_step(export: Export) -> bool:
-        return not export.status.ganesha_configured or not export.status.service_reloaded
+        return (
+            not export.status.ganesha_configured or not export.status.service_reloaded
+        )
 
     @staticmethod
     def _is_failed_delete(export: Export) -> bool:
@@ -389,10 +438,10 @@ def _records_to_config_entries(
             continue
         phase = status.get("phase")
         key = (spec.get("svm"), spec.get("volume"), spec.get("client"))
-        is_current_transient = (
-            key == include_transient_key
-            and phase in {Phase.CREATING.value, Phase.DELETING.value}
-        )
+        is_current_transient = key == include_transient_key and phase in {
+            Phase.CREATING.value,
+            Phase.DELETING.value,
+        }
         if phase != Phase.READY.value and not is_current_transient:
             continue
 
@@ -414,7 +463,9 @@ def _records_to_config_entries(
             "path": path,
             "pseudo": pseudo,
             "access": str(spec.get("access", "RW")).upper(),
-            "squash": "Root_Squash" if spec.get("root_squash", True) else "No_Root_Squash",
+            "squash": "Root_Squash"
+            if spec.get("root_squash", True)
+            else "No_Root_Squash",
             "sec": spec.get("sec") or ["sys"],
             "client": spec.get("client"),
         }
@@ -422,7 +473,9 @@ def _records_to_config_entries(
             entry["owner"] = spec.get("owner")
         entries.append(entry)
 
-    return sorted(entries, key=lambda e: (int(e.get("export_id") or 0), str(e.get("path") or "")))
+    return sorted(
+        entries, key=lambda e: (int(e.get("export_id") or 0), str(e.get("path") or ""))
+    )
 
 
 def _next_export_id(records: list[dict]) -> int:
@@ -448,7 +501,9 @@ def _can_resume_create_record(record: dict, requested_export: Export) -> bool:
         return False
     if str(status.get("message") or "").startswith("Delete failed:"):
         return False
-    return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
+    return not status.get("ganesha_configured", False) or not status.get(
+        "service_reloaded", False
+    )
 
 
 def _requires_ready_volume(export: Export) -> bool:
@@ -463,14 +518,18 @@ def _record_export_path(spec: dict, status: dict, export_dir: str) -> str:
 
 
 def _record_export_pseudo(spec: dict, status: dict, path: str) -> str:
-    return _normalize_absolute_export_path(status.get("pseudo") or spec.get("pseudo") or path, "export pseudo")
+    return _normalize_absolute_export_path(
+        status.get("pseudo") or spec.get("pseudo") or path, "export pseudo"
+    )
 
 
 def _export_path(spec: ExportSpec, export_dir: str) -> str:
     if spec.path:
         return _normalize_export_path(spec.path, export_dir, "export path")
     base = _normalize_absolute_export_path(export_dir, "export_dir")
-    return _normalize_export_path(f"{base}/{spec.svm}/{spec.volume}", export_dir, "export path")
+    return _normalize_export_path(
+        f"{base}/{spec.svm}/{spec.volume}", export_dir, "export path"
+    )
 
 
 def _export_pseudo(spec: ExportSpec, path: str) -> str:

@@ -68,6 +68,14 @@ def test_runtime_dependencies_use_single_requirements_source(repo_root):
     assert not (repo_root / "packaging/requirements-runtime.txt").exists()
 
 
+def test_export_reconciler_uses_public_state_db_api(repo_root):
+    source = (repo_root / "arca_storage/arca_storage/reconcilers/export.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert "self.db._" not in source
+
+
 def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):
     dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
 
