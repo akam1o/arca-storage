@@ -271,6 +271,14 @@ def test_csi_controller_exposes_pod_namespace_to_driver(repo_root):
         assert "fieldPath: metadata.namespace" in manifest
 
 
+def test_csi_workflow_verifies_kubeconform_checksum(repo_root):
+    workflow = (repo_root / ".github/workflows/csi-tests.yml").read_text(encoding="utf-8")
+
+    assert "KUBECONFORM_SHA256=" in workflow
+    assert "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73" in workflow
+    assert "sha256sum -c -" in workflow
+
+
 def test_csi_controller_rbac_limits_crd_discovery(repo_root):
     rbac_manifests = [
         repo_root / "csi-arca-storage/deploy/rbac-controller.yaml",
