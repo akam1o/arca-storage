@@ -200,19 +200,16 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 if hasattr(self.configuration, "nfs_mount_options"):
                     standard_opts = self.configuration.nfs_mount_options
                     if standard_opts and standard_opts != default_mount_opts:
-                        LOG.info(
-                            "Using standard nfs_mount_options: %s (overriding default arca_storage_nfs_mount_options)",
-                            standard_opts,
-                        )
+                        LOG.info("Using standard nfs_mount_options override")
                         # Override the arca-specific option with standard one
                         self.configuration.arca_storage_nfs_mount_options = standard_opts
 
             LOG.info(
-                "ARCA Storage driver initialized (version=%s, use_api=%s, endpoint=%s, mount_options=%s)",
+                "ARCA Storage driver initialized (version=%s, use_api=%s, endpoint_configured=%s, mount_options_configured=%s)",
                 VERSION,
                 self.configuration.arca_storage_use_api,
-                self.configuration.arca_storage_api_endpoint,
-                self.configuration.arca_storage_nfs_mount_options,
+                bool(self.configuration.arca_storage_api_endpoint),
+                bool(self.configuration.arca_storage_nfs_mount_options),
             )
 
         except Exception as e:
@@ -236,8 +233,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         try:
             if self.configuration.arca_storage_svm_strategy == "shared":
                 default_svm = self.configuration.arca_storage_default_svm
-                export_path = self._get_export_path(default_svm)
-                LOG.info("Validated export path for default SVM: %s", export_path)
+                self._get_export_path(default_svm)
+                LOG.info("Validated export path for default SVM")
         except Exception as e:
             msg = _("Failed to validate ARCA Storage configuration: %s") % safe_error_detail(e)
             LOG.error(msg)
@@ -259,7 +256,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_size = volume.size
         volume_id = volume.id
 
-        LOG.info("Creating volume: %s (size=%sGB)", volume_name, volume_size)
+        LOG.info("Creating Cinder volume")
 
         self._apply_qos_to_volume(volume)
 
@@ -291,7 +288,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 mount_options=self.configuration.arca_storage_nfs_mount_options,
             )
 
-            LOG.info("Mounted SVM export at: %s", mount_point)
+            LOG.info("Mounted SVM export for volume creation")
 
             # Create or adopt the raw sparse file using volume ID for unique naming.
             volume_file, volume_file_created = arca_utils.ensure_volume_file(
@@ -303,18 +300,18 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             cleanup_state["volume_file_created"] = volume_file_created
             cleanup_state["volume_file_path"] = volume_file
 
-            LOG.info("Created volume file: %s", volume_file)
+            LOG.info("Created Cinder volume file")
 
             return self._volume_model_update(svm_name, export_path)
 
         except arca_exceptions.ArcaStorageException as e:
             msg = _("Failed to create volume %s: %s") % (volume_name, safe_error_detail(e))
-            LOG.error(msg)
+            LOG.error("Failed to create Cinder volume")
             self._cleanup_failed_volume(volume_name, cleanup_state)
             raise exception.VolumeBackendAPIException(data=msg)
         except Exception as e:
             msg = _("Failed to create volume %s: %s") % (volume_name, safe_error_detail(e))
-            LOG.error(msg)
+            LOG.error("Failed to create Cinder volume")
             # Cleanup on failure with tracked state
             self._cleanup_failed_volume(volume_name, cleanup_state)
             raise exception.VolumeBackendAPIException(data=msg)
@@ -331,7 +328,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_name = volume.name
         volume_id = volume.id
 
-        LOG.info("Deleting volume: %s (ID: %s)", volume_name, volume_id)
+        LOG.info("Deleting Cinder volume")
 
         try:
             # Use the SVM recorded when the volume was created.
@@ -353,24 +350,24 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     mount_point=mount_point,
                     mount_options=self.configuration.arca_storage_nfs_mount_options,
                 )
-                LOG.info("Mounted SVM export for deletion: %s", export_path)
+                LOG.info("Mounted SVM export for volume deletion")
 
             # Delete volume file from SVM's shared export
             # Volume file is named: volume-{volume_id}
             volume_file_name = f"volume-{volume_id}"
             arca_utils.delete_volume_file(mount_point, volume_file_name)
-            LOG.info("Deleted volume file: %s from %s", volume_file_name, mount_point)
+            LOG.info("Deleted Cinder volume file")
 
             # Note: We do NOT unmount the SVM export - it may be in use by other volumes
             # Note: We do NOT delete per-volume NFS export - we use per-SVM exports
 
         except arca_exceptions.ArcaStorageException as e:
             msg = _("Failed to delete volume %s: %s") % (volume_name, safe_error_detail(e))
-            LOG.error(msg)
+            LOG.error("Failed to delete Cinder volume")
             raise exception.VolumeBackendAPIException(data=msg)
         except Exception as e:
             msg = _("Failed to delete volume %s: %s") % (volume_name, safe_error_detail(e))
-            LOG.error(msg)
+            LOG.error("Failed to delete Cinder volume")
             raise exception.VolumeBackendAPIException(data=msg)
 
     def extend_volume(self, volume, new_size):
@@ -388,9 +385,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         current_size = volume.size
 
         LOG.info(
-            "Extending volume: %s (ID: %s) (%dGB -> %dGB)",
-            volume_name,
-            volume_id,
+            "Extending Cinder volume (%dGB -> %dGB)",
             current_size,
             new_size,
         )
@@ -414,22 +409,22 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     mount_point=mount_point,
                     mount_options=self.configuration.arca_storage_nfs_mount_options,
                 )
-                LOG.info("Mounted SVM export: %s", export_path)
+                LOG.info("Mounted SVM export for volume extension")
 
             # Extend volume file (volume-{volume_id})
             volume_file_name = f"volume-{volume_id}"
             arca_utils.extend_volume_file(mount_point, volume_file_name, new_size)
-            LOG.info("Extended volume file %s to %dGB", volume_file_name, new_size)
+            LOG.info("Extended Cinder volume file to %dGB", new_size)
 
             # Note: We do NOT unmount the SVM export - it may be in use by other volumes
 
         except arca_exceptions.ArcaStorageException as e:
             msg = _("Failed to extend volume %s: %s") % (volume_name, safe_error_detail(e))
-            LOG.error(msg)
+            LOG.error("Failed to extend Cinder volume")
             raise exception.VolumeBackendAPIException(data=msg)
         except Exception as e:
             msg = _("Failed to extend volume %s: %s") % (volume_name, safe_error_detail(e))
-            LOG.error(msg)
+            LOG.error("Failed to extend Cinder volume")
             raise exception.VolumeBackendAPIException(data=msg)
 
     def initialize_connection(self, volume, connector):
@@ -448,29 +443,21 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_name = volume.name
         volume_id = volume.id
 
-        LOG.info("Initializing connection for volume: %s (ID: %s)", volume_name, volume_id)
+        LOG.info("Initializing Cinder volume connection")
 
         try:
             # Prioritize provider_location (persisted export path) over regenerating
             # This ensures consistency even if SVM VIP changes after volume creation
             export_path = self._volume_provider_location(volume)
             if export_path:
-                LOG.debug(
-                    "Using provider_location for volume %s: %s",
-                    volume_name,
-                    export_path,
-                )
+                LOG.debug("Using persisted provider location for Cinder volume")
             else:
                 # Fallback: regenerate per-SVM export path
                 # (for volumes created before per-SVM export architecture)
                 svm_name = self._get_existing_volume_svm(volume)
                 # Use per-SVM export path, NOT per-volume export path
                 export_path = self._get_export_path(svm_name)
-                LOG.warning(
-                    "Volume %s has no provider_location, regenerated per-SVM export: %s",
-                    volume_name,
-                    export_path,
-                )
+                LOG.warning("Cinder volume has no provider_location; regenerated per-SVM export")
 
             # Return connection info for Nova compute node
             # Nova will mount the SVM's NFS export and find the volume file (volume-{volume_id})
@@ -483,7 +470,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 },
             }
 
-            LOG.debug("Connection info: %s", connection_info)
+            LOG.debug("Prepared Cinder volume connection info")
 
             return connection_info
 
@@ -492,7 +479,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 volume_name,
                 safe_error_detail(e),
             )
-            LOG.error(msg)
+            LOG.error("Failed to initialize Cinder volume connection")
             raise exception.VolumeBackendAPIException(data=msg)
 
     def terminate_connection(self, volume, connector, **kwargs):
@@ -503,9 +490,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             connector: Connection info from compute node
             **kwargs: Additional arguments
         """
-        volume_name = volume.name
-
-        LOG.info("Terminating connection for volume: %s", volume_name)
+        LOG.info("Terminating Cinder volume connection")
 
         # For NFS, termination is handled by compute node unmounting
         # No action needed on storage side
@@ -557,8 +542,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             }
         except Exception as e:
             LOG.warning(
-                "Failed to get capacity for SVM %s: %s",
-                svm_name,
+                "Failed to get backend capacity: %s",
                 safe_error_detail(e),
             )
             return None
@@ -652,11 +636,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
         svm_name = self._svm_from_volume_provider_location(volume)
         if svm_name:
-            LOG.warning(
-                "Volume %s has no provider_id; inferred SVM %s from provider_location",
-                getattr(volume, "name", getattr(volume, "id", "<unknown>")),
-                svm_name,
-            )
+            LOG.warning("Volume has no provider_id; inferred SVM from provider_location")
             return svm_name
 
         return self._get_svm_for_volume(volume)
@@ -930,7 +910,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             "source": source_svm_name,
             "target": target_svm_name,
         }
-        LOG.error(msg)
+        LOG.error("Cross-SVM copy operation rejected")
         raise exception.VolumeBackendAPIException(data=msg)
 
     def _ensure_target_size_at_least_source(
@@ -992,24 +972,13 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         )
         requested_svm = self._svm_name_from_volume_type(new_type)
         if not current_svm or not requested_svm:
-            LOG.error(
-                "Retype requires ARCA SVM extra specs for volume %s: "
-                "current=%s requested=%s",
-                getattr(volume, "name", "<unknown>"),
-                current_svm,
-                requested_svm,
-            )
+            LOG.error("Retype requires ARCA SVM extra specs")
             return False
 
         if current_svm == requested_svm:
             return True
 
-        LOG.error(
-            "Retype would change ARCA SVM for volume %s: current=%s requested=%s",
-            getattr(volume, "name", "<unknown>"),
-            current_svm,
-            requested_svm,
-        )
+        LOG.error("Retype would change ARCA SVM")
         return False
 
     def _assert_file_snapshot_source_available(self, volume):
@@ -1021,7 +990,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             "Cannot create a file-backed snapshot for attached volume %s; "
             "detach the volume before snapshotting"
         ) % volume_id
-        LOG.error(msg)
+        LOG.error("Cannot create a file-backed snapshot for attached volume")
         raise exception.VolumeBackendAPIException(data=msg)
 
     @staticmethod
@@ -1056,10 +1025,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         """
         svm_name = cleanup_state.get("svm_name")
         if not svm_name:
-            LOG.warning("Cannot cleanup volume %s: SVM name unknown", volume_name)
+            LOG.warning("Cannot cleanup failed volume creation without SVM name")
             return
 
-        LOG.info("Cleaning up failed volume creation: %s", volume_name)
+        LOG.info("Cleaning up failed volume creation")
 
         # Note: We do NOT unmount the SVM export as it may be in use by other volumes
 
@@ -1071,12 +1040,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     import os
                     if os.path.exists(volume_file_path):
                         os.remove(volume_file_path)
-                        LOG.info("Deleted volume file during cleanup: %s", volume_file_path)
-                except Exception as e:
-                    LOG.warning(
-                        "Failed to delete volume file during cleanup: %s",
-                        safe_error_detail(e),
-                    )
+                        LOG.info("Deleted volume file during cleanup")
+                except Exception:
+                    LOG.warning("Failed to delete volume file during cleanup")
 
     # Snapshot operations
 
@@ -1101,7 +1067,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         # Use volume_id instead of volume object (may not be hydrated)
         volume_id = snapshot.volume_id
 
-        LOG.info("Creating snapshot: %s (id=%s) for volume: %s", snapshot_name, snapshot_id, volume_id)
+        LOG.info("Creating Cinder snapshot")
 
         mount_point = None
         try:
@@ -1129,7 +1095,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Copy volume file to snapshot file (preserving sparseness)
             arca_utils.copy_sparse_file(source_file, snapshot_file, timeout=copy_timeout)
 
-            LOG.info("Created snapshot file: %s", snapshot_file)
+            LOG.info("Created Cinder snapshot file")
 
             # Note: We do NOT unmount to avoid concurrency issues
             # The SVM export remains mounted for subsequent operations
@@ -1143,7 +1109,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 snapshot_name,
                 safe_error_detail(e),
             )
-            LOG.error(msg)
+            LOG.error("Failed to create Cinder snapshot")
             raise exception.VolumeBackendAPIException(data=msg)
 
     def delete_snapshot(self, snapshot):
@@ -1160,10 +1126,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         """
         snapshot_name = snapshot.name
         snapshot_id = snapshot.id
-        # Use volume_id instead of volume object (may not be hydrated)
-        volume_id = snapshot.volume_id
-
-        LOG.info("Deleting snapshot: %s (id=%s) for volume: %s", snapshot_name, snapshot_id, volume_id)
+        LOG.info("Deleting Cinder snapshot")
 
         mount_point = None
         try:
@@ -1179,9 +1142,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Delete snapshot file
             if os.path.exists(snapshot_file):
                 os.remove(snapshot_file)
-                LOG.info("Deleted snapshot file: %s", snapshot_file)
+                LOG.info("Deleted Cinder snapshot file")
             else:
-                LOG.warning("Snapshot file %s not found, already deleted?", snapshot_file)
+                LOG.warning("Cinder snapshot file not found, already deleted?")
 
             # Note: We do NOT unmount to avoid concurrency issues
 
@@ -1190,7 +1153,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 snapshot_name,
                 safe_error_detail(e),
             )
-            LOG.error(msg)
+            LOG.error("Failed to delete Cinder snapshot")
             raise exception.VolumeBackendAPIException(data=msg)
 
     def create_volume_from_snapshot(self, volume, snapshot):
@@ -1209,7 +1172,6 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         Raises:
             exception.VolumeBackendAPIException: If volume creation fails
         """
-        volume_name = volume.name
         volume_size = volume.size
         volume_id = volume.id
 
@@ -1217,12 +1179,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         snapshot_id = snapshot.id
 
         LOG.info(
-            "Creating volume: %s (id=%s, size=%sGB) from snapshot: %s (id=%s)",
-            volume_name,
-            volume_id,
+            "Creating Cinder volume from snapshot (size=%sGB)",
             volume_size,
-            snapshot_name,
-            snapshot_id,
         )
 
         self._apply_qos_to_volume(volume)
@@ -1267,7 +1225,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             arca_utils.copy_sparse_file(snapshot_file, volume_file, timeout=copy_timeout)
             volume_file_created = True
 
-            LOG.info("Created volume file from snapshot: %s -> %s", snapshot_file, volume_file)
+            LOG.info("Created Cinder volume file from snapshot")
 
             # If new volume size is larger than snapshot, extend the file
             if volume_size > snapshot_size_gib:
@@ -1286,20 +1244,16 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             if volume_file_created and volume_file:
                 try:
                     os.remove(volume_file)
-                    LOG.info("Deleted incomplete volume file after create-from-snapshot failure: %s", volume_file)
+                    LOG.info("Deleted incomplete volume file after create-from-snapshot failure")
                 except FileNotFoundError:
                     pass
-                except Exception as cleanup_error:
-                    LOG.warning(
-                        "Failed to delete incomplete volume file %s: %s",
-                        volume_file,
-                        safe_error_detail(cleanup_error),
-                    )
+                except Exception:
+                    LOG.warning("Failed to delete incomplete volume file after create-from-snapshot failure")
             msg = _("Failed to create volume from snapshot %s: %s") % (
                 snapshot_name,
                 safe_error_detail(e),
             )
-            LOG.error(msg)
+            LOG.error("Failed to create Cinder volume from snapshot")
             raise exception.VolumeBackendAPIException(data=msg)
 
     def create_cloned_volume(self, volume, src_vref):
@@ -1322,12 +1276,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         volume_id = volume.id
         volume_size = volume.size
 
-        src_volume_name = src_vref.name
         src_volume_id = src_vref.id
         src_volume_size = src_vref.size
 
-        LOG.info("Creating cloned volume: %s (id=%s) from source: %s (id=%s)",
-                 volume_name, volume_id, src_volume_name, src_volume_id)
+        LOG.info("Creating cloned Cinder volume")
 
         self._apply_qos_to_volume(volume)
 
@@ -1363,7 +1315,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Directly copy source to volume (single atomic operation)
             arca_utils.copy_sparse_file(source_file, volume_file, timeout=copy_timeout)
             volume_file_created = True
-            LOG.info("Created cloned volume file: %s", volume_file)
+            LOG.info("Created cloned Cinder volume file")
 
             # If new volume size is larger than source, extend the file
             if volume_size > src_volume_size:
@@ -1382,20 +1334,16 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             if volume_file_created and volume_file:
                 try:
                     os.remove(volume_file)
-                    LOG.info("Deleted incomplete cloned volume file after failure: %s", volume_file)
+                    LOG.info("Deleted incomplete cloned volume file after failure")
                 except FileNotFoundError:
                     pass
-                except Exception as cleanup_error:
-                    LOG.warning(
-                        "Failed to delete incomplete cloned volume file %s: %s",
-                        volume_file,
-                        safe_error_detail(cleanup_error),
-                    )
+                except Exception:
+                    LOG.warning("Failed to delete incomplete cloned volume file after failure")
             msg = _("Failed to create cloned volume %s: %s") % (
                 volume_name,
                 safe_error_detail(e),
             )
-            LOG.error(msg)
+            LOG.error("Failed to create cloned Cinder volume")
             raise exception.VolumeBackendAPIException(data=msg)
 
     # QoS operations
@@ -1484,14 +1432,14 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 try:
                     qos_specs["read_iops"] = int(extra_specs["arca_storage:read_iops_sec"])
                 except ValueError:
-                    LOG.warning("Invalid read_iops_sec value: %s", extra_specs["arca_storage:read_iops_sec"])
+                    LOG.warning("Ignoring invalid read_iops_sec value")
 
             # Write IOPS
             if "arca_storage:write_iops_sec" in extra_specs:
                 try:
                     qos_specs["write_iops"] = int(extra_specs["arca_storage:write_iops_sec"])
                 except ValueError:
-                    LOG.warning("Invalid write_iops_sec value: %s", extra_specs["arca_storage:write_iops_sec"])
+                    LOG.warning("Ignoring invalid write_iops_sec value")
 
             # Total IOPS (applies to both read and write if not specified)
             if "arca_storage:total_iops_sec" in extra_specs:
@@ -1502,21 +1450,21 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     if "write_iops" not in qos_specs:
                         qos_specs["write_iops"] = total_iops
                 except ValueError:
-                    LOG.warning("Invalid total_iops_sec value: %s", extra_specs["arca_storage:total_iops_sec"])
+                    LOG.warning("Ignoring invalid total_iops_sec value")
 
             # Read bandwidth
             if "arca_storage:read_bytes_sec" in extra_specs:
                 try:
                     qos_specs["read_bps"] = int(extra_specs["arca_storage:read_bytes_sec"])
                 except ValueError:
-                    LOG.warning("Invalid read_bytes_sec value: %s", extra_specs["arca_storage:read_bytes_sec"])
+                    LOG.warning("Ignoring invalid read_bytes_sec value")
 
             # Write bandwidth
             if "arca_storage:write_bytes_sec" in extra_specs:
                 try:
                     qos_specs["write_bps"] = int(extra_specs["arca_storage:write_bytes_sec"])
                 except ValueError:
-                    LOG.warning("Invalid write_bytes_sec value: %s", extra_specs["arca_storage:write_bytes_sec"])
+                    LOG.warning("Ignoring invalid write_bytes_sec value")
 
         except Exception as e:
             LOG.warning(
@@ -1532,13 +1480,11 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         Args:
             volume: Cinder volume object
         """
-        volume_name = volume.name
-
         volume_type = getattr(volume, "volume_type", None)
         qos_extra_specs = self._get_qos_extra_specs(volume)
         cinder_qos_specs = self._get_cinder_qos_specs(volume_type)
         if not qos_extra_specs and not cinder_qos_specs:
-            LOG.debug("No QoS specs found for volume: %s", volume_name)
+            LOG.debug("No QoS specs found for Cinder volume")
             return
 
         details = []
@@ -1550,7 +1496,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         msg = _("ARCA Cinder file-backed volumes do not support QoS: %(details)s") % {
             "details": "; ".join(details)
         }
-        LOG.error("%s (volume=%s)", msg, volume_name)
+        LOG.error("%s", msg)
         raise exception.VolumeBackendAPIException(data=msg)
 
     def retype(
@@ -1582,9 +1528,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             exception.VolumeBackendAPIException: If retype fails
         """
         self._context = context
-        volume_name = volume.name
 
-        LOG.info("Retyping volume: %s (new_type=%s)", volume_name, new_type["name"])
+        LOG.info("Retyping Cinder volume")
 
         try:
             # For ARCA Storage NFS driver, we mainly care about QoS changes
@@ -1594,7 +1539,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
 
             # Check if QoS specs changed
             if "qos_specs" in diff or "extra_specs" in diff:
-                LOG.info("QoS specs changed for volume %s, handling QoS update", volume_name)
+                LOG.info("QoS specs changed for Cinder volume; handling QoS update")
 
                 # Extract new QoS specs from new type
                 # We need to temporarily set volume.volume_type to new_type to extract specs
@@ -1622,16 +1567,12 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     # Restore original volume type
                     volume.volume_type = old_volume_type
 
-            LOG.info("Retype completed for volume: %s", volume_name)
+            LOG.info("Retype completed for Cinder volume")
 
             return True, {}
 
         except Exception as e:
-            msg = _("Failed to retype volume %s: %s") % (
-                volume_name,
-                safe_error_detail(e),
-            )
-            LOG.error(msg)
+            LOG.error("Failed to retype Cinder volume: %s", safe_error_detail(e))
             # Return False to indicate retype failed
             # Cinder will keep the volume at the old type
             return False, {}
