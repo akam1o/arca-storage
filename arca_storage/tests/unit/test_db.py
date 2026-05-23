@@ -1230,6 +1230,58 @@ class TestStateDB:
         db.log_operation("svm", "svm1", "create", "started", "Creating SVM")
         # Should not raise — just validates the call works
 
+    def test_operation_log_query_filters_and_paginates(self, db):
+        db.log_operation("SVM", "svm1", "create", "started", "Creating SVM")
+        db.log_operation("Volume", "vol1", "create", "started", "Creating volume")
+        db.log_operation("SVM", "svm2", "delete", "completed", "Deleted SVM")
+
+        svm_logs = db.list_operation_log(resource_type="SVM")
+
+        assert [entry["resource_id"] for entry in svm_logs] == ["svm2", "svm1"]
+
+        first_page = db.list_operation_log(limit=1)
+        assert [entry["resource_id"] for entry in first_page] == ["svm2"]
+
+        second_page = db.list_operation_log(
+            limit=2,
+            cursor=encode_cursor([str(first_page[-1]["id"])]),
+        )
+        assert [entry["resource_id"] for entry in second_page] == ["vol1", "svm1"]
+
+        create_logs = db.list_operation_log(operation="create")
+        assert [entry["resource_id"] for entry in create_logs] == ["vol1", "svm1"]
+
+    def test_operation_log_prune_deletes_old_entries(self, db):
+        old_timestamp = (datetime.now(timezone.utc) - timedelta(days=10)).isoformat()
+        fresh_timestamp = datetime.now(timezone.utc).isoformat()
+        with db.transaction() as conn:
+            conn.execute(
+                """INSERT INTO operation_log
+                   (resource_type, resource_id, operation, phase, detail, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("SVM", "old", "create", "started", "old entry", old_timestamp),
+            )
+            conn.execute(
+                """INSERT INTO operation_log
+                   (resource_type, resource_id, operation, phase, detail, created_at)
+                   VALUES (?, ?, ?, ?, ?, ?)""",
+                ("SVM", "fresh", "create", "started", "fresh entry", fresh_timestamp),
+            )
+
+        deleted = db.prune_operation_log(datetime.now(timezone.utc) - timedelta(days=1))
+
+        assert deleted == 1
+        assert [entry["resource_id"] for entry in db.list_operation_log()] == ["fresh"]
+
+    def test_operation_log_indexes_are_present(self, db):
+        indexes = {
+            row["name"]
+            for row in db._conn().execute("PRAGMA index_list(operation_log)").fetchall()
+        }
+
+        assert "idx_operation_log_resource_created" in indexes
+        assert "idx_operation_log_created_at" in indexes
+
     def test_transaction_rollback(self, db):
         svm = SVM(
             spec=SVMSpec(

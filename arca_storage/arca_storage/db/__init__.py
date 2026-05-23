@@ -217,6 +217,14 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
            ON svms(network_key)
            WHERE network_key IS NOT NULL"""
     )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_operation_log_resource_created
+           ON operation_log(resource_type, resource_id, id DESC)"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_operation_log_created_at
+           ON operation_log(created_at)"""
+    )
 
 
 def _register_backend_lv_conn(
@@ -2069,6 +2077,69 @@ class StateDB:
             self._log_operation_conn(
                 conn, resource_type, resource_id, operation, phase, detail
             )
+
+    def list_operation_log(
+        self,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._conn()
+        return self._list_operation_log_conn(
+            conn,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            operation=operation,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    def _list_operation_log_conn(
+        self,
+        conn: sqlite3.Connection,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if limit < 1:
+            raise ValueError("Operation log limit must be positive")
+
+        sql = "SELECT * FROM operation_log WHERE 1=1"
+        params: list[Any] = []
+        if resource_type:
+            sql += " AND resource_type = ?"
+            params.append(resource_type)
+        if resource_id:
+            sql += " AND resource_id = ?"
+            params.append(resource_id)
+        if operation:
+            sql += " AND operation = ?"
+            params.append(operation)
+        cursor_values = _decode_cursor(cursor, 1)
+        if cursor_values:
+            try:
+                cursor_id = int(cursor_values[0])
+            except ValueError as e:
+                raise ValueError("Invalid pagination cursor") from e
+            sql += " AND id < ?"
+            params.append(cursor_id)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        cur = conn.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+    def prune_operation_log(self, before: Union[datetime, str]) -> int:
+        cutoff = before.isoformat() if isinstance(before, datetime) else str(before)
+        with self.transaction(immediate=True) as conn:
+            cur = conn.execute(
+                "DELETE FROM operation_log WHERE created_at < ?",
+                (cutoff,),
+            )
+            return int(cur.rowcount)
 
     def _log_operation_conn(
         self,
