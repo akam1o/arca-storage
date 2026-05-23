@@ -117,6 +117,23 @@ def test_csi_directory_create_reports_effective_gib_quota(fake_context):
     assert fake_context.db.get_volume(svm_name, volume_path)["spec"]["size_gib"] == 2
 
 
+def test_csi_directory_rejects_nested_path(fake_context):
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": "k8s-default",
+            "path": "nested/path",
+            "quota_bytes": GIB,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert fake_context.db.get_volume("k8s-default", "nested/path") is None
+
+
 def test_csi_quota_reports_filesystem_used_bytes(fake_context, monkeypatch):
     client = TestClient(app)
     svm_name = "k8s-default"

@@ -20,6 +20,9 @@ def _validate_resource_name(value: str) -> str:
     return value
 
 
+CSI_VOLUME_PATH_DESCRIPTION = "CSI volume name within the SVM; nested paths are not supported"
+
+
 class SVMStatus(str, Enum):
     """SVM status values."""
 
@@ -149,7 +152,7 @@ class DirectoryCreate(BaseModel):
     """Request model for CSI directory-backed volume creation."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
+    path: str = Field(..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64)
     quota_bytes: Optional[int] = Field(None, description="Optional quota/capacity in bytes", gt=0)
 
     @field_validator("svm_name", "path")
@@ -161,7 +164,7 @@ class QuotaSet(BaseModel):
     """Request model for CSI quota/capacity updates."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
+    path: str = Field(..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64)
     quota_bytes: int = Field(..., description="Quota/capacity in bytes", gt=0)
 
     @field_validator("svm_name", "path")
@@ -173,7 +176,7 @@ class QuotaExpand(BaseModel):
     """Request model for CSI quota expansion."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
+    path: str = Field(..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64)
     new_quota_bytes: int = Field(..., description="New quota/capacity in bytes", gt=0)
 
     @field_validator("svm_name", "path")

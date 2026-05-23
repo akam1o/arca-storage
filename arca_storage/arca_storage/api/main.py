@@ -15,6 +15,7 @@ from fastapi.exceptions import RequestValidationError
 from fastapi.responses import JSONResponse
 
 from arca_storage.api.models import (
+    CSI_VOLUME_PATH_DESCRIPTION,
     DirectoryCreate,
     ExportCreate,
     ExportListResponse,
@@ -322,7 +323,7 @@ def create_directory(directory: DirectoryCreate) -> Dict[str, Any]:
 @app.delete("/v1/directories/{svm_name}", response_model=SuccessResponse)
 def delete_directory(
     svm_name: str,
-    path: str = Query(..., description="Directory path relative to SVM root"),
+    path: str = Query(..., description=CSI_VOLUME_PATH_DESCRIPTION),
 ) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     directory_service.delete_directory(svm_name, path)
@@ -346,7 +347,7 @@ def expand_quota(quota: QuotaExpand) -> Dict[str, Any]:
 @app.get("/v1/quotas/{svm_name}", response_model=SuccessResponse)
 def get_quota(
     svm_name: str,
-    path: str = Query(..., description="Directory path relative to SVM root"),
+    path: str = Query(..., description=CSI_VOLUME_PATH_DESCRIPTION),
 ) -> Dict[str, Any]:
     request_id = str(uuid.uuid4())
     result = directory_service.get_quota(svm_name, path)
