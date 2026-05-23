@@ -23,6 +23,10 @@ pacemaker_ra_vendor = "local"
 [api]
 bind = "127.0.0.1"
 port = 8080
+# Optional HTTPS settings for arca-storage-api. Set both paths when binding to a
+# non-loopback address instead of relying on ARCA_ALLOW_INSECURE_REMOTE_API.
+# ssl_certfile = "/etc/arca-storage/tls/api.crt"
+# ssl_keyfile = "/etc/arca-storage/tls/api.key"
 
 [timeouts]
 subprocess_default = 30

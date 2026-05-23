@@ -7,7 +7,14 @@ import re
 from pathlib import Path, PurePosixPath
 from typing import Optional, Union
 
-from pydantic import BaseModel, ConfigDict, Field, ValidationInfo, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
 
 from arca_storage.cli.lib.validators import normalize_nfs_client_cidr
 
@@ -117,6 +124,28 @@ class APIConfig(BaseModel):
 
     bind: str = "127.0.0.1"
     port: int = 8080
+    ssl_certfile: Optional[str] = None
+    ssl_keyfile: Optional[str] = None
+
+    @field_validator("ssl_certfile", "ssl_keyfile", mode="before")
+    @classmethod
+    def validate_tls_paths(
+        cls, value: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        return _validate_absolute_posix_path(raw, field_name=f"api.{info.field_name}")
+
+    @model_validator(mode="after")
+    def validate_tls_pair(self) -> "APIConfig":
+        if bool(self.ssl_certfile) != bool(self.ssl_keyfile):
+            raise ValueError(
+                "api.ssl_certfile and api.ssl_keyfile must be provided together"
+            )
+        return self
 
 
 class TimeoutConfig(BaseModel):
@@ -136,7 +165,9 @@ class StateConfig(BaseModel):
     @field_validator("db_path", "runtime_dir")
     @classmethod
     def validate_paths(cls, value: str, info: ValidationInfo) -> str:
-        return _validate_absolute_posix_path(value, field_name=f"state.{info.field_name}")
+        return _validate_absolute_posix_path(
+            value, field_name=f"state.{info.field_name}"
+        )
 
 
 class GaneshaConfig(BaseModel):
@@ -151,7 +182,9 @@ class GaneshaConfig(BaseModel):
     @field_validator("config_dir", "export_dir")
     @classmethod
     def validate_paths(cls, value: str, info: ValidationInfo) -> str:
-        return _validate_absolute_posix_path(value, field_name=f"ganesha.{info.field_name}")
+        return _validate_absolute_posix_path(
+            value, field_name=f"ganesha.{info.field_name}"
+        )
 
     @field_validator("protocols")
     @classmethod
@@ -230,7 +263,9 @@ def _load_toml(path: Path) -> dict:
         return tomllib.load(f)
 
 
-def load_settings(path: Optional[Union[Path, str]] = None, *, require_file: bool = True) -> ArcaSettings:
+def load_settings(
+    path: Optional[Union[Path, str]] = None, *, require_file: bool = True
+) -> ArcaSettings:
     """Load and validate configuration.
 
     Resolution order:

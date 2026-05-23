@@ -72,17 +72,19 @@ def main(argv: Optional[list[str]] = None) -> int:
     cfg = load_settings()
     host = args.host or cfg.api.bind
     port = args.port or cfg.api.port
-    if bool(args.ssl_certfile) != bool(args.ssl_keyfile):
+    ssl_certfile = args.ssl_certfile or getattr(cfg.api, "ssl_certfile", None)
+    ssl_keyfile = args.ssl_keyfile or getattr(cfg.api, "ssl_keyfile", None)
+    if bool(ssl_certfile) != bool(ssl_keyfile):
         parser.error("--ssl-certfile and --ssl-keyfile must be provided together")
     _validate_auth_for_bind(parser, host)
-    _validate_transport_for_bind(parser, host, args.ssl_certfile)
+    _validate_transport_for_bind(parser, host, ssl_certfile)
     uvicorn.run(
         "arca_storage.api.main:app",
         host=host,
         port=port,
         log_level=args.log_level,
         access_log=args.access_log,
-        ssl_certfile=args.ssl_certfile,
-        ssl_keyfile=args.ssl_keyfile,
+        ssl_certfile=ssl_certfile,
+        ssl_keyfile=ssl_keyfile,
     )
     return 0

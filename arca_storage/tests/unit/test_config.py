@@ -18,7 +18,9 @@ def test_load_settings_missing_default_fails(monkeypatch, temp_dir):
 
 
 @pytest.mark.unit
-def test_load_settings_missing_default_uses_dev_defaults_when_allowed(monkeypatch, temp_dir):
+def test_load_settings_missing_default_uses_dev_defaults_when_allowed(
+    monkeypatch, temp_dir
+):
     monkeypatch.delenv("ARCA_CONFIG_PATH", raising=False)
 
     from arca_storage import config as config_mod
@@ -29,6 +31,8 @@ def test_load_settings_missing_default_uses_dev_defaults_when_allowed(monkeypatc
     assert cfg.storage.vg_name == "vg_pool_01"
     assert cfg.network.parent_interface == "bond0"
     assert cfg.state.db_path == "/var/lib/arca-storage/state.db"
+    assert cfg.api.ssl_certfile is None
+    assert cfg.api.ssl_keyfile is None
     assert cfg.csi.client_cidrs == []
     assert cfg.csi.root_squash is True
 
@@ -64,6 +68,8 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
                 "[api]",
                 'bind = "0.0.0.0"',
                 "port = 18080",
+                f'ssl_certfile = "{temp_dir}/tls/api.crt"',
+                f'ssl_keyfile = "{temp_dir}/tls/api.key"',
                 "",
                 "[timeouts]",
                 "subprocess_default = 11",
@@ -101,6 +107,8 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
     assert cfg.cluster.pacemaker_ra_vendor == "custom"
     assert cfg.api.bind == "0.0.0.0"
     assert cfg.api.port == 18080
+    assert cfg.api.ssl_certfile == f"{temp_dir}/tls/api.crt"
+    assert cfg.api.ssl_keyfile == f"{temp_dir}/tls/api.key"
     assert cfg.state.runtime_dir == f"{temp_dir}/runtime"
     assert cfg.ganesha.protocols == [3, 4]
     assert cfg.ganesha.mountd_port == 20048
@@ -121,7 +129,9 @@ def test_load_settings_reads_toml_values(monkeypatch, temp_dir):
         ("240.0.0.0/4", "reserved"),
     ],
 )
-def test_load_settings_rejects_unsafe_csi_client_cidr(monkeypatch, temp_dir, cidr, match):
+def test_load_settings_rejects_unsafe_csi_client_cidr(
+    monkeypatch, temp_dir, cidr, match
+):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
         "\n".join(
@@ -142,9 +152,13 @@ def test_load_settings_rejects_unsafe_csi_client_cidr(monkeypatch, temp_dir, cid
 
 @pytest.mark.unit
 @pytest.mark.parametrize("vendor", ["../etc", "/tmp", "local/bad", "..", ".hidden", ""])
-def test_load_settings_rejects_unsafe_pacemaker_ra_vendor(monkeypatch, temp_dir, vendor):
+def test_load_settings_rejects_unsafe_pacemaker_ra_vendor(
+    monkeypatch, temp_dir, vendor
+):
     config_path = temp_dir / "config.toml"
-    config_path.write_text(f"[cluster]\npacemaker_ra_vendor = {vendor!r}\n", encoding="utf-8")
+    config_path.write_text(
+        f"[cluster]\npacemaker_ra_vendor = {vendor!r}\n", encoding="utf-8"
+    )
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
 
     from arca_storage.config import load_settings
@@ -166,7 +180,9 @@ def test_load_settings_rejects_unsafe_pacemaker_ra_vendor(monkeypatch, temp_dir,
         ("cluster", "drbd_resource", "", "cluster.drbd_resource"),
     ],
 )
-def test_load_settings_rejects_unsafe_resource_tokens(monkeypatch, temp_dir, section, key, value, match):
+def test_load_settings_rejects_unsafe_resource_tokens(
+    monkeypatch, temp_dir, section, key, value, match
+):
     config_path = temp_dir / "config.toml"
     config_path.write_text(f"[{section}]\n{key} = {value!r}\n", encoding="utf-8")
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
@@ -186,9 +202,60 @@ def test_load_settings_rejects_unsafe_resource_tokens(monkeypatch, temp_dir, sec
         ("nfs_mount", 86401, "less than or equal to 86400"),
     ],
 )
-def test_load_settings_rejects_invalid_timeouts(monkeypatch, temp_dir, key, value, match):
+def test_load_settings_rejects_invalid_timeouts(
+    monkeypatch, temp_dir, key, value, match
+):
     config_path = temp_dir / "config.toml"
     config_path.write_text(f"[timeouts]\n{key} = {value}\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match=match):
+        load_settings()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    "tls_lines, match",
+    [
+        (
+            ['ssl_certfile = "/etc/arca-storage/tls/api.crt"'],
+            "must be provided together",
+        ),
+        (
+            ['ssl_keyfile = "/etc/arca-storage/tls/api.key"'],
+            "must be provided together",
+        ),
+        (
+            [
+                'ssl_certfile = "api.crt"',
+                'ssl_keyfile = "/etc/arca-storage/tls/api.key"',
+            ],
+            "api.ssl_certfile",
+        ),
+        (
+            [
+                'ssl_certfile = "/etc/arca-storage/tls/api.crt"',
+                'ssl_keyfile = "../api.key"',
+            ],
+            "api.ssl_keyfile",
+        ),
+    ],
+)
+def test_load_settings_rejects_invalid_api_tls_paths(
+    monkeypatch, temp_dir, tls_lines, match
+):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(
+        "\n".join(
+            [
+                "[api]",
+                *tls_lines,
+            ]
+        ),
+        encoding="utf-8",
+    )
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
 
     from arca_storage.config import load_settings
@@ -210,7 +277,9 @@ def test_load_settings_rejects_invalid_timeouts(monkeypatch, temp_dir, key, valu
         ("ganesha", "export_dir", "/", "filesystem root"),
     ],
 )
-def test_load_settings_rejects_unsafe_filesystem_paths(monkeypatch, temp_dir, section, key, value, match):
+def test_load_settings_rejects_unsafe_filesystem_paths(
+    monkeypatch, temp_dir, section, key, value, match
+):
     config_path = temp_dir / "config.toml"
     config_path.write_text(f"[{section}]\n{key} = {value!r}\n", encoding="utf-8")
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
@@ -222,7 +291,9 @@ def test_load_settings_rejects_unsafe_filesystem_paths(monkeypatch, temp_dir, se
 
 
 @pytest.mark.unit
-def test_load_settings_rejects_control_character_filesystem_paths(monkeypatch, temp_dir):
+def test_load_settings_rejects_control_character_filesystem_paths(
+    monkeypatch, temp_dir
+):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
         '[ganesha]\nconfig_dir = "/srv/ganesha\\nARCA_EXPORT_DIR=/tmp"\n',

@@ -20,8 +20,20 @@ def test_help_does_not_require_config(monkeypatch, capsys):
     assert "arca-storage-api" in capsys.readouterr().out
 
 
-def _settings(bind: str = "127.0.0.1", port: int = 8080):
-    return SimpleNamespace(api=SimpleNamespace(bind=bind, port=port))
+def _settings(
+    bind="127.0.0.1",
+    port=8080,
+    ssl_certfile=None,
+    ssl_keyfile=None,
+):
+    return SimpleNamespace(
+        api=SimpleNamespace(
+            bind=bind,
+            port=port,
+            ssl_certfile=ssl_certfile,
+            ssl_keyfile=ssl_keyfile,
+        )
+    )
 
 
 def test_loopback_bind_requires_token_without_opt_out(monkeypatch):
@@ -140,6 +152,30 @@ def test_non_loopback_bind_accepts_token_with_tls(monkeypatch):
     assert calls[0][1]["host"] == "0.0.0.0"
     assert calls[0][1]["ssl_certfile"] == "/etc/arca-storage/api.crt"
     assert calls[0][1]["ssl_keyfile"] == "/etc/arca-storage/api.key"
+
+
+def test_non_loopback_bind_accepts_token_with_configured_tls(monkeypatch):
+    calls = []
+    monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+    monkeypatch.delenv("ARCA_ALLOW_INSECURE_REMOTE_API", raising=False)
+    monkeypatch.setattr(
+        server,
+        "load_settings",
+        lambda: _settings(
+            bind="0.0.0.0",
+            ssl_certfile="/etc/arca-storage/tls/api.crt",
+            ssl_keyfile="/etc/arca-storage/tls/api.key",
+        ),
+    )
+    monkeypatch.setattr(
+        server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
+
+    assert server.main([]) == 0
+
+    assert calls[0][1]["host"] == "0.0.0.0"
+    assert calls[0][1]["ssl_certfile"] == "/etc/arca-storage/tls/api.crt"
+    assert calls[0][1]["ssl_keyfile"] == "/etc/arca-storage/tls/api.key"
 
 
 def test_non_loopback_bind_accepts_explicit_insecure_remote_override(monkeypatch):
