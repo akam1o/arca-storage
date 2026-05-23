@@ -5,6 +5,7 @@ QoS (Quality of Service) management using cgroups v2 I/O Controller.
 from __future__ import annotations
 
 import os
+import logging
 import stat
 import subprocess
 from pathlib import Path
@@ -13,9 +14,15 @@ from typing import Any, Dict, Optional
 from arca_storage.api.services.volume_service import require_volume_ready_record
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
-from arca_storage.errors import InvalidArgumentError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    InvalidArgumentError,
+    NotFoundError,
+    PreconditionFailedError,
+)
+from arca_storage.openstack.http_errors import safe_error_detail
 
 _QOS_LIMIT_FIELDS = ("read_iops", "write_iops", "read_bps", "write_bps")
+logger = logging.getLogger(__name__)
 
 
 def _get_cgroup_base() -> Path:
@@ -80,7 +87,11 @@ def _is_kernel_cgroup_path(cgroup_path: Path) -> bool:
 def _read_io_max_lines(io_max_file: Path) -> list[str]:
     if not io_max_file.exists():
         return []
-    return [line for line in io_max_file.read_text(encoding="utf-8").splitlines() if line.strip()]
+    return [
+        line
+        for line in io_max_file.read_text(encoding="utf-8").splitlines()
+        if line.strip()
+    ]
 
 
 def _io_max_line_device(line: str) -> str:
@@ -93,7 +104,11 @@ def _write_io_max_limit(cgroup_path: Path, device_id: str, line: str) -> None:
         return
 
     io_max_file = cgroup_path / "io.max"
-    lines = [existing for existing in _read_io_max_lines(io_max_file) if _io_max_line_device(existing) != device_id]
+    lines = [
+        existing
+        for existing in _read_io_max_lines(io_max_file)
+        if _io_max_line_device(existing) != device_id
+    ]
     lines.append(line)
     io_max_file.write_text("\n".join(lines), encoding="utf-8")
 
@@ -105,7 +120,11 @@ def _clear_io_max_limit(cgroup_path: Path, device_id: str) -> None:
         return
 
     io_max_file = cgroup_path / "io.max"
-    lines = [existing for existing in _read_io_max_lines(io_max_file) if _io_max_line_device(existing) != device_id]
+    lines = [
+        existing
+        for existing in _read_io_max_lines(io_max_file)
+        if _io_max_line_device(existing) != device_id
+    ]
     io_max_file.write_text("\n".join(lines), encoding="utf-8")
 
 
@@ -125,7 +144,9 @@ def _require_qos_volume_lv_path(ctx: Any, svm: str, volume: str) -> str:
 
 
 def _qos_volume_lv_path(volume_info: dict[str, Any], svm: str, volume: str) -> str:
-    lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get("status", {}).get("lv_path")
+    lv_path = volume_info.get("spec", {}).get("lv_path") or volume_info.get(
+        "status", {}
+    ).get("lv_path")
     if not lv_path:
         raise PreconditionFailedError(
             f"Volume '{svm}/{volume}' has no device path",
@@ -142,7 +163,9 @@ def _qos_limits_from_settings(settings: dict[str, Any]) -> dict[str, int]:
     return _normalize_qos_limits(settings, strict=False)
 
 
-def _normalize_qos_limits(raw_limits: dict[str, Any], *, strict: bool) -> dict[str, int]:
+def _normalize_qos_limits(
+    raw_limits: dict[str, Any], *, strict: bool
+) -> dict[str, int]:
     limits: dict[str, int] = {}
     for field in _QOS_LIMIT_FIELDS:
         value = raw_limits.get(field)
@@ -224,7 +247,9 @@ def _write_qos_limits(
     return qos_settings
 
 
-def _disabled_qos_settings(svm: str, volume: str, persisted: Optional[dict[str, Any]] = None) -> Dict[str, Any]:
+def _disabled_qos_settings(
+    svm: str, volume: str, persisted: Optional[dict[str, Any]] = None
+) -> Dict[str, Any]:
     settings: Dict[str, Any] = {"svm": svm, "volume": volume, "qos_enabled": False}
     if isinstance(persisted, dict):
         if persisted.get("device_id"):
@@ -235,7 +260,9 @@ def _disabled_qos_settings(svm: str, volume: str, persisted: Optional[dict[str, 
     return settings
 
 
-def _trusted_persisted_cgroup_path(raw_cgroup_path: Any, svm: str, volume: str) -> Optional[Path]:
+def _trusted_persisted_cgroup_path(
+    raw_cgroup_path: Any, svm: str, volume: str
+) -> Optional[Path]:
     if not raw_cgroup_path:
         return None
     try:
@@ -259,7 +286,63 @@ def _trusted_persisted_device_id(raw_device_id: Any) -> Optional[str]:
     return f"{int(major)}:{int(minor)}"
 
 
-def _clear_qos_limit_best_effort(svm: str, volume: str, settings: dict[str, Any]) -> None:
+def _qos_failure_detail(exc: Exception) -> str:
+    return f"{type(exc).__name__}: {safe_error_detail(exc)}"
+
+
+def _record_qos_best_effort_failure(
+    ctx: Optional[Any],
+    svm: str,
+    volume: str,
+    action: str,
+    detail: str,
+) -> None:
+    if ctx is None:
+        return
+    db = getattr(ctx, "db", None)
+    if db is None or not hasattr(db, "log_operation"):
+        return
+    try:
+        db.log_operation(
+            "Volume",
+            f"{svm}/{volume}",
+            "qos_best_effort",
+            "warning",
+            f"{action}: {detail}",
+        )
+    except Exception as e:
+        logger.warning(
+            "Failed to record QoS best-effort failure for svm=%s volume=%s: %s",
+            svm,
+            volume,
+            _qos_failure_detail(e),
+        )
+
+
+def _log_qos_best_effort_failure(
+    ctx: Optional[Any],
+    svm: str,
+    volume: str,
+    action: str,
+    exc: Exception,
+) -> None:
+    detail = _qos_failure_detail(exc)
+    logger.warning(
+        "QoS %s best-effort failed for svm=%s volume=%s: %s",
+        action,
+        svm,
+        volume,
+        detail,
+    )
+    _record_qos_best_effort_failure(ctx, svm, volume, action, detail)
+
+
+def _clear_qos_limit_best_effort(
+    svm: str,
+    volume: str,
+    settings: dict[str, Any],
+    ctx: Optional[Any] = None,
+) -> None:
     raw_cgroup_path = settings.get("cgroup_path")
     cgroup_path = _trusted_persisted_cgroup_path(raw_cgroup_path, svm, volume)
     device_id = _trusted_persisted_device_id(settings.get("device_id"))
@@ -268,17 +351,22 @@ def _clear_qos_limit_best_effort(svm: str, volume: str, settings: dict[str, Any]
     try:
         if cgroup_path.exists():
             _clear_io_max_limit(cgroup_path, device_id)
-    except Exception:
-        pass
+    except Exception as e:
+        _log_qos_best_effort_failure(ctx, svm, volume, "clear persisted limit", e)
 
 
-def _clear_qos_limit_for_volume_best_effort(svm: str, volume: str, lv_path: str) -> None:
+def _clear_qos_limit_for_volume_best_effort(
+    svm: str,
+    volume: str,
+    lv_path: str,
+    ctx: Optional[Any] = None,
+) -> None:
     try:
         cgroup_path = _get_cgroup_path(svm, volume)
         if cgroup_path.exists():
             _clear_io_max_limit(cgroup_path, _get_device_id(lv_path))
-    except Exception:
-        pass
+    except Exception as e:
+        _log_qos_best_effort_failure(ctx, svm, volume, "clear volume limit", e)
 
 
 def _restore_qos_limit_direct_best_effort(
@@ -287,17 +375,23 @@ def _restore_qos_limit_direct_best_effort(
     lv_path: str,
     settings: dict[str, Any],
     limits: dict[str, int],
+    ctx: Optional[Any] = None,
 ) -> bool:
     raw_cgroup_path = settings.get("cgroup_path")
     raw_device_id = settings.get("device_id")
     try:
-        cgroup_path = _trusted_persisted_cgroup_path(raw_cgroup_path, svm, volume) or _get_cgroup_path(svm, volume)
+        cgroup_path = _trusted_persisted_cgroup_path(
+            raw_cgroup_path, svm, volume
+        ) or _get_cgroup_path(svm, volume)
         if not cgroup_path.exists():
             return False
-        device_id = _trusted_persisted_device_id(raw_device_id) or _get_device_id(lv_path)
+        device_id = _trusted_persisted_device_id(raw_device_id) or _get_device_id(
+            lv_path
+        )
         _write_io_max_limit(cgroup_path, device_id, _qos_io_max_line(device_id, limits))
         return True
-    except Exception:
+    except Exception as e:
+        _log_qos_best_effort_failure(ctx, svm, volume, "restore persisted limit", e)
         return False
 
 
@@ -309,21 +403,23 @@ def _restore_qos_state_best_effort(
     settings: Optional[dict[str, Any]],
 ) -> None:
     if not isinstance(settings, dict):
-        _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
+        _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path, ctx)
         return
 
     limits = _qos_limits_from_settings(settings)
     if not limits:
-        _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path)
+        _clear_qos_limit_for_volume_best_effort(svm, volume, lv_path, ctx)
         return
 
-    if _restore_qos_limit_direct_best_effort(svm, volume, lv_path, settings, limits):
+    if _restore_qos_limit_direct_best_effort(
+        svm, volume, lv_path, settings, limits, ctx
+    ):
         return
 
     try:
         _write_qos_limits(ctx, svm, volume, lv_path, limits)
-    except Exception:
-        pass
+    except Exception as e:
+        _log_qos_best_effort_failure(ctx, svm, volume, "rewrite limit", e)
 
 
 def _persist_volume_qos(
@@ -346,7 +442,7 @@ def _persist_reapplied_qos(
     try:
         _persist_volume_qos(ctx, svm, volume, qos_settings)
     except NotFoundError:
-        _clear_qos_limit_best_effort(svm, volume, qos_settings)
+        _clear_qos_limit_best_effort(svm, volume, qos_settings, ctx)
         raise
 
 
@@ -418,7 +514,7 @@ def apply_qos_to_volume(
     try:
         _persist_volume_qos(ctx, svm, volume, qos_settings)
     except NotFoundError:
-        _clear_qos_limit_best_effort(svm, volume, qos_settings)
+        _clear_qos_limit_best_effort(svm, volume, qos_settings, ctx)
         raise
     except Exception:
         _restore_qos_state_best_effort(ctx, svm, volume, lv_path, previous_qos)
@@ -457,11 +553,15 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     volume_info = _require_qos_volume_record(ctx, svm, volume)
     lv_path = _qos_volume_lv_path(volume_info, svm, volume)
     persisted = volume_info.get("status", {}).get("qos")
-    persisted_limits = _qos_limits_from_settings(persisted) if isinstance(persisted, dict) else {}
+    persisted_limits = (
+        _qos_limits_from_settings(persisted) if isinstance(persisted, dict) else {}
+    )
     cgroup_path = _get_cgroup_path(svm, volume)
     if not cgroup_path.exists():
         if persisted_limits:
-            qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
+            qos_settings = _write_qos_limits(
+                ctx, svm, volume, lv_path, persisted_limits
+            )
             _persist_reapplied_qos(ctx, svm, volume, qos_settings)
             return qos_settings
         return _disabled_qos_settings(svm, volume, persisted)
@@ -471,7 +571,9 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
 
     if not io_max_file.exists():
         if persisted_limits:
-            qos_settings = _write_qos_limits(ctx, svm, volume, lv_path, persisted_limits)
+            qos_settings = _write_qos_limits(
+                ctx, svm, volume, lv_path, persisted_limits
+            )
             _persist_reapplied_qos(ctx, svm, volume, qos_settings)
             return qos_settings
         return _disabled_qos_settings(svm, volume, persisted)
