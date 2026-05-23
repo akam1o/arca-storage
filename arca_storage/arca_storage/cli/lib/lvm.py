@@ -72,7 +72,7 @@ def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True, *, t
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create logical volume: {result.stderr}")
+        raise RuntimeError("Failed to create logical volume")
     
     return lv_path
 
@@ -119,9 +119,9 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to inspect logical volume size: {result.stderr}")
+        raise RuntimeError("Failed to inspect logical volume size")
     if not result.stdout.strip():
-        raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
+        raise RuntimeError("Unexpected logical volume size output")
     current_size_gib = _parse_lvm_float(result.stdout.strip().split()[0])
     requested_size_gib = float(new_size_gib)
     if current_size_gib == requested_size_gib:
@@ -141,7 +141,7 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to resize logical volume: {result.stderr}")
+        raise RuntimeError("Failed to resize logical volume")
 
 
 def delete_lv(vg_name: str, lv_name: str) -> None:
@@ -178,7 +178,7 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to delete logical volume: {result.stderr}")
+        raise RuntimeError("Failed to delete logical volume")
 
 
 def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
@@ -237,7 +237,7 @@ def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create snapshot: {result.stderr}")
+        raise RuntimeError("Failed to create snapshot")
 
     return snap_path
 

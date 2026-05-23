@@ -8,8 +8,14 @@ import pytest
 
 from arca_storage.adapters.lvm import SubprocessLVMAdapter
 from arca_storage.cli.lib import lvm as legacy_lvm
-from arca_storage.cli.lib.lvm import create_lv, delete_lv, resize_lv
+from arca_storage.cli.lib.lvm import create_lv, create_snapshot_lv, delete_lv, resize_lv
 from arca_storage.errors import PreconditionFailedError
+
+
+def _assert_redacted(error: BaseException, *values: str) -> None:
+    rendered = str(error)
+    for value in values:
+        assert value not in rendered
 
 
 class TestCreateLv:
@@ -66,11 +72,13 @@ class TestCreateLv:
         """Test creating LV fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=1),  # lvdisplay (doesn't exist)
-            MagicMock(returncode=1, stderr="Error"),  # lvcreate fails
+            MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/vol1"),  # lvcreate fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to create logical volume"):
+        with pytest.raises(RuntimeError, match="Failed to create logical volume") as exc_info:
             create_lv("vg_pool_01", "vol1", 100, thin=True)
+
+        _assert_redacted(exc_info.value, "secret-token", "/dev/vg_pool_01/vol1")
 
 
 class TestResizeLv:
@@ -109,11 +117,39 @@ class TestResizeLv:
         mock_subprocess.side_effect = [
             MagicMock(returncode=0),  # lvdisplay (exists)
             MagicMock(returncode=0, stdout="100.00\n"),  # lvs current size
-            MagicMock(returncode=1, stderr="Error"),  # lvextend fails
+            MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/vol1"),  # lvextend fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to resize logical volume"):
+        with pytest.raises(RuntimeError, match="Failed to resize logical volume") as exc_info:
             resize_lv("vg_pool_01", "vol1", 200)
+
+        _assert_redacted(exc_info.value, "secret-token", "/dev/vg_pool_01/vol1")
+
+    @pytest.mark.unit
+    def test_resize_lv_inspect_size_failure_redacts_stderr(self, mock_subprocess):
+        """Test size inspection failure does not expose lvs stderr."""
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0),  # lvdisplay (exists)
+            MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/vol1"),  # lvs fails
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to inspect logical volume size") as exc_info:
+            resize_lv("vg_pool_01", "vol1", 200)
+
+        _assert_redacted(exc_info.value, "secret-token", "/dev/vg_pool_01/vol1")
+
+    @pytest.mark.unit
+    def test_resize_lv_empty_size_output_redacts_lv_path(self, mock_subprocess):
+        """Test unexpected lvs output does not expose the LV path."""
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0),  # lvdisplay (exists)
+            MagicMock(returncode=0, stdout=""),  # lvs output is empty
+        ]
+
+        with pytest.raises(RuntimeError, match="Unexpected logical volume size output") as exc_info:
+            resize_lv("vg_pool_01", "vol1", 200)
+
+        _assert_redacted(exc_info.value, "/dev/vg_pool_01/vol1")
 
     @pytest.mark.unit
     def test_resize_lv_skips_already_requested_size(self, mock_subprocess):
@@ -177,11 +213,30 @@ class TestDeleteLv:
         """Test deleting LV fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0),  # lvdisplay (exists)
-            MagicMock(returncode=1, stderr="Error"),  # lvremove fails
+            MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/vol1"),  # lvremove fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to delete logical volume"):
+        with pytest.raises(RuntimeError, match="Failed to delete logical volume") as exc_info:
             delete_lv("vg_pool_01", "vol1")
+
+        _assert_redacted(exc_info.value, "secret-token", "/dev/vg_pool_01/vol1")
+
+
+class TestCreateSnapshotLv:
+    """Tests for create_snapshot_lv function."""
+
+    @pytest.mark.unit
+    def test_create_snapshot_lv_failure_redacts_stderr(self, mock_subprocess):
+        mock_subprocess.side_effect = [
+            MagicMock(returncode=0),  # source lvdisplay succeeds
+            MagicMock(returncode=1),  # snapshot does not exist
+            MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/source"),  # lvcreate fails
+        ]
+
+        with pytest.raises(RuntimeError, match="Failed to create snapshot") as exc_info:
+            create_snapshot_lv("vg_pool_01", "source", "snap")
+
+        _assert_redacted(exc_info.value, "secret-token", "/dev/vg_pool_01/source")
 
 
 class TestSubprocessLVMAdapter:

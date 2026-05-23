@@ -26,6 +26,23 @@ _DEVICE_PATH_RE = re.compile(r"/dev/[A-Za-z0-9._/+:-]+")
 _HOST_LABEL_RE = re.compile(r"[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?")
 _LVM_SIZE_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)(?P<unit>[bBsSkKmMgGtTpPeE])")
 _LVM_PERCENT_SIZE_RE = re.compile(r"(?P<amount>\d+(?:\.\d+)?)%(?P<scope>VG|FREE)", re.IGNORECASE)
+_SAFE_OPERATION_SUBCOMMANDS = {
+    "drbdadm": 1,
+    "pcs": 2,
+    "systemctl": 1,
+}
+
+
+def _safe_operation_label(cmd: list[str]) -> str:
+    if not cmd:
+        return "command"
+    command = Path(str(cmd[0])).name or "command"
+    parts = [command]
+    for token in cmd[1 : 1 + _SAFE_OPERATION_SUBCOMMANDS.get(command, 0)]:
+        if token.startswith("-") or not re.fullmatch(r"[A-Za-z0-9_.:-]+", token):
+            break
+        parts.append(token)
+    return " ".join(parts)
 
 
 def _run(
@@ -45,7 +62,7 @@ def _run(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired as e:
-        raise RuntimeError(f"{' '.join(cmd)} timed out after {timeout}s") from e
+        raise RuntimeError(f"{_safe_operation_label(cmd)} timed out after {timeout}s") from e
 
 
 def _resource_path(*parts: str) -> Path:
@@ -100,9 +117,7 @@ def _run_required(
 ) -> subprocess.CompletedProcess[str]:
     result = _run(cmd, check=False, timeout=timeout)
     if result.returncode != 0:
-        output = (result.stderr or result.stdout or "").strip()
-        detail = output or f"exit status {result.returncode}"
-        raise RuntimeError(f"{' '.join(cmd)} failed: {detail}")
+        raise RuntimeError(f"{_safe_operation_label(cmd)} failed")
     return result
 
 
@@ -470,7 +485,7 @@ def verify(
         # Pacemaker cluster health
         if shutil.which("pcs"):
             res = _run(["pcs", "status"], check=False, timeout=pacemaker_timeout)
-            check(res.returncode == 0, "pcs status ok", f"pcs status failed: {(res.stderr or res.stdout).strip()}")
+            check(res.returncode == 0, "pcs status ok", "pcs status failed")
 
             master = f"ms_drbd_{cfg.cluster.drbd_resource}"
             res = _run(["pcs", "resource", "show", master], check=False, timeout=pacemaker_timeout)
@@ -484,7 +499,7 @@ def verify(
             check(
                 res.returncode == 0,
                 f"drbdadm status ok: {cfg.cluster.drbd_resource}",
-                f"drbdadm status failed for {cfg.cluster.drbd_resource}: {(res.stderr or res.stdout).strip()}",
+                "drbdadm status failed",
             )
         else:
             check(False, "drbdadm available", "drbdadm not found; cannot verify DRBD")
@@ -554,7 +569,7 @@ def pacemaker_cluster(
         # Authenticate and setup
         auth = _pcs_host_auth(node_list, hacluster_password, timeout=pacemaker_timeout)
         if auth.returncode != 0 and "Authorized" not in (auth.stdout or ""):
-            raise RuntimeError(f"pcs host auth failed: {auth.stderr.strip()}")
+            raise RuntimeError("pcs host auth failed")
 
         if not Path("/etc/corosync/authkey").exists():
             setup = _run(
@@ -563,7 +578,7 @@ def pacemaker_cluster(
                 timeout=pacemaker_timeout,
             )
             if setup.returncode != 0 and "already exists" not in (setup.stderr or "").lower():
-                raise RuntimeError(f"pcs cluster setup failed: {setup.stderr.strip()}")
+                raise RuntimeError("pcs cluster setup failed")
 
         _run(["pcs", "cluster", "start", "--all"], timeout=pacemaker_timeout)
         _run(["pcs", "cluster", "enable", "--all"], timeout=pacemaker_timeout)

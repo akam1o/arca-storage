@@ -15,6 +15,12 @@ def completed(cmd, returncode=0, stdout="", stderr=""):
     return subprocess.CompletedProcess(cmd, returncode, stdout, stderr)
 
 
+def assert_redacted(error, *values: str) -> None:
+    rendered = str(error)
+    for value in values:
+        assert value not in rendered
+
+
 def test_pcs_host_auth_does_not_put_password_in_argv():
     result_process = completed([])
 
@@ -105,10 +111,24 @@ def test_run_raises_runtime_error_on_timeout():
     with patch.object(
         bootstrap.subprocess,
         "run",
-        side_effect=subprocess.TimeoutExpired(["pcs", "status"], timeout=30),
+        side_effect=subprocess.TimeoutExpired(["drbdadm", "create-md", "secret-resource"], timeout=30),
     ):
-        with pytest.raises(RuntimeError, match="pcs status timed out after 30s"):
-            bootstrap._run(["pcs", "status"])
+        with pytest.raises(RuntimeError, match="drbdadm create-md timed out after 30s") as exc_info:
+            bootstrap._run(["drbdadm", "create-md", "secret-resource"])
+
+    assert_redacted(exc_info.value, "secret-resource")
+
+
+def test_run_required_redacts_command_arguments_and_output():
+    with patch.object(
+        bootstrap,
+        "_run",
+        return_value=completed(["drbdadm", "create-md", "secret-resource"], 20, stderr="bad disk secret-resource"),
+    ):
+        with pytest.raises(RuntimeError, match="drbdadm create-md failed") as exc_info:
+            bootstrap._run_required(["drbdadm", "create-md", "secret-resource"])
+
+    assert_redacted(exc_info.value, "bad disk", "secret-resource")
 
 
 def test_bootstrap_does_not_expose_shell_runner():
@@ -182,8 +202,52 @@ def test_apply_drbd_config_raises_on_create_md_failure():
             completed(["drbdadm", "create-md", "r0"], 20, stderr="bad disk"),
         ],
     ):
-        with pytest.raises(RuntimeError, match="create-md.*bad disk"):
+        with pytest.raises(RuntimeError, match="drbdadm create-md failed") as exc_info:
             bootstrap._apply_drbd_config("r0")
+
+    assert_redacted(exc_info.value, "bad disk", "r0")
+
+
+def test_pacemaker_cluster_auth_failure_redacts_pcs_output(capsys):
+    cfg = SimpleNamespace(timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60))
+
+    with (
+        patch.object(bootstrap, "load_settings", return_value=cfg),
+        patch.object(bootstrap, "_run", return_value=completed([])),
+        patch.object(
+            bootstrap,
+            "_pcs_host_auth",
+            return_value=completed(["pcs", "host", "auth"], 1, stderr="secret-password node-a node-b"),
+        ),
+    ):
+        with pytest.raises(typer.Exit):
+            bootstrap.pacemaker_cluster("arca", "node-a node-b", "secret-password")
+
+    captured = capsys.readouterr()
+    assert "pcs host auth failed" in captured.err
+    assert_redacted(captured.err, "secret-password", "node-a", "node-b")
+
+
+def test_pacemaker_cluster_setup_failure_redacts_pcs_output(capsys):
+    cfg = SimpleNamespace(timeouts=SimpleNamespace(subprocess_default=30, pacemaker_operation=60))
+
+    def fake_run(cmd, **_kwargs):
+        if cmd[:3] == ["pcs", "cluster", "setup"]:
+            return completed(cmd, 1, stderr="secret-password node-a node-b")
+        return completed(cmd)
+
+    with (
+        patch.object(bootstrap, "load_settings", return_value=cfg),
+        patch.object(bootstrap, "_run", side_effect=fake_run),
+        patch.object(bootstrap, "_pcs_host_auth", return_value=completed(["pcs", "host", "auth"])),
+        patch.object(bootstrap.Path, "exists", return_value=False),
+    ):
+        with pytest.raises(typer.Exit):
+            bootstrap.pacemaker_cluster("arca", "node-a node-b", "secret-password")
+
+    captured = capsys.readouterr()
+    assert "pcs cluster setup failed" in captured.err
+    assert_redacted(captured.err, "secret-password", "node-a", "node-b")
 
 
 def test_render_drbd_config_validates_and_renders():

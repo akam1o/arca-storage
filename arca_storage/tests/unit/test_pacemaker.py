@@ -14,6 +14,12 @@ from arca_storage.adapters.pacemaker import (
 from arca_storage.cli.lib.pacemaker import create_group, _parse_group_members as parse_cli_group_members
 
 
+def _assert_redacted(error: BaseException, *values: str) -> None:
+    rendered = str(error)
+    for value in values:
+        assert value not in rendered
+
+
 @pytest.mark.unit
 @pytest.mark.parametrize("parse_members", [parse_adapter_group_members, parse_cli_group_members])
 def test_parse_group_members_handles_detailed_pcs_output(parse_members):
@@ -92,6 +98,38 @@ def test_create_group_creates_missing_resources(mock_subprocess):
     assert any(cmd[:5] == ["pcs", "resource", "create", "netns_tenant_a", "ocf:local:NetnsVlan"] for cmd in calls)
     assert any("vlan_id=100" in cmd for cmd in calls if isinstance(cmd, list))
     assert any("ifname=v100-tenantxxxx" in cmd for cmd in calls if isinstance(cmd, list))
+
+
+@pytest.mark.unit
+def test_create_group_failure_redacts_pcs_stderr_and_arguments(mock_subprocess):
+    mock_subprocess.side_effect = [
+        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_secret
+        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
+        MagicMock(returncode=1),  # pcs resource show fs_tenant_secret
+        MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/secret-lv /exports/tenant_secret"),
+    ]
+
+    with pytest.raises(RuntimeError, match="Failed to create Filesystem resource") as exc_info:
+        create_group(
+            "tenant_secret",
+            "/exports/tenant_secret",
+            vlan_id=None,
+            ip="192.168.10.5",
+            prefix=32,
+            gw=None,
+            parent_if="bond0",
+            vg_name="vg_pool_01",
+            filesystem_lv_name="secret-lv",
+        )
+
+    _assert_redacted(
+        exc_info.value,
+        "secret-token",
+        "/dev/vg_pool_01/secret-lv",
+        "/exports/tenant_secret",
+        "tenant_secret",
+    )
 
 
 @pytest.mark.unit

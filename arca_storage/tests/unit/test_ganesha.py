@@ -13,6 +13,12 @@ from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, rend
 from arca_storage.config import ArcaSettings, GaneshaConfig, StateConfig
 
 
+def _assert_redacted(error: BaseException, *values: str) -> None:
+    rendered = str(error)
+    for value in values:
+        assert value not in rendered
+
+
 @pytest.fixture(autouse=True)
 def arca_config(monkeypatch, tmp_path):
     config_path = tmp_path / "config.toml"
@@ -224,10 +230,12 @@ class TestReload:
     @pytest.mark.unit
     def test_reload_fails(self, mock_subprocess):
         """Test reload fails."""
-        mock_subprocess.return_value = MagicMock(returncode=1, stderr="Error")
+        mock_subprocess.return_value = MagicMock(returncode=1, stderr="secret-token tenant_a")
 
-        with pytest.raises(RuntimeError, match="Failed to reload NFS-Ganesha"):
+        with pytest.raises(RuntimeError, match="Failed to reload NFS-Ganesha") as exc_info:
             reload("tenant_a")
+
+        _assert_redacted(exc_info.value, "secret-token", "tenant_a")
 
 
 class TestAddExport:

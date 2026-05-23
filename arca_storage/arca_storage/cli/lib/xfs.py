@@ -42,9 +42,7 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
         if 'type="xfs"' in result.stdout.lower():
             # Already formatted with XFS, skip
             return
-        raise RuntimeError(
-            f"Device {device} already contains a non-XFS filesystem: {result.stdout.strip()}"
-        )
+        raise RuntimeError("Device already contains a non-XFS filesystem")
     
     # Default XFS format options from SPEC.md
     cmd = [
@@ -68,7 +66,7 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to format XFS: {result.stderr}")
+        raise RuntimeError("Failed to format XFS")
 
 
 def mount_xfs(device: str, mount_point: str) -> None:
@@ -114,7 +112,7 @@ def mount_xfs(device: str, mount_point: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to mount XFS: {result.stderr}")
+        raise RuntimeError("Failed to mount XFS")
 
 
 def umount_xfs(mount_point: str) -> None:
@@ -147,7 +145,7 @@ def umount_xfs(mount_point: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to unmount XFS: {result.stderr}")
+        raise RuntimeError("Failed to unmount XFS")
 
 
 def grow_xfs(mount_point: str) -> None:
@@ -169,7 +167,7 @@ def grow_xfs(mount_point: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Mount point {mount_point} is not mounted")
+        raise RuntimeError("Mount point is not mounted")
     
     # Grow filesystem
     result = _run(
@@ -180,4 +178,4 @@ def grow_xfs(mount_point: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to grow XFS: {result.stderr}")
+        raise RuntimeError("Failed to grow XFS")

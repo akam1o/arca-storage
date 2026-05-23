@@ -31,7 +31,7 @@ def start_unit(unit_name: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to start unit {unit_name}: {result.stderr}")
+        raise RuntimeError("Failed to start systemd unit")
 
 
 def stop_unit(unit_name: str) -> None:
@@ -52,7 +52,7 @@ def stop_unit(unit_name: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to stop unit {unit_name}: {result.stderr}")
+        raise RuntimeError("Failed to stop systemd unit")
 
 
 def is_active(unit_name: str) -> bool:

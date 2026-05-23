@@ -122,7 +122,7 @@ def create_namespace(name: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create namespace {name}: {result.stderr}")
+        raise RuntimeError("Failed to create namespace")
 
 
 def attach_vlan(
@@ -277,4 +277,4 @@ def delete_namespace(name: str) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to delete namespace {name}: {result.stderr}")
+        raise RuntimeError("Failed to delete namespace")

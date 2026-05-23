@@ -108,7 +108,7 @@ def _ensure_resource_attribute(resource: str, name: str, value: str) -> None:
         return
     result = _run(["pcs", "resource", "update", resource, f"{name}={value}"])
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to update {resource} {name}: {result.stderr.strip()}")
+        raise RuntimeError("Failed to update Pacemaker resource attribute")
 
 
 def _ensure_group_members(group_name: str, resources: list[str]) -> None:
@@ -119,7 +119,7 @@ def _ensure_group_members(group_name: str, resources: list[str]) -> None:
         command, before, after = _group_add_command(group_name, resource, resources, index, members)
         result = _run(command)
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to add {resource} to resource group {group_name}: {result.stderr.strip()}")
+            raise RuntimeError("Failed to add Pacemaker resource to group")
         members = _insert_group_member(members, resource, before=before, after=after)
 
 
@@ -212,7 +212,7 @@ def ensure_drbd_master(drbd_resource_name: str = "r0") -> str:
             ]
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to create DRBD resource: {result.stderr.strip()}")
+            raise RuntimeError("Failed to create DRBD resource")
 
     if not _resource_exists(master):
         result = _run(
@@ -229,7 +229,7 @@ def ensure_drbd_master(drbd_resource_name: str = "r0") -> str:
             ]
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to create DRBD master resource: {result.stderr.strip()}")
+            raise RuntimeError("Failed to create DRBD master resource")
 
     return master
 
@@ -243,7 +243,7 @@ def ensure_order(master_name: str, target_resource: str) -> None:
         return
     result = _run(["pcs", "constraint", "order", f"{master_name}:promote", f"{target_resource}:start"])
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create order constraint: {result.stderr.strip()}")
+        raise RuntimeError("Failed to create Pacemaker order constraint")
 
 
 def ensure_colocation(group_name: str, master_name: str) -> None:
@@ -255,7 +255,7 @@ def ensure_colocation(group_name: str, master_name: str) -> None:
         return
     result = _run(["pcs", "constraint", "colocation", "add", group_name, "with", f"{master_name}:Master"])
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create colocation constraint: {result.stderr.strip()}")
+        raise RuntimeError("Failed to create Pacemaker colocation constraint")
 
 
 def create_group(
@@ -325,7 +325,7 @@ def create_group(
                 ]
             )
             if result.returncode != 0:
-                raise RuntimeError(f"Failed to create Filesystem resource: {result.stderr.strip()}")
+                raise RuntimeError("Failed to create Filesystem resource")
         elif filesystem_lv_name:
             _ensure_resource_attribute(fs_resource, "device", device)
         resources.append(fs_resource)
@@ -349,7 +349,7 @@ def create_group(
                 ]
             )
             if result.returncode != 0:
-                raise RuntimeError(f"Failed to create IPaddr2 resource: {result.stderr.strip()}")
+                raise RuntimeError("Failed to create IPaddr2 resource")
         resources.append(ip_resource)
         ganesha_unit = "nfs-ganesha-host"
     else:
@@ -375,7 +375,7 @@ def create_group(
             cmd += ["op", "monitor", "interval=10s"]
             result = _run(cmd)
             if result.returncode != 0:
-                raise RuntimeError(f"Failed to create NetnsVlan resource: {result.stderr.strip()}")
+                raise RuntimeError("Failed to create NetnsVlan resource")
         resources.append(netns_resource)
         ganesha_unit = "nfs-ganesha"
 
@@ -395,13 +395,13 @@ def create_group(
             ]
         )
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to create NFS-Ganesha resource: {result.stderr.strip()}")
+            raise RuntimeError("Failed to create NFS-Ganesha resource")
     resources.append(ganesha_resource)
 
     if not group_exists:
         result = _run(["pcs", "resource", "group", "add", group_name, *resources])
         if result.returncode != 0:
-            raise RuntimeError(f"Failed to create resource group: {result.stderr.strip()}")
+            raise RuntimeError("Failed to create resource group")
     else:
         _ensure_group_members(group_name, resources)
 
@@ -435,4 +435,4 @@ def delete_group(svm_name: str) -> None:
     result = _run(["pcs", "resource", "delete", group_name])
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to delete resource group: {result.stderr.strip()}")
+        raise RuntimeError("Failed to delete resource group")

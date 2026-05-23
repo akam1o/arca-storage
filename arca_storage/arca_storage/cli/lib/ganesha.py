@@ -305,7 +305,7 @@ def reload(svm_name: str, *, host_network: bool = False) -> None:
     )
     
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to reload NFS-Ganesha: {result.stderr}")
+        raise RuntimeError("Failed to reload NFS-Ganesha")
 
 
 def add_export(

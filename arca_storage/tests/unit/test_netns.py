@@ -11,6 +11,12 @@ from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_nam
 from arca_storage.adapters.netns import SubprocessNetNSAdapter
 
 
+def _assert_redacted(error: BaseException, *values: str) -> None:
+    rendered = str(error)
+    for value in values:
+        assert value not in rendered
+
+
 class TestCreateNamespace:
     """Tests for create_namespace function."""
 
@@ -73,11 +79,13 @@ class TestCreateNamespace:
         """Test creating namespace fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0, stdout=""),  # ip netns list (empty)
-            MagicMock(returncode=1, stderr="Error"),  # ip netns add fails
+            MagicMock(returncode=1, stderr="secret-token test_ns"),  # ip netns add fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to create namespace"):
+        with pytest.raises(RuntimeError, match="Failed to create namespace") as exc_info:
             create_namespace("test_ns")
+
+        _assert_redacted(exc_info.value, "secret-token", "test_ns")
 
 
 class TestAttachVlan:
@@ -190,11 +198,13 @@ class TestDeleteNamespace:
         """Test deleting namespace fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0, stdout="test_ns\n"),  # ip netns list
-            MagicMock(returncode=1, stderr="Error"),  # ip netns del fails
+            MagicMock(returncode=1, stderr="secret-token test_ns"),  # ip netns del fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to delete namespace"):
+        with pytest.raises(RuntimeError, match="Failed to delete namespace") as exc_info:
             delete_namespace("test_ns")
+
+        _assert_redacted(exc_info.value, "secret-token", "test_ns")
 
 
 class TestSubprocessNetNSAdapter:
