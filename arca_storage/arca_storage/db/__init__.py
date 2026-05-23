@@ -37,6 +37,7 @@ from arca_storage.errors import (
     PreconditionFailedError,
 )
 from arca_storage.models.base import Phase
+from arca_storage.models.volume import QoSStatus
 
 
 _SCHEMA_VERSION = 4
@@ -1125,7 +1126,9 @@ class StateDB:
                 return False
             status = dict(record["status"])
             if qos:
-                status["qos"] = dict(qos)
+                status["qos"] = QoSStatus.model_validate(qos).model_dump(
+                    mode="json", exclude_none=True
+                )
             else:
                 status.pop("qos", None)
             self._update_status_by_key_conn(

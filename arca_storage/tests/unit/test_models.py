@@ -2,11 +2,14 @@
 
 from datetime import datetime, timezone
 
+import pytest
+from pydantic import ValidationError
+
 from arca_storage.models.base import Phase, ResourceMeta, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.svm import SVM, SVMSpec
-from arca_storage.models.volume import Volume, VolumeSpec
+from arca_storage.models.volume import Volume, VolumeSpec, VolumeStatus
 
 
 class TestResourceMeta:
@@ -45,12 +48,22 @@ class TestResourceMeta:
 
 class TestSVMModel:
     def test_default_status(self):
-        svm = SVM(spec=SVMSpec(name="test", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"))
+        svm = SVM(
+            spec=SVMSpec(
+                name="test", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1"
+            )
+        )
         assert svm.status.phase == Phase.PENDING
         assert svm.status.namespace_created is False
 
     def test_spec_serialization(self):
-        spec = SVMSpec(name="test", vlan_id=100, ip_cidr="10.0.0.5/24", gateway="10.0.0.1", mtu=9000)
+        spec = SVMSpec(
+            name="test",
+            vlan_id=100,
+            ip_cidr="10.0.0.5/24",
+            gateway="10.0.0.1",
+            mtu=9000,
+        )
         d = spec.model_dump()
         assert d["mtu"] == 9000
         assert d["name"] == "test"
@@ -72,6 +85,23 @@ class TestVolumeModel:
         vol.status.lv_created = True
         vol.status.phase = Phase.READY
         assert vol.status.lv_created is True
+
+    def test_qos_status_is_typed(self):
+        status = VolumeStatus.model_validate(
+            {"qos": {"qos_enabled": True, "read_iops": 1000}}
+        )
+
+        assert status.qos is not None
+        assert status.qos.read_iops == 1000
+
+    def test_qos_status_rejects_invalid_shape(self):
+        with pytest.raises(ValidationError):
+            VolumeStatus.model_validate({"qos": {"qos_enabled": True, "read_iops": -1}})
+
+        with pytest.raises(ValidationError):
+            VolumeStatus.model_validate(
+                {"qos": {"qos_enabled": True, "unexpected": "value"}}
+            )
 
 
 class TestSnapshotModel:
