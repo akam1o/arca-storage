@@ -46,7 +46,9 @@ def test_loopback_bind_allows_explicit_unauthenticated_opt_out(monkeypatch):
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
     monkeypatch.setattr(server, "load_settings", lambda: _settings())
-    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
 
     assert server.main([]) == 0
 
@@ -60,7 +62,9 @@ def test_access_log_requires_explicit_opt_in(monkeypatch):
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
     monkeypatch.setattr(server, "load_settings", lambda: _settings())
-    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
 
     assert server.main(["--access-log"]) == 0
 
@@ -117,9 +121,21 @@ def test_non_loopback_bind_accepts_token_with_tls(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
     monkeypatch.delenv("ARCA_ALLOW_INSECURE_REMOTE_API", raising=False)
     monkeypatch.setattr(server, "load_settings", lambda: _settings(bind="0.0.0.0"))
-    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
 
-    assert server.main(["--ssl-certfile", "/etc/arca-storage/api.crt", "--ssl-keyfile", "/etc/arca-storage/api.key"]) == 0
+    assert (
+        server.main(
+            [
+                "--ssl-certfile",
+                "/etc/arca-storage/api.crt",
+                "--ssl-keyfile",
+                "/etc/arca-storage/api.key",
+            ]
+        )
+        == 0
+    )
 
     assert calls[0][1]["host"] == "0.0.0.0"
     assert calls[0][1]["ssl_certfile"] == "/etc/arca-storage/api.crt"
@@ -131,7 +147,9 @@ def test_non_loopback_bind_accepts_explicit_insecure_remote_override(monkeypatch
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
     monkeypatch.setenv("ARCA_ALLOW_INSECURE_REMOTE_API", "true")
     monkeypatch.setattr(server, "load_settings", lambda: _settings(bind="0.0.0.0"))
-    monkeypatch.setattr(server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs)))
+    monkeypatch.setattr(
+        server.uvicorn, "run", lambda *args, **kwargs: calls.append((args, kwargs))
+    )
 
     assert server.main([]) == 0
 
@@ -139,7 +157,7 @@ def test_non_loopback_bind_accepts_explicit_insecure_remote_override(monkeypatch
     assert calls[0][1]["ssl_certfile"] is None
 
 
-def test_ssl_keyfile_requires_ssl_certfile(monkeypatch):
+def test_ssl_keyfile_requires_ssl_certfile(monkeypatch, capsys):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
     monkeypatch.setattr(server, "load_settings", lambda: _settings())
 
@@ -147,3 +165,21 @@ def test_ssl_keyfile_requires_ssl_certfile(monkeypatch):
         server.main(["--ssl-keyfile", "/etc/arca-storage/api.key"])
 
     assert exc.value.code == 2
+    assert (
+        "--ssl-certfile and --ssl-keyfile must be provided together"
+        in capsys.readouterr().err
+    )
+
+
+def test_ssl_certfile_requires_ssl_keyfile(monkeypatch, capsys):
+    monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+    monkeypatch.setattr(server, "load_settings", lambda: _settings())
+
+    with pytest.raises(SystemExit) as exc:
+        server.main(["--ssl-certfile", "/etc/arca-storage/api.crt"])
+
+    assert exc.value.code == 2
+    assert (
+        "--ssl-certfile and --ssl-keyfile must be provided together"
+        in capsys.readouterr().err
+    )
