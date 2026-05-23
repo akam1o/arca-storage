@@ -135,12 +135,7 @@ class StandaloneAllocator(NetworkAllocator):
         except Exception as e:
             # Unknown error - treat as retryable conflict
             details = safe_error_detail(e)
-            LOG.error(
-                "Failed to allocate network for project %s (attempt %d): %s",
-                project_id,
-                retry_attempt,
-                details,
-            )
+            LOG.error("Failed to allocate standalone network")
             raise ArcaNetworkConflict(
                 details=f"Network allocation failed: {details}"
             )
@@ -317,8 +312,8 @@ class StandaloneAllocator(NetworkAllocator):
                 })
 
                 LOG.debug(
-                    "Parsed pool %d: %s (VLAN %d, %s-%s, %d IPs)",
-                    i, str(ip_network), vlan_id, first_host, last_host, num_hosts
+                    "Parsed standalone IP pool %d with %d IPs",
+                    i, num_hosts
                 )
 
             except ValueError as e:
@@ -370,9 +365,8 @@ class StandaloneAllocator(NetworkAllocator):
                 gateway = pool["gateway"]
 
                 LOG.debug(
-                    "Allocated network for project %s from pool %d: "
-                    "VLAN=%d, IP=%s, gateway=%s",
-                    project_id, pool_idx, vlan_id, ip_cidr, gateway
+                    "Allocated standalone network from pool %d",
+                    pool_idx
                 )
 
                 return vlan_id, ip_cidr, gateway
@@ -380,15 +374,11 @@ class StandaloneAllocator(NetworkAllocator):
             except PoolExhaustedException as e:
                 # This pool is exhausted - track the error and try next pool
                 pool_exhaustion_errors.append(str(e))
-                LOG.debug("Pool %d exhausted: %s", pool_idx, e)
+                LOG.debug("Standalone network pool %d exhausted", pool_idx)
                 continue
-            except Exception as e:
+            except Exception:
                 # Unknown error in this pool - log and try next pool
-                LOG.warning(
-                    "Pool %d allocation failed with unexpected error: %s",
-                    pool_idx,
-                    safe_error_detail(e),
-                )
+                LOG.warning("Standalone network pool allocation failed with unexpected error")
                 continue
 
         # All pools exhausted or failed - raise non-retryable error
@@ -425,7 +415,7 @@ class StandaloneAllocator(NetworkAllocator):
                 try:
                     svm_vlan = int(svm_vlan) if svm_vlan is not None else None
                 except (ValueError, TypeError):
-                    LOG.warning("Invalid vlan_id type in SVM %s: %s", svm["name"], svm_vlan)
+                    LOG.warning("Skipping SVM with invalid VLAN metadata")
                     continue
 
                 if svm_vlan == vlan_id:
@@ -444,9 +434,9 @@ class StandaloneAllocator(NetworkAllocator):
                             if isinstance(ip_addr, ipaddress.IPv4Address):
                                 used_ips.add(ip_addr)
                             else:
-                                LOG.warning("Ignoring IPv6 VIP in SVM %s: %s", svm["name"], vip)
+                                LOG.warning("Ignoring IPv6 VIP in SVM metadata")
                         except ValueError:
-                            LOG.warning("Invalid VIP format in SVM %s: %s", svm["name"], vip)
+                            LOG.warning("Invalid VIP format in SVM metadata")
 
                     # Fallback to ip_cidr if vip is not available
                     elif ip_cidr:
@@ -455,12 +445,12 @@ class StandaloneAllocator(NetworkAllocator):
                             if isinstance(ip_addr, ipaddress.IPv4Address):
                                 used_ips.add(ip_addr)
                             else:
-                                LOG.warning("Ignoring IPv6 ip_cidr in SVM %s: %s", svm["name"], ip_cidr)
+                                LOG.warning("Ignoring IPv6 ip_cidr in SVM metadata")
                         except ValueError:
-                            LOG.warning("Invalid ip_cidr format in SVM %s: %s", svm["name"], ip_cidr)
+                            LOG.warning("Invalid ip_cidr format in SVM metadata")
 
-        except Exception as e:
-            LOG.warning("Failed to get used IPs in VLAN %d: %s", vlan_id, safe_error_detail(e))
+        except Exception:
+            LOG.warning("Failed to get used IPs for standalone allocation")
             # Return empty set and let allocation proceed
             # (will rely on backend to detect conflicts)
 
@@ -498,7 +488,7 @@ class StandaloneAllocator(NetworkAllocator):
             seed = (os.getpid() * 1000000 + int(time.time() * 1000)) ^ attempt
             local_rng = random.Random(seed)
             start_offset = local_rng.randint(0, num_hosts - 1)
-            LOG.debug("Retry %d: using random offset (seed based on PID %d)", attempt, os.getpid())
+            LOG.debug("Retry %d: using randomized standalone pool offset", attempt)
         else:
             start_offset = 0
 
@@ -511,14 +501,14 @@ class StandaloneAllocator(NetworkAllocator):
                 # Found free slot
                 ip_cidr = f"{ip_addr}/{ip_network.prefixlen}"
                 LOG.debug(
-                    "Found free IP in pool VLAN %d at offset %d (attempt %d)",
-                    vlan_id, offset, attempt
+                    "Found free IP in standalone pool (attempt %d)",
+                    attempt
                 )
                 return vlan_id, ip_cidr
 
         # Pool exhausted - raise internal exception for classification
         raise PoolExhaustedException(
-            f"Pool exhausted: VLAN {vlan_id}, all {num_hosts} IP slots used"
+            f"Pool exhausted: all {num_hosts} IP slots used"
         )
 
 
