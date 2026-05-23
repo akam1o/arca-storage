@@ -59,6 +59,30 @@ def test_create_share_fails_when_qos_application_fails(
     mock_arca_client.apply_qos.assert_called_once()
 
 
+def test_qos_failure_logs_redact_identifiers_and_backend_errors(
+    driver, mock_arca_client, mock_manila_share
+):
+    mock_manila_share["id"] = "share-secret-token"
+    mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+    mock_manila_share["share_type"]["extra_specs"] = {
+        "arca_manila:read_iops_sec": "1000",
+    }
+    mock_arca_client.apply_qos.side_effect = RuntimeError(
+        "Authorization: Bearer secret-token password=hunter2"
+    )
+
+    with patch.object(manila_driver.LOG, "error") as mock_error:
+        with pytest.raises(manila_driver.manila_exception.ShareBackendException):
+            driver.create_share(Mock(), mock_manila_share, None)
+
+    rendered_calls = " ".join(str(call.args) for call in mock_error.call_args_list)
+    assert "share-secret-token" not in rendered_calls
+    assert "test-svm" not in rendered_calls
+    assert "secret-token" not in rendered_calls
+    assert "hunter2" not in rendered_calls
+    assert "Failed to apply QoS to share" in rendered_calls
+
+
 def test_create_share_fails_on_invalid_qos_specs(
     driver, mock_arca_client, mock_manila_share
 ):

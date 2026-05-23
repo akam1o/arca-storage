@@ -22,6 +22,12 @@ class TestArcaStorageManilaDriverSharedStrategy:
             drv.do_setup(Mock())
             return drv
 
+    def _render_log_calls(self, *mock_logs):
+        rendered = []
+        for mock_log in mock_logs:
+            rendered.extend(str(call.args) for call in mock_log.call_args_list)
+        return " ".join(rendered)
+
     def test_do_setup_checks_default_svm_exists(self, driver, mock_arca_client):
         mock_arca_client.get_svm.assert_called_with("test-svm")
 
@@ -187,6 +193,24 @@ class TestArcaStorageManilaDriverSharedStrategy:
             thin=True,
             fs_type="xfs",
         )
+
+    def test_create_share_logs_redact_backend_identifiers(self, driver, mock_arca_client, mock_manila_share):
+        mock_manila_share["id"] = "share-secret-token"
+        mock_arca_client.create_volume.return_value = {
+            "name": "share-share-secret-token",
+            "export_path": "192.168.100.5:/exports/test-svm/share-share-secret-token",
+        }
+
+        with patch.object(manila_driver.LOG, "info") as mock_info:
+            with patch.object(manila_driver.LOG, "debug") as mock_debug:
+                driver.create_share(Mock(), mock_manila_share, None)
+
+        rendered_calls = self._render_log_calls(mock_info, mock_debug)
+        assert "share-secret-token" not in rendered_calls
+        assert "share-share-secret-token" not in rendered_calls
+        assert "test-svm" not in rendered_calls
+        assert "192.168.100.5" not in rendered_calls
+        assert "Created share with export location" in rendered_calls
 
     def test_create_share_rejects_unsafe_backend_export_path(
         self, driver, mock_arca_client, mock_manila_share
@@ -373,6 +397,35 @@ class TestArcaStorageManilaDriverSharedStrategy:
             size_gib=10,
         )
 
+    def test_create_share_from_snapshot_logs_redact_identifiers(
+        self, driver, mock_arca_client, mock_manila_snapshot
+    ):
+        mock_manila_snapshot["id"] = "snapshot-secret-token"
+        mock_manila_snapshot["share_id"] = "share-private-id"
+        mock_manila_snapshot["share"]["id"] = "share-private-id"
+        mock_arca_client.clone_volume_from_snapshot.return_value = {
+            "name": "share-share-secret-token",
+            "export_path": "192.168.100.5:/exports/test-svm/share-share-secret-token",
+        }
+        new_share = {
+            "id": "share-secret-token",
+            "size": 10,
+            "project_id": "test-project-id",
+            "metadata": {},
+        }
+
+        with patch.object(manila_driver.LOG, "info") as mock_info:
+            with patch.object(manila_driver.LOG, "debug") as mock_debug:
+                driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+
+        rendered_calls = self._render_log_calls(mock_info, mock_debug)
+        assert "share-secret-token" not in rendered_calls
+        assert "share-private-id" not in rendered_calls
+        assert "snapshot-secret-token" not in rendered_calls
+        assert "test-svm" not in rendered_calls
+        assert "192.168.100.5" not in rendered_calls
+        assert "Created share from snapshot with export location" in rendered_calls
+
     def test_create_share_from_snapshot_rejects_unsafe_backend_export_path(
         self, driver, mock_arca_client, mock_manila_snapshot
     ):
@@ -433,6 +486,39 @@ class TestArcaStorageManilaDriverSharedStrategy:
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
         assert "<redacted>" in str(exc_info.value)
+
+    def test_update_access_logs_redact_identifiers_and_errors(
+        self, driver, mock_arca_client, mock_manila_share, mock_access_rules
+    ):
+        mock_manila_share["id"] = "share-secret-token"
+        mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
+        mock_access_rules[0]["id"] = "rule-secret-token"
+        mock_access_rules[0]["access_to"] = "192.168.1.100"
+        mock_arca_client.create_export.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with patch.object(manila_driver.LOG, "info") as mock_info:
+            with patch.object(manila_driver.LOG, "warning") as mock_warning:
+                with patch.object(manila_driver.LOG, "debug") as mock_debug:
+                    with pytest.raises(manila_driver.manila_exception.ShareBackendException):
+                        driver.update_access(
+                            Mock(),
+                            mock_manila_share,
+                            [],
+                            add_rules=mock_access_rules,
+                            delete_rules=[],
+                            share_server=None,
+                        )
+
+        rendered_calls = self._render_log_calls(mock_info, mock_warning, mock_debug)
+        assert "share-secret-token" not in rendered_calls
+        assert "rule-secret-token" not in rendered_calls
+        assert "192.168.1.100" not in rendered_calls
+        assert "test-svm" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Failed to add access rule for share" in rendered_calls
 
     def test_update_access_reports_delete_rule_failures(self, driver, mock_arca_client, mock_manila_share, mock_access_rules):
         mock_manila_share["metadata"]["arca_svm_name"] = "test-svm"
