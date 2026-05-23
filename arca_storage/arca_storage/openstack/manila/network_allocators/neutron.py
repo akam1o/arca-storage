@@ -102,9 +102,8 @@ class NeutronAllocator(NetworkAllocator):
             self._supports_tags = False
 
         LOG.info(
-            "Neutron allocator validated %d network(s): VLANs %s",
+            "Neutron allocator validated %d network(s)",
             len(self._networks),
-            [n["vlan_id"] for n in self._networks]
         )
 
     def allocate(
@@ -133,11 +132,7 @@ class NeutronAllocator(NetworkAllocator):
         existing_port = self._find_existing_port(device_id)
 
         if existing_port:
-            LOG.info(
-                "Reusing existing Neutron port %s for SVM %s",
-                existing_port["id"],
-                svm_name,
-            )
+            LOG.info("Reusing existing Neutron port for SVM allocation")
             return self._extract_allocation_from_port(existing_port)
 
         # Select network using round-robin
@@ -178,57 +173,51 @@ class NeutronAllocator(NetworkAllocator):
 
         try:
             port = self._neutron_client.create_port(port_body)["port"]
-            LOG.info(
-                "Created Neutron port %s for SVM %s on network %s (VLAN %d)",
-                port["id"],
-                svm_name,
-                network["network_id"][:8],
-                network["vlan_id"],
-            )
+            LOG.info("Created Neutron port for SVM allocation")
         except ks_exceptions.Unauthorized as e:
             # Authentication error - not retryable
             details = safe_error_detail(e)
-            LOG.error("Neutron authentication failed: %s", details)
+            LOG.error("Neutron authentication failed")
             raise ArcaNeutronAuthenticationError(details=details)
         except neutron_exceptions.Unauthorized as e:
             # Neutron client authentication error - not retryable
             details = safe_error_detail(e)
-            LOG.error("Neutron client authentication failed: %s", details)
+            LOG.error("Neutron client authentication failed")
             raise ArcaNeutronAuthenticationError(details=details)
         except ks_exceptions.Forbidden as e:
             # Permission error - not retryable
             details = safe_error_detail(e)
-            LOG.error("Neutron permission denied: %s", details)
+            LOG.error("Neutron permission denied")
             raise ArcaNeutronError(details=f"Permission denied: {details}")
         except neutron_exceptions.Forbidden as e:
             # Neutron client permission error - not retryable
             details = safe_error_detail(e)
-            LOG.error("Neutron client permission denied: %s", details)
+            LOG.error("Neutron client permission denied")
             raise ArcaNeutronError(details=f"Permission denied: {details}")
         except neutron_exceptions.BadRequest as e:
             # Invalid request - not retryable
             details = safe_error_detail(e)
-            LOG.error("Invalid Neutron port request: %s", details)
+            LOG.error("Invalid Neutron port request")
             raise ArcaNeutronPortCreationFailed(details=f"Bad request: {details}")
         except neutron_exceptions.NotFound as e:
             # Resource not found (network/subnet deleted after validation) - not retryable
             details = safe_error_detail(e)
-            LOG.error("Neutron resource not found: %s", details)
+            LOG.error("Neutron resource not found")
             raise ArcaNeutronError(details=f"Resource not found: {details}")
         except neutron_exceptions.Conflict as e:
             # IP conflict or duplicate - retryable
             details = safe_error_detail(e)
-            LOG.warning("Neutron port conflict for SVM %s: %s", svm_name, details)
+            LOG.warning("Neutron port conflict during allocation")
             raise ArcaNetworkConflict(details=f"Port conflict: {details}")
         except (neutron_exceptions.ServiceUnavailable, neutron_exceptions.ConnectionFailed) as e:
             # Transient error - retryable
             details = safe_error_detail(e)
-            LOG.warning("Neutron service unavailable: %s", details)
+            LOG.warning("Neutron service unavailable")
             raise ArcaNetworkConflict(details=f"Service unavailable: {details}")
         except Exception as e:
             # Unknown error - treat as retryable but log as error
             details = safe_error_detail(e)
-            LOG.error("Unexpected error creating Neutron port for SVM %s: %s", svm_name, details)
+            LOG.error("Unexpected error creating Neutron port")
             raise ArcaNetworkConflict(details=f"Failed to create port: {details}")
 
         # Check for duplicate ports (race condition detection)
@@ -239,7 +228,7 @@ class NeutronAllocator(NetworkAllocator):
 
         if len(all_ports) > 1:
             # Duplicate detected - consolidate them
-            LOG.warning("Detected %d duplicate ports for device_id %s", len(all_ports), device_id)
+            LOG.warning("Detected %d duplicate Neutron ports for SVM allocation", len(all_ports))
             all_ports = self._consolidate_duplicate_ports(all_ports, newly_created_port_id=port["id"])
             port = all_ports[0]
             # CRITICAL FIX: Don't use originally selected network metadata
@@ -266,9 +255,9 @@ class NeutronAllocator(NetworkAllocator):
 
         try:
             self._neutron_client.delete_port(allocation_id)
-            LOG.info("Deleted Neutron port %s", allocation_id)
-        except Exception as e:
-            LOG.warning("Failed to delete Neutron port %s: %s", allocation_id, safe_error_detail(e))
+            LOG.info("Deleted Neutron port")
+        except Exception:
+            LOG.warning("Failed to delete Neutron port")
 
     def _consolidate_duplicate_ports(self, ports, newly_created_port_id=None):
         """Consolidate duplicate ports by keeping oldest and deleting the rest.
@@ -301,9 +290,9 @@ class NeutronAllocator(NetworkAllocator):
         for duplicate_port in ports[1:]:
             try:
                 self._neutron_client.delete_port(duplicate_port["id"])
-                LOG.info("Deleted duplicate port %s", duplicate_port["id"])
-            except Exception as e:
-                LOG.error("Failed to delete duplicate port %s: %s", duplicate_port["id"], safe_error_detail(e))
+                LOG.info("Deleted duplicate Neutron port")
+            except Exception:
+                LOG.error("Failed to delete duplicate Neutron port")
 
         return [port_to_keep]
 
@@ -331,16 +320,15 @@ class NeutronAllocator(NetworkAllocator):
             if len(ports) > 1:
                 # Found pre-existing duplicates - consolidate them
                 LOG.warning(
-                    "Found %d pre-existing duplicate ports for device_id %s, consolidating",
+                    "Found %d pre-existing duplicate Neutron ports, consolidating",
                     len(ports),
-                    device_id,
                 )
                 ports = self._consolidate_duplicate_ports(ports, newly_created_port_id=None)
 
             return ports[0] if ports else None
 
-        except Exception as e:
-            LOG.warning("Failed to query existing ports: %s", safe_error_detail(e))
+        except Exception:
+            LOG.warning("Failed to query existing Neutron ports")
         return None
 
     def _extract_allocation_from_port(self, port, network=None) -> NetworkAllocation:
@@ -363,7 +351,7 @@ class NeutronAllocator(NetworkAllocator):
             # This can happen transiently during DHCP allocation
             # Wrap as retryable network conflict rather than hard ValueError
             error_msg = (
-                f"Port {port_id} has no fixed IPs. "
+                "Neutron port has no fixed IPs. "
                 "Port may be misconfigured or still pending IP allocation from DHCP."
             )
             LOG.warning(error_msg)
@@ -386,10 +374,8 @@ class NeutronAllocator(NetworkAllocator):
             if network is None:
                 # Network not in cache - this shouldn't happen, but handle gracefully
                 LOG.warning(
-                    "Port %s references network %s not in validated networks. "
-                    "Querying network details from Neutron.",
-                    port_id[:8],
-                    port_network_id[:8],
+                    "Neutron port references a network that was not validated. "
+                    "Querying network details from Neutron."
                 )
                 # Fallback: query network from Neutron
                 neutron_network = self._neutron_client.show_network(port_network_id)["network"]
@@ -460,19 +446,19 @@ class NeutronAllocator(NetworkAllocator):
             network_type = network.get("provider:network_type")
             if network_type != "vlan":
                 raise ValueError(
-                    f"Network {net_id} must be a VLAN provider network "
+                    "Configured Neutron network must be a VLAN provider network "
                     f"(got: {network_type}). VXLAN/Geneve networks are not supported."
                 )
 
             # Extract VLAN ID
             vlan_id = network.get("provider:segmentation_id")
             if not vlan_id:
-                raise ValueError(f"Network {net_id} missing provider:segmentation_id")
+                raise ValueError("Configured Neutron network missing provider:segmentation_id")
 
             # Auto-detect subnet - prefer IPv4 with gateway
             subnets = network.get("subnets", [])
             if not subnets:
-                raise ValueError(f"Network {net_id} has no subnets")
+                raise ValueError("Configured Neutron network has no subnets")
 
             # Try to find best IPv4 subnet with gateway
             selected_subnet = None
@@ -487,8 +473,7 @@ class NeutronAllocator(NetworkAllocator):
             # Fallback to first subnet if no IPv4 with gateway found
             if not selected_subnet:
                 LOG.warning(
-                    "Network %s: No IPv4 subnet with gateway found, using first subnet %s",
-                    net_id[:8], subnets[0][:8]
+                    "No IPv4 subnet with gateway found for Neutron network; using first subnet"
                 )
                 subnet_id = subnets[0]
                 selected_subnet = self._neutron_client.show_subnet(subnet_id)["subnet"]
@@ -499,15 +484,12 @@ class NeutronAllocator(NetworkAllocator):
             # Validate gateway
             gateway_ip = subnet.get("gateway_ip")
             if not gateway_ip:
-                raise ValueError(f"Subnet {subnet_id} must have gateway_ip configured")
+                raise ValueError("Selected Neutron subnet must have gateway_ip configured")
 
             cidr = subnet["cidr"]
             cidr_prefix = cidr.split("/")[1]
 
-            LOG.info(
-                "Validated network %s: VLAN %d, subnet %s (%s, gateway %s)",
-                net_id[:8], vlan_id, subnet_id[:8], cidr, gateway_ip
-            )
+            LOG.info("Validated Neutron provider network metadata")
 
             return {
                 "network_id": net_id,
@@ -520,8 +502,8 @@ class NeutronAllocator(NetworkAllocator):
 
         except Exception as e:
             details = safe_error_detail(e)
-            LOG.error("Network validation failed for %s: %s", net_id, details)
-            raise ValueError(f"Network {net_id} validation failed: {details}") from e
+            LOG.error("Network validation failed")
+            raise ValueError(f"Network validation failed: {details}") from e
 
     def _create_neutron_client(self):
         """Create Neutron client using [neutron] section auth configuration.
@@ -598,11 +580,9 @@ class NeutronAllocator(NetworkAllocator):
         network = self._networks[net_idx]
 
         LOG.debug(
-            "Selected network %d/%d: %s (VLAN %d) for allocation (retry=%d)",
+            "Selected Neutron network %d/%d for allocation (retry=%d)",
             net_idx + 1,
             num_networks,
-            network["network_id"][:8],
-            network["vlan_id"],
             retry_attempt,
         )
 
