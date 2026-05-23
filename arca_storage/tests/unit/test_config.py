@@ -340,6 +340,24 @@ def test_reconciler_config_is_derived_from_toml(monkeypatch, temp_dir):
 
 
 @pytest.mark.unit
+def test_reconciler_config_type_contract():
+    from typing import get_type_hints
+
+    from arca_storage.config import ArcaSettings, ReconcilerConfig
+
+    assert (
+        get_type_hints(ArcaSettings.to_reconciler_config)["return"] is ReconcilerConfig
+    )
+    assert set(get_type_hints(ReconcilerConfig)) == {
+        "vg_name",
+        "thinpool_name",
+        "parent_if",
+        "export_dir",
+        "drbd_resource",
+    }
+
+
+@pytest.mark.unit
 def test_systemd_env_only_exports_values_consumed_by_units(monkeypatch, temp_dir):
     config_path = temp_dir / "config.toml"
     config_path.write_text(

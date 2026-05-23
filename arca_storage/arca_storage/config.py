@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Optional, Union
+from typing import Optional, TypedDict, Union
 
 from pydantic import (
     BaseModel,
@@ -24,6 +24,16 @@ _PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SYSTEMD_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _SYSTEMD_ENV_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
 _MAX_TIMEOUT_SECONDS = 24 * 60 * 60
+
+
+class ReconcilerConfig(TypedDict):
+    """Settings contract shared with reconcilers."""
+
+    vg_name: str
+    thinpool_name: str
+    parent_if: str
+    export_dir: str
+    drbd_resource: str
 
 
 def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
@@ -234,7 +244,7 @@ class ArcaSettings(BaseModel):
     ganesha: GaneshaConfig = Field(default_factory=GaneshaConfig)
     csi: CSIConfig = Field(default_factory=CSIConfig)
 
-    def to_reconciler_config(self) -> dict:
+    def to_reconciler_config(self) -> ReconcilerConfig:
         """Flatten settings into the dict reconcilers expect."""
         return {
             "vg_name": self.storage.vg_name,
