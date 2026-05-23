@@ -6,7 +6,7 @@ from datetime import datetime
 from enum import Enum
 from typing import List, Optional, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from arca_storage.cli.lib.validators import (
     normalize_nfs_client_cidr,
@@ -21,6 +21,12 @@ def _validate_resource_name(value: str) -> str:
 
 
 CSI_VOLUME_PATH_DESCRIPTION = "CSI volume name within the SVM; nested paths are not supported"
+
+
+class StrictRequestModel(BaseModel):
+    """Base class for API request bodies that should reject unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class SVMStatus(str, Enum):
@@ -66,7 +72,7 @@ class ExportStatus(str, Enum):
 # SVM Models
 
 
-class SVMCreate(BaseModel):
+class SVMCreate(StrictRequestModel):
     """Request model for creating an SVM."""
 
     name: str = Field(..., description="SVM name", min_length=1, max_length=64)
@@ -148,7 +154,7 @@ class SVMListResponse(BaseModel):
 # CSI compatibility models
 
 
-class DirectoryCreate(BaseModel):
+class DirectoryCreate(StrictRequestModel):
     """Request model for CSI directory-backed volume creation."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
@@ -160,7 +166,7 @@ class DirectoryCreate(BaseModel):
         return _validate_resource_name(v)
 
 
-class QuotaSet(BaseModel):
+class QuotaSet(StrictRequestModel):
     """Request model for CSI quota/capacity updates."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
@@ -172,7 +178,7 @@ class QuotaSet(BaseModel):
         return _validate_resource_name(v)
 
 
-class QuotaExpand(BaseModel):
+class QuotaExpand(StrictRequestModel):
     """Request model for CSI quota expansion."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
@@ -187,7 +193,7 @@ class QuotaExpand(BaseModel):
 # Volume Models
 
 
-class VolumeCreate(BaseModel):
+class VolumeCreate(StrictRequestModel):
     """Request model for creating a volume."""
 
     name: str = Field(..., description="Volume name", min_length=1, max_length=64)
@@ -208,7 +214,7 @@ class VolumeCreate(BaseModel):
         return normalized
 
 
-class VolumeResize(BaseModel):
+class VolumeResize(StrictRequestModel):
     """Request model for resizing a volume."""
 
     svm: str = Field(..., description="SVM name")
@@ -219,7 +225,7 @@ class VolumeResize(BaseModel):
         return _validate_resource_name(v)
 
 
-class VolumeQoSApply(BaseModel):
+class VolumeQoSApply(StrictRequestModel):
     """Request model for applying QoS to a volume."""
 
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
@@ -303,7 +309,7 @@ class VolumeListResponse(BaseModel):
 # Snapshot Models
 
 
-class SnapshotCreate(BaseModel):
+class SnapshotCreate(StrictRequestModel):
     """Request model for creating a snapshot."""
 
     name: str = Field(..., description="Snapshot name", min_length=1, max_length=64)
@@ -315,7 +321,7 @@ class SnapshotCreate(BaseModel):
         return _validate_resource_name(v)
 
 
-class VolumeCloneCreate(BaseModel):
+class VolumeCloneCreate(StrictRequestModel):
     """Request model for creating a volume from a snapshot."""
 
     name: str = Field(..., description="New volume name", min_length=1, max_length=64)
@@ -372,7 +378,7 @@ class SnapshotListResponse(BaseModel):
 # Export Models
 
 
-class ExportCreate(BaseModel):
+class ExportCreate(StrictRequestModel):
     """Request model for creating an export."""
 
     svm: str = Field(..., description="SVM name")
