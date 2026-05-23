@@ -56,6 +56,7 @@ pytest --cov=arca_storage --cov-report=html
 ```
 
 Coverage report will be generated in `htmlcov/index.html`.
+Core Python CI enforces a minimum total coverage floor of 50%.
 
 ### Run Specific Test File
 

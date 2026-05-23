@@ -20,6 +20,14 @@ def test_python_workflow_checks_lint_and_format(repo_root):
     assert "name: Check Python formatting" in workflow
 
 
+def test_python_workflow_enforces_coverage_floor(repo_root):
+    workflow = (repo_root / ".github/workflows/python-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "--cov-fail-under=50" in workflow
+
+
 def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):
     dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
 
