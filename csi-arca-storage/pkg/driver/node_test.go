@@ -407,6 +407,83 @@ func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T
 	}
 }
 
+func TestNodeStageInvalidVolumeContextDoesNotEchoInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		key       string
+		value     string
+		wantCause string
+	}{
+		{
+			name:      "svm",
+			key:       volumeContextSVM,
+			value:     "secret-svm/../tenant",
+			wantCause: "invalid SVM name",
+		},
+		{
+			name:      "vip",
+			key:       volumeContextVIP,
+			value:     "secret-vip-value",
+			wantCause: "invalid VIP",
+		},
+		{
+			name:      "export root",
+			key:       volumeContextExportRoot,
+			value:     "secret-export-root",
+			wantCause: "invalid export root",
+		},
+		{
+			name:      "volume path",
+			key:       volumeContextVolumePath,
+			value:     "secret-volume-path/..",
+			wantCause: "invalid volume path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+			if err != nil {
+				t.Fatalf("failed to create node state: %v", err)
+			}
+			mountManager := &fakeNodeMountManager{mountPath: filepath.Join(tmp, "svm-mount")}
+			driver := &Driver{
+				mode:         "node",
+				nodeID:       "node-a",
+				nodeState:    nodeState,
+				mountManager: mountManager,
+				nodeMounter:  mountutils.NewFakeMounter(nil),
+			}
+			volumeContext := map[string]string{
+				volumeContextSVM:        "svm-a",
+				volumeContextVIP:        "10.0.0.1",
+				volumeContextVolumePath: "volumes/vol-a",
+			}
+			volumeContext[tt.key] = tt.value
+
+			_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "vol-a",
+				StagingTargetPath: filepath.Join(tmp, "stage"),
+				VolumeCapability:  testMountCapability(),
+				VolumeContext:     volumeContext,
+			})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantCause) {
+				t.Fatalf("NodeStageVolume() error = %v, want %q", err, tt.wantCause)
+			}
+			if strings.Contains(err.Error(), tt.value) {
+				t.Fatalf("NodeStageVolume() error %q contains invalid input", err)
+			}
+			if mountManager.ensureCalls != 0 {
+				t.Fatalf("EnsureSVMMount calls = %d, want 0", mountManager.ensureCalls)
+			}
+		})
+	}
+}
+
 func TestNodeStageRejectsBlockCapability(t *testing.T) {
 	tmp := t.TempDir()
 	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))

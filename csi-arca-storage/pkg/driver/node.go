@@ -37,7 +37,7 @@ func validateSVMName(name string) error {
 		return fmt.Errorf("SVM name cannot be empty")
 	}
 	if !svmNamePattern.MatchString(name) {
-		return fmt.Errorf("invalid SVM name %q: must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens", name)
+		return fmt.Errorf("SVM name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens")
 	}
 	return nil
 }
@@ -51,20 +51,20 @@ func validateVolumePath(path string) error {
 
 	// Reject absolute paths (should be relative to SVM root)
 	if filepath.IsAbs(path) {
-		return fmt.Errorf("volume path must be relative, not absolute: %s", path)
+		return fmt.Errorf("volume path must be relative, not absolute")
 	}
 
 	// Clean the path and check for traversal attempts
 	cleaned := filepath.Clean(path)
 	if cleaned == "." {
-		return fmt.Errorf("volume path must identify a directory below the SVM root: %s", path)
+		return fmt.Errorf("volume path must identify a directory below the SVM root")
 	}
 	if cleaned != path {
-		return fmt.Errorf("volume path must be canonical: %s", path)
+		return fmt.Errorf("volume path must be canonical")
 	}
 	for _, part := range strings.Split(cleaned, string(filepath.Separator)) {
 		if part == "" || part == "." || part == ".." {
-			return fmt.Errorf("volume path contains invalid path segment %q: %s", part, path)
+			return fmt.Errorf("volume path contains invalid path segment")
 		}
 	}
 
@@ -80,7 +80,7 @@ func validateVIP(vip string) error {
 	// Parse as IP address
 	ip := net.ParseIP(vip)
 	if ip == nil {
-		return fmt.Errorf("invalid VIP address: %s", vip)
+		return fmt.Errorf("invalid VIP address")
 	}
 
 	return nil
@@ -98,11 +98,11 @@ func validateExportRoot(exportRoot string) error {
 		return fmt.Errorf("export root cannot be empty")
 	}
 	if !filepath.IsAbs(exportRoot) {
-		return fmt.Errorf("export root must be absolute: %s", exportRoot)
+		return fmt.Errorf("export root must be absolute")
 	}
 	cleaned := filepath.Clean(exportRoot)
 	if cleaned != exportRoot {
-		return fmt.Errorf("export root must be canonical: %s", exportRoot)
+		return fmt.Errorf("export root must be canonical")
 	}
 	return nil
 }
