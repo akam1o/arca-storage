@@ -417,7 +417,7 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 pools.append(pool)
 
         except Exception as e:
-            LOG.warning("Failed to get pool stats: %s", e)
+            LOG.warning("Failed to get pool stats: %s", safe_error_detail(e))
             # Fallback: single pool with unknown capacity
             pool = self._get_unknown_pool()
             pool.update(self._get_pool_capabilities())
@@ -551,7 +551,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             pool["free_capacity_gb"] = float(capacity["free_gb"])
             pool["provisioned_capacity_gb"] = float(capacity.get("provisioned_gb", 0))
         except Exception as e:
-            LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+            LOG.warning(
+                "Failed to get capacity for SVM %s: %s",
+                svm_name,
+                safe_error_detail(e),
+            )
             # Fallback to unknown (Manila 2025.1 accepts 'unknown' string)
             pool["total_capacity_gb"] = "unknown"
             pool["free_capacity_gb"] = "unknown"
@@ -591,7 +595,11 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             try:
                 capacity = self.arca_client.get_svm_capacity(svm_name)
             except Exception as e:
-                LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+                LOG.warning(
+                    "Failed to get capacity for SVM %s: %s",
+                    svm_name,
+                    safe_error_detail(e),
+                )
                 continue
 
             capacity_count += 1
@@ -672,7 +680,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 pool["free_capacity_gb"] = "unknown"
 
         except Exception as e:
-            LOG.warning("Failed to aggregate per-project pool stats: %s", e)
+            LOG.warning(
+                "Failed to aggregate per-project pool stats: %s",
+                safe_error_detail(e),
+            )
             pool["total_capacity_gb"] = "unknown"
             pool["free_capacity_gb"] = "unknown"
 
@@ -741,7 +752,10 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 pool["free_capacity_gb"] = "unknown"
 
         except Exception as e:
-            LOG.warning("Failed to aggregate manual pool stats: %s", e)
+            LOG.warning(
+                "Failed to aggregate manual pool stats: %s",
+                safe_error_detail(e),
+            )
             pool["total_capacity_gb"] = "unknown"
             pool["free_capacity_gb"] = "unknown"
 
