@@ -794,7 +794,10 @@ class TestExportReconciler:
         )
         assert created.status.phase == Phase.READY
 
+        reload_calls = []
+
         def fail_reload(_svm, *, host_network=False):
+            reload_calls.append((_svm, host_network))
             raise RuntimeError("reload failed")
 
         adapters.ganesha.reload = fail_reload
@@ -809,6 +812,7 @@ class TestExportReconciler:
         assert record["status"]["phase"] == Phase.READY.value
         assert record["spec"]["access"] == "rw"
         assert adapters.ganesha.exports["svm1"][0]["access"] == "RW"
+        assert reload_calls == [("svm1", True), ("svm1", True)]
 
     def test_create_export_resumes_only_matching_live_lease_owner(self, db, adapters, config):
         _insert_ready_volume(db, "svm1", "vol1")
@@ -964,6 +968,36 @@ class TestExportReconciler:
         )
 
         with pytest.raises(ValueError, match="relative path segments"):
+            rec.reconcile(export)
+
+        assert db.get_export("svm1", "__csi_root__", "10.0.0.0/24") is None
+        assert adapters.ganesha.exports.get("svm1") is None
+
+    def test_create_export_rejects_symlink_escape_before_persist(self, db, adapters, config, tmp_path):
+        export_root = tmp_path / "export"
+        outside_root = tmp_path / "outside"
+        export_root.mkdir()
+        outside_root.mkdir()
+        (export_root / "escape").symlink_to(outside_root, target_is_directory=True)
+        config = {**config, "export_dir": str(export_root)}
+
+        svm = SVM(spec=SVMSpec(name="svm1", ip_cidr="10.0.1.5/32"))
+        svm.status.phase = Phase.READY
+        db.insert_svm(svm)
+        rec = ExportReconciler(db, adapters, config=config)
+
+        export = Export(
+            spec=ExportSpec(
+                svm="svm1",
+                volume="__csi_root__",
+                client="10.0.0.0/24",
+                path=str(export_root / "escape" / "vol1"),
+                pseudo=str(export_root / "svm1"),
+                owner="csi",
+            ),
+        )
+
+        with pytest.raises(ValueError, match="within export_dir"):
             rec.reconcile(export)
 
         assert db.get_export("svm1", "__csi_root__", "10.0.0.0/24") is None

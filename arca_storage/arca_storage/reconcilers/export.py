@@ -334,6 +334,7 @@ class ExportReconciler:
                 bind_addr=bind_addr,
                 host_network=host_network,
             )
+            self.adapters.ganesha.reload(svm_name, host_network=host_network)
         except Exception as rollback_error:
             logger.warning("Failed to roll back Ganesha config for SVM %s: %s", svm_name, rollback_error)
 
@@ -457,7 +458,7 @@ def _requires_ready_volume(export: Export) -> bool:
 def _record_export_path(spec: dict, status: dict, export_dir: str) -> str:
     raw_path = status.get("path") or spec.get("path")
     if raw_path:
-        return _normalize_absolute_export_path(raw_path, "export path")
+        return _normalize_export_path(raw_path, export_dir, "export path")
     return _export_path(ExportSpec.model_validate(spec), export_dir)
 
 
@@ -467,9 +468,9 @@ def _record_export_pseudo(spec: dict, status: dict, path: str) -> str:
 
 def _export_path(spec: ExportSpec, export_dir: str) -> str:
     if spec.path:
-        return _normalize_absolute_export_path(spec.path, "export path")
+        return _normalize_export_path(spec.path, export_dir, "export path")
     base = _normalize_absolute_export_path(export_dir, "export_dir")
-    return _normalize_absolute_export_path(f"{base}/{spec.svm}/{spec.volume}", "export path")
+    return _normalize_export_path(f"{base}/{spec.svm}/{spec.volume}", export_dir, "export path")
 
 
 def _export_pseudo(spec: ExportSpec, path: str) -> str:
@@ -491,6 +492,16 @@ def _normalize_absolute_export_path(value: object, field_name: str) -> str:
     if any(part in {".", ".."} for part in parts):
         raise ValueError(f"{field_name} must not contain relative path segments")
     return "/" + "/".join(parts)
+
+
+def _normalize_export_path(value: object, export_dir: str, field_name: str) -> str:
+    path = _normalize_absolute_export_path(value, field_name)
+    base = _normalize_absolute_export_path(export_dir, "export_dir")
+    try:
+        Path(path).resolve(strict=False).relative_to(Path(base).resolve(strict=False))
+    except (OSError, RuntimeError, ValueError) as e:
+        raise ValueError(f"{field_name} must be within export_dir") from e
+    return path
 
 
 def _meta_from_record(record: dict) -> ResourceMeta:
