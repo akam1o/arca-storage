@@ -258,6 +258,19 @@ def test_csi_node_rbac_does_not_grant_cluster_permissions(repo_root):
         assert "verbs:" not in manifest
 
 
+def test_csi_controller_exposes_pod_namespace_to_driver(repo_root):
+    controller_manifests = [
+        repo_root / "csi-arca-storage/deploy/controller.yaml",
+        repo_root / "csi-arca-storage/deploy/controller-statefulset.yaml",
+        repo_root / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
+    ]
+
+    for manifest_path in controller_manifests:
+        manifest = manifest_path.read_text(encoding="utf-8")
+        assert "- name: POD_NAMESPACE" in manifest
+        assert "fieldPath: metadata.namespace" in manifest
+
+
 def test_csi_controller_rbac_limits_crd_discovery(repo_root):
     rbac_manifests = [
         repo_root / "csi-arca-storage/deploy/rbac-controller.yaml",

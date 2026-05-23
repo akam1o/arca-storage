@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"os/signal"
+	"strings"
 	"syscall"
 	"time"
 
@@ -28,6 +29,15 @@ var (
 	kubeconfig = flag.String("kubeconfig", "", "Path to kubeconfig file (optional, uses in-cluster config if not specified)")
 	version    = flag.Bool("version", false, "Print version information and exit")
 )
+
+const defaultLockNamespace = "kube-system"
+
+func controllerLockNamespace() string {
+	if namespace := strings.TrimSpace(os.Getenv("POD_NAMESPACE")); namespace != "" {
+		return namespace
+	}
+	return defaultLockNamespace
+}
 
 func main() {
 	klog.InitFlags(nil)
@@ -128,8 +138,10 @@ func main() {
 				klog.Fatalf("Failed to determine lock identity: %v", err)
 			}
 		}
+		lockNamespace := controllerLockNamespace()
 		klog.V(2).Infof("Using lock identity (controller mode): %s", lockIdentity)
-		lockManager = lock.NewManager(k8sClient, "kube-system", lockIdentity)
+		klog.V(2).Infof("Using lock namespace (controller mode): %s", lockNamespace)
+		lockManager = lock.NewManager(k8sClient, lockNamespace, lockIdentity)
 	}
 
 	var svmManager *arca.SVMManager
