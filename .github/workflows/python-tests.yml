@@ -9,7 +9,7 @@ permissions:
 
 jobs:
   quality:
-    name: Python Type And Security Gates
+    name: Python Type, Lint, Format, And Security Gates
     runs-on: ubuntu-latest
 
     steps:
@@ -37,6 +37,24 @@ jobs:
       - name: Run type check
         working-directory: ./arca_storage
         run: python -m mypy arca_storage
+
+      - name: Run Python lint
+        working-directory: ./arca_storage
+        run: python -m ruff check .
+
+      - name: Check Python formatting
+        run: |
+          base_branch="${{ github.base_ref || 'main' }}"
+          git fetch origin "$base_branch" --depth=1
+          base_commit="$(git merge-base HEAD "origin/$base_branch")"
+          mapfile -t python_files < <(
+            git diff --name-only --diff-filter=ACMRT "$base_commit" HEAD -- 'arca_storage/*.py' 'arca_storage/arca_storage/**/*.py' 'arca_storage/tests/**/*.py' |
+              sed 's#^arca_storage/##'
+          )
+          if ((${#python_files[@]})); then
+            cd arca_storage
+            python -m ruff format --check "${python_files[@]}"
+          fi
 
       - name: Run Python security lint
         working-directory: ./arca_storage
@@ -121,11 +139,6 @@ jobs:
           for p in sorted(root.iterdir()):
               print('lib content:', p)
           PY
-
-      - name: Run ruff
-        if: matrix.python-version == '3.9'
-        working-directory: ./arca_storage
-        run: python -m ruff check .
 
       - name: Run tests with pytest
         run: |

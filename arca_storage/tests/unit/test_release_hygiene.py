@@ -8,6 +8,18 @@ def test_top_level_ci_runs_on_main_and_develop(repo_root):
     assert "branches: [main]" not in workflow
 
 
+def test_python_workflow_checks_lint_and_format(repo_root):
+    workflow = (repo_root / ".github/workflows/python-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "name: Python Type, Lint, Format, And Security Gates" in workflow
+    assert "python -m ruff check ." in workflow
+    assert 'python -m ruff format --check "${python_files[@]}"' in workflow
+    assert "git diff --name-only --diff-filter=ACMRT" in workflow
+    assert "name: Check Python formatting" in workflow
+
+
 def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):
     dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
 
@@ -27,7 +39,9 @@ def test_ansible_site_rejects_disabled_stonith_without_lab_opt_out(repo_root):
     group_vars = (repo_root / "ansible/group_vars/all.yml").read_text(encoding="utf-8")
 
     assert "pacemaker_enable_stonith | default(false) | bool" in playbook
-    assert "pacemaker_allow_stonith_disabled_for_lab | default(false) | bool" in playbook
+    assert (
+        "pacemaker_allow_stonith_disabled_for_lab | default(false) | bool" in playbook
+    )
     assert "pacemaker_allow_stonith_disabled_for_lab: false" in group_vars
 
 
@@ -35,7 +49,8 @@ def test_csi_controller_manifests_drop_privileges(repo_root):
     controller_manifests = [
         repo_root / "csi-arca-storage/deploy/controller.yaml",
         repo_root / "csi-arca-storage/deploy/controller-statefulset.yaml",
-        repo_root / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
     ]
 
     for manifest_path in controller_manifests:
@@ -55,7 +70,8 @@ def test_csi_controller_manifests_wire_liveness_probe(repo_root):
     controller_manifests = [
         repo_root / "csi-arca-storage/deploy/controller.yaml",
         repo_root / "csi-arca-storage/deploy/controller-statefulset.yaml",
-        repo_root / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/base/controller-statefulset.yaml",
     ]
 
     for manifest_path in controller_manifests:
@@ -74,14 +90,20 @@ def test_csi_deployment_configs_include_node_paths(repo_root):
     config_sources = [
         repo_root / "csi-arca-storage/deploy/controller.yaml",
         repo_root / "csi-arca-storage/deploy/kustomize/base/config.yaml",
-        repo_root / "csi-arca-storage/deploy/kustomize/overlays/development/config.yaml",
+        repo_root
+        / "csi-arca-storage/deploy/kustomize/overlays/development/config.yaml",
         repo_root / "csi-arca-storage/deploy/kustomize/overlays/production/config.yaml",
     ]
 
     for config_path in config_sources:
         config = config_path.read_text(encoding="utf-8")
-        assert 'state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"' in config
-        assert 'base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"' in config
+        assert (
+            'state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"' in config
+        )
+        assert (
+            'base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"'
+            in config
+        )
 
 
 def test_csi_node_sidecars_drop_privileges(repo_root):
