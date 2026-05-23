@@ -1186,7 +1186,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         self._apply_qos_to_volume(volume)
 
         volume_file = None
-        volume_file_created = False
+        volume_file_should_cleanup = False
         try:
             source_svm_name, source_export_path = self._get_snapshot_storage(snapshot)
             target_svm_name = self._get_svm_for_volume(volume)
@@ -1222,8 +1222,8 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
 
             # Copy snapshot file to volume file (preserving sparseness)
+            volume_file_should_cleanup = True
             arca_utils.copy_sparse_file(snapshot_file, volume_file, timeout=copy_timeout)
-            volume_file_created = True
 
             LOG.info("Created Cinder volume file from snapshot")
 
@@ -1241,7 +1241,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return self._volume_model_update(target_svm_name, target_export_path)
 
         except Exception as e:
-            if volume_file_created and volume_file:
+            if volume_file_should_cleanup and volume_file:
                 try:
                     os.remove(volume_file)
                     LOG.info("Deleted incomplete volume file after create-from-snapshot failure")
