@@ -397,7 +397,13 @@ class ArcaManilaClient:
                 return {}
 
             # Parse JSON response
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                details = safe_error_detail(e)
+                raise ArcaManilaAPIError(
+                    details=f"Invalid JSON response from ARCA API: {details}"
+                ) from e
 
         except requests.exceptions.Timeout:
             LOG.error("Request timeout after %ss for %s", self.timeout, safe_path)

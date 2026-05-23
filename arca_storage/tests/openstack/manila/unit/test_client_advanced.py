@@ -128,6 +128,18 @@ class TestErrorMappingEdgeCases:
             client._make_request("GET", "/v1/svms")
 
     @patch("requests.Session.request")
+    def test_success_response_invalid_json_raises_api_error(self, mock_request, client):
+        """Invalid successful API JSON should be surfaced as a Manila client error."""
+        resp = Mock()
+        resp.status_code = 200
+        resp.text = "not-json"
+        resp.json.side_effect = ValueError("Not JSON")
+        mock_request.return_value = resp
+
+        with pytest.raises(exceptions.ArcaManilaAPIError, match="Invalid JSON"):
+            client._make_request("GET", "/v1/svms")
+
+    @patch("requests.Session.request")
     def test_400_bad_request(self, mock_request, client):
         """Test 400 bad request error."""
         resp = Mock()

@@ -185,7 +185,13 @@ class ArcaStorageClient:
             if response.status_code == 204:  # No Content
                 return {}
 
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                raise ArcaAPIError(
+                    f"API response was not valid JSON: {safe_error_detail(e)}",
+                    status_code=response.status_code,
+                ) from e
 
         except requests.exceptions.Timeout as e:
             raise ArcaAPITimeout(f"API request timed out after {self.timeout}s: {safe_error_detail(e)}")
