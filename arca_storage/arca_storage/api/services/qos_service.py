@@ -29,7 +29,7 @@ def _get_cgroup_base() -> Path:
     return Path("/sys/fs/cgroup/arca")
 
 
-def _get_cgroup_path(svm: str, _volume: str) -> Path:
+def _get_svm_cgroup_path(svm: str) -> Path:
     return _get_cgroup_base() / f"svm_{svm}"
 
 
@@ -228,7 +228,7 @@ def _write_qos_limits(
     limits = _normalize_qos_limits(limits, strict=True)
     _ensure_cgroup_hierarchy()
 
-    cgroup_path = _get_cgroup_path(svm, volume)
+    cgroup_path = _get_svm_cgroup_path(svm)
     if not cgroup_path.exists():
         cgroup_path.mkdir(parents=True, exist_ok=True)
     _attach_ganesha_process(ctx, svm, cgroup_path)
@@ -267,7 +267,7 @@ def _trusted_persisted_cgroup_path(
         return None
     try:
         cgroup_path = Path(str(raw_cgroup_path))
-        expected_path = _get_cgroup_path(svm, volume)
+        expected_path = _get_svm_cgroup_path(svm)
         if cgroup_path.resolve(strict=False) != expected_path.resolve(strict=False):
             return None
     except (OSError, RuntimeError, ValueError):
@@ -362,7 +362,7 @@ def _clear_qos_limit_for_volume_best_effort(
     ctx: Optional[Any] = None,
 ) -> None:
     try:
-        cgroup_path = _get_cgroup_path(svm, volume)
+        cgroup_path = _get_svm_cgroup_path(svm)
         if cgroup_path.exists():
             _clear_io_max_limit(cgroup_path, _get_device_id(lv_path))
     except Exception as e:
@@ -382,7 +382,7 @@ def _restore_qos_limit_direct_best_effort(
     try:
         cgroup_path = _trusted_persisted_cgroup_path(
             raw_cgroup_path, svm, volume
-        ) or _get_cgroup_path(svm, volume)
+        ) or _get_svm_cgroup_path(svm)
         if not cgroup_path.exists():
             return False
         device_id = _trusted_persisted_device_id(raw_device_id) or _get_device_id(
@@ -518,7 +518,7 @@ def remove_qos_from_volume(svm: str, volume: str) -> None:
     volume_info = _require_qos_volume_record(ctx, svm, volume)
     lv_path = _qos_volume_lv_path(volume_info, svm, volume)
     previous_qos = volume_info.get("status", {}).get("qos")
-    cgroup_path = _get_cgroup_path(svm, volume)
+    cgroup_path = _get_svm_cgroup_path(svm)
     if cgroup_path.exists():
         device_id = _get_device_id(lv_path)
         _clear_io_max_limit(cgroup_path, device_id)
@@ -540,7 +540,7 @@ def get_qos_settings(svm: str, volume: str) -> Dict[str, Any]:
     volume_info = _require_qos_volume_record(ctx, svm, volume)
     lv_path = _qos_volume_lv_path(volume_info, svm, volume)
     persisted = volume_info.get("status", {}).get("qos")
-    cgroup_path = _get_cgroup_path(svm, volume)
+    cgroup_path = _get_svm_cgroup_path(svm)
     if not cgroup_path.exists():
         return _disabled_qos_settings(svm, volume, persisted)
 

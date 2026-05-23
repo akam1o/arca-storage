@@ -66,6 +66,12 @@ class FailingDB(FailingPersistDB):
         raise RuntimeError("db unavailable")
 
 
+def test_qos_cgroup_path_is_svm_scoped(monkeypatch, tmp_path):
+    monkeypatch.setattr(qos_service, "_get_cgroup_base", lambda: tmp_path)
+
+    assert qos_service._get_svm_cgroup_path("tenant-a") == (tmp_path / "svm_tenant-a")
+
+
 def test_apply_qos_attaches_ganesha_process_and_writes_io_limits(monkeypatch, tmp_path):
     cgroup_base = tmp_path / "sys" / "fs" / "cgroup" / "arca"
     ctx = SimpleNamespace(
