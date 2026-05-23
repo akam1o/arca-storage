@@ -48,8 +48,9 @@ app = FastAPI(title="Arca Storage API", description="REST API for Arca Storage S
 logger = logging.getLogger(__name__)
 _VALIDATION_INPUT_PART_RE = re.compile(r"[^\s/,:;=]+")
 _VALUE_ERROR_QUOTED_TEXT_RE = re.compile(r"(['\"])[^'\"]+\1")
-_VALUE_ERROR_BEARER_RE = re.compile(r"(?i)\b(authorization\s*:\s*bearer|bearer)\s+([^\s,;]+)")
-_VALUE_ERROR_ASSIGNMENT_RE = re.compile(
+_SENSITIVE_KEY_PARTS = ("authorization", "token", "password", "secret", "client_key")
+_SENSITIVE_BEARER_RE = re.compile(r"(?i)\b(authorization\s*:\s*bearer|bearer)\s+([^\s,;]+)")
+_SENSITIVE_ASSIGNMENT_RE = re.compile(
     r"(?i)\b(api[_-]?token|auth[_-]?token|token|password|secret|client[_-]?key)=([^\s,;]+)"
 )
 
@@ -97,19 +98,20 @@ async def require_bearer_token(request: Request, call_next):
 async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
     """Return structured error responses for all ArcaError subtypes."""
     request_id = str(uuid.uuid4())
+    error = _redact_arca_error(exc)
     logger.warning(
         "ArcaError (request_id=%s, path=%s, code=%s): %s",
         request_id,
         request.url.path,
         exc.code.value,
-        exc.message,
+        error["message"],
     )
     return JSONResponse(
         status_code=exc.http_status,
         content={
             "request_id": request_id,
             "status": "error",
-            "error": exc.to_dict(),
+            "error": error,
         },
     )
 
@@ -145,9 +147,39 @@ def _request_validation_errors_without_inputs(exc: RequestValidationError) -> li
     return errors
 
 
+def _redact_arca_error(exc: ArcaError) -> dict[str, Any]:
+    return {
+        "code": exc.code.value,
+        "message": _redact_sensitive_text(exc.message),
+        "details": _redact_sensitive_value(exc.details),
+    }
+
+
+def _redact_sensitive_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        redacted: dict[Any, Any] = {}
+        for key, item in value.items():
+            if any(part in str(key).lower() for part in _SENSITIVE_KEY_PARTS):
+                redacted[key] = "<redacted>"
+            else:
+                redacted[key] = _redact_sensitive_value(item)
+        return redacted
+    if isinstance(value, list):
+        return [_redact_sensitive_value(item) for item in value]
+    if isinstance(value, tuple):
+        return tuple(_redact_sensitive_value(item) for item in value)
+    if isinstance(value, str):
+        return _redact_sensitive_text(value)
+    return value
+
+
+def _redact_sensitive_text(message: str) -> str:
+    message = _SENSITIVE_BEARER_RE.sub(r"\1 <redacted>", message)
+    return _SENSITIVE_ASSIGNMENT_RE.sub(r"\1=<redacted>", message)
+
+
 def _redact_value_error_message(message: str) -> str:
-    message = _VALUE_ERROR_BEARER_RE.sub(r"\1 <redacted>", message)
-    message = _VALUE_ERROR_ASSIGNMENT_RE.sub(r"\1=<redacted>", message)
+    message = _redact_sensitive_text(message)
     return _VALUE_ERROR_QUOTED_TEXT_RE.sub(lambda match: f"{match.group(1)}<redacted>{match.group(1)}", message)
 
 
@@ -193,7 +225,13 @@ def _redact_validation_input_strings(value: Any, input_values: set[str]) -> Any:
 async def global_exception_handler(request: Request, exc: Exception) -> JSONResponse:
     """Global fallback exception handler."""
     request_id = str(uuid.uuid4())
-    logger.exception("Unhandled error (request_id=%s, path=%s)", request_id, request.url.path)
+    logger.error(
+        "Unhandled error (request_id=%s, path=%s, type=%s): %s",
+        request_id,
+        request.url.path,
+        type(exc).__name__,
+        _redact_sensitive_text(str(exc)),
+    )
     return JSONResponse(
         status_code=500,
         content={

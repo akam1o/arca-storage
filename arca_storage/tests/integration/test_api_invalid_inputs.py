@@ -2,10 +2,14 @@
 Integration tests for API validation errors raised below request parsing.
 """
 
+import logging
+from unittest.mock import patch
+
 import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.errors import InternalError
 
 
 @pytest.mark.integration
@@ -122,6 +126,52 @@ def test_value_error_messages_do_not_echo_derived_query_values():
     assert response.status_code == 400
     assert payload["error"]["code"] == "INVALID_ARGUMENT"
     assert "secret-token" not in str(payload)
+
+
+@pytest.mark.integration
+def test_arca_error_response_and_log_redact_sensitive_values(caplog):
+    client = TestClient(app, raise_server_exceptions=False)
+    caplog.set_level(logging.WARNING, logger="arca_storage.api.main")
+
+    with patch(
+        "arca_storage.api.services.svm_service.list_svms",
+        side_effect=InternalError(
+            "backend failed Authorization: Bearer secret-token password=hunter2",
+            {"auth_token": "secret-token", "safe": "kept"},
+        ),
+    ):
+        response = client.get("/v1/svms")
+
+    payload = response.json()
+    assert response.status_code == 500
+    assert payload["error"]["code"] == "INTERNAL"
+    assert payload["error"]["details"]["auth_token"] == "<redacted>"
+    assert payload["error"]["details"]["safe"] == "kept"
+    assert "secret-token" not in str(payload)
+    assert "hunter2" not in str(payload)
+    assert "secret-token" not in caplog.text
+    assert "hunter2" not in caplog.text
+    assert "<redacted>" in caplog.text
+
+
+@pytest.mark.integration
+def test_global_exception_log_redacts_sensitive_values(caplog):
+    client = TestClient(app, raise_server_exceptions=False)
+    caplog.set_level(logging.ERROR, logger="arca_storage.api.main")
+
+    with patch(
+        "arca_storage.api.services.svm_service.list_svms",
+        side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2"),
+    ):
+        response = client.get("/v1/svms")
+
+    payload = response.json()
+    assert response.status_code == 500
+    assert payload["error"] == {"code": "INTERNAL", "message": "Internal server error", "details": {}}
+    assert "secret-token" not in caplog.text
+    assert "hunter2" not in caplog.text
+    assert "RuntimeError" in caplog.text
+    assert "<redacted>" in caplog.text
 
 
 @pytest.mark.integration
