@@ -55,6 +55,14 @@ _SENSITIVE_ASSIGNMENT_RE = re.compile(
 )
 
 
+def _request_log_path(request: Request) -> str:
+    """Return a route template for logs without resource identifiers."""
+    route_path = getattr(request.scope.get("route"), "path", None)
+    if isinstance(route_path, str) and route_path:
+        return route_path
+    return "/<unmatched>"
+
+
 @app.middleware("http")
 async def require_bearer_token(request: Request, call_next):
     """Require a bearer token when ARCA_API_TOKEN/ARCA_AUTH_TOKEN is configured."""
@@ -102,7 +110,7 @@ async def arca_error_handler(request: Request, exc: ArcaError) -> JSONResponse:
     logger.warning(
         "ArcaError (request_id=%s, path=%s, code=%s): %s",
         request_id,
-        request.url.path,
+        _request_log_path(request),
         exc.code.value,
         error["message"],
     )
@@ -228,7 +236,7 @@ async def global_exception_handler(request: Request, exc: Exception) -> JSONResp
     logger.error(
         "Unhandled error (request_id=%s, path=%s, type=%s): %s",
         request_id,
-        request.url.path,
+        _request_log_path(request),
         type(exc).__name__,
         _redact_sensitive_text(str(exc)),
     )

@@ -155,6 +155,23 @@ def test_arca_error_response_and_log_redact_sensitive_values(caplog):
 
 
 @pytest.mark.integration
+def test_arca_error_log_uses_route_template_not_resource_path(caplog):
+    client = TestClient(app, raise_server_exceptions=False)
+    caplog.set_level(logging.WARNING, logger="arca_storage.api.main")
+
+    with patch(
+        "arca_storage.api.services.volume_service.delete_volume",
+        side_effect=InternalError("backend failed"),
+    ):
+        response = client.delete("/v1/volumes/secret-volume?svm=secret-svm")
+
+    assert response.status_code == 500
+    assert "/v1/volumes/{name}" in caplog.text
+    assert "secret-volume" not in caplog.text
+    assert "secret-svm" not in caplog.text
+
+
+@pytest.mark.integration
 def test_global_exception_log_redacts_sensitive_values(caplog):
     client = TestClient(app, raise_server_exceptions=False)
     caplog.set_level(logging.ERROR, logger="arca_storage.api.main")
@@ -172,6 +189,23 @@ def test_global_exception_log_redacts_sensitive_values(caplog):
     assert "hunter2" not in caplog.text
     assert "RuntimeError" in caplog.text
     assert "<redacted>" in caplog.text
+
+
+@pytest.mark.integration
+def test_global_exception_log_uses_route_template_not_resource_path(caplog):
+    client = TestClient(app, raise_server_exceptions=False)
+    caplog.set_level(logging.ERROR, logger="arca_storage.api.main")
+
+    with patch(
+        "arca_storage.api.services.volume_service.delete_volume",
+        side_effect=RuntimeError("backend failed"),
+    ):
+        response = client.delete("/v1/volumes/secret-volume?svm=secret-svm")
+
+    assert response.status_code == 500
+    assert "/v1/volumes/{name}" in caplog.text
+    assert "secret-volume" not in caplog.text
+    assert "secret-svm" not in caplog.text
 
 
 @pytest.mark.integration
