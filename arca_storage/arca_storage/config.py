@@ -16,6 +16,7 @@ DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
 _PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
 _SYSTEMD_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
 _SYSTEMD_ENV_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
 
 
 def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
@@ -121,9 +122,9 @@ class APIConfig(BaseModel):
 class TimeoutConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    subprocess_default: int = 30
-    pacemaker_operation: int = 60
-    nfs_mount: int = 15
+    subprocess_default: int = Field(default=30, gt=0, le=_MAX_TIMEOUT_SECONDS)
+    pacemaker_operation: int = Field(default=60, gt=0, le=_MAX_TIMEOUT_SECONDS)
+    nfs_mount: int = Field(default=15, gt=0, le=_MAX_TIMEOUT_SECONDS)
 
 
 class StateConfig(BaseModel):

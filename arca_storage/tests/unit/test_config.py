@@ -179,6 +179,26 @@ def test_load_settings_rejects_unsafe_resource_tokens(monkeypatch, temp_dir, sec
 
 @pytest.mark.unit
 @pytest.mark.parametrize(
+    "key,value,match",
+    [
+        ("subprocess_default", 0, "greater than 0"),
+        ("pacemaker_operation", -1, "greater than 0"),
+        ("nfs_mount", 86401, "less than or equal to 86400"),
+    ],
+)
+def test_load_settings_rejects_invalid_timeouts(monkeypatch, temp_dir, key, value, match):
+    config_path = temp_dir / "config.toml"
+    config_path.write_text(f"[timeouts]\n{key} = {value}\n", encoding="utf-8")
+    monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
+
+    from arca_storage.config import load_settings
+
+    with pytest.raises(ValueError, match=match):
+        load_settings()
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
     "section,key,value,match",
     [
         ("state", "db_path", "state.db", "absolute POSIX path"),
