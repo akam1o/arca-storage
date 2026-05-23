@@ -8,7 +8,9 @@ through the SVM's NFS-Ganesha instance.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import zlib
 from typing import Any, Dict, Optional
 
@@ -20,6 +22,7 @@ from arca_storage.errors import NotFoundError, PreconditionFailedError
 
 GIB = 1024**3
 CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
+logger = logging.getLogger(__name__)
 
 
 def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
@@ -89,10 +92,11 @@ def get_quota(svm_name: str, path: str) -> Dict[str, Any]:
 
     size_gib = int(record.get("spec", {}).get("size_gib") or 0)
     quota_bytes = size_gib * GIB
+    used_bytes = _volume_used_bytes(ctx, record, svm_name, path)
     return {
         "path": path,
         "quota_bytes": quota_bytes,
-        "used_bytes": 0,
+        "used_bytes": used_bytes,
         "project_id": zlib.crc32(f"{svm_name}/{path}".encode("utf-8")) & 0x7FFFFFFF,
     }
 
@@ -191,6 +195,25 @@ def _quota_bytes_to_gib(quota_bytes: Optional[int]) -> int:
     if quota_bytes is None:
         return 1
     return max(1, int(math.ceil(quota_bytes / GIB)))
+
+
+def _volume_used_bytes(ctx: Any, record: dict[str, Any], svm: str, path: str) -> int:
+    mount_path = record.get("status", {}).get("mount_path")
+    if not mount_path:
+        cfg = ctx.settings.to_reconciler_config()
+        export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
+        mount_path = f"{export_dir}/{svm}/{path}"
+    try:
+        stats = os.statvfs(str(mount_path))
+    except OSError as e:
+        logger.warning("Failed to stat CSI quota mount path %s: %s", mount_path, e)
+        return 0
+
+    block_size = int(stats.f_bsize or stats.f_frsize)
+    if block_size <= 0:
+        return 0
+    used_blocks = max(int(stats.f_blocks) - int(stats.f_bfree), 0)
+    return used_blocks * block_size
 
 
 def _validate_directory(svm: str, path: str) -> None:

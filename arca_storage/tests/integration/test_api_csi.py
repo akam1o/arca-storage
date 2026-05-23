@@ -7,6 +7,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.api.services import directory_service
 
 GIB = 1024**3
 
@@ -114,6 +115,53 @@ def test_csi_directory_create_reports_effective_gib_quota(fake_context):
     assert response.status_code == 201
     assert response.json()["data"]["directory"]["quota_bytes"] == 2 * GIB
     assert fake_context.db.get_volume(svm_name, volume_path)["spec"]["size_gib"] == 2
+
+
+def test_csi_quota_reports_filesystem_used_bytes(fake_context, monkeypatch):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 201
+
+    class FakeStatVfs:
+        f_bsize = 4096
+        f_frsize = 4096
+        f_blocks = 100
+        f_bfree = 25
+
+    stat_paths = []
+
+    def fake_statvfs(path):
+        stat_paths.append(path)
+        return FakeStatVfs()
+
+    monkeypatch.setattr(directory_service.os, "statvfs", fake_statvfs)
+
+    response = client.get(f"/v1/quotas/{svm_name}", params={"path": volume_path})
+
+    assert response.status_code == 200
+    assert stat_paths == [f"/exports/{svm_name}/{volume_path}"]
+    assert response.json()["data"]["used_bytes"] == 75 * 4096
 
 
 def test_csi_directory_delete_rejects_existing_snapshots(fake_context):
