@@ -52,6 +52,12 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         self.driver.db = Mock()
         self.driver._stats = {}
 
+    def _assert_redacted(self, value):
+        text = str(value)
+        self.assertNotIn("secret-token", text)
+        self.assertNotIn("hunter2", text)
+        self.assertIn("<redacted>", text)
+
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
     @patch("arca_storage.openstack.cinder.driver.arca_client.ArcaStorageClient")
     def test_do_setup_passes_ssl_cert_path_to_api_client(self, mock_client, mock_super_setup):
@@ -111,6 +117,21 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_super_setup.assert_not_called()
 
     @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
+    @patch("arca_storage.openstack.cinder.driver.arca_client.ArcaStorageClient")
+    def test_do_setup_redacts_sensitive_client_init_errors(
+        self, mock_client, mock_super_setup
+    ):
+        mock_client.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.do_setup(self.driver._context)
+
+        self._assert_redacted(exc_info.value)
+        mock_super_setup.assert_called_once_with(self.driver._context)
+
+    @patch.object(arca_driver.remotefs_drv.RemoteFSDriver, "do_setup", return_value=None)
     def test_do_setup_rejects_unimplemented_per_project_strategy(self, mock_super_setup):
         """per_project must fail at backend setup instead of first volume operation."""
         self.driver.configuration.arca_storage_svm_strategy = "per_project"
@@ -119,6 +140,114 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
             self.driver.do_setup(self.driver._context)
 
         mock_super_setup.assert_not_called()
+
+    def test_create_volume_redacts_sensitive_backend_errors(self):
+        volume = self._create_mock_volume()
+        self.driver._get_svm_for_volume = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.create_volume(volume)
+
+        self._assert_redacted(exc_info.value)
+
+    def test_delete_volume_redacts_sensitive_backend_errors(self):
+        volume = self._create_mock_volume()
+        self.driver._get_existing_volume_svm = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.delete_volume(volume)
+
+        self._assert_redacted(exc_info.value)
+
+    def test_extend_volume_redacts_sensitive_backend_errors(self):
+        volume = self._create_mock_volume()
+        self.driver._get_existing_volume_svm = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.extend_volume(volume, 20)
+
+        self._assert_redacted(exc_info.value)
+
+    def test_initialize_connection_redacts_sensitive_backend_errors(self):
+        volume = self._create_mock_volume()
+        self.driver._get_existing_volume_svm = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.initialize_connection(volume, {})
+
+        self._assert_redacted(exc_info.value)
+
+    def test_create_snapshot_redacts_sensitive_backend_errors(self):
+        snapshot = self._create_mock_snapshot()
+        self.driver.db.volume_get.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.create_snapshot(snapshot)
+
+        self._assert_redacted(exc_info.value)
+
+    def test_delete_snapshot_redacts_sensitive_backend_errors(self):
+        snapshot = self._create_mock_snapshot()
+        self.driver._get_snapshot_storage = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.delete_snapshot(snapshot)
+
+        self._assert_redacted(exc_info.value)
+
+    def test_create_volume_from_snapshot_redacts_sensitive_backend_errors(self):
+        volume = self._create_mock_volume()
+        snapshot = self._create_mock_snapshot()
+        self.driver._get_snapshot_storage = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.create_volume_from_snapshot(volume, snapshot)
+
+        self._assert_redacted(exc_info.value)
+
+    def test_create_cloned_volume_redacts_sensitive_backend_errors(self):
+        volume = self._create_mock_volume(volume_id="clone-vol-id")
+        source = self._create_mock_volume(volume_id="source-vol-id")
+        self.driver._get_existing_volume_svm = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.create_cloned_volume(volume, source)
+
+        self._assert_redacted(exc_info.value)
+
+    @patch.object(
+        arca_driver.remotefs_drv.RemoteFSDriver,
+        "check_for_setup_error",
+        return_value=None,
+    )
+    def test_check_for_setup_error_redacts_sensitive_validation_errors(
+        self, mock_super_check
+    ):
+        self.driver._get_export_path = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with pytest.raises(exception.VolumeBackendAPIException) as exc_info:
+            self.driver.check_for_setup_error()
+
+        self._assert_redacted(exc_info.value)
+        mock_super_check.assert_called_once_with()
 
     def _create_mock_volume(self, volume_id="test-vol-id", name="test-volume", size=10):
         """Create a mock Cinder volume object."""
@@ -570,6 +699,68 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         assert self.driver._stats["total_capacity_gb"] == "unknown"
         assert self.driver._stats["free_capacity_gb"] == "unknown"
         self.driver.arca_client.get_svm_capacity.assert_not_called()
+
+    @patch("arca_storage.openstack.cinder.driver.LOG.warning")
+    def test_get_backend_capacity_redacts_sensitive_api_errors(self, mock_warning):
+        self.driver.arca_client.get_svm_capacity.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        capacity = self.driver._get_backend_capacity()
+
+        self.assertIsNone(capacity)
+        rendered = " ".join(
+            str(arg)
+            for call in mock_warning.call_args_list
+            for arg in call.args
+        )
+        self._assert_redacted(rendered)
+
+    @patch("arca_storage.openstack.cinder.driver.LOG.warning")
+    def test_get_qos_specs_redacts_sensitive_volume_type_errors(self, mock_warning):
+        class BadVolumeType:
+            def __bool__(self):
+                return True
+
+            @property
+            def extra_specs(self):
+                raise RuntimeError("Authorization: Bearer secret-token password=hunter2")
+
+        volume = self._create_mock_volume()
+        volume.volume_type = BadVolumeType()
+
+        assert self.driver._get_qos_specs(volume) == {}
+        rendered = " ".join(
+            str(arg)
+            for call in mock_warning.call_args_list
+            for arg in call.args
+        )
+        self._assert_redacted(rendered)
+
+    @patch("arca_storage.openstack.cinder.driver.LOG.error")
+    def test_retype_redacts_sensitive_errors(self, mock_error):
+        volume = self._create_mock_volume()
+        new_type = {"name": "new-type"}
+        self.driver._retype_preserves_svm_mapping = Mock(
+            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        changed, updates = self.driver.retype(
+            self.driver._context,
+            volume,
+            new_type,
+            {},
+            None,
+        )
+
+        assert changed is False
+        assert updates == {}
+        rendered = " ".join(
+            str(arg)
+            for call in mock_error.call_args_list
+            for arg in call.args
+        )
+        self._assert_redacted(rendered)
 
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
     def test_create_snapshot_copies_volume_file(self, mock_utils):

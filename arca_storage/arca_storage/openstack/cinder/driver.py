@@ -50,6 +50,7 @@ from . import client as arca_client
 from . import configuration as arca_config
 from . import exceptions as arca_exceptions
 from . import utils as arca_utils
+from arca_storage.openstack.http_errors import safe_error_detail
 
 LOG = logging.getLogger(__name__)
 
@@ -170,7 +171,9 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     self._allow_insecure_api_token_transport(),
                 )
             except ValueError as e:
-                raise exception.VolumeBackendAPIException(data=_(str(e))) from e
+                raise exception.VolumeBackendAPIException(
+                    data=_(safe_error_detail(e))
+                ) from e
 
         super(ArcaStorageNFSDriver, self).do_setup(context)
         self._context = context
@@ -213,7 +216,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             )
 
         except Exception as e:
-            msg = _("Failed to initialize ARCA Storage driver: %s") % e
+            msg = _("Failed to initialize ARCA Storage driver: %s") % safe_error_detail(e)
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -236,7 +239,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 export_path = self._get_export_path(default_svm)
                 LOG.info("Validated export path for default SVM: %s", export_path)
         except Exception as e:
-            msg = _("Failed to validate ARCA Storage configuration: %s") % e
+            msg = _("Failed to validate ARCA Storage configuration: %s") % safe_error_detail(e)
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -305,12 +308,12 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return self._volume_model_update(svm_name, export_path)
 
         except arca_exceptions.ArcaStorageException as e:
-            msg = _("Failed to create volume %s: %s") % (volume_name, e)
+            msg = _("Failed to create volume %s: %s") % (volume_name, safe_error_detail(e))
             LOG.error(msg)
             self._cleanup_failed_volume(volume_name, cleanup_state)
             raise exception.VolumeBackendAPIException(data=msg)
         except Exception as e:
-            msg = _("Failed to create volume %s: %s") % (volume_name, e)
+            msg = _("Failed to create volume %s: %s") % (volume_name, safe_error_detail(e))
             LOG.error(msg)
             # Cleanup on failure with tracked state
             self._cleanup_failed_volume(volume_name, cleanup_state)
@@ -362,11 +365,11 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Note: We do NOT delete per-volume NFS export - we use per-SVM exports
 
         except arca_exceptions.ArcaStorageException as e:
-            msg = _("Failed to delete volume %s: %s") % (volume_name, e)
+            msg = _("Failed to delete volume %s: %s") % (volume_name, safe_error_detail(e))
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
         except Exception as e:
-            msg = _("Failed to delete volume %s: %s") % (volume_name, e)
+            msg = _("Failed to delete volume %s: %s") % (volume_name, safe_error_detail(e))
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -421,11 +424,11 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Note: We do NOT unmount the SVM export - it may be in use by other volumes
 
         except arca_exceptions.ArcaStorageException as e:
-            msg = _("Failed to extend volume %s: %s") % (volume_name, e)
+            msg = _("Failed to extend volume %s: %s") % (volume_name, safe_error_detail(e))
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
         except Exception as e:
-            msg = _("Failed to extend volume %s: %s") % (volume_name, e)
+            msg = _("Failed to extend volume %s: %s") % (volume_name, safe_error_detail(e))
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -487,7 +490,7 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         except Exception as e:
             msg = _("Failed to initialize connection for volume %s: %s") % (
                 volume_name,
-                e,
+                safe_error_detail(e),
             )
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
@@ -553,7 +556,11 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 "provisioned_capacity_gb": float(capacity.get("provisioned_gb", 0)),
             }
         except Exception as e:
-            LOG.warning("Failed to get capacity for SVM %s: %s", svm_name, e)
+            LOG.warning(
+                "Failed to get capacity for SVM %s: %s",
+                svm_name,
+                safe_error_detail(e),
+            )
             return None
 
     def _get_svm_for_volume(self, volume) -> str:
@@ -1066,7 +1073,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                         os.remove(volume_file_path)
                         LOG.info("Deleted volume file during cleanup: %s", volume_file_path)
                 except Exception as e:
-                    LOG.warning("Failed to delete volume file during cleanup: %s", e)
+                    LOG.warning(
+                        "Failed to delete volume file during cleanup: %s",
+                        safe_error_detail(e),
+                    )
 
     # Snapshot operations
 
@@ -1129,7 +1139,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
         except exception.VolumeBackendAPIException:
             raise
         except Exception as e:
-            msg = _("Failed to create snapshot %s: %s") % (snapshot_name, e)
+            msg = _("Failed to create snapshot %s: %s") % (
+                snapshot_name,
+                safe_error_detail(e),
+            )
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -1173,7 +1186,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             # Note: We do NOT unmount to avoid concurrency issues
 
         except Exception as e:
-            msg = _("Failed to delete snapshot %s: %s") % (snapshot_name, e)
+            msg = _("Failed to delete snapshot %s: %s") % (
+                snapshot_name,
+                safe_error_detail(e),
+            )
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -1274,8 +1290,15 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 except FileNotFoundError:
                     pass
                 except Exception as cleanup_error:
-                    LOG.warning("Failed to delete incomplete volume file %s: %s", volume_file, cleanup_error)
-            msg = _("Failed to create volume from snapshot %s: %s") % (snapshot_name, e)
+                    LOG.warning(
+                        "Failed to delete incomplete volume file %s: %s",
+                        volume_file,
+                        safe_error_detail(cleanup_error),
+                    )
+            msg = _("Failed to create volume from snapshot %s: %s") % (
+                snapshot_name,
+                safe_error_detail(e),
+            )
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -1363,8 +1386,15 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                 except FileNotFoundError:
                     pass
                 except Exception as cleanup_error:
-                    LOG.warning("Failed to delete incomplete cloned volume file %s: %s", volume_file, cleanup_error)
-            msg = _("Failed to create cloned volume %s: %s") % (volume_name, e)
+                    LOG.warning(
+                        "Failed to delete incomplete cloned volume file %s: %s",
+                        volume_file,
+                        safe_error_detail(cleanup_error),
+                    )
+            msg = _("Failed to create cloned volume %s: %s") % (
+                volume_name,
+                safe_error_detail(e),
+            )
             LOG.error(msg)
             raise exception.VolumeBackendAPIException(data=msg)
 
@@ -1489,7 +1519,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
                     LOG.warning("Invalid write_bytes_sec value: %s", extra_specs["arca_storage:write_bytes_sec"])
 
         except Exception as e:
-            LOG.warning("Failed to extract QoS specs from volume type: %s", e)
+            LOG.warning(
+                "Failed to extract QoS specs from volume type: %s",
+                safe_error_detail(e),
+            )
 
         return qos_specs
 
@@ -1594,7 +1627,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             return True, {}
 
         except Exception as e:
-            msg = _("Failed to retype volume %s: %s") % (volume_name, e)
+            msg = _("Failed to retype volume %s: %s") % (
+                volume_name,
+                safe_error_detail(e),
+            )
             LOG.error(msg)
             # Return False to indicate retype failed
             # Cinder will keep the volume at the old type
