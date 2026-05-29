@@ -26,6 +26,7 @@ type VolumeInfo struct {
 
 	TemporaryCloneSnapshot         string
 	TemporaryCloneSourceVolumePath string
+	TemporaryCloneCleanupOnly      bool
 }
 
 // SnapshotInfo represents snapshot metadata

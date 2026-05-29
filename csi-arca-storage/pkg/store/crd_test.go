@@ -214,6 +214,7 @@ func TestCRDStoreUpdateVolumeClearsTemporaryCloneAnnotations(t *testing.T) {
 		CreatedAt:                      time.Now(),
 		TemporaryCloneSnapshot:         "clone-vol-a-0123456789abcdef",
 		TemporaryCloneSourceVolumePath: "source-path",
+		TemporaryCloneCleanupOnly:      true,
 	})
 	st := &CRDStore{
 		client: ctrlfake.NewClientBuilder().WithScheme(scheme).WithObjects(existing).Build(),
@@ -236,7 +237,7 @@ func TestCRDStoreUpdateVolumeClearsTemporaryCloneAnnotations(t *testing.T) {
 	if err != nil {
 		t.Fatalf("GetVolume() error = %v", err)
 	}
-	if stored.TemporaryCloneSnapshot != "" || stored.TemporaryCloneSourceVolumePath != "" {
-		t.Fatalf("temporary clone metadata = (%q, %q), want empty", stored.TemporaryCloneSnapshot, stored.TemporaryCloneSourceVolumePath)
+	if stored.TemporaryCloneSnapshot != "" || stored.TemporaryCloneSourceVolumePath != "" || stored.TemporaryCloneCleanupOnly {
+		t.Fatalf("temporary clone metadata = (%q, %q, %t), want empty", stored.TemporaryCloneSnapshot, stored.TemporaryCloneSourceVolumePath, stored.TemporaryCloneCleanupOnly)
 	}
 }

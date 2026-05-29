@@ -180,6 +180,9 @@ func (s *CRDStore) UpdateVolume(ctx context.Context, info *VolumeInfo) error {
 		if info.TemporaryCloneSourceVolumePath == "" && existing.Annotations != nil {
 			delete(existing.Annotations, temporaryCloneSourceVolumePathAnnotation)
 		}
+		if !info.TemporaryCloneCleanupOnly && existing.Annotations != nil {
+			delete(existing.Annotations, temporaryCloneCleanupOnlyAnnotation)
+		}
 
 		return s.client.Update(ctx, existing)
 	})

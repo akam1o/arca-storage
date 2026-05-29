@@ -734,6 +734,7 @@ func (d *Driver) cleanupTemporaryCloneSnapshot(ctx context.Context, volumeInfo, 
 	}
 	volumeInfo.TemporaryCloneSnapshot = ""
 	volumeInfo.TemporaryCloneSourceVolumePath = ""
+	volumeInfo.TemporaryCloneCleanupOnly = false
 	return nil
 }
 
@@ -807,6 +808,16 @@ func (d *Driver) finishTemporaryVolumeClone(ctx context.Context, volumeInfo *sto
 			if !allowExistingBackend {
 				if cleanupErr := d.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol); cleanupErr != nil {
 					klog.Warningf("Failed to clean up temporary clone snapshot after clone conflict for %s: %v", volumeInfo.VolumeID, cleanupErr)
+					volumeInfo.TemporaryCloneCleanupOnly = true
+					if updateErr := d.store.UpdateVolume(ctx, volumeInfo); updateErr != nil {
+						klog.Warningf("Failed to persist temporary clone cleanup-only state for %s: %v", volumeInfo.VolumeID, updateErr)
+					}
+					return status.Errorf(
+						codes.Internal,
+						"backend volume %s already exists and temporary clone snapshot cleanup failed: %v",
+						volumeInfo.Path,
+						cleanupErr,
+					)
 				}
 				return status.Errorf(
 					codes.AlreadyExists,
@@ -824,6 +835,28 @@ func (d *Driver) finishTemporaryVolumeClone(ctx context.Context, volumeInfo *sto
 		klog.Warningf("Failed to clean up temporary clone snapshot after cloning %s: %v", volumeInfo.VolumeID, err)
 	}
 	return nil
+}
+
+func (d *Driver) cleanupTemporaryCloneConflict(ctx context.Context, volumeInfo *store.VolumeInfo) error {
+	sourceVol, err := d.temporaryCloneSourceVolume(ctx, volumeInfo)
+	if err != nil {
+		return err
+	}
+	if err := d.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol); err != nil {
+		volumeInfo.TemporaryCloneCleanupOnly = true
+		if updateErr := d.store.UpdateVolume(ctx, volumeInfo); updateErr != nil {
+			klog.Warningf("Failed to persist temporary clone cleanup-only state for %s: %v", volumeInfo.VolumeID, updateErr)
+		}
+		return status.Errorf(codes.Internal, "failed to clean up temporary clone snapshot after clone conflict: %v", err)
+	}
+	if err := d.store.DeleteVolume(ctx, volumeInfo.VolumeID); err != nil && !store.IsNotFound(err) {
+		return status.Errorf(codes.Internal, "failed to delete conflicted volume metadata %s after temporary clone cleanup: %v", volumeInfo.VolumeID, err)
+	}
+	return status.Errorf(
+		codes.AlreadyExists,
+		"backend volume %s already exists but is not tracked by CSI metadata",
+		volumeInfo.Path,
+	)
 }
 
 func (d *Driver) finishNewTemporaryVolumeClone(ctx context.Context, volumeInfo *store.VolumeInfo) error {
@@ -857,6 +890,9 @@ func (d *Driver) finishNewTemporaryVolumeClone(ctx context.Context, volumeInfo *
 }
 
 func (d *Driver) resumePendingVolume(ctx context.Context, volumeInfo *store.VolumeInfo) error {
+	if volumeInfo.TemporaryCloneCleanupOnly {
+		return d.cleanupTemporaryCloneConflict(ctx, volumeInfo)
+	}
 	if snapshotSourceID(volumeInfo) != "" {
 		if err := d.finishSnapshotVolumeClone(ctx, volumeInfo, true); err != nil {
 			return err

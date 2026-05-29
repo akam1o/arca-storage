@@ -14,6 +14,7 @@ const (
 	volumeReadyToUseAnnotation               = "storage.arca.io/ready-to-use"
 	temporaryCloneSnapshotAnnotation         = "storage.arca.io/temporary-clone-snapshot"
 	temporaryCloneSourceVolumePathAnnotation = "storage.arca.io/temporary-clone-source-volume-path"
+	temporaryCloneCleanupOnlyAnnotation      = "storage.arca.io/temporary-clone-cleanup-only"
 )
 
 // convertContentSourceToCRD converts CSI VolumeContentSource to CRD ArcaContentSource
@@ -92,6 +93,7 @@ func volumeInfoToArcaVolume(info *VolumeInfo) *v1alpha1.ArcaVolume {
 	setVolumeReadyAnnotation(av, info)
 	setVolumeAnnotation(av, temporaryCloneSnapshotAnnotation, info.TemporaryCloneSnapshot)
 	setVolumeAnnotation(av, temporaryCloneSourceVolumePathAnnotation, info.TemporaryCloneSourceVolumePath)
+	setVolumeBoolAnnotation(av, temporaryCloneCleanupOnlyAnnotation, info.TemporaryCloneCleanupOnly)
 	return av
 }
 
@@ -118,6 +120,7 @@ func arcaVolumeToVolumeInfo(av *v1alpha1.ArcaVolume) *VolumeInfo {
 
 		TemporaryCloneSnapshot:         av.Annotations[temporaryCloneSnapshotAnnotation],
 		TemporaryCloneSourceVolumePath: av.Annotations[temporaryCloneSourceVolumePathAnnotation],
+		TemporaryCloneCleanupOnly:      av.Annotations[temporaryCloneCleanupOnlyAnnotation] == "true",
 	}
 }
 
@@ -139,6 +142,16 @@ func setVolumeAnnotation(av *v1alpha1.ArcaVolume, key, value string) {
 		av.Annotations = make(map[string]string)
 	}
 	av.Annotations[key] = value
+}
+
+func setVolumeBoolAnnotation(av *v1alpha1.ArcaVolume, key string, value bool) {
+	if !value {
+		return
+	}
+	if av.Annotations == nil {
+		av.Annotations = make(map[string]string)
+	}
+	av.Annotations[key] = strconv.FormatBool(value)
 }
 
 // snapshotInfoToArcaSnapshot converts SnapshotInfo to ArcaSnapshot CRD
