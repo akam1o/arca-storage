@@ -32,6 +32,7 @@ func (d *Driver) acquireControllerSVMLock(ctx context.Context, svmName string) (
 	}
 
 	lockedCtx, cancelLockedCtx := distributedLock.Context(ctx)
+	lockedCtx = withLifecycleLock(lockedCtx, distributedLock)
 	return lockedCtx, func() {
 		cancelLockedCtx()
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

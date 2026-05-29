@@ -949,6 +949,26 @@ func TestCreateVolumeUsesDistributedLockBeforeIdempotentSuccess(t *testing.T) {
 	}
 }
 
+func TestControllerSVMLockAddsCleanupLifecycleLock(t *testing.T) {
+	driver := &Driver{
+		lockManager: lock.NewManager(k8sfake.NewClientset(), "kube-system", "pod-a"),
+	}
+
+	ctx, release, err := driver.acquireControllerSVMLock(context.Background(), "k8s-ns-a")
+	if err != nil {
+		t.Fatalf("acquireControllerSVMLock() error = %v", err)
+	}
+	defer release()
+
+	lockStates := lifecycleLocksFromContext(ctx)
+	if len(lockStates) != 1 {
+		t.Fatalf("lifecycle lock count = %d, want 1", len(lockStates))
+	}
+	if lockStates[0].Err() != nil {
+		t.Fatalf("lifecycle lock Err() = %v", lockStates[0].Err())
+	}
+}
+
 func TestCreateVolumeResumesPendingMetadata(t *testing.T) {
 	st := store.NewMemoryStore()
 	volumeIDGen := idempotency.NewVolumeIDGenerator()
