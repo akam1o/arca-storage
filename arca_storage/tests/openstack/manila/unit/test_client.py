@@ -535,7 +535,8 @@ class TestArcaManilaClientOperations:
             with pytest.raises(
                 exceptions.ArcaManilaAPIError,
                 match=f"Repeated {resource} pagination cursor",
-            ):
+            ) as exc_info:
                 method(**kwargs)
 
+        assert "cursor-1" not in str(exc_info.value)
         assert mock_make.call_count == 2

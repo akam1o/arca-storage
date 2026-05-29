@@ -444,7 +444,7 @@ class ArcaManilaClient:
             return None
         if next_cursor in seen_cursors:
             raise ArcaManilaAPIError(
-                details=f"Repeated {resource} pagination cursor from ARCA API: {next_cursor}"
+                details=f"Repeated {resource} pagination cursor from ARCA API"
             )
         seen_cursors.add(next_cursor)
         return next_cursor
