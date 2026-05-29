@@ -100,6 +100,31 @@ func snapshotBackendCreateError(snapshotID string, err error) error {
 	return status.Errorf(codes.Internal, "failed to create snapshot: %v", err)
 }
 
+func (d *Driver) sourceVolumeLockIDForCreateRequest(ctx context.Context, source *csi.VolumeContentSource) (string, error) {
+	if source == nil {
+		return "", nil
+	}
+	if vol := source.GetVolume(); vol != nil {
+		sourceVolumeID := vol.GetVolumeId()
+		if sourceVolumeID == "" {
+			return "", status.Error(codes.InvalidArgument, "source volume ID is required")
+		}
+		return sourceVolumeID, nil
+	}
+	if snap := source.GetSnapshot(); snap != nil {
+		snapshotID := snap.GetSnapshotId()
+		if snapshotID == "" {
+			return "", status.Error(codes.InvalidArgument, "source snapshot ID is required")
+		}
+		snapshot, err := d.store.GetSnapshot(ctx, snapshotID)
+		if err != nil {
+			return "", snapshotStoreGetError("snapshot", snapshotID, err)
+		}
+		return snapshot.SourceVolumeID, nil
+	}
+	return "", status.Error(codes.InvalidArgument, "volume content source must set either volume or snapshot")
+}
+
 // compareVolumeParameters checks if requested matches existing
 func compareVolumeParameters(existing *store.VolumeInfo, req *csi.CreateVolumeRequest) error {
 	// Compare capacity
@@ -192,17 +217,50 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 	// Generate stable volume ID (idempotent)
 	volumeID := d.volumeIDGen.GenerateVolumeID(req.GetName())
 
-	ctx, releaseVolumeCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
+	targetCtx, releaseTargetCreateLock, err := d.acquireVolumeCreateLock(ctx, volumeID)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
 			return nil, status.FromContextError(ctxErr).Err()
 		}
 		return nil, status.Errorf(codes.Aborted, "failed to serialize volume creation: %v", err)
 	}
-	defer releaseVolumeCreateLock()
 
-	// Check if volume already exists (idempotency)
-	existingVol, err := d.store.GetVolume(ctx, volumeID)
+	existingVol, err := d.store.GetVolume(targetCtx, volumeID)
+	if err == nil {
+		if err := compareVolumeParameters(existingVol, req); err != nil {
+			releaseTargetCreateLock()
+			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists but is incompatible: %v", volumeID, err)
+		}
+		if store.IsVolumeReady(existingVol) && existingVol.TemporaryCloneSnapshot == "" {
+			releaseTargetCreateLock()
+			klog.V(4).Infof("Volume %s already exists, returning existing volume", volumeID)
+			return &csi.CreateVolumeResponse{
+				Volume: existingVol.ToCSIVolume(),
+			}, nil
+		}
+	} else if !store.IsNotFound(err) {
+		releaseTargetCreateLock()
+		return nil, status.Errorf(codes.Internal, "failed to check existing volume %s: %v", volumeID, err)
+	}
+	releaseTargetCreateLock()
+
+	sourceVolumeLockID, err := d.sourceVolumeLockIDForCreateRequest(ctx, req.GetVolumeContentSource())
+	if err != nil {
+		return nil, err
+	}
+	ctx, releaseVolumeCreateLocks, err := d.acquireVolumeLifecycleLocks(ctx, []string{volumeID, sourceVolumeLockID}, "create")
+	if err != nil {
+		if ctxErr := ctx.Err(); ctxErr != nil {
+			return nil, status.FromContextError(ctxErr).Err()
+		}
+		return nil, status.Errorf(codes.Aborted, "failed to serialize volume creation: %v", err)
+	}
+	defer releaseVolumeCreateLocks()
+
+	// Check if volume already exists (idempotency). This is repeated after
+	// acquiring all source/target locks because another request may have won
+	// the race while we upgraded from the target-only fast path.
+	existingVol, err = d.store.GetVolume(ctx, volumeID)
 	if err == nil {
 		if err := compareVolumeParameters(existingVol, req); err != nil {
 			return nil, status.Errorf(codes.AlreadyExists, "volume %s already exists but is incompatible: %v", volumeID, err)

@@ -3486,6 +3486,225 @@ func TestControllerExpandVolumeWaitsForInFlightDelete(t *testing.T) {
 	}
 }
 
+func TestCreateVolumeFromVolumeWaitsForSourceDelete(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
+		VolumeID:      "source-vol",
+		Name:          "source-pvc",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+
+	deleteEntered := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	backendCalled := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/svm-a":
+			close(deleteEntered)
+			<-releaseDelete
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodPost && (r.URL.Path == "/v1/snapshots" || r.URL.Path == "/v1/quotas"):
+			select {
+			case backendCalled <- r.URL.Path:
+			default:
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/volumes/source-path/clone":
+			select {
+			case backendCalled <- r.URL.Path:
+			default:
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"volume":{"name":"cloned"}}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, err := driver.DeleteVolume(context.Background(), &csi.DeleteVolumeRequest{VolumeId: "source-vol"})
+		deleteDone <- err
+	}()
+
+	select {
+	case <-deleteEntered:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for in-flight source delete")
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+			Name: "clone-pvc",
+			Parameters: map[string]string{
+				paramNamespace: "ns-a",
+				paramPVCName:   "clone-pvc",
+			},
+			CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+			VolumeCapabilities: testVolumeCapabilities(),
+			VolumeContentSource: &csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Volume{
+					Volume: &csi.VolumeContentSource_VolumeSource{VolumeId: "source-vol"},
+				},
+			},
+		})
+		createDone <- err
+	}()
+
+	select {
+	case path := <-backendCalled:
+		close(releaseDelete)
+		t.Fatalf("backend endpoint %s was called while source delete held the volume lifecycle lock", path)
+	case err := <-createDone:
+		close(releaseDelete)
+		t.Fatalf("CreateVolume returned before in-flight source delete completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseDelete)
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("DeleteVolume() error = %v", err)
+	}
+	if err := <-createDone; status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound after source delete completed, got %v", err)
+	}
+	select {
+	case path := <-backendCalled:
+		t.Fatalf("backend endpoint %s was called after source metadata was deleted", path)
+	default:
+	}
+}
+
+func TestCreateVolumeFromSnapshotWaitsForSnapshotDelete(t *testing.T) {
+	st := store.NewMemoryStore()
+	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{
+		VolumeID:      "source-vol",
+		Name:          "source-pvc",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+	if err := st.CreateSnapshot(context.Background(), &store.SnapshotInfo{
+		SnapshotID:       "snap-a",
+		Name:             "snap-a",
+		SourceVolumeID:   "source-vol",
+		SourceVolumePath: "source-path",
+		SVMName:          "svm-a",
+		Path:             "snap-a",
+		SizeBytes:        1 << 30,
+		CreatedAt:        time.Now(),
+		ReadyToUse:       true,
+	}); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+
+	deleteEntered := make(chan struct{})
+	releaseDelete := make(chan struct{})
+	backendCalled := make(chan string, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/snap-a":
+			close(deleteEntered)
+			<-releaseDelete
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		case r.Method == http.MethodPost && (r.URL.Path == "/v1/volumes/source-path/clone" || r.URL.Path == "/v1/quotas"):
+			select {
+			case backendCalled <- r.URL.Path:
+			default:
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+		store:      st,
+	}
+
+	deleteDone := make(chan error, 1)
+	go func() {
+		_, err := driver.DeleteSnapshot(context.Background(), &csi.DeleteSnapshotRequest{SnapshotId: "snap-a"})
+		deleteDone <- err
+	}()
+
+	select {
+	case <-deleteEntered:
+	case <-time.After(time.Second):
+		t.Fatalf("timed out waiting for in-flight snapshot delete")
+	}
+
+	createDone := make(chan error, 1)
+	go func() {
+		_, err := driver.CreateVolume(context.Background(), &csi.CreateVolumeRequest{
+			Name: "restore-pvc",
+			Parameters: map[string]string{
+				paramNamespace: "ns-a",
+				paramPVCName:   "restore-pvc",
+			},
+			CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+			VolumeCapabilities: testVolumeCapabilities(),
+			VolumeContentSource: &csi.VolumeContentSource{
+				Type: &csi.VolumeContentSource_Snapshot{
+					Snapshot: &csi.VolumeContentSource_SnapshotSource{SnapshotId: "snap-a"},
+				},
+			},
+		})
+		createDone <- err
+	}()
+
+	select {
+	case path := <-backendCalled:
+		close(releaseDelete)
+		t.Fatalf("backend endpoint %s was called while snapshot delete held the source volume lifecycle lock", path)
+	case err := <-createDone:
+		close(releaseDelete)
+		t.Fatalf("CreateVolume returned before in-flight snapshot delete completed: %v", err)
+	case <-time.After(100 * time.Millisecond):
+	}
+
+	close(releaseDelete)
+	if err := <-deleteDone; err != nil {
+		t.Fatalf("DeleteSnapshot() error = %v", err)
+	}
+	if err := <-createDone; status.Code(err) != codes.NotFound {
+		t.Fatalf("expected NotFound after snapshot delete completed, got %v", err)
+	}
+	select {
+	case path := <-backendCalled:
+		t.Fatalf("backend endpoint %s was called after snapshot metadata was deleted", path)
+	default:
+	}
+}
+
 func TestControllerExpandVolumeRejectsPendingVolume(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{

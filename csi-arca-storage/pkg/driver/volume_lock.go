@@ -3,6 +3,7 @@ package driver
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"k8s.io/klog/v2"
@@ -36,6 +37,42 @@ func lifecycleLockFromContext(ctx context.Context) lifecycleLockState {
 
 func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (context.Context, func(), error) {
 	return d.acquireVolumeLifecycleLock(ctx, volumeID, "create")
+}
+
+func (d *Driver) acquireVolumeLifecycleLocks(ctx context.Context, volumeIDs []string, operation string) (context.Context, func(), error) {
+	unique := make(map[string]struct{}, len(volumeIDs))
+	ordered := make([]string, 0, len(volumeIDs))
+	for _, volumeID := range volumeIDs {
+		if volumeID == "" {
+			continue
+		}
+		if _, ok := unique[volumeID]; ok {
+			continue
+		}
+		unique[volumeID] = struct{}{}
+		ordered = append(ordered, volumeID)
+	}
+	sort.Strings(ordered)
+
+	releases := make([]func(), 0, len(ordered))
+	lockedCtx := ctx
+	for _, volumeID := range ordered {
+		nextCtx, release, err := d.acquireVolumeLifecycleLock(lockedCtx, volumeID, operation)
+		if err != nil {
+			for i := len(releases) - 1; i >= 0; i-- {
+				releases[i]()
+			}
+			return ctx, nil, err
+		}
+		lockedCtx = nextCtx
+		releases = append(releases, release)
+	}
+
+	return lockedCtx, func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}, nil
 }
 
 func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, operation string) (context.Context, func(), error) {
