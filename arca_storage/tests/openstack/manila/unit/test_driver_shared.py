@@ -5,6 +5,7 @@ from unittest.mock import Mock, patch
 import pytest
 
 from arca_storage.openstack.manila import driver as manila_driver
+from arca_storage.openstack.manila import exceptions as arca_exceptions
 
 
 class TestArcaStorageManilaDriverSharedStrategy:
@@ -495,6 +496,39 @@ class TestArcaStorageManilaDriverSharedStrategy:
             )
 
         mock_arca_client.apply_qos.assert_not_called()
+
+    def test_create_share_from_snapshot_already_exists_returns_existing(
+        self, driver, mock_arca_client, mock_manila_snapshot
+    ):
+        new_share = {
+            "id": "share-456",
+            "size": 10,
+            "project_id": "test-project-id",
+            "metadata": {},
+        }
+        mock_arca_client.clone_volume_from_snapshot.side_effect = (
+            arca_exceptions.ArcaShareAlreadyExists(share_id="share-share-456")
+        )
+        mock_arca_client.get_volume.return_value = {
+            "name": "share-share-456",
+            "export_path": "192.168.100.5:/exports/test-svm/share-share-456",
+        }
+
+        exports = driver.create_share_from_snapshot(
+            Mock(), new_share, mock_manila_snapshot, None
+        )
+
+        assert exports == [
+            {
+                "path": "192.168.100.5:/exports/test-svm/share-share-456",
+                "is_admin_only": False,
+                "metadata": {},
+            }
+        ]
+        assert new_share["metadata"]["arca_svm_name"] == "test-svm"
+        mock_arca_client.get_volume.assert_called_once_with(
+            "share-share-456", "test-svm"
+        )
 
     def test_update_access_add_rule(
         self, driver, mock_arca_client, mock_manila_share, mock_access_rules

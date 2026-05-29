@@ -1812,6 +1812,8 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
             share_size,
         )
 
+        qos_limits: Dict[str, int] = {}
+        svm_name: Optional[str] = None
         try:
             qos_limits = self._qos_limits_for_share(share)
 
@@ -1909,6 +1911,49 @@ class ArcaStorageManilaDriver(manila_driver.ShareDriver):
                 }
             ]
 
+        except arca_exceptions.ArcaShareAlreadyExists:
+            if not svm_name:
+                raise
+            LOG.info("Share clone already exists, fetching existing export location")
+            try:
+                existing_volume = self.arca_client.get_volume(volume_name, svm_name)
+                raw_export_path = existing_volume.get("export_path")
+                export_path = (
+                    self._validate_nfs_export_path(
+                        raw_export_path,
+                        field_name=f"ARCA export_path for existing share {share_id}",
+                    )
+                    if raw_export_path
+                    else None
+                )
+                if export_path:
+                    self._persist_share_metadata(
+                        context, share, {"arca_svm_name": svm_name}
+                    )
+                    self._apply_qos_to_share(share, volume_name, svm_name, qos_limits)
+                    return [
+                        {
+                            "path": export_path,
+                            "is_admin_only": False,
+                            "metadata": {},
+                        }
+                    ]
+                LOG.error(
+                    "Share clone exists but is not exported (no export_path). "
+                    "This may indicate incomplete provisioning or backend error.",
+                )
+                raise manila_exception.ShareBackendException(
+                    f"Share {share_id} clone exists but is not exported. "
+                    "This may indicate incomplete provisioning."
+                )
+            except manila_exception.ShareBackendException:
+                raise
+            except Exception as fetch_error:
+                details = safe_error_detail(fetch_error)
+                LOG.error("Failed to fetch existing cloned share")
+                raise manila_exception.ShareBackendException(
+                    f"Failed to verify existing cloned share {share_id}: {details}"
+                )
         except Exception as e:
             details = safe_error_detail(e)
             LOG.error(
