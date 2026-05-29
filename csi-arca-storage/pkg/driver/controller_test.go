@@ -31,6 +31,7 @@ type failingCreateStore struct {
 	failCreateSnapshot       bool
 	failUpdateSnapshotStatus bool
 	onCreateVolume           func()
+	onCreateSnapshot         func()
 }
 
 func requireTemporaryCloneSnapshotName(t *testing.T, name, volumeID string) {
@@ -69,6 +70,9 @@ func (s *failingCreateStore) UpdateVolume(ctx context.Context, info *store.Volum
 }
 
 func (s *failingCreateStore) CreateSnapshot(ctx context.Context, info *store.SnapshotInfo) error {
+	if s.onCreateSnapshot != nil {
+		s.onCreateSnapshot()
+	}
 	if s.failCreateSnapshot {
 		return errors.New("store snapshot create failed")
 	}
@@ -596,6 +600,69 @@ func TestCreateVolumeDoesNotRestoreSnapshotWhenMetadataStoreFails(t *testing.T) 
 	}
 	if cleanupPath != "" {
 		t.Fatalf("cleanup path = %q, want no cleanup request", cleanupPath)
+	}
+}
+
+func TestCreateVolumeSkipsProvisionedCleanupWhenLifecycleContextCanceled(t *testing.T) {
+	st := &failingCreateStore{
+		MemoryStore: store.NewMemoryStore(),
+		failCreate:  true,
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.onCreateVolume = cancel
+
+	var directoryCreated bool
+	var cleanupCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodGet && r.URL.Path == "/v1/svms/k8s-ns-a":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"k8s-ns-a","ip_cidr":"10.0.0.10/24","vip":"10.0.0.10","export_root":"/exports/k8s-ns-a","gateway":"","mtu":1500,"state":"ready","created_at":"2026-01-01T00:00:00Z"}}`))
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/directories":
+			directoryCreated = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"directory":{}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/directories/k8s-ns-a":
+			cleanupCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		svmManager:    arca.NewSVMManager(client, nil, nil, 1500),
+		store:         st,
+		volumeIDGen:   idempotency.NewVolumeIDGenerator(),
+		snapshotIDGen: idempotency.NewSnapshotIDGenerator(),
+	}
+
+	_, err = driver.CreateVolume(ctx, &csi.CreateVolumeRequest{
+		Name: "cleanup-pvc",
+		Parameters: map[string]string{
+			paramNamespace: "ns-a",
+			paramPVCName:   "cleanup-pvc",
+		},
+		CapacityRange:      &csi.CapacityRange{RequiredBytes: 1 << 30},
+		VolumeCapabilities: testVolumeCapabilities(),
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if !directoryCreated {
+		t.Fatalf("directory endpoint was not called")
+	}
+	if cleanupCalled {
+		t.Fatalf("backend volume cleanup ran after lifecycle context was canceled")
 	}
 }
 
@@ -1654,6 +1721,72 @@ func TestCreateSnapshotCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 	}
 }
 
+func TestCreateSnapshotSkipsBackendCleanupWhenLifecycleContextCanceled(t *testing.T) {
+	st := &failingCreateStore{
+		MemoryStore:        store.NewMemoryStore(),
+		failCreateSnapshot: true,
+	}
+	if err := st.MemoryStore.CreateVolume(context.Background(), &store.VolumeInfo{
+		VolumeID:      "source-vol",
+		SVMName:       "svm-a",
+		VIP:           "10.0.0.10",
+		Path:          "source-path",
+		CapacityBytes: 1 << 30,
+	}); err != nil {
+		t.Fatalf("seed source volume: %v", err)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	st.onCreateSnapshot = cancel
+
+	snapshotIDGen := idempotency.NewSnapshotIDGenerator()
+	snapshotID := snapshotIDGen.GenerateSnapshotID("source-vol/snap-a")
+	var snapshotCreated bool
+	var cleanupCalled bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		switch {
+		case r.Method == http.MethodPost && r.URL.Path == "/v1/snapshots":
+			snapshotCreated = true
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"snapshot":{}}}`))
+		case r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/"+snapshotID:
+			cleanupCalled = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:          "controller",
+		arcaClient:    client,
+		store:         st,
+		snapshotIDGen: snapshotIDGen,
+	}
+
+	_, err = driver.CreateSnapshot(ctx, &csi.CreateSnapshotRequest{
+		Name:           "snap-a",
+		SourceVolumeId: "source-vol",
+	})
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal error, got %v", err)
+	}
+	if !snapshotCreated {
+		t.Fatalf("snapshot endpoint was not called")
+	}
+	if cleanupCalled {
+		t.Fatalf("backend snapshot cleanup ran after lifecycle context was canceled")
+	}
+}
+
 func TestCreateSnapshotCleansUpBackendWhenStatusStoreFails(t *testing.T) {
 	st := &failingCreateStore{
 		MemoryStore:              store.NewMemoryStore(),
@@ -1901,6 +2034,53 @@ func TestCreateVolumeKeepsPendingTemporaryCloneSnapshotOnCloneFailure(t *testing
 	}
 	if stored.TemporaryCloneSnapshot != temporarySnapshotName || stored.TemporaryCloneSourceVolumePath != "source-path" {
 		t.Fatalf("temporary clone metadata = (%q, %q), want (%q, source-path)", stored.TemporaryCloneSnapshot, stored.TemporaryCloneSourceVolumePath, temporarySnapshotName)
+	}
+}
+
+func TestCleanupTemporaryCloneSnapshotSkipsCanceledLifecycleContext(t *testing.T) {
+	var snapshotDeleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/temp-snap" {
+			snapshotDeleted = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+	}
+	volumeInfo := &store.VolumeInfo{
+		VolumeID:                       "target-vol",
+		TemporaryCloneSnapshot:         "temp-snap",
+		TemporaryCloneSourceVolumePath: "source-path",
+	}
+	sourceVol := &store.VolumeInfo{
+		SVMName: "svm-a",
+		Path:    "source-path",
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	err = driver.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol)
+
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("cleanup error = %v, want context canceled", err)
+	}
+	if snapshotDeleted {
+		t.Fatalf("temporary snapshot cleanup ran after lifecycle context was canceled")
+	}
+	if volumeInfo.TemporaryCloneSnapshot == "" || volumeInfo.TemporaryCloneSourceVolumePath == "" {
+		t.Fatalf("temporary clone metadata was cleared without backend cleanup")
 	}
 }
 

@@ -473,7 +473,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 				}
 				return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 			}
-			d.cleanupProvisionedVolume(volumeInfo, "metadata store failure")
+			d.cleanupProvisionedVolume(ctx, volumeInfo, "metadata store failure")
 			return nil, status.Errorf(codes.Internal, "failed to store volume metadata: %v", err)
 		}
 	}
@@ -486,7 +486,7 @@ func (d *Driver) CreateVolume(ctx context.Context, req *csi.CreateVolumeRequest)
 		} else {
 			klog.Warningf("Keeping pending volume metadata %s after quota failure because temporary clone snapshot %s still needs cleanup", volumeID, volumeInfo.TemporaryCloneSnapshot)
 		}
-		d.cleanupProvisionedVolume(volumeInfo, "quota failure")
+		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
 		return nil, status.Errorf(codes.Internal, "failed to set quota: %v", err)
 	}
 	if err := d.markVolumeReady(ctx, volumeInfo); err != nil {
@@ -627,12 +627,23 @@ func (d *Driver) ensureTemporaryCloneSnapshot(ctx context.Context, volumeInfo, s
 	return nil
 }
 
-func (d *Driver) cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol *store.VolumeInfo) error {
+func lifecycleCleanupContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
+	if err := ctx.Err(); err != nil {
+		return ctx, func() {}, err
+	}
+	cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	return cleanupCtx, cancel, nil
+}
+
+func (d *Driver) cleanupTemporaryCloneSnapshot(ctx context.Context, volumeInfo, sourceVol *store.VolumeInfo) error {
 	if volumeInfo.TemporaryCloneSnapshot == "" {
 		return nil
 	}
 
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	cleanupCtx, cancel, err := lifecycleCleanupContext(ctx)
+	if err != nil {
+		return fmt.Errorf("skipping temporary clone snapshot cleanup for %s because lifecycle context is canceled: %w", volumeInfo.VolumeID, err)
+	}
 	defer cancel()
 	if err := d.arcaClient.DeleteSnapshot(cleanupCtx, volumeInfo.TemporaryCloneSnapshot, sourceVol.SVMName, sourceVol.Path); err != nil {
 		return fmt.Errorf("failed to delete temporary clone snapshot %s: %w", volumeInfo.TemporaryCloneSnapshot, err)
@@ -648,7 +659,7 @@ func (d *Driver) retryTemporaryCloneSnapshotCleanup(ctx context.Context, volumeI
 		klog.Warningf("Failed to resolve source volume for temporary clone snapshot cleanup on %s: %v", volumeInfo.VolumeID, err)
 		return
 	}
-	if err := d.cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol); err != nil {
+	if err := d.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol); err != nil {
 		klog.Warningf("Failed to retry temporary clone snapshot cleanup for %s: %v", volumeInfo.VolumeID, err)
 		return
 	}
@@ -710,7 +721,7 @@ func (d *Driver) finishTemporaryVolumeClone(ctx context.Context, volumeInfo *sto
 	if err != nil {
 		if arca.IsAlreadyExistsError(err) {
 			if !allowExistingBackend {
-				if cleanupErr := d.cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol); cleanupErr != nil {
+				if cleanupErr := d.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol); cleanupErr != nil {
 					klog.Warningf("Failed to clean up temporary clone snapshot after clone conflict for %s: %v", volumeInfo.VolumeID, cleanupErr)
 				}
 				return status.Errorf(
@@ -725,7 +736,7 @@ func (d *Driver) finishTemporaryVolumeClone(ctx context.Context, volumeInfo *sto
 		}
 	}
 
-	if err := d.cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol); err != nil {
+	if err := d.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol); err != nil {
 		klog.Warningf("Failed to clean up temporary clone snapshot after cloning %s: %v", volumeInfo.VolumeID, err)
 	}
 	return nil
@@ -777,7 +788,7 @@ func (d *Driver) resumePendingVolume(ctx context.Context, volumeInfo *store.Volu
 		} else {
 			klog.Warningf("Keeping pending volume metadata %s after quota failure because temporary clone snapshot %s still needs cleanup", volumeInfo.VolumeID, volumeInfo.TemporaryCloneSnapshot)
 		}
-		d.cleanupProvisionedVolume(volumeInfo, "quota failure")
+		d.cleanupProvisionedVolume(ctx, volumeInfo, "quota failure")
 		return status.Errorf(codes.Internal, "failed to set quota: %v", err)
 	}
 	if err := d.markVolumeReady(ctx, volumeInfo); err != nil {
@@ -786,14 +797,18 @@ func (d *Driver) resumePendingVolume(ctx context.Context, volumeInfo *store.Volu
 	return nil
 }
 
-func (d *Driver) cleanupProvisionedVolume(volumeInfo *store.VolumeInfo, reason string) {
+func (d *Driver) cleanupProvisionedVolume(ctx context.Context, volumeInfo *store.VolumeInfo, reason string) {
 	if volumeInfo == nil || d.arcaClient == nil {
 		return
 	}
 
-	klog.Warningf("Cleaning up provisioned volume %s after %s", volumeInfo.VolumeID, reason)
-	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	cleanupCtx, cancel, err := lifecycleCleanupContext(ctx)
+	if err != nil {
+		klog.Warningf("Skipping backend volume cleanup for %s after %s because lifecycle context is canceled: %v", volumeInfo.VolumeID, reason, err)
+		return
+	}
 	defer cancel()
+	klog.Warningf("Cleaning up provisioned volume %s after %s", volumeInfo.VolumeID, reason)
 	if err := d.arcaClient.DeleteDirectory(cleanupCtx, volumeInfo.SVMName, volumeInfo.Path); err != nil && !arca.IsNotFoundError(err) {
 		klog.Warningf("Failed to clean up backend volume %s on SVM %s: %v", volumeInfo.Path, volumeInfo.SVMName, err)
 	}
@@ -896,7 +911,7 @@ func (d *Driver) DeleteVolume(ctx context.Context, req *csi.DeleteVolumeRequest)
 		if err != nil {
 			return nil, err
 		}
-		if err := d.cleanupTemporaryCloneSnapshot(volumeInfo, sourceVol); err != nil {
+		if err := d.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol); err != nil {
 			return nil, status.Errorf(codes.Internal, "failed to clean up temporary clone snapshot for volume %s: %v", volumeID, err)
 		}
 	}
@@ -1153,7 +1168,11 @@ func (d *Driver) CreateSnapshot(ctx context.Context, req *csi.CreateSnapshotRequ
 		if !backendSnapshotCreated {
 			return
 		}
-		cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		cleanupCtx, cancel, cleanupErr := lifecycleCleanupContext(ctx)
+		if cleanupErr != nil {
+			klog.Warningf("Skipping backend snapshot cleanup for %s after %s because lifecycle context is canceled: %v", snapshotID, reason, cleanupErr)
+			return
+		}
 		defer cancel()
 		if cleanupErr := d.arcaClient.DeleteSnapshot(cleanupCtx, snapshotID, sourceVolume.SVMName, sourceVolume.Path); cleanupErr != nil && !arca.IsNotFoundError(cleanupErr) {
 			klog.Warningf("Failed to clean up backend snapshot %s after %s: %v", snapshotID, reason, cleanupErr)
