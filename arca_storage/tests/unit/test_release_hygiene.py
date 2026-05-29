@@ -19,6 +19,8 @@ def test_python_workflow_checks_lint_and_format(repo_root):
     assert "python -m ruff check ." in workflow
     assert 'python -m ruff format --check "${python_files[@]}"' in workflow
     assert "git diff --name-only --diff-filter=ACMRT" in workflow
+    assert 'git rev-parse --verify --quiet "$base_ref"' in workflow
+    assert "--depth=1" not in workflow
     assert "name: Check Python formatting" in workflow
 
 

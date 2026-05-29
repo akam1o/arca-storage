@@ -45,8 +45,11 @@ jobs:
       - name: Check Python formatting
         run: |
           base_branch="${{ github.base_ref || 'main' }}"
-          git fetch origin "$base_branch" --depth=1
-          base_commit="$(git merge-base HEAD "origin/$base_branch")"
+          base_ref="origin/$base_branch"
+          if ! git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+            git fetch origin "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}"
+          fi
+          base_commit="$(git merge-base HEAD "$base_ref")"
           mapfile -t python_files < <(
             git diff --name-only --diff-filter=ACMRT "$base_commit" HEAD -- 'arca_storage/*.py' 'arca_storage/arca_storage/**/*.py' 'arca_storage/tests/**/*.py' |
               sed 's#^arca_storage/##'
