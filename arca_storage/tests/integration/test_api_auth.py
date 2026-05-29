@@ -1,5 +1,6 @@
 """Integration tests for optional API bearer-token authentication."""
 
+import re
 from unittest.mock import patch
 
 from fastapi.testclient import TestClient
@@ -122,6 +123,43 @@ def test_api_auth_protects_monitoring_endpoints(monkeypatch):
             response = client.get(path)
             assert response.status_code == 401
             assert response.json()["error"]["code"] == "UNAUTHORIZED"
+
+
+def test_api_auth_failures_are_recorded_in_metrics(monkeypatch):
+    monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+
+    with TestClient(app, base_url="http://127.0.0.1:8080") as client:
+        unauthorized = client.get("/healthz")
+        assert unauthorized.status_code == 401
+
+        monkeypatch.delenv("ARCA_API_TOKEN", raising=False)
+        monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
+        monkeypatch.delenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", raising=False)
+        token_required = client.get("/healthz")
+        assert token_required.status_code == 503
+
+        monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
+        metrics = client.get(
+            "/metrics", headers={"Authorization": "Bearer secret-token"}
+        )
+
+    assert metrics.status_code == 200
+    assert re.search(
+        r'arca_storage_http_requests_total\{method="GET",route="[^"]+",status="401"\} [1-9]\d*',
+        metrics.text,
+    )
+    assert re.search(
+        r'arca_storage_http_request_failures_total\{method="GET",route="[^"]+",status="401"\} [1-9]\d*',
+        metrics.text,
+    )
+    assert re.search(
+        r'arca_storage_http_requests_total\{method="GET",route="[^"]+",status="503"\} [1-9]\d*',
+        metrics.text,
+    )
+    assert re.search(
+        r'arca_storage_http_request_failures_total\{method="GET",route="[^"]+",status="503"\} [1-9]\d*',
+        metrics.text,
+    )
 
 
 def test_api_auth_accepts_openapi_schema_with_bearer_token(monkeypatch):

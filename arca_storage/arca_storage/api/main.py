@@ -166,24 +166,6 @@ def _request_log_path(request: Request) -> str:
 
 
 @app.middleware("http")
-async def record_http_metrics(request: Request, call_next):
-    """Record low-cardinality HTTP metrics for the Prometheus endpoint."""
-    started = time.perf_counter()
-    status_code = 500
-    try:
-        response = await call_next(request)
-        status_code = response.status_code
-        return response
-    finally:
-        _record_http_metric(
-            request.method,
-            _request_log_path(request),
-            status_code,
-            time.perf_counter() - started,
-        )
-
-
-@app.middleware("http")
 async def require_bearer_token(request: Request, call_next):
     """Require a bearer token when ARCA_API_TOKEN/ARCA_AUTH_TOKEN is configured."""
     token = configured_api_token()
@@ -225,6 +207,24 @@ async def require_bearer_token(request: Request, call_next):
         )
 
     return await call_next(request)
+
+
+@app.middleware("http")
+async def record_http_metrics(request: Request, call_next):
+    """Record low-cardinality HTTP metrics for the Prometheus endpoint."""
+    started = time.perf_counter()
+    status_code = 500
+    try:
+        response = await call_next(request)
+        status_code = response.status_code
+        return response
+    finally:
+        _record_http_metric(
+            request.method,
+            _request_log_path(request),
+            status_code,
+            time.perf_counter() - started,
+        )
 
 
 @app.exception_handler(ArcaError)
