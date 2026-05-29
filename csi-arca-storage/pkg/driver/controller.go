@@ -687,27 +687,30 @@ func (d *Driver) ensureTemporaryCloneSnapshot(ctx context.Context, volumeInfo, s
 }
 
 func lifecycleCleanupContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	lockState := lifecycleLockFromContext(ctx)
-	if lockState != nil {
+	lockStates := lifecycleLocksFromContext(ctx)
+	for _, lockState := range lockStates {
 		if err := lockState.Err(); err != nil {
 			return ctx, func() {}, err
 		}
 	}
 
 	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-	if lockState == nil {
+	if len(lockStates) == 0 {
 		return cleanupCtx, cancel, nil
 	}
 
 	done := make(chan struct{})
 	var stopWatcher sync.Once
-	go func() {
-		select {
-		case <-lockState.Done():
-			cancel()
-		case <-done:
-		}
-	}()
+	for _, lockState := range lockStates {
+		lockState := lockState
+		go func() {
+			select {
+			case <-lockState.Done():
+				cancel()
+			case <-done:
+			}
+		}()
+	}
 	return cleanupCtx, func() {
 		stopWatcher.Do(func() {
 			close(done)

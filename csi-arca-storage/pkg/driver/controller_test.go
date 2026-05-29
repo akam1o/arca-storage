@@ -2148,6 +2148,55 @@ func TestCleanupTemporaryCloneSnapshotSkipsLostLifecycleLock(t *testing.T) {
 	}
 }
 
+func TestLifecycleCleanupContextObservesEveryLifecycleLock(t *testing.T) {
+	t.Run("already lost", func(t *testing.T) {
+		lostLockDone := make(chan struct{})
+		close(lostLockDone)
+		heldLockDone := make(chan struct{})
+
+		ctx := withLifecycleLock(context.Background(), &fakeLifecycleLockState{
+			done: lostLockDone,
+			err:  lock.ErrLockLost,
+		})
+		ctx = withLifecycleLock(ctx, &fakeLifecycleLockState{
+			done: heldLockDone,
+		})
+
+		_, cancel, err := lifecycleCleanupContext(ctx)
+		defer cancel()
+
+		if !errors.Is(err, lock.ErrLockLost) {
+			t.Fatalf("cleanup context error = %v, want lock lost", err)
+		}
+	})
+
+	t.Run("lost after cleanup starts", func(t *testing.T) {
+		firstLockDone := make(chan struct{})
+		secondLockDone := make(chan struct{})
+
+		ctx := withLifecycleLock(context.Background(), &fakeLifecycleLockState{
+			done: firstLockDone,
+		})
+		ctx = withLifecycleLock(ctx, &fakeLifecycleLockState{
+			done: secondLockDone,
+		})
+
+		cleanupCtx, cancel, err := lifecycleCleanupContext(ctx)
+		defer cancel()
+		if err != nil {
+			t.Fatalf("lifecycleCleanupContext() error = %v", err)
+		}
+
+		close(firstLockDone)
+
+		select {
+		case <-cleanupCtx.Done():
+		case <-time.After(time.Second):
+			t.Fatalf("cleanup context was not canceled after the first lifecycle lock was lost")
+		}
+	})
+}
+
 func TestCreateVolumeRecordsCloneWhenTemporarySnapshotCleanupFails(t *testing.T) {
 	st := store.NewMemoryStore()
 	if err := st.CreateVolume(context.Background(), &store.VolumeInfo{

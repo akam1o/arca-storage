@@ -27,12 +27,32 @@ type lifecycleLockState interface {
 }
 
 func withLifecycleLock(ctx context.Context, lockState lifecycleLockState) context.Context {
-	return context.WithValue(ctx, lifecycleLockContextKey{}, lockState)
+	if lockState == nil {
+		return ctx
+	}
+	existingLockStates := lifecycleLocksFromContext(ctx)
+	lockStates := make([]lifecycleLockState, 0, len(existingLockStates)+1)
+	lockStates = append(lockStates, existingLockStates...)
+	lockStates = append(lockStates, lockState)
+	return context.WithValue(ctx, lifecycleLockContextKey{}, lockStates)
 }
 
-func lifecycleLockFromContext(ctx context.Context) lifecycleLockState {
-	lockState, _ := ctx.Value(lifecycleLockContextKey{}).(lifecycleLockState)
-	return lockState
+func lifecycleLocksFromContext(ctx context.Context) []lifecycleLockState {
+	var lockStates []lifecycleLockState
+	switch state := ctx.Value(lifecycleLockContextKey{}).(type) {
+	case []lifecycleLockState:
+		lockStates = state
+	case lifecycleLockState:
+		lockStates = []lifecycleLockState{state}
+	}
+
+	filteredLockStates := make([]lifecycleLockState, 0, len(lockStates))
+	for _, lockState := range lockStates {
+		if lockState != nil {
+			filteredLockStates = append(filteredLockStates, lockState)
+		}
+	}
+	return filteredLockStates
 }
 
 func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (context.Context, func(), error) {
