@@ -29,6 +29,36 @@ def db(tmp_path):
     state.close()
 
 
+def _create_legacy_v3_svm_table(conn: sqlite3.Connection) -> None:
+    conn.execute(
+        """CREATE TABLE svms (
+            id          TEXT PRIMARY KEY,
+            name        TEXT NOT NULL UNIQUE,
+            spec        TEXT NOT NULL,
+            status      TEXT NOT NULL,
+            generation  INTEGER NOT NULL DEFAULT 1,
+            created_at  TEXT NOT NULL,
+            updated_at  TEXT NOT NULL
+        )"""
+    )
+
+
+def _insert_legacy_svm(conn: sqlite3.Connection, svm: SVM) -> None:
+    conn.execute(
+        """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
+           VALUES (?, ?, ?, ?, ?, ?, ?)""",
+        (
+            svm.metadata.id,
+            svm.spec.name,
+            svm.spec.model_dump_json(),
+            svm.status.model_dump_json(),
+            svm.metadata.generation,
+            svm.metadata.created_at.isoformat(),
+            datetime.now(timezone.utc).isoformat(),
+        ),
+    )
+
+
 class TestStateDB:
     def test_state_db_migrates_version_one_cleanup_reservations(self, tmp_path):
         db_path = tmp_path / "state.db"
@@ -110,30 +140,8 @@ class TestStateDB:
         try:
             conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
             conn.execute("INSERT INTO schema_version (version) VALUES (3)")
-            conn.execute(
-                """CREATE TABLE svms (
-                    id          TEXT PRIMARY KEY,
-                    name        TEXT NOT NULL UNIQUE,
-                    spec        TEXT NOT NULL,
-                    status      TEXT NOT NULL,
-                    generation  INTEGER NOT NULL DEFAULT 1,
-                    created_at  TEXT NOT NULL,
-                    updated_at  TEXT NOT NULL
-                )"""
-            )
-            conn.execute(
-                """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
-                   VALUES (?, ?, ?, ?, ?, ?, ?)""",
-                (
-                    svm.metadata.id,
-                    svm.spec.name,
-                    svm.spec.model_dump_json(),
-                    svm.status.model_dump_json(),
-                    svm.metadata.generation,
-                    svm.metadata.created_at.isoformat(),
-                    datetime.now(timezone.utc).isoformat(),
-                ),
-            )
+            _create_legacy_v3_svm_table(conn)
+            _insert_legacy_svm(conn, svm)
             conn.commit()
         finally:
             conn.close()
@@ -165,6 +173,45 @@ class TestStateDB:
         assert row["network_vip"] == "10.0.0.5"
         assert row["network_key"] == "vlan:100:10.0.0.5"
         assert "idx_svms_network_key" in indexes
+
+    def test_state_db_migration_rejects_duplicate_svm_network_keys(self, tmp_path):
+        db_path = tmp_path / "state.db"
+        svms = [
+            SVM(
+                spec=SVMSpec(
+                    name="svm1",
+                    vlan_id=100,
+                    ip_cidr="10.0.0.5/24",
+                    gateway="10.0.0.1",
+                )
+            ),
+            SVM(
+                spec=SVMSpec(
+                    name="svm2",
+                    vlan_id=100,
+                    ip_cidr="10.0.0.5/32",
+                    gateway="10.0.0.1",
+                )
+            ),
+        ]
+        conn = sqlite3.connect(db_path)
+        try:
+            conn.execute("CREATE TABLE schema_version (version INTEGER NOT NULL)")
+            conn.execute("INSERT INTO schema_version (version) VALUES (3)")
+            _create_legacy_v3_svm_table(conn)
+            for svm in svms:
+                _insert_legacy_svm(conn, svm)
+            conn.commit()
+        finally:
+            conn.close()
+
+        with pytest.raises(RuntimeError) as exc_info:
+            StateDB(str(db_path))
+
+        message = str(exc_info.value)
+        assert "unique SVM network index" in message
+        assert "vlan:100:10.0.0.5 used by svm1, svm2" in message
+        assert "UNIQUE constraint" not in message
 
     def test_state_db_rejects_current_schema_missing_columns(self, tmp_path):
         db_path = tmp_path / "bad.db"

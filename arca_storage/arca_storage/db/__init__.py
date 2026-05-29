@@ -212,7 +212,37 @@ def _add_column_if_missing(
         conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
 
 
+def _raise_duplicate_svm_network_keys(conn: sqlite3.Connection) -> None:
+    duplicates = conn.execute(
+        """SELECT network_key, COUNT(*) AS count, GROUP_CONCAT(name, ', ') AS names
+           FROM (
+               SELECT network_key, name
+               FROM svms
+               WHERE network_key IS NOT NULL
+               ORDER BY network_key, name
+           )
+           GROUP BY network_key
+           HAVING count > 1
+           ORDER BY network_key"""
+    ).fetchall()
+    if not duplicates:
+        return
+
+    summaries = [
+        f"{row['network_key']} used by {row['names']}" for row in duplicates[:5]
+    ]
+    remaining = len(duplicates) - len(summaries)
+    if remaining:
+        summaries.append(f"{remaining} more duplicate network keys")
+    raise RuntimeError(
+        "State DB migration cannot create the unique SVM network index because "
+        "existing SVMs share a VIP on the same network. Resolve duplicate SVM "
+        f"network assignments before upgrading: {'; '.join(summaries)}"
+    )
+
+
 def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    _raise_duplicate_svm_network_keys(conn)
     conn.execute(
         """CREATE UNIQUE INDEX IF NOT EXISTS idx_svms_network_key
            ON svms(network_key)
