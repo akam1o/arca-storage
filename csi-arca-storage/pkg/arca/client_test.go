@@ -284,6 +284,9 @@ func TestListSVMsRejectsRepeatedPaginationCursor(t *testing.T) {
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("ListSVMs() error = %v, want ErrInvalidResponse", err)
 	}
+	if strings.Contains(err.Error(), "cursor-1") {
+		t.Fatalf("ListSVMs() error exposed cursor value: %v", err)
+	}
 	if calls != 2 {
 		t.Fatalf("GET calls = %d, want 2", calls)
 	}
@@ -667,6 +670,9 @@ func TestListSnapshotsRejectsRepeatedPaginationCursor(t *testing.T) {
 	_, err = client.ListSnapshots(context.Background(), "k8s-default", "pvc-1234", "")
 	if !errors.Is(err, ErrInvalidResponse) {
 		t.Fatalf("ListSnapshots() error = %v, want ErrInvalidResponse", err)
+	}
+	if strings.Contains(err.Error(), "cursor-1") {
+		t.Fatalf("ListSnapshots() error exposed cursor value: %v", err)
 	}
 	if calls != 2 {
 		t.Fatalf("GET calls = %d, want 2", calls)

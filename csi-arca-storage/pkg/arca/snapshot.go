@@ -60,7 +60,7 @@ func (c *Client) ListSnapshots(ctx context.Context, svmName, volume, name string
 			return all, nil
 		}
 		if _, ok := seenCursors[nextCursor]; ok {
-			return nil, fmt.Errorf("%w: repeated snapshot pagination cursor %q", ErrInvalidResponse, nextCursor)
+			return nil, fmt.Errorf("%w: repeated snapshot pagination cursor", ErrInvalidResponse)
 		}
 		seenCursors[nextCursor] = struct{}{}
 		cursor = nextCursor

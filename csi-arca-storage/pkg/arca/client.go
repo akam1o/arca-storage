@@ -367,7 +367,7 @@ func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 			return all, nil
 		}
 		if _, ok := seenCursors[nextCursor]; ok {
-			return nil, fmt.Errorf("%w: repeated SVM pagination cursor %q", ErrInvalidResponse, nextCursor)
+			return nil, fmt.Errorf("%w: repeated SVM pagination cursor", ErrInvalidResponse)
 		}
 		seenCursors[nextCursor] = struct{}{}
 		cursor = nextCursor
