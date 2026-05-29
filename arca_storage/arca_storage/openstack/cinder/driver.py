@@ -1276,10 +1276,10 @@ class ArcaStorageNFSDriver(remotefs_drv.RemoteFSDriver):
             copy_timeout = self.configuration.arca_storage_snapshot_copy_timeout
 
             # Copy snapshot file to volume file (preserving sparseness)
-            volume_file_should_cleanup = True
             arca_utils.copy_sparse_file(
                 snapshot_file, volume_file, timeout=copy_timeout
             )
+            volume_file_should_cleanup = True
 
             LOG.info("Created Cinder volume file from snapshot")
 

@@ -1347,10 +1347,10 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.getsize")
     @patch("arca_storage.openstack.cinder.driver.arca_utils")
-    def test_create_volume_from_snapshot_cleans_up_file_after_copy_failure(
+    def test_create_volume_from_snapshot_does_not_remove_after_copy_failure(
         self, mock_utils, mock_getsize, mock_remove
     ):
-        """Copy failures remove a partially-created destination file."""
+        """copy_sparse_file owns copy-failure cleanup and may fail on existing dest."""
         self._mock_driver_file_paths(mock_utils)
         source_volume = self._create_mock_volume(volume_id="source-vol-id")
         new_volume = self._create_mock_volume(
@@ -1366,9 +1366,7 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         with pytest.raises(exception.VolumeBackendAPIException):
             self.driver.create_volume_from_snapshot(new_volume, snapshot)
 
-        mock_remove.assert_called_once_with(
-            os.path.join(mount_point, "volume-new-vol-id")
-        )
+        mock_remove.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.driver.os.remove")
     @patch("arca_storage.openstack.cinder.driver.os.path.exists", return_value=True)
