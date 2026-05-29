@@ -97,6 +97,15 @@ def test_csi_runtime_image_uses_supported_alpine_branch(repo_root):
     assert "FROM alpine:3.19" not in dockerfile
 
 
+def test_csi_builder_image_matches_go_mod_toolchain(repo_root):
+    dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
+    go_mod = (repo_root / "csi-arca-storage/go.mod").read_text(encoding="utf-8")
+
+    assert "go 1.26.3" in go_mod
+    assert "FROM golang:1.26.3-alpine AS builder" in dockerfile
+    assert "FROM golang:1.25-alpine" not in dockerfile
+
+
 def test_csi_driver_version_matches_manifest_tag_and_build_flags(repo_root):
     dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
     makefile = (repo_root / "csi-arca-storage/Makefile").read_text(encoding="utf-8")
