@@ -79,7 +79,7 @@ jobs:
         run: docker build -t csi-arca-storage:ci .
 
       - name: Run Trivy image scan
-        uses: aquasecurity/trivy-action@v0.28.0
+        uses: aquasecurity/trivy-action@v0.36.0
         with:
           image-ref: csi-arca-storage:ci
           format: table

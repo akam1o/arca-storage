@@ -309,7 +309,8 @@ def test_csi_workflow_uses_resolvable_trivy_action_tag(repo_root):
         encoding="utf-8"
     )
 
-    assert "uses: aquasecurity/trivy-action@v0.28.0" in workflow
+    assert "uses: aquasecurity/trivy-action@v0.36.0" in workflow
+    assert "uses: aquasecurity/trivy-action@v0.28.0" not in workflow
     assert "uses: aquasecurity/trivy-action@0.28.0" not in workflow
 
 
