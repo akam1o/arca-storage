@@ -37,6 +37,18 @@ def test_python_workflow_enforces_coverage_floor(repo_root):
     )
 
     assert "--cov-fail-under=70" in workflow
+    assert "cp arca_storage/.coveragerc-core /tmp/.coveragerc-core" in workflow
+    assert "--cov-config=.coveragerc-core" in workflow
+
+    coverage_config = (repo_root / "arca_storage/.coveragerc-core").read_text(
+        encoding="utf-8"
+    )
+    assert "*/arca_storage/openstack/*" in coverage_config
+
+    openstack_workflow = (
+        repo_root / ".github/workflows/openstack-python-tests.yml"
+    ).read_text(encoding="utf-8")
+    assert "--cov-config=.coveragerc-core" not in openstack_workflow
 
 
 def test_python_slow_tests_run_on_schedule(repo_root):
@@ -290,6 +302,37 @@ def test_csi_workflow_verifies_kubeconform_checksum(repo_root):
         "95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73" in workflow
     )
     assert "sha256sum -c -" in workflow
+
+
+def test_csi_workflow_uses_resolvable_trivy_action_tag(repo_root):
+    workflow = (repo_root / ".github/workflows/csi-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "uses: aquasecurity/trivy-action@v0.28.0" in workflow
+    assert "uses: aquasecurity/trivy-action@0.28.0" not in workflow
+
+
+def test_csi_workflow_prepares_kustomize_secret_fixtures(repo_root):
+    workflow = (repo_root / ".github/workflows/csi-tests.yml").read_text(
+        encoding="utf-8"
+    )
+
+    assert "Prepare kustomize overlay fixtures" in workflow
+    assert (
+        "csi-arca-storage/deploy/kustomize/overlays/development/secrets.env.example"
+        in workflow
+    )
+    assert (
+        "csi-arca-storage/deploy/kustomize/overlays/development/secrets.env" in workflow
+    )
+    assert (
+        "csi-arca-storage/deploy/kustomize/overlays/production/secrets.env.example"
+        in workflow
+    )
+    assert (
+        "csi-arca-storage/deploy/kustomize/overlays/production/secrets.env" in workflow
+    )
 
 
 def test_csi_controller_rbac_limits_crd_discovery(repo_root):

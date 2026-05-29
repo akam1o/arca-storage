@@ -76,6 +76,7 @@ class ArcaError(Exception):
 
 # Convenience subclasses
 
+
 class AlreadyExistsError(ArcaError):
     def __init__(self, resource: str, name: str) -> None:
         super().__init__(

@@ -10,7 +10,11 @@ import pytest
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
-from arca_storage.cli.lib.validators import legacy_snapshot_lv_name, snapshot_lv_name, volume_lv_name
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    snapshot_lv_name,
+    volume_lv_name,
+)
 from arca_storage.create_resume import assign_create_lease
 
 
@@ -23,7 +27,12 @@ def client():
 def create_test_svm(client: TestClient) -> None:
     client.post(
         "/v1/svms",
-        json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+        json={
+            "name": "tenant_a",
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
     )
 
 
@@ -32,20 +41,28 @@ def switch_export_dir(fake_context, export_dir: str) -> None:
 
     cfg = {**fake_context.settings.to_reconciler_config(), "export_dir": export_dir}
     fake_context.settings.to_reconciler_config = lambda: cfg
-    fake_context.volume_reconciler = VolumeReconciler(fake_context.db, fake_context.adapters, config=cfg)
+    fake_context.volume_reconciler = VolumeReconciler(
+        fake_context.db, fake_context.adapters, config=cfg
+    )
 
 
-def stored_volume_lv_name(fake_context, svm: str = "tenant_a", name: str = "vol1") -> str:
+def stored_volume_lv_name(
+    fake_context, svm: str = "tenant_a", name: str = "vol1"
+) -> str:
     record = fake_context.db.get_volume(svm, name)
     if record:
         return record["status"].get("lv_name") or volume_lv_name(svm, name)
     return volume_lv_name(svm, name)
 
 
-def stored_snapshot_lv_name(fake_context, svm: str = "tenant_a", volume: str = "vol1", name: str = "snap1") -> str:
+def stored_snapshot_lv_name(
+    fake_context, svm: str = "tenant_a", volume: str = "vol1", name: str = "snap1"
+) -> str:
     records = fake_context.db.list_snapshots(svm=svm, volume=volume, name=name)
     if records:
-        return records[0]["status"].get("lv_name") or snapshot_lv_name(svm, volume, name)
+        return records[0]["status"].get("lv_name") or snapshot_lv_name(
+            svm, volume, name
+        )
     return snapshot_lv_name(svm, volume, name)
 
 
@@ -74,7 +91,14 @@ class TestCreateVolume:
         }
 
         response = client.post(
-            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 100, "thin": True, "fs_type": "xfs"}
+            "/v1/volumes",
+            json={
+                "name": "vol1",
+                "svm": "tenant_a",
+                "size_gib": 100,
+                "thin": True,
+                "fs_type": "xfs",
+            },
         )
 
         assert response.status_code == 201
@@ -86,7 +110,8 @@ class TestCreateVolume:
     def test_create_volume_invalid_name(self, client):
         """Test creating volume with invalid name."""
         response = client.post(
-            "/v1/volumes", json={"name": "vol 1", "svm": "tenant_a", "size_gib": 100}  # space in name
+            "/v1/volumes",
+            json={"name": "vol 1", "svm": "tenant_a", "size_gib": 100},  # space in name
         )
 
         assert response.status_code == 400
@@ -96,7 +121,12 @@ class TestCreateVolume:
     def test_create_volume_rejects_unsupported_fs_type(self, client):
         response = client.post(
             "/v1/volumes",
-            json={"name": "vol1", "svm": "tenant_a", "size_gib": 100, "fs_type": "ext4"},
+            json={
+                "name": "vol1",
+                "svm": "tenant_a",
+                "size_gib": 100,
+                "fs_type": "ext4",
+            },
         )
 
         assert response.status_code == 400
@@ -106,7 +136,9 @@ class TestCreateVolume:
     def test_create_volume_requires_existing_svm(self, fake_context):
         client = TestClient(app)
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "missing", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "missing", "size_gib": 10}
+        )
 
         assert response.status_code == 404
         assert response.json()["error"]["code"] == "NOT_FOUND"
@@ -117,10 +149,19 @@ class TestCreateVolume:
 
         client = TestClient(app)
         fake_context.db.insert_svm(
-            SVM(spec=SVMSpec(name="tenant_a", vlan_id=100, ip_cidr="192.168.10.5/24", gateway="192.168.10.1"))
+            SVM(
+                spec=SVMSpec(
+                    name="tenant_a",
+                    vlan_id=100,
+                    ip_cidr="192.168.10.5/24",
+                    gateway="192.168.10.1",
+                )
+            )
         )
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
@@ -137,7 +178,9 @@ class TestCreateVolume:
         create_test_svm(client)
         fake_context.db.reserve_svm_delete("tenant_a")
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
@@ -145,14 +188,23 @@ class TestCreateVolume:
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
 
     @pytest.mark.integration
-    def test_create_volume_rejects_duplicate_without_mutating_existing(self, fake_context):
+    def test_create_volume_rejects_duplicate_without_mutating_existing(
+        self, fake_context
+    ):
         client = TestClient(app)
         create_test_svm(client)
-        first = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        first = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         assert first.status_code == 201
-        assert first.json()["data"]["volume"]["export_path"] == "192.168.10.5:/exports/tenant_a/vol1"
+        assert (
+            first.json()["data"]["volume"]["export_path"]
+            == "192.168.10.5:/exports/tenant_a/vol1"
+        )
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20}
+        )
 
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "ALREADY_EXISTS"
@@ -161,20 +213,30 @@ class TestCreateVolume:
         assert record["status"]["phase"] == "Ready"
 
     @pytest.mark.integration
-    def test_create_volume_rejects_reserved_duplicate_without_side_effects(self, fake_context):
+    def test_create_volume_rejects_reserved_duplicate_without_side_effects(
+        self, fake_context
+    ):
         from arca_storage.models.volume import Volume, VolumeSpec
 
         client = TestClient(app)
         create_test_svm(client)
-        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+        fake_context.db.insert_volume(
+            Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10))
+        )
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert response.status_code == 409
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_volume_lv_name(fake_context)
+        )
 
     @pytest.mark.integration
-    def test_create_volume_rejects_live_leased_duplicate_without_side_effects(self, fake_context):
+    def test_create_volume_rejects_live_leased_duplicate_without_side_effects(
+        self, fake_context
+    ):
         from arca_storage.models.volume import Volume, VolumeSpec
 
         client = TestClient(app)
@@ -183,10 +245,14 @@ class TestCreateVolume:
         assign_create_lease(volume.status, "live-owner")
         fake_context.db.insert_volume(volume)
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert response.status_code == 409
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_volume_lv_name(fake_context)
+        )
 
     @pytest.mark.integration
     def test_create_volume_resumes_stale_reserved_duplicate(self, fake_context):
@@ -194,7 +260,9 @@ class TestCreateVolume:
 
         client = TestClient(app)
         create_test_svm(client)
-        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+        fake_context.db.insert_volume(
+            Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10))
+        )
         expired_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
         record = fake_context.db.get_volume("tenant_a", "vol1")
         status = record["status"]
@@ -208,11 +276,15 @@ class TestCreateVolume:
         )
         conn.commit()
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert response.status_code == 201
         assert response.json()["data"]["volume"]["status"] == "Ready"
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context))
+        assert fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_volume_lv_name(fake_context)
+        )
 
     @pytest.mark.integration
     def test_create_volume_returns_structured_reconcile_failure(self, fake_context):
@@ -224,7 +296,9 @@ class TestCreateVolume:
 
         fake_context.adapters.xfs.mount = fail_mount
 
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert response.status_code == 500
         assert response.json()["error"] == {
@@ -258,7 +332,9 @@ class TestResizeVolume:
             "created_at": "2025-12-20T12:00:00Z",
         }
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 200})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 200}
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -293,48 +369,77 @@ class TestResizeVolume:
                 ),
             )
         )
-        fake_context.adapters.lvm.create_thin_lv("vg_pool_01", "pool", "vol_tenant_a_vol1", 20)
-        fake_context.adapters.xfs.mount("/dev/vg_pool_01/vol_tenant_a_vol1", "/exports/tenant_a/vol1")
+        fake_context.adapters.lvm.create_thin_lv(
+            "vg_pool_01", "pool", "vol_tenant_a_vol1", 20
+        )
+        fake_context.adapters.xfs.mount(
+            "/dev/vg_pool_01/vol_tenant_a_vol1", "/exports/tenant_a/vol1"
+        )
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40}
+        )
 
         assert response.status_code == 200
-        returned_created_at = response.json()["data"]["volume"]["created_at"].replace("Z", "+00:00")
+        returned_created_at = response.json()["data"]["volume"]["created_at"].replace(
+            "Z", "+00:00"
+        )
         assert datetime.fromisoformat(returned_created_at) == created_at
 
     @pytest.mark.integration
     def test_resize_volume_requires_existing_record_before_mutation(self, fake_context):
         client = TestClient(app)
-        fake_context.adapters.lvm.create_thin_lv("vg_pool_01", "pool", "vol_tenant_a_missing", 10)
-        fake_context.adapters.xfs.mount("/dev/vg_pool_01/vol_tenant_a_missing", "/exports/tenant_a/missing")
+        fake_context.adapters.lvm.create_thin_lv(
+            "vg_pool_01", "pool", "vol_tenant_a_missing", 10
+        )
+        fake_context.adapters.xfs.mount(
+            "/dev/vg_pool_01/vol_tenant_a_missing", "/exports/tenant_a/missing"
+        )
 
-        response = client.patch("/v1/volumes/missing", json={"svm": "tenant_a", "new_size_gib": 20})
+        response = client.patch(
+            "/v1/volumes/missing", json={"svm": "tenant_a", "new_size_gib": 20}
+        )
 
         assert response.status_code == 404
-        assert fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_missing"] == 10
+        assert (
+            fake_context.adapters.lvm.volumes["vg_pool_01/vol_tenant_a_missing"] == 10
+        )
 
     @pytest.mark.integration
     def test_resize_volume_rejects_shrink_without_mutation(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20}
+        )
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 10})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 10}
+        )
 
         assert response.status_code == 412
         record = fake_context.db.get_volume("tenant_a", "vol1")
         assert record["spec"]["size_gib"] == 20
         assert record["status"].get("resize_owner") is None
         assert record["status"].get("resize_lease_expires_at") is None
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 20
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 20
+        )
 
     @pytest.mark.integration
     def test_resize_volume_noop_does_not_reserve_lease(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20}
+        )
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20}
+        )
 
         assert response.status_code == 200
         assert response.json()["data"]["volume"]["size_gib"] == 20
@@ -342,7 +447,12 @@ class TestResizeVolume:
         assert record["spec"]["size_gib"] == 20
         assert record["status"].get("resize_owner") is None
         assert record["status"].get("resize_lease_expires_at") is None
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 20
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 20
+        )
 
     @pytest.mark.integration
     def test_resize_volume_rejects_unready_record_without_mutation(self, fake_context):
@@ -350,36 +460,53 @@ class TestResizeVolume:
 
         client = TestClient(app)
         create_test_svm(client)
-        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=20)))
+        fake_context.db.insert_volume(
+            Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=20))
+        )
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40}
+        )
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert response.json()["error"]["details"]["phase"] == "Pending"
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_volume_lv_name(fake_context)
+        )
 
     @pytest.mark.integration
     def test_resize_volume_rejects_deleting_svm(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20}
+        )
         fake_context.db.reserve_svm_delete("tenant_a", delete_volumes=True)
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40}
+        )
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert response.json()["error"]["details"]["phase"] == "Deleting"
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 20
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 20
+        )
 
     @pytest.mark.integration
     def test_resize_volume_retries_grow_after_lv_extension(self, fake_context):
         client = TestClient(app, raise_server_exceptions=False)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 20}
+        )
 
         original_grow = fake_context.adapters.xfs.grow
         grow_calls = {"count": 0}
@@ -392,42 +519,73 @@ class TestResizeVolume:
 
         fake_context.adapters.xfs.grow = flaky_grow
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40}
+        )
         assert response.status_code == 500
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 40
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 40
+        )
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30}
+        )
         assert response.status_code == 412
         assert response.json()["error"]["details"]["current_size_gib"] == 40
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 40
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 40
+        )
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 40
         assert grow_calls["count"] == 2
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 40}
+        )
 
         assert response.status_code == 200
         assert response.json()["data"]["volume"]["size_gib"] == 40
         assert grow_calls["count"] == 2
 
     @pytest.mark.integration
-    def test_resize_volume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
+    def test_resize_volume_uses_persisted_mount_path_after_export_dir_change(
+        self, fake_context
+    ):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         switch_export_dir(fake_context, "/newexports")
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20}
+        )
 
         assert response.status_code == 200
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 20
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 20
+        )
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 20
 
     @pytest.mark.integration
-    def test_resize_volume_does_not_recreate_concurrently_deleted_record(self, fake_context):
+    def test_resize_volume_does_not_recreate_concurrently_deleted_record(
+        self, fake_context
+    ):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         original_grow = fake_context.adapters.xfs.grow
 
         def delete_record_during_grow(mount_path):
@@ -436,7 +594,9 @@ class TestResizeVolume:
 
         fake_context.adapters.xfs.grow = delete_record_during_grow
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20}
+        )
 
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "CONFLICT"
@@ -446,7 +606,9 @@ class TestResizeVolume:
     def test_resize_volume_rejects_overlapping_resize(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         original_resize = fake_context.adapters.lvm.resize_lv
         nested_responses = []
         triggered = {"value": False}
@@ -455,19 +617,28 @@ class TestResizeVolume:
             if new_size_gib == 30 and not triggered["value"]:
                 triggered["value"] = True
                 nested_responses.append(
-                    client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
+                    client.patch(
+                        "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20}
+                    )
                 )
             original_resize(vg_name, lv_name, new_size_gib)
 
         fake_context.adapters.lvm.resize_lv = resize_with_nested_request
 
-        response = client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30})
+        response = client.patch(
+            "/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 30}
+        )
 
         assert response.status_code == 200
         assert nested_responses[0].status_code == 409
         assert nested_responses[0].json()["error"]["code"] == "CONFLICT"
         assert fake_context.db.get_volume("tenant_a", "vol1")["spec"]["size_gib"] == 30
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context))] == 30
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context))
+            ]
+            == 30
+        )
 
 
 class TestCloneVolume:
@@ -477,12 +648,21 @@ class TestCloneVolume:
     def test_clone_volume_applies_larger_requested_size(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         response = client.post(
             "/v1/volumes/vol1/clone",
-            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+            json={
+                "name": "clone1",
+                "svm": "tenant_a",
+                "snapshot": "snap1",
+                "size_gib": 20,
+            },
         )
 
         assert response.status_code == 201
@@ -492,20 +672,39 @@ class TestCloneVolume:
         assert volume["fs_type"] == "xfs"
         assert volume["lv_name"] == stored_volume_lv_name(fake_context, name="clone1")
         assert volume["export_path"] == "192.168.10.5:/exports/tenant_a/clone1"
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context, name="clone1"))] == 20
-        assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20
-        assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
-        snapshot = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context, name="clone1"))
+            ]
+            == 20
+        )
+        assert (
+            fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 20
+        )
+        assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == [
+            "nouuid"
+        ]
+        snapshot = fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )[0]
         assert "clone_leases" not in snapshot["status"]
 
     @pytest.mark.integration
     def test_clone_volume_uses_source_volume_from_route(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/volumes", json={"name": "vol2", "svm": "tenant_a", "size_gib": 30})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol2"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/volumes", json={"name": "vol2", "svm": "tenant_a", "size_gib": 30}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol2"}
+        )
 
         response = client.post(
             "/v1/volumes/vol2/clone",
@@ -515,14 +714,23 @@ class TestCloneVolume:
         assert response.status_code == 201
         volume = response.json()["data"]["volume"]
         assert volume["size_gib"] == 30
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context, name="clone2"))] == 30
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context, name="clone2"))
+            ]
+            == 30
+        )
 
     @pytest.mark.integration
     def test_clone_volume_uses_snapshot_size_after_source_expansion(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
         client.patch("/v1/volumes/vol1", json={"svm": "tenant_a", "new_size_gib": 20})
 
         response = client.post(
@@ -533,16 +741,31 @@ class TestCloneVolume:
         assert response.status_code == 201
         volume = response.json()["data"]["volume"]
         assert volume["size_gib"] == 10
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context, name="clone1"))] == 10
-        assert fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 10
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context, name="clone1"))
+            ]
+            == 10
+        )
+        assert (
+            fake_context.db.get_volume("tenant_a", "clone1")["spec"]["size_gib"] == 10
+        )
 
     @pytest.mark.integration
-    def test_clone_volume_rejects_legacy_snapshot_with_unreadable_size(self, fake_context):
+    def test_clone_volume_rejects_legacy_snapshot_with_unreadable_size(
+        self, fake_context
+    ):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
-        snapshot = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
+        snapshot = fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )[0]
         status = snapshot["status"]
         status.pop("size_gib", None)
         conn = fake_context.db._conn()
@@ -566,20 +789,32 @@ class TestCloneVolume:
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert fake_context.db.get_volume("tenant_a", "clone1") is None
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "clone1"))
-        snapshot = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "clone1")
+        )
+        snapshot = fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )[0]
         assert "clone_leases" not in snapshot["status"]
 
     @pytest.mark.integration
-    def test_clone_volume_resume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
+    def test_clone_volume_resume_uses_persisted_mount_path_after_export_dir_change(
+        self, fake_context
+    ):
         from arca_storage.models.volume import Volume, VolumeSpec
 
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
-        clone = Volume(spec=VolumeSpec(name="clone1", svm="tenant_a", size_gib=10, thin=True))
+        clone = Volume(
+            spec=VolumeSpec(name="clone1", svm="tenant_a", size_gib=10, thin=True)
+        )
         assign_create_lease(clone.status, "dead-owner")
         clone.status.lv_created = True
         clone.status.lv_path = "/dev/vg_pool_01/vol_tenant_a_clone1"
@@ -624,8 +859,12 @@ class TestCloneVolume:
     def test_clone_volume_cleans_up_new_lv_on_mount_or_grow_failure(self, fake_context):
         client = TestClient(app, raise_server_exceptions=False)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         def fail_grow(_mount_path):
             raise RuntimeError("grow failed")
@@ -634,35 +873,55 @@ class TestCloneVolume:
 
         response = client.post(
             "/v1/volumes/vol1/clone",
-            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+            json={
+                "name": "clone1",
+                "svm": "tenant_a",
+                "snapshot": "snap1",
+                "size_gib": 20,
+            },
         )
 
         assert response.status_code == 500
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context, name="clone1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_volume_lv_name(fake_context, name="clone1")
+        )
         assert "/exports/tenant_a/clone1" not in fake_context.adapters.xfs.mounts
         record = fake_context.db.get_volume("tenant_a", "clone1")
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["lv_created"] is False
 
         def grow(mount_path):
-            return type(fake_context.adapters.xfs).grow(fake_context.adapters.xfs, mount_path)
+            return type(fake_context.adapters.xfs).grow(
+                fake_context.adapters.xfs, mount_path
+            )
 
         fake_context.adapters.xfs.grow = grow
         response = client.post(
             "/v1/volumes/vol1/clone",
-            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+            json={
+                "name": "clone1",
+                "svm": "tenant_a",
+                "snapshot": "snap1",
+                "size_gib": 20,
+            },
         )
 
         assert response.status_code == 201
         assert response.json()["data"]["volume"]["status"] == "Ready"
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_volume_lv_name(fake_context, name="clone1"))
+        assert fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_volume_lv_name(fake_context, name="clone1")
+        )
 
     @pytest.mark.integration
     def test_clone_volume_preserves_state_when_cleanup_delete_fails(self, fake_context):
         client = TestClient(app, raise_server_exceptions=False)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         clone_lv = volume_lv_name("tenant_a", "clone1")
         original_delete_lv = fake_context.adapters.lvm.delete_lv
@@ -680,7 +939,12 @@ class TestCloneVolume:
 
         response = client.post(
             "/v1/volumes/vol1/clone",
-            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+            json={
+                "name": "clone1",
+                "svm": "tenant_a",
+                "snapshot": "snap1",
+                "size_gib": 20,
+            },
         )
 
         assert response.status_code == 500
@@ -697,13 +961,20 @@ class TestCloneVolume:
         assert "lv cleanup failed" in record["status"]["message"]
 
         def grow(mount_path):
-            return type(fake_context.adapters.xfs).grow(fake_context.adapters.xfs, mount_path)
+            return type(fake_context.adapters.xfs).grow(
+                fake_context.adapters.xfs, mount_path
+            )
 
         fake_context.adapters.xfs.grow = grow
         fake_context.adapters.lvm.delete_lv = original_delete_lv
         response = client.post(
             "/v1/volumes/vol1/clone",
-            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+            json={
+                "name": "clone1",
+                "svm": "tenant_a",
+                "snapshot": "snap1",
+                "size_gib": 20,
+            },
         )
 
         assert response.status_code == 201
@@ -716,10 +987,16 @@ class TestCloneVolume:
 
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
-        clone = Volume(spec=VolumeSpec(name="clone1", svm="tenant_a", size_gib=20, thin=True))
+        clone = Volume(
+            spec=VolumeSpec(name="clone1", svm="tenant_a", size_gib=20, thin=True)
+        )
         assign_create_lease(clone.status, "dead-owner")
         fake_context.db.insert_volume(clone)
         expired_at = (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat()
@@ -740,24 +1017,42 @@ class TestCloneVolume:
 
         response = client.post(
             "/v1/volumes/vol1/clone",
-            json={"name": "clone1", "svm": "tenant_a", "snapshot": "snap1", "size_gib": 20},
+            json={
+                "name": "clone1",
+                "svm": "tenant_a",
+                "snapshot": "snap1",
+                "size_gib": 20,
+            },
         )
 
         assert response.status_code == 201
         volume = response.json()["data"]["volume"]
         assert volume["status"] == "Ready"
         assert volume["size_gib"] == 20
-        assert fake_context.adapters.lvm.volumes[lvm_key(stored_volume_lv_name(fake_context, name="clone1"))] == 20
-        assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == ["nouuid"]
+        assert (
+            fake_context.adapters.lvm.volumes[
+                lvm_key(stored_volume_lv_name(fake_context, name="clone1"))
+            ]
+            == 20
+        )
+        assert fake_context.adapters.xfs.mount_options["/exports/tenant_a/clone1"] == [
+            "nouuid"
+        ]
 
     @pytest.mark.integration
-    def test_clone_volume_rejects_unready_snapshot_without_target_record(self, fake_context):
+    def test_clone_volume_rejects_unready_snapshot_without_target_record(
+        self, fake_context
+    ):
         from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        fake_context.db.insert_snapshot(Snapshot(spec=SnapshotSpec(name="snap1", svm="tenant_a", volume="vol1")))
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        fake_context.db.insert_snapshot(
+            Snapshot(spec=SnapshotSpec(name="snap1", svm="tenant_a", volume="vol1"))
+        )
 
         response = client.post(
             "/v1/volumes/vol1/clone",
@@ -768,16 +1063,22 @@ class TestCloneVolume:
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert response.json()["error"]["details"]["phase"] == "Pending"
         assert fake_context.db.get_volume("tenant_a", "clone1") is None
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "clone1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "clone1")
+        )
 
     @pytest.mark.integration
-    def test_clone_volume_rejects_snapshot_with_missing_source_without_target_record(self, fake_context):
+    def test_clone_volume_rejects_snapshot_with_missing_source_without_target_record(
+        self, fake_context
+    ):
         from arca_storage.models.base import Phase
         from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 
         client = TestClient(app)
         create_test_svm(client)
-        snapshot = Snapshot(spec=SnapshotSpec(name="snap1", svm="tenant_a", volume="missing"))
+        snapshot = Snapshot(
+            spec=SnapshotSpec(name="snap1", svm="tenant_a", volume="missing")
+        )
         snapshot.status.phase = Phase.READY
         snapshot.status.lv_created = True
         fake_context.db.insert_snapshot(snapshot)
@@ -789,9 +1090,13 @@ class TestCloneVolume:
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
-        assert response.json()["error"]["details"]["source_volume"] == "tenant_a/missing"
+        assert (
+            response.json()["error"]["details"]["source_volume"] == "tenant_a/missing"
+        )
         assert fake_context.db.get_volume("tenant_a", "clone1") is None
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "clone1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "clone1")
+        )
 
 
 class TestSnapshots:
@@ -801,8 +1106,12 @@ class TestSnapshots:
     def test_list_snapshots_returns_public_shape(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         response = client.get("/v1/snapshots?svm=tenant_a&volume=vol1")
 
@@ -825,7 +1134,9 @@ class TestSnapshots:
         )
         assert response.status_code == 201
 
-        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        response = client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
@@ -837,28 +1148,38 @@ class TestSnapshots:
 
         client = TestClient(app)
         create_test_svm(client)
-        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+        fake_context.db.insert_volume(
+            Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10))
+        )
 
-        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        response = client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         assert response.status_code == 412
         assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
         assert response.json()["error"]["details"]["phase"] == "Pending"
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", snapshot_lv_name("tenant_a", "vol1", "snap1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", snapshot_lv_name("tenant_a", "vol1", "snap1")
+        )
 
     @pytest.mark.integration
     def test_create_snapshot_returns_structured_reconcile_failure(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         def fail_create_snapshot(*args, **kwargs):
             raise RuntimeError("snapshot failed")
 
         fake_context.adapters.lvm.create_snapshot = fail_create_snapshot
 
-        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        response = client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         assert response.status_code == 500
         assert response.json()["error"] == {
@@ -872,17 +1193,23 @@ class TestSnapshots:
         }
 
     @pytest.mark.integration
-    def test_create_snapshot_rejects_unavailable_size_without_ready_record(self, fake_context):
+    def test_create_snapshot_rejects_unavailable_size_without_ready_record(
+        self, fake_context
+    ):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         def fail_get_lv_size_gib(_vg_name, _lv_name):
             raise RuntimeError("lvs failed")
 
         fake_context.adapters.lvm.get_lv_size_gib = fail_get_lv_size_gib
 
-        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        response = client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         assert response.status_code == 500
         assert response.json()["error"] == {
@@ -894,8 +1221,12 @@ class TestSnapshots:
                 "reason": "Create failed: Snapshot size is unavailable",
             },
         }
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", snapshot_lv_name("tenant_a", "vol1", "snap1"))
-        record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", snapshot_lv_name("tenant_a", "vol1", "snap1")
+        )
+        record = fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )[0]
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["lv_created"] is False
         assert record["status"]["size_gib"] is None
@@ -904,7 +1235,12 @@ class TestSnapshots:
     def test_create_snapshot_recovers_expired_cleanup_reservation(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        assert client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}).status_code == 201
+        assert (
+            client.post(
+                "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+            ).status_code
+            == 201
+        )
         source_lv = stored_volume_lv_name(fake_context)
         snap_lv = snapshot_lv_name("tenant_a", "vol1", "snap1")
         fake_context.adapters.lvm.create_snapshot(
@@ -912,14 +1248,24 @@ class TestSnapshots:
             source_lv,
             snap_lv,
         )
-        assert fake_context.db.reserve_snapshot_cleanup("tenant_a", "vol1", "snap1", "cleanup-owner") is True
+        assert (
+            fake_context.db.reserve_snapshot_cleanup(
+                "tenant_a", "vol1", "snap1", "cleanup-owner"
+            )
+            is True
+        )
         conn = fake_context.db._conn()
         conn.execute(
             """UPDATE snapshot_cleanup_reservations
                SET expires_at = ?
                WHERE svm = ? AND volume = ? AND name = ?
             """,
-            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "tenant_a", "vol1", "snap1"),
+            (
+                (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                "tenant_a",
+                "vol1",
+                "snap1",
+            ),
         )
         conn.commit()
         original_delete_lv = fake_context.adapters.lvm.delete_lv
@@ -931,31 +1277,56 @@ class TestSnapshots:
 
         fake_context.adapters.lvm.delete_lv = record_delete
 
-        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        response = client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         assert response.status_code == 201
         assert ("vg_pool_01", snap_lv) in deleted_lvs
-        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", stored_snapshot_lv_name(fake_context))
+        assert fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )
+        assert fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", stored_snapshot_lv_name(fake_context)
+        )
 
     @pytest.mark.integration
-    def test_create_snapshot_releases_expired_cleanup_reservation_on_cleanup_failure(self, fake_context):
+    def test_create_snapshot_releases_expired_cleanup_reservation_on_cleanup_failure(
+        self, fake_context
+    ):
         client = TestClient(app, raise_server_exceptions=False)
         create_test_svm(client)
-        assert client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}).status_code == 201
+        assert (
+            client.post(
+                "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+            ).status_code
+            == 201
+        )
         source_lv = stored_volume_lv_name(fake_context)
         snap_lv = snapshot_lv_name("tenant_a", "vol1", "snap1")
         legacy_snap_lv = legacy_snapshot_lv_name("tenant_a", "vol1", "snap1")
         fake_context.adapters.lvm.create_snapshot("vg_pool_01", source_lv, snap_lv)
-        fake_context.adapters.lvm.create_snapshot("vg_pool_01", source_lv, legacy_snap_lv)
-        assert fake_context.db.reserve_snapshot_cleanup("tenant_a", "vol1", "snap1", "cleanup-owner") is True
+        fake_context.adapters.lvm.create_snapshot(
+            "vg_pool_01", source_lv, legacy_snap_lv
+        )
+        assert (
+            fake_context.db.reserve_snapshot_cleanup(
+                "tenant_a", "vol1", "snap1", "cleanup-owner"
+            )
+            is True
+        )
         conn = fake_context.db._conn()
         conn.execute(
             """UPDATE snapshot_cleanup_reservations
                SET expires_at = ?
                WHERE svm = ? AND volume = ? AND name = ?
             """,
-            ((datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(), "tenant_a", "vol1", "snap1"),
+            (
+                (datetime.now(timezone.utc) - timedelta(minutes=1)).isoformat(),
+                "tenant_a",
+                "vol1",
+                "snap1",
+            ),
         )
         conn.commit()
         original_delete_lv = fake_context.adapters.lvm.delete_lv
@@ -967,24 +1338,39 @@ class TestSnapshots:
 
         fake_context.adapters.lvm.delete_lv = fail_legacy_delete
 
-        response = client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        response = client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         assert response.status_code == 500
         assert response.json()["error"]["details"]["legacy_lv_name"] == legacy_snap_lv
         assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", snap_lv)
         assert fake_context.adapters.lvm.lv_exists("vg_pool_01", legacy_snap_lv)
-        assert fake_context.db.reserve_snapshot_cleanup("tenant_a", "vol1", "snap1", "next-owner") is True
-        fake_context.db.release_snapshot_cleanup("tenant_a", "vol1", "snap1", "next-owner")
+        assert (
+            fake_context.db.reserve_snapshot_cleanup(
+                "tenant_a", "vol1", "snap1", "next-owner"
+            )
+            is True
+        )
+        fake_context.db.release_snapshot_cleanup(
+            "tenant_a", "vol1", "snap1", "next-owner"
+        )
 
     @pytest.mark.integration
     def test_delete_snapshot_reports_reconciler_failure(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         def fail_delete(_vg, _lv):
-            record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+            record = fake_context.db.list_snapshots(
+                svm="tenant_a", volume="vol1", name="snap1"
+            )[0]
             assert record["status"]["phase"] == "Deleting"
             raise RuntimeError("snapshot delete failed")
 
@@ -994,7 +1380,9 @@ class TestSnapshots:
 
         assert response.status_code == 500
         assert response.json()["error"]["code"] == "INTERNAL"
-        record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        record = fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )[0]
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["message"].startswith("Delete failed:")
 
@@ -1002,22 +1390,35 @@ class TestSnapshots:
     def test_delete_snapshot_rejects_active_clone_lease(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
-        fake_context.db.reserve_snapshot_clone("tenant_a", "vol1", "snap1", "clone-owner")
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
+        fake_context.db.reserve_snapshot_clone(
+            "tenant_a", "vol1", "snap1", "clone-owner"
+        )
 
         response = client.delete("/v1/snapshots/snap1?svm=tenant_a&volume=vol1")
 
         assert response.status_code == 409
         assert response.json()["error"]["code"] == "CONFLICT"
-        record = fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")[0]
+        record = fake_context.db.list_snapshots(
+            svm="tenant_a", volume="vol1", name="snap1"
+        )[0]
         assert record["status"]["phase"] == "Ready"
-        fake_context.db.release_snapshot_clone("tenant_a", "vol1", "snap1", "clone-owner")
+        fake_context.db.release_snapshot_clone(
+            "tenant_a", "vol1", "snap1", "clone-owner"
+        )
 
         response = client.delete("/v1/snapshots/snap1?svm=tenant_a&volume=vol1")
 
         assert response.status_code == 200
-        assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1") == []
+        assert (
+            fake_context.db.list_snapshots(svm="tenant_a", volume="vol1", name="snap1")
+            == []
+        )
 
 
 class TestDeleteVolume:
@@ -1042,10 +1443,17 @@ class TestDeleteVolume:
         """Deleting a volume cleans dependent export records and Ganesha config."""
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
 
         assert fake_context.db.list_exports(svm="tenant_a", volume="vol1")
@@ -1063,8 +1471,12 @@ class TestDeleteVolume:
         """Snapshots must be explicitly removed or deleted via force."""
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         response = client.delete("/v1/volumes/vol1?svm=tenant_a")
 
@@ -1080,10 +1492,14 @@ class TestDeleteVolume:
         assert fake_context.db.list_snapshots(svm="tenant_a", volume="vol1") == []
 
     @pytest.mark.integration
-    def test_delete_volume_uses_persisted_mount_path_after_export_dir_change(self, fake_context):
+    def test_delete_volume_uses_persisted_mount_path_after_export_dir_change(
+        self, fake_context
+    ):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         switch_export_dir(fake_context, "/newexports")
 
         response = client.delete("/v1/volumes/vol1?svm=tenant_a")
@@ -1091,13 +1507,17 @@ class TestDeleteVolume:
         assert response.status_code == 200
         assert "/exports/tenant_a/vol1" not in fake_context.adapters.xfs.mounts
         assert fake_context.db.get_volume("tenant_a", "vol1") is None
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "vol1")
+        )
 
     @pytest.mark.integration
     def test_create_volume_does_not_resume_failed_delete(self, fake_context):
         client = TestClient(app)
         create_test_svm(client)
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         def fail_delete(_vg, _lv):
             record = fake_context.db.get_volume("tenant_a", "vol1")
@@ -1114,10 +1534,15 @@ class TestDeleteVolume:
         assert failed_record["status"]["message"].startswith("Delete failed:")
         assert "/exports/tenant_a/vol1" not in fake_context.adapters.xfs.mounts
 
-        create_response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        create_response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         assert create_response.status_code == 409
-        assert fake_context.db.get_volume("tenant_a", "vol1")["status"]["phase"] == "Failed"
+        assert (
+            fake_context.db.get_volume("tenant_a", "vol1")["status"]["phase"]
+            == "Failed"
+        )
 
 
 class TestListVolumes:
@@ -1126,7 +1551,9 @@ class TestListVolumes:
         client = TestClient(app)
         create_test_svm(client)
         for name in ("vol1", "vol2", "vol3"):
-            client.post("/v1/volumes", json={"name": name, "svm": "tenant_a", "size_gib": 10})
+            client.post(
+                "/v1/volumes", json={"name": name, "svm": "tenant_a", "size_gib": 10}
+            )
 
         first = client.get("/v1/volumes?svm=tenant_a&limit=2")
 
@@ -1135,7 +1562,9 @@ class TestListVolumes:
         assert [item["name"] for item in first_data["items"]] == ["vol1", "vol2"]
         assert first_data["next_cursor"]
 
-        second = client.get(f"/v1/volumes?svm=tenant_a&limit=2&cursor={first_data['next_cursor']}")
+        second = client.get(
+            f"/v1/volumes?svm=tenant_a&limit=2&cursor={first_data['next_cursor']}"
+        )
 
         assert second.status_code == 200
         second_data = second.json()["data"]
@@ -1152,11 +1581,15 @@ class TestListVolumes:
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
-    def test_list_volumes_reuses_svm_lookup_for_export_paths(self, fake_context, monkeypatch):
+    def test_list_volumes_reuses_svm_lookup_for_export_paths(
+        self, fake_context, monkeypatch
+    ):
         client = TestClient(app)
         create_test_svm(client)
         for name in ("vol1", "vol2", "vol3"):
-            client.post("/v1/volumes", json={"name": name, "svm": "tenant_a", "size_gib": 10})
+            client.post(
+                "/v1/volumes", json={"name": name, "svm": "tenant_a", "size_gib": 10}
+            )
 
         original_get_svm = fake_context.db.get_svm
         svm_lookups = []
@@ -1170,5 +1603,9 @@ class TestListVolumes:
         response = client.get("/v1/volumes?svm=tenant_a&limit=10")
 
         assert response.status_code == 200
-        assert [item["name"] for item in response.json()["data"]["items"]] == ["vol1", "vol2", "vol3"]
+        assert [item["name"] for item in response.json()["data"]["items"]] == [
+            "vol1",
+            "vol2",
+            "vol3",
+        ]
         assert svm_lookups == ["tenant_a"]

@@ -1,6 +1,5 @@
 """Tests for the structured error model."""
 
-
 from arca_storage.errors import (
     AlreadyExistsError,
     ArcaError,
@@ -52,7 +51,9 @@ class TestErrorCodes:
         assert err.stderr == "error msg"
 
     def test_reconcile_failed_error(self):
-        err = ReconcileFailedError("Volume", "svm1/vol1", "Step 'mounted' failed: mount failed")
+        err = ReconcileFailedError(
+            "Volume", "svm1/vol1", "Step 'mounted' failed: mount failed"
+        )
         assert err.http_status == 500
         assert err.code == ErrorCode.INTERNAL
         assert err.message == "Volume 'svm1/vol1' reconcile failed"

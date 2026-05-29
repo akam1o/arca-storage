@@ -1,8 +1,16 @@
 """Tests for the CLI entrypoint error handling."""
 
+import re
+
 from typer.testing import CliRunner
 
 from arca_storage.cli import cli
+
+_ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
+
+
+def _strip_ansi(value: str) -> str:
+    return _ANSI_ESCAPE_RE.sub("", value)
 
 
 def test_cli_main_hides_traceback_by_default(monkeypatch, capsys):
@@ -52,4 +60,4 @@ def test_verbose_option_is_documented_in_help():
     result = CliRunner().invoke(cli.app, ["--help"])
 
     assert result.exit_code == 0
-    assert "--verbose" in result.output
+    assert "--verbose" in _strip_ansi(result.output)

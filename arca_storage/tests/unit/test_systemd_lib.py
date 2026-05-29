@@ -33,9 +33,13 @@ class TestSystemdUnits:
 
     @pytest.mark.unit
     def test_start_unit_failure_redacts_unit_and_stderr(self, mock_subprocess):
-        mock_subprocess.return_value = MagicMock(returncode=1, stderr="secret-token nfs-ganesha@tenant_a")
+        mock_subprocess.return_value = MagicMock(
+            returncode=1, stderr="secret-token nfs-ganesha@tenant_a"
+        )
 
-        with pytest.raises(RuntimeError, match="Failed to start systemd unit") as exc_info:
+        with pytest.raises(
+            RuntimeError, match="Failed to start systemd unit"
+        ) as exc_info:
             start_unit("nfs-ganesha@tenant_a")
 
         _assert_redacted(exc_info.value, "secret-token", "nfs-ganesha@tenant_a")
@@ -56,9 +60,13 @@ class TestSystemdUnits:
 
     @pytest.mark.unit
     def test_stop_unit_failure_redacts_unit_and_stderr(self, mock_subprocess):
-        mock_subprocess.return_value = MagicMock(returncode=1, stderr="secret-token nfs-ganesha@tenant_a")
+        mock_subprocess.return_value = MagicMock(
+            returncode=1, stderr="secret-token nfs-ganesha@tenant_a"
+        )
 
-        with pytest.raises(RuntimeError, match="Failed to stop systemd unit") as exc_info:
+        with pytest.raises(
+            RuntimeError, match="Failed to stop systemd unit"
+        ) as exc_info:
             stop_unit("nfs-ganesha@tenant_a")
 
         _assert_redacted(exc_info.value, "secret-token", "nfs-ganesha@tenant_a")

@@ -9,7 +9,13 @@ import pytest
 
 from arca_storage.adapters.ganesha import SubprocessGaneshaAdapter
 from arca_storage.cli.lib import ganesha
-from arca_storage.cli.lib.ganesha import add_export, reload, remove_export, render_config, sync
+from arca_storage.cli.lib.ganesha import (
+    add_export,
+    reload,
+    remove_export,
+    render_config,
+    sync,
+)
 from arca_storage.config import ArcaSettings, GaneshaConfig, StateConfig
 
 
@@ -23,8 +29,8 @@ def _assert_redacted(error: BaseException, *values: str) -> None:
 def arca_config(monkeypatch, tmp_path):
     config_path = tmp_path / "config.toml"
     config_path.write_text(
-        f"[state]\nruntime_dir = \"{tmp_path}\"\n"
-        f"[ganesha]\nconfig_dir = \"{tmp_path / 'ganesha'}\"\n",
+        f'[state]\nruntime_dir = "{tmp_path}"\n'
+        f'[ganesha]\nconfig_dir = "{tmp_path / "ganesha"}"\n',
         encoding="utf-8",
     )
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
@@ -99,7 +105,9 @@ class TestRenderConfig:
             render_config("tenant_a", exports)
 
     @pytest.mark.unit
-    def test_write_if_changed_keeps_existing_file_on_replace_failure(self, monkeypatch, tmp_path):
+    def test_write_if_changed_keeps_existing_file_on_replace_failure(
+        self, monkeypatch, tmp_path
+    ):
         target = tmp_path / "ganesha.conf"
         target.write_text("old config", encoding="utf-8")
 
@@ -119,8 +127,8 @@ class TestRenderConfig:
     def test_render_config_with_bind_addr(self, monkeypatch, tmp_path):
         config_path = tmp_path / "config.toml"
         config_path.write_text(
-            f"[state]\nruntime_dir = \"{tmp_path}\"\n"
-            f"[ganesha]\nconfig_dir = \"{tmp_path / 'ganesha'}\"\n",
+            f'[state]\nruntime_dir = "{tmp_path}"\n'
+            f'[ganesha]\nconfig_dir = "{tmp_path / "ganesha"}"\n',
             encoding="utf-8",
         )
         monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
@@ -141,7 +149,9 @@ class TestRenderConfig:
 
         result = adapter.render_config("tenant_injected", [])
 
-        assert result == str(tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf")
+        assert result == str(
+            tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf"
+        )
         assert (tmp_path / "custom-ganesha" / "ganesha.tenant_injected.conf").exists()
 
     @pytest.mark.unit
@@ -158,8 +168,14 @@ class TestConfigSnapshots:
         latest = ganesha.read_config_snapshot_meta("tenant_a", "latest")
         version = latest["config_version"]
 
-        assert ganesha.read_config_snapshot_meta("tenant_a", version)["config_version"] == version
-        assert any(s["config_version"] == version for s in ganesha.list_config_snapshots("tenant_a"))
+        assert (
+            ganesha.read_config_snapshot_meta("tenant_a", version)["config_version"]
+            == version
+        )
+        assert any(
+            s["config_version"] == version
+            for s in ganesha.list_config_snapshots("tenant_a")
+        )
 
     @pytest.mark.unit
     @pytest.mark.parametrize(
@@ -185,13 +201,21 @@ class TestConfigSnapshots:
     def test_list_config_snapshots_ignores_untrusted_versions(self, tmp_path):
         snapshot_dir = tmp_path / "config"
         snapshot_dir.mkdir()
-        (snapshot_dir / "ganesha.tenant_a.abcdef123456.conf").write_text("valid", encoding="utf-8")
-        (snapshot_dir / "ganesha.tenant_a.not-a-digest.conf").write_text("invalid", encoding="utf-8")
-        (snapshot_dir / "ganesha.tenant_a.latest.conf").write_text("latest", encoding="utf-8")
+        (snapshot_dir / "ganesha.tenant_a.abcdef123456.conf").write_text(
+            "valid", encoding="utf-8"
+        )
+        (snapshot_dir / "ganesha.tenant_a.not-a-digest.conf").write_text(
+            "invalid", encoding="utf-8"
+        )
+        (snapshot_dir / "ganesha.tenant_a.latest.conf").write_text(
+            "latest", encoding="utf-8"
+        )
 
         snapshots = ganesha.list_config_snapshots("tenant_a")
 
-        assert [snapshot["config_version"] for snapshot in snapshots] == ["abcdef123456"]
+        assert [snapshot["config_version"] for snapshot in snapshots] == [
+            "abcdef123456"
+        ]
 
 
 class TestReload:
@@ -230,9 +254,13 @@ class TestReload:
     @pytest.mark.unit
     def test_reload_fails(self, mock_subprocess):
         """Test reload fails."""
-        mock_subprocess.return_value = MagicMock(returncode=1, stderr="secret-token tenant_a")
+        mock_subprocess.return_value = MagicMock(
+            returncode=1, stderr="secret-token tenant_a"
+        )
 
-        with pytest.raises(RuntimeError, match="Failed to reload NFS-Ganesha") as exc_info:
+        with pytest.raises(
+            RuntimeError, match="Failed to reload NFS-Ganesha"
+        ) as exc_info:
             reload("tenant_a")
 
         _assert_redacted(exc_info.value, "secret-token", "tenant_a")
@@ -262,9 +290,17 @@ class TestAddExport:
     @patch("arca_storage.cli.lib.ganesha._save_exports")
     @patch("arca_storage.cli.lib.ganesha.render_config")
     @patch("arca_storage.cli.lib.ganesha.reload")
-    def test_add_export_increments_id(self, mock_reload, mock_render, mock_save, mock_load):
+    def test_add_export_increments_id(
+        self, mock_reload, mock_render, mock_save, mock_load
+    ):
         """Test export ID is incremented."""
-        mock_load.return_value = [{"export_id": 101, "path": "/exports/tenant_a/vol1", "client": "10.0.0.0/24"}]
+        mock_load.return_value = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "client": "10.0.0.0/24",
+            }
+        ]
 
         add_export("tenant_a", "vol2", "10.0.0.0/24", "rw", True)
 
@@ -284,7 +320,13 @@ class TestRemoveExport:
     @patch("arca_storage.cli.lib.ganesha.reload")
     def test_remove_export(self, mock_reload, mock_render, mock_save, mock_load):
         """Test removing an export."""
-        mock_load.return_value = [{"export_id": 101, "path": "/exports/tenant_a/vol1", "client": "10.0.0.0/24"}]
+        mock_load.return_value = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "client": "10.0.0.0/24",
+            }
+        ]
 
         remove_export("tenant_a", "vol1", "10.0.0.0/24")
 
@@ -299,7 +341,9 @@ class TestRemoveExport:
     @patch("arca_storage.cli.lib.ganesha._save_exports")
     @patch("arca_storage.cli.lib.ganesha.render_config")
     @patch("arca_storage.cli.lib.ganesha.reload")
-    def test_remove_nonexistent_export(self, mock_reload, mock_render, mock_save, mock_load):
+    def test_remove_nonexistent_export(
+        self, mock_reload, mock_render, mock_save, mock_load
+    ):
         """Test removing export that doesn't exist."""
         mock_load.return_value = []
 

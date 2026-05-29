@@ -107,14 +107,18 @@ class TestArcaManilaClientMakeRequest:
             client._make_request("GET", "/v1/svms")
 
     @patch("requests.Session.request")
-    def test_connection_error_maps_to_ArcaAPIConnectionError(self, mock_request, client):
+    def test_connection_error_maps_to_ArcaAPIConnectionError(
+        self, mock_request, client
+    ):
         mock_request.side_effect = requests.exceptions.ConnectionError("refused")
         with pytest.raises(exceptions.ArcaAPIConnectionError):
             client._make_request("GET", "/v1/svms")
 
     @patch("requests.Session.request")
     def test_connection_error_redacts_sensitive_details(self, mock_request, client):
-        mock_request.side_effect = requests.exceptions.ConnectionError("Authorization: Bearer secret-token")
+        mock_request.side_effect = requests.exceptions.ConnectionError(
+            "Authorization: Bearer secret-token"
+        )
         with pytest.raises(exceptions.ArcaAPIConnectionError) as exc_info:
             client._make_request("GET", "/v1/svms")
 
@@ -155,10 +159,16 @@ class TestArcaManilaClientMakeRequest:
             client._make_request("GET", "/v1/volumes/share-123")
 
     def test_extract_resource_id_decodes_url_quoted_segments(self, client):
-        assert client._extract_resource_id("/v1/volumes/share%2F..%2Fqos", "GET") == "share/../qos"
+        assert (
+            client._extract_resource_id("/v1/volumes/share%2F..%2Fqos", "GET")
+            == "share/../qos"
+        )
 
     def test_extract_resource_id_ignores_query_string(self, client):
-        assert client._extract_resource_id("/v1/volumes/share-123?password=hunter2", "GET") == "share-123"
+        assert (
+            client._extract_resource_id("/v1/volumes/share-123?password=hunter2", "GET")
+            == "share-123"
+        )
 
     @patch("requests.Session.request")
     def test_warning_log_redacts_path_and_response_details(self, mock_request, client):
@@ -170,7 +180,9 @@ class TestArcaManilaClientMakeRequest:
 
         with patch.object(manila_client.LOG, "warning") as mock_warning:
             with pytest.raises(exceptions.ArcaShareNotFound):
-                client._make_request("GET", "/v1/volumes/share-private-id?password=hunter2")
+                client._make_request(
+                    "GET", "/v1/volumes/share-private-id?password=hunter2"
+                )
 
         rendered_calls = self._render_log_calls(mock_warning)
         assert "share-private-id" not in rendered_calls
@@ -187,7 +199,11 @@ class TestArcaManilaClientMakeRequest:
         mock_request.return_value = resp
 
         with pytest.raises(exceptions.ArcaNetworkConflict):
-            client._make_request("POST", "/v1/svms", json_data={"name": "svm1", "ip_cidr": "192.168.100.10/24"})
+            client._make_request(
+                "POST",
+                "/v1/svms",
+                json_data={"name": "svm1", "ip_cidr": "192.168.100.10/24"},
+            )
 
     @patch("requests.Session.request")
     def test_api_error_redacts_sensitive_response_details(self, mock_request, client):
@@ -256,16 +272,22 @@ class TestArcaManilaClientOperations:
 
     def test_create_volume_returns_volume(self, client):
         with patch.object(client, "_make_request") as mock_make:
-            mock_make.return_value = {"data": {"volume": {"name": "share-123", "export_path": "vip:/path"}}}
+            mock_make.return_value = {
+                "data": {"volume": {"name": "share-123", "export_path": "vip:/path"}}
+            }
             vol = client.create_volume(name="share-123", svm="svm1", size_gib=10)
             assert vol["name"] == "share-123"
             assert vol["export_path"] == "vip:/path"
 
     def test_create_volume_log_redacts_resource_identifiers(self, client):
         with patch.object(client, "_make_request") as mock_make:
-            mock_make.return_value = {"data": {"volume": {"name": "share-secret-token"}}}
+            mock_make.return_value = {
+                "data": {"volume": {"name": "share-secret-token"}}
+            }
             with patch.object(manila_client.LOG, "info") as mock_info:
-                client.create_volume(name="share-secret-token", svm="svm-private-id", size_gib=10)
+                client.create_volume(
+                    name="share-secret-token", svm="svm-private-id", size_gib=10
+                )
 
         rendered_calls = self._render_log_calls(mock_info)
         assert "share-secret-token" not in rendered_calls
@@ -275,10 +297,16 @@ class TestArcaManilaClientOperations:
     def test_delete_volume_timeout_log_redacts_resource_identifiers(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.side_effect = exceptions.ArcaAPITimeout(timeout=30)
-            with patch.object(client, "get_volume", side_effect=exceptions.ArcaShareNotFound(share_id="share-secret-token")):
+            with patch.object(
+                client,
+                "get_volume",
+                side_effect=exceptions.ArcaShareNotFound(share_id="share-secret-token"),
+            ):
                 with patch.object(manila_client.LOG, "warning") as mock_warning:
                     with patch.object(manila_client.LOG, "info") as mock_info:
-                        client.delete_volume(name="share-secret-token", svm="svm-private-id")
+                        client.delete_volume(
+                            name="share-secret-token", svm="svm-private-id"
+                        )
 
         rendered_calls = self._render_log_calls(mock_warning, mock_info)
         assert "share-secret-token" not in rendered_calls
@@ -309,7 +337,9 @@ class TestArcaManilaClientOperations:
             with patch.object(
                 client,
                 "list_snapshots",
-                side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2"),
+                side_effect=RuntimeError(
+                    "Authorization: Bearer secret-token password=hunter2"
+                ),
             ):
                 with patch.object(manila_client.LOG, "warning") as mock_warning:
                     with patch.object(manila_client.LOG, "error") as mock_error:
@@ -352,11 +382,20 @@ class TestArcaManilaClientOperations:
         assert result == [{"name": "share-123"}, {"name": "share-456"}]
         mock_make.assert_has_calls(
             [
-                call("GET", "/v1/volumes", params={"limit": 200, "svm": "svm1", "name": "share-123"}),
                 call(
                     "GET",
                     "/v1/volumes",
-                    params={"limit": 200, "svm": "svm1", "name": "share-123", "cursor": "cursor-1"},
+                    params={"limit": 200, "svm": "svm1", "name": "share-123"},
+                ),
+                call(
+                    "GET",
+                    "/v1/volumes",
+                    params={
+                        "limit": 200,
+                        "svm": "svm1",
+                        "name": "share-123",
+                        "cursor": "cursor-1",
+                    },
                 ),
             ]
         )
@@ -374,7 +413,12 @@ class TestArcaManilaClientOperations:
             mock_make.assert_called_once_with(
                 "POST",
                 "/v1/volumes/share-src/clone",
-                json_data={"name": "share-new", "svm": "svm1", "snapshot": "snap1", "size_gib": 12},
+                json_data={
+                    "name": "share-new",
+                    "svm": "svm1",
+                    "snapshot": "snap1",
+                    "size_gib": 12,
+                },
             )
 
     def test_list_exports_passes_filters(self, client):
@@ -382,13 +426,20 @@ class TestArcaManilaClientOperations:
             mock_make.return_value = {"data": {"items": []}}
             client.list_exports(svm="svm1", volume="share-123")
             mock_make.assert_called_once_with(
-                "GET", "/v1/exports", params={"limit": 200, "svm": "svm1", "volume": "share-123"}
+                "GET",
+                "/v1/exports",
+                params={"limit": 200, "svm": "svm1", "volume": "share-123"},
             )
 
     def test_list_exports_follows_pagination(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.side_effect = [
-                {"data": {"items": [{"client": "10.0.0.0/24"}], "next_cursor": "cursor-1"}},
+                {
+                    "data": {
+                        "items": [{"client": "10.0.0.0/24"}],
+                        "next_cursor": "cursor-1",
+                    }
+                },
                 {"data": {"items": [{"client": "10.0.1.0/24"}], "next_cursor": None}},
             ]
 
@@ -397,11 +448,20 @@ class TestArcaManilaClientOperations:
         assert result == [{"client": "10.0.0.0/24"}, {"client": "10.0.1.0/24"}]
         mock_make.assert_has_calls(
             [
-                call("GET", "/v1/exports", params={"limit": 200, "svm": "svm1", "volume": "share-123"}),
                 call(
                     "GET",
                     "/v1/exports",
-                    params={"limit": 200, "svm": "svm1", "volume": "share-123", "cursor": "cursor-1"},
+                    params={"limit": 200, "svm": "svm1", "volume": "share-123"},
+                ),
+                call(
+                    "GET",
+                    "/v1/exports",
+                    params={
+                        "limit": 200,
+                        "svm": "svm1",
+                        "volume": "share-123",
+                        "cursor": "cursor-1",
+                    },
                 ),
             ]
         )
@@ -418,11 +478,20 @@ class TestArcaManilaClientOperations:
         assert result == [{"name": "snap1"}, {"name": "snap2"}]
         mock_make.assert_has_calls(
             [
-                call("GET", "/v1/snapshots", params={"limit": 200, "svm": "svm1", "volume": "share-123"}),
                 call(
                     "GET",
                     "/v1/snapshots",
-                    params={"limit": 200, "svm": "svm1", "volume": "share-123", "cursor": "cursor-1"},
+                    params={"limit": 200, "svm": "svm1", "volume": "share-123"},
+                ),
+                call(
+                    "GET",
+                    "/v1/snapshots",
+                    params={
+                        "limit": 200,
+                        "svm": "svm1",
+                        "volume": "share-123",
+                        "cursor": "cursor-1",
+                    },
                 ),
             ]
         )

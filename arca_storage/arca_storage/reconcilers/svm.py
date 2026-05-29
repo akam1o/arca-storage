@@ -32,7 +32,9 @@ logger = logging.getLogger(__name__)
 
 
 class SVMReconciler:
-    def __init__(self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+    ) -> None:
         self.db = db
         self.adapters = adapters
         self._cfg = config or {}
@@ -66,7 +68,9 @@ class SVMReconciler:
         vlan_id = spec.vlan_id
         root_volume_size_gib = spec.root_volume_size_gib
         uses_vlan = vlan_id is not None
-        gateway = spec.gateway or (infer_gateway_from_ip_cidr(spec.ip_cidr) if uses_vlan else None)
+        gateway = spec.gateway or (
+            infer_gateway_from_ip_cidr(spec.ip_cidr) if uses_vlan else None
+        )
         parent_if = self._cfg.get("parent_if", "bond0")
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         thinpool = self._cfg.get("thinpool_name", "pool")
@@ -95,41 +99,47 @@ class SVMReconciler:
             lv_path = f"/dev/{vg_name}/{lv_name}"
             svm.status.lv_path = lv_path
             self._reset_missing_root_lv(svm, vg_name, lv_name, create_owner)
-            steps.append((
-                "lv_created",
-                lambda: create_volume_lv_or_accept_existing(
-                    self.adapters.lvm,
-                    vg_name,
-                    thinpool,
-                    lv_name,
-                    root_volume_size_gib,
-                    thin=True,
-                ),
-            ))
-            steps.append((
-                "fs_formatted",
-                lambda: self.adapters.xfs.format_xfs(lv_path),
-            ))
+            steps.append(
+                (
+                    "lv_created",
+                    lambda: create_volume_lv_or_accept_existing(
+                        self.adapters.lvm,
+                        vg_name,
+                        thinpool,
+                        lv_name,
+                        root_volume_size_gib,
+                        thin=True,
+                    ),
+                )
+            )
+            steps.append(
+                (
+                    "fs_formatted",
+                    lambda: self.adapters.xfs.format_xfs(lv_path),
+                )
+            )
 
-        steps.append((
-            "pacemaker_group_created",
-            lambda: self.adapters.pacemaker.create_group(
-                spec.name,
-                f"{export_dir}/{spec.name}",
-                vlan_id=vlan_id,
-                ifname=svm.status.vlan_ifname,
-                ip=ip_addr,
-                prefix=prefix,
-                gw=gateway,
-                mtu=spec.mtu,
-                parent_if=parent_if,
-                vg_name=vg_name,
-                filesystem_lv_name=svm.status.lv_name,
-                create_filesystem=root_volume_size_gib is not None,
-                drbd_resource_name=drbd_resource,
-                enforce_drbd_constraints=True,
-            ),
-        ))
+        steps.append(
+            (
+                "pacemaker_group_created",
+                lambda: self.adapters.pacemaker.create_group(
+                    spec.name,
+                    f"{export_dir}/{spec.name}",
+                    vlan_id=vlan_id,
+                    ifname=svm.status.vlan_ifname,
+                    ip=ip_addr,
+                    prefix=prefix,
+                    gw=gateway,
+                    mtu=spec.mtu,
+                    parent_if=parent_if,
+                    vg_name=vg_name,
+                    filesystem_lv_name=svm.status.lv_name,
+                    create_filesystem=root_volume_size_gib is not None,
+                    drbd_resource_name=drbd_resource,
+                    enforce_drbd_constraints=True,
+                ),
+            )
+        )
 
         for field, action in steps:
             if getattr(svm.status, field, False):
@@ -137,10 +147,15 @@ class SVMReconciler:
             try:
                 action()
                 setattr(svm.status, field, True)
-                if root_volume_size_gib is not None and field in {"lv_created", "fs_formatted"}:
+                if root_volume_size_gib is not None and field in {
+                    "lv_created",
+                    "fs_formatted",
+                }:
                     svm.status.lv_name = lv_name
                     svm.status.lv_path = lv_path
-                self._persist(svm, f"step '{field}' completed", expected_create_owner=create_owner)
+                self._persist(
+                    svm, f"step '{field}' completed", expected_create_owner=create_owner
+                )
             except CreateLeaseLostError:
                 raise
             except Exception as e:
@@ -148,7 +163,9 @@ class SVMReconciler:
                 expected_owner = create_owner
                 clear_create_lease(svm.status)
                 svm.status.message = f"Step '{field}' failed: {e}"
-                self._persist(svm, svm.status.message, expected_create_owner=expected_owner)
+                self._persist(
+                    svm, svm.status.message, expected_create_owner=expected_owner
+                )
                 logger.error("SVM %s reconcile failed at %s: %s", spec.name, field, e)
                 return svm
 
@@ -172,7 +189,9 @@ class SVMReconciler:
             if svm.status.namespace_created:
                 self.adapters.netns.delete_namespace(spec.name)
             if spec.root_volume_size_gib or svm.status.lv_created:
-                self.adapters.lvm.delete_lv(vg_name, svm.status.lv_name or legacy_svm_root_lv_name(spec.name))
+                self.adapters.lvm.delete_lv(
+                    vg_name, svm.status.lv_name or legacy_svm_root_lv_name(spec.name)
+                )
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
         except Exception as e:
@@ -195,7 +214,9 @@ class SVMReconciler:
             return
         svm.status.lv_created = False
         svm.status.fs_formatted = False
-        self._persist(svm, "SVM root LV state reset", expected_create_owner=create_owner)
+        self._persist(
+            svm, "SVM root LV state reset", expected_create_owner=create_owner
+        )
 
     # ---- drift detection (placeholder) ----
 
@@ -205,10 +226,14 @@ class SVMReconciler:
 
     # ---- helpers ----
 
-    def _persist(self, svm: SVM, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
+    def _persist(
+        self, svm: SVM, detail: str, *, expected_create_owner: Optional[str] = None
+    ) -> None:
         if not self.db.upsert_svm(svm, expected_create_owner=expected_create_owner):
             raise CreateLeaseLostError("SVM", svm.spec.name)
-        self.db.log_operation("SVM", svm.metadata.id, "reconcile", svm.status.phase.value, detail)
+        self.db.log_operation(
+            "SVM", svm.metadata.id, "reconcile", svm.status.phase.value, detail
+        )
 
     @staticmethod
     def _has_pending_create_step(svm: SVM) -> bool:

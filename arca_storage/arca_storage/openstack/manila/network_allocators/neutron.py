@@ -26,7 +26,7 @@ from .base import NetworkAllocator, NetworkAllocation
 LOG = logging.getLogger(__name__)
 
 # Register [neutron] config section (do this once at module level)
-NEUTRON_GROUP = 'neutron'
+NEUTRON_GROUP = "neutron"
 ks_loading.register_session_conf_options(cfg.CONF, NEUTRON_GROUP)
 ks_loading.register_auth_conf_options(cfg.CONF, NEUTRON_GROUP)
 
@@ -97,7 +97,10 @@ class NeutronAllocator(NetworkAllocator):
         try:
             extensions = self._neutron_client.list_extensions()["extensions"]
             self._supports_tags = any(ext["alias"] == "tag" for ext in extensions)
-            LOG.info("Neutron tag extension: %s", "available" if self._supports_tags else "not available")
+            LOG.info(
+                "Neutron tag extension: %s",
+                "available" if self._supports_tags else "not available",
+            )
         except Exception:
             self._supports_tags = False
 
@@ -145,9 +148,7 @@ class NeutronAllocator(NetworkAllocator):
             "port": {
                 "name": port_name,
                 "network_id": network["network_id"],
-                "fixed_ips": [{
-                    "subnet_id": network["subnet_id"]
-                }],
+                "fixed_ips": [{"subnet_id": network["subnet_id"]}],
                 "admin_state_up": True,
                 "port_security_enabled": self.configuration.arca_storage_neutron_port_security,
                 "device_owner": self.DEVICE_OWNER,
@@ -209,7 +210,10 @@ class NeutronAllocator(NetworkAllocator):
             details = safe_error_detail(e)
             LOG.warning("Neutron port conflict during allocation")
             raise ArcaNetworkConflict(details=f"Port conflict: {details}")
-        except (neutron_exceptions.ServiceUnavailable, neutron_exceptions.ConnectionFailed) as e:
+        except (
+            neutron_exceptions.ServiceUnavailable,
+            neutron_exceptions.ConnectionFailed,
+        ) as e:
             # Transient error - retryable
             details = safe_error_detail(e)
             LOG.warning("Neutron service unavailable")
@@ -228,8 +232,12 @@ class NeutronAllocator(NetworkAllocator):
 
         if len(all_ports) > 1:
             # Duplicate detected - consolidate them
-            LOG.warning("Detected %d duplicate Neutron ports for SVM allocation", len(all_ports))
-            all_ports = self._consolidate_duplicate_ports(all_ports, newly_created_port_id=port["id"])
+            LOG.warning(
+                "Detected %d duplicate Neutron ports for SVM allocation", len(all_ports)
+            )
+            all_ports = self._consolidate_duplicate_ports(
+                all_ports, newly_created_port_id=port["id"]
+            )
             port = all_ports[0]
             # CRITICAL FIX: Don't use originally selected network metadata
             # The kept port may be on a different network, so pass network=None
@@ -269,6 +277,7 @@ class NeutronAllocator(NetworkAllocator):
         Returns:
             List containing single port dict that was kept
         """
+
         # Sort by created_at, with stable fallback for missing timestamps
         # Prefer newly created port (from create_port) if present
         def sort_key(p):
@@ -323,7 +332,9 @@ class NeutronAllocator(NetworkAllocator):
                     "Found %d pre-existing duplicate Neutron ports, consolidating",
                     len(ports),
                 )
-                ports = self._consolidate_duplicate_ports(ports, newly_created_port_id=None)
+                ports = self._consolidate_duplicate_ports(
+                    ports, newly_created_port_id=None
+                )
 
             return ports[0] if ports else None
 
@@ -378,7 +389,9 @@ class NeutronAllocator(NetworkAllocator):
                     "Querying network details from Neutron."
                 )
                 # Fallback: query network from Neutron
-                neutron_network = self._neutron_client.show_network(port_network_id)["network"]
+                neutron_network = self._neutron_client.show_network(port_network_id)[
+                    "network"
+                ]
                 vlan_id = neutron_network.get("provider:segmentation_id")
 
                 # Get subnet for gateway/CIDR from port's actual subnet
@@ -421,7 +434,9 @@ class NeutronAllocator(NetworkAllocator):
 
         if net_ids:
             # Strip whitespace and filter empty strings
-            cleaned_ids = [net_id.strip() for net_id in net_ids if net_id and net_id.strip()]
+            cleaned_ids = [
+                net_id.strip() for net_id in net_ids if net_id and net_id.strip()
+            ]
             return cleaned_ids
 
         return []
@@ -453,7 +468,9 @@ class NeutronAllocator(NetworkAllocator):
             # Extract VLAN ID
             vlan_id = network.get("provider:segmentation_id")
             if not vlan_id:
-                raise ValueError("Configured Neutron network missing provider:segmentation_id")
+                raise ValueError(
+                    "Configured Neutron network missing provider:segmentation_id"
+                )
 
             # Auto-detect subnet - prefer IPv4 with gateway
             subnets = network.get("subnets", [])
@@ -484,7 +501,9 @@ class NeutronAllocator(NetworkAllocator):
             # Validate gateway
             gateway_ip = subnet.get("gateway_ip")
             if not gateway_ip:
-                raise ValueError("Selected Neutron subnet must have gateway_ip configured")
+                raise ValueError(
+                    "Selected Neutron subnet must have gateway_ip configured"
+                )
 
             cidr = subnet["cidr"]
             cidr_prefix = cidr.split("/")[1]
@@ -568,11 +587,13 @@ class NeutronAllocator(NetworkAllocator):
         # For retry attempts, use randomized offset like StandaloneAllocator
         if retry_attempt > 0:
             import random
+
             offset = random.randint(0, num_networks - 1)
             start_idx = (start_idx + offset) % num_networks
             LOG.debug(
                 "Retry attempt %d: using randomized offset %d for network selection",
-                retry_attempt, offset
+                retry_attempt,
+                offset,
             )
 
         # Select network (always returns first choice in current implementation)

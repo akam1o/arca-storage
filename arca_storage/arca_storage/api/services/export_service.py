@@ -27,7 +27,11 @@ from arca_storage.errors import (
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
-from arca_storage.cli.lib.validators import normalize_ip_cidr, normalize_nfs_client_cidr, validate_name
+from arca_storage.cli.lib.validators import (
+    normalize_ip_cidr,
+    normalize_nfs_client_cidr,
+    validate_name,
+)
 from arca_storage.api.services.svm_service import require_svm_ready_record
 from arca_storage.api.services.volume_service import require_volume_ready_record
 
@@ -70,7 +74,9 @@ def add_export(export_data: ExportCreate) -> Dict[str, Any]:
         )
         if acquired and _can_resume_create(acquired, requested_spec, owner=owner):
             return _resume_export_create(ctx, acquired, owner)
-        raise AlreadyExistsError("Export", f"{export_data.svm}/{export_data.volume}/{client}")
+        raise AlreadyExistsError(
+            "Export", f"{export_data.svm}/{export_data.volume}/{client}"
+        )
 
     export = Export(spec=requested_spec)
     owner = new_create_owner()
@@ -129,7 +135,9 @@ def ensure_internal_export(
     ctx = get_context()
     export = ctx.export_reconciler.reconcile(export, allow_update=True)
     if export.status.phase == Phase.FAILED:
-        raise ReconcileFailedError("Export", f"{svm}/{volume}/{client}", export.status.message)
+        raise ReconcileFailedError(
+            "Export", f"{svm}/{volume}/{client}", export.status.message
+        )
     return _export_to_dict(export)
 
 
@@ -154,7 +162,8 @@ def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
     result = ctx.export_reconciler.reconcile(export)
     if result.status.phase == Phase.FAILED:
         raise InternalError(
-            result.status.message or f"Failed to delete Export '{svm}/{volume}/{client}'",
+            result.status.message
+            or f"Failed to delete Export '{svm}/{volume}/{client}'",
             {"resource": "Export", "name": f"{svm}/{volume}/{client}"},
         )
 
@@ -171,7 +180,9 @@ def list_exports(
     if client:
         client = normalize_ip_cidr(client)
     try:
-        records = ctx.db.list_exports(svm=svm, volume=volume, client=client, limit=limit + 1, cursor=cursor)
+        records = ctx.db.list_exports(
+            svm=svm, volume=volume, client=client, limit=limit + 1, cursor=cursor
+        )
     except ValueError as e:
         raise InvalidArgumentError(str(e), {"field": "cursor"}) from e
     next_cursor = None
@@ -219,7 +230,9 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
     return resource_meta_from_record(record)
 
 
-def _can_resume_create(record: Dict[str, Any], requested_spec: ExportSpec, *, owner: Optional[str] = None) -> bool:
+def _can_resume_create(
+    record: Dict[str, Any], requested_spec: ExportSpec, *, owner: Optional[str] = None
+) -> bool:
     if not record:
         return False
     status = record.get("status", {})
@@ -240,10 +253,14 @@ def _is_failed_delete(status: Dict[str, Any]) -> bool:
 
 
 def _has_pending_create_step(status: Dict[str, Any]) -> bool:
-    return not status.get("ganesha_configured", False) or not status.get("service_reloaded", False)
+    return not status.get("ganesha_configured", False) or not status.get(
+        "service_reloaded", False
+    )
 
 
-def _resume_export_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
+def _resume_export_create(
+    ctx: Any, record: Dict[str, Any], owner: str
+) -> Dict[str, Any]:
     export = Export(
         metadata=_meta_from_record(record),
         spec=ExportSpec.model_validate(record["spec"]),

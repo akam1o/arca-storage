@@ -33,7 +33,9 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
         assert str(pool["ip_network"]) == "192.168.100.0/24"
         assert pool["vlan_id"] == 100
 
-    def test_create_share_creates_svm_when_missing(self, driver, mock_arca_client, mock_manila_share):
+    def test_create_share_creates_svm_when_missing(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
         # Force "SVM not found" for the per-project SVM name, so driver will create it.
         def get_svm_side_effect(name):
             if name == "manila_test-project-id":
@@ -56,7 +58,9 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
         exports = driver.create_share(Mock(), mock_manila_share, None)
 
         assert exports[0]["path"].endswith("/share-share-123")
-        assert mock_manila_share["metadata"]["arca_svm_name"] == "manila_test-project-id"
+        assert (
+            mock_manila_share["metadata"]["arca_svm_name"] == "manila_test-project-id"
+        )
 
         mock_arca_client.create_svm.assert_called_once_with(
             name="manila_test-project-id",
@@ -79,7 +83,9 @@ class TestArcaStorageManilaDriverPerProjectStrategy:
 
         driver.create_share(Mock(), mock_manila_share, None)
 
-        assert mock_manila_share["metadata"]["arca_svm_name"] == "manila_test-project-id"
+        assert (
+            mock_manila_share["metadata"]["arca_svm_name"] == "manila_test-project-id"
+        )
         mock_arca_client.create_volume.assert_called_once_with(
             name="share-share-123",
             svm="manila_test-project-id",

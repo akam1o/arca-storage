@@ -21,7 +21,9 @@ logger = logging.getLogger(__name__)
 
 
 class VolumeReconciler:
-    def __init__(self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+    ) -> None:
         self.db = db
         self.adapters = adapters
         self._cfg = config or {}
@@ -33,7 +35,9 @@ class VolumeReconciler:
         elif phase == Phase.DELETING:
             return self._reconcile_delete(volume)
         elif phase == Phase.FAILED:
-            if not self._is_failed_delete(volume) and self._has_pending_create_step(volume):
+            if not self._is_failed_delete(volume) and self._has_pending_create_step(
+                volume
+            ):
                 volume.status.phase = Phase.CREATING
                 return self._reconcile_create(volume)
             return volume
@@ -54,7 +58,9 @@ class VolumeReconciler:
         lv_path = f"/dev/{vg_name}/{lv_name}"
         default_mount_path = f"{export_dir}/{spec.svm}/{spec.name}"
         mount_path = volume.status.mount_path or default_mount_path
-        self._reset_missing_create_resources(volume, vg_name, lv_name, mount_path, create_owner)
+        self._reset_missing_create_resources(
+            volume, vg_name, lv_name, mount_path, create_owner
+        )
         mount_path = volume.status.mount_path or default_mount_path
 
         steps = [
@@ -83,7 +89,11 @@ class VolumeReconciler:
                 volume.status.lv_path = lv_path
                 volume.status.lv_name = lv_name
                 volume.status.mount_path = mount_path
-                self._persist(volume, f"step '{field}' completed", expected_create_owner=create_owner)
+                self._persist(
+                    volume,
+                    f"step '{field}' completed",
+                    expected_create_owner=create_owner,
+                )
             except CreateLeaseLostError:
                 raise
             except Exception as e:
@@ -91,8 +101,16 @@ class VolumeReconciler:
                 expected_owner = create_owner
                 clear_create_lease(volume.status)
                 volume.status.message = f"Step '{field}' failed: {e}"
-                self._persist(volume, volume.status.message, expected_create_owner=expected_owner)
-                logger.error("Volume %s/%s reconcile failed at %s: %s", spec.svm, spec.name, field, e)
+                self._persist(
+                    volume, volume.status.message, expected_create_owner=expected_owner
+                )
+                logger.error(
+                    "Volume %s/%s reconcile failed at %s: %s",
+                    spec.svm,
+                    spec.name,
+                    field,
+                    e,
+                )
                 return volume
 
         volume.status.phase = Phase.READY
@@ -112,7 +130,9 @@ class VolumeReconciler:
         create_owner: Optional[str],
     ) -> None:
         changed = False
-        if volume.status.lv_created and not self.adapters.lvm.lv_exists(vg_name, lv_name):
+        if volume.status.lv_created and not self.adapters.lvm.lv_exists(
+            vg_name, lv_name
+        ):
             volume.status.lv_created = False
             volume.status.lv_path = None
             volume.status.fs_formatted = False
@@ -130,7 +150,9 @@ class VolumeReconciler:
                 changed = True
 
         if changed:
-            self._persist(volume, "Volume create state reset", expected_create_owner=create_owner)
+            self._persist(
+                volume, "Volume create state reset", expected_create_owner=create_owner
+            )
 
     def _reconcile_delete(self, volume: Volume) -> Volume:
         spec = volume.spec
@@ -153,10 +175,22 @@ class VolumeReconciler:
             logger.error("Volume %s/%s delete failed: %s", spec.svm, spec.name, e)
         return volume
 
-    def _persist(self, volume: Volume, detail: str, *, expected_create_owner: Optional[str] = None) -> None:
-        if not self.db.upsert_volume(volume, expected_create_owner=expected_create_owner):
-            raise CreateLeaseLostError("Volume", f"{volume.spec.svm}/{volume.spec.name}")
-        self.db.log_operation("Volume", volume.metadata.id, "reconcile", volume.status.phase.value, detail)
+    def _persist(
+        self,
+        volume: Volume,
+        detail: str,
+        *,
+        expected_create_owner: Optional[str] = None,
+    ) -> None:
+        if not self.db.upsert_volume(
+            volume, expected_create_owner=expected_create_owner
+        ):
+            raise CreateLeaseLostError(
+                "Volume", f"{volume.spec.svm}/{volume.spec.name}"
+            )
+        self.db.log_operation(
+            "Volume", volume.metadata.id, "reconcile", volume.status.phase.value, detail
+        )
 
     @staticmethod
     def _has_pending_create_step(volume: Volume) -> bool:

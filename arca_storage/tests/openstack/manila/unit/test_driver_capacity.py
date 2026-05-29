@@ -13,7 +13,9 @@ def _driver(mock_manila_driver_config, mock_arca_client):
     return drv
 
 
-def test_per_project_capacity_deduplicates_shared_vg(mock_manila_driver_config, mock_arca_client):
+def test_per_project_capacity_deduplicates_shared_vg(
+    mock_manila_driver_config, mock_arca_client
+):
     drv = _driver(mock_manila_driver_config, mock_arca_client)
     mock_arca_client.list_svms.return_value = [
         {"name": "manila_project-a"},
@@ -21,8 +23,18 @@ def test_per_project_capacity_deduplicates_shared_vg(mock_manila_driver_config, 
         {"name": "other-svm"},
     ]
     capacities = {
-        "manila_project-a": {"vg": "vg_pool_01", "total_gb": 1000, "free_gb": 700, "provisioned_gb": 100},
-        "manila_project-b": {"vg": "vg_pool_01", "total_gb": 1000, "free_gb": 700, "provisioned_gb": 200},
+        "manila_project-a": {
+            "vg": "vg_pool_01",
+            "total_gb": 1000,
+            "free_gb": 700,
+            "provisioned_gb": 100,
+        },
+        "manila_project-b": {
+            "vg": "vg_pool_01",
+            "total_gb": 1000,
+            "free_gb": 700,
+            "provisioned_gb": 200,
+        },
     }
     mock_arca_client.get_svm_capacity.side_effect = lambda name: capacities[name]
 
@@ -43,9 +55,24 @@ def test_manual_capacity_deduplicates_shared_vg_and_sums_unique_vgs(
         {"name": "svm-c"},
     ]
     capacities = {
-        "svm-a": {"vg": "vg_pool_01", "total_gb": 1000, "free_gb": 700, "provisioned_gb": 100},
-        "svm-b": {"vg": "vg_pool_01", "total_gb": 1000, "free_gb": 700, "provisioned_gb": 200},
-        "svm-c": {"vg": "vg_pool_02", "total_gb": 500, "free_gb": 300, "provisioned_gb": 50},
+        "svm-a": {
+            "vg": "vg_pool_01",
+            "total_gb": 1000,
+            "free_gb": 700,
+            "provisioned_gb": 100,
+        },
+        "svm-b": {
+            "vg": "vg_pool_01",
+            "total_gb": 1000,
+            "free_gb": 700,
+            "provisioned_gb": 200,
+        },
+        "svm-c": {
+            "vg": "vg_pool_02",
+            "total_gb": 500,
+            "free_gb": 300,
+            "provisioned_gb": 50,
+        },
     }
     mock_arca_client.get_svm_capacity.side_effect = lambda name: capacities[name]
 

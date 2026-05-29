@@ -25,17 +25,26 @@ _TRUTHY_ENV_VALUES = {"1", "true", "yes", "on"}
 
 def configured_api_token() -> str:
     """Return the configured bearer token, if any."""
-    return os.environ.get("ARCA_API_TOKEN", "").strip() or os.environ.get("ARCA_AUTH_TOKEN", "").strip()
+    return (
+        os.environ.get("ARCA_API_TOKEN", "").strip()
+        or os.environ.get("ARCA_AUTH_TOKEN", "").strip()
+    )
 
 
 def unauthenticated_loopback_allowed() -> bool:
     """Return whether loopback-only unauthenticated access is explicitly enabled."""
-    return os.environ.get(ALLOW_UNAUTHENTICATED_LOOPBACK_ENV, "").strip().lower() in _TRUTHY_ENV_VALUES
+    return (
+        os.environ.get(ALLOW_UNAUTHENTICATED_LOOPBACK_ENV, "").strip().lower()
+        in _TRUTHY_ENV_VALUES
+    )
 
 
 def insecure_remote_api_allowed() -> bool:
     """Return whether non-loopback plain HTTP API access is explicitly enabled."""
-    return os.environ.get(ALLOW_INSECURE_REMOTE_API_ENV, "").strip().lower() in _TRUTHY_ENV_VALUES
+    return (
+        os.environ.get(ALLOW_INSECURE_REMOTE_API_ENV, "").strip().lower()
+        in _TRUTHY_ENV_VALUES
+    )
 
 
 def is_loopback_bind_host(host: str) -> bool:

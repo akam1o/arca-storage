@@ -16,7 +16,17 @@ from arca_storage.models.volume import Volume, VolumeSpec
 def create_test_svm(runner: CliRunner) -> None:
     result = runner.invoke(
         app,
-        ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24", "--gateway", "192.168.10.1"],
+        [
+            "svm",
+            "create",
+            "tenant_a",
+            "--vlan",
+            "100",
+            "--ip",
+            "192.168.10.5/24",
+            "--gateway",
+            "192.168.10.1",
+        ],
     )
     assert result.exit_code == 0
 
@@ -29,21 +39,39 @@ class TestVolumeCreate:
         """Test successful volume creation."""
         runner = CliRunner()
         create_test_svm(runner)
-        result = runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"])
+        result = runner.invoke(
+            app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"]
+        )
 
         assert result.exit_code == 0
         assert "Creating volume: vol1" in result.stdout
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
+        assert fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "vol1")
+        )
 
     @pytest.mark.integration
     def test_create_volume_no_thin(self, fake_context):
         """Test creating volume without thin provisioning."""
         runner = CliRunner()
         create_test_svm(runner)
-        result = runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100", "--no-thin"])
+        result = runner.invoke(
+            app,
+            [
+                "volume",
+                "create",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--size",
+                "100",
+                "--no-thin",
+            ],
+        )
 
         assert result.exit_code == 0
-        assert fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
+        assert fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "vol1")
+        )
 
 
 class TestVolumeResize:
@@ -54,9 +82,13 @@ class TestVolumeResize:
         """Test successful volume resize."""
         runner = CliRunner()
         create_test_svm(runner)
-        runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"])
+        runner.invoke(
+            app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"]
+        )
 
-        result = runner.invoke(app, ["volume", "resize", "vol1", "--svm", "tenant_a", "--new-size", "200"])
+        result = runner.invoke(
+            app, ["volume", "resize", "vol1", "--svm", "tenant_a", "--new-size", "200"]
+        )
 
         assert result.exit_code == 0
         assert "Resizing volume: vol1" in result.stdout
@@ -70,13 +102,17 @@ class TestVolumeDelete:
         """Test successful volume deletion."""
         runner = CliRunner()
         create_test_svm(runner)
-        runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"])
+        runner.invoke(
+            app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"]
+        )
 
         result = runner.invoke(app, ["volume", "delete", "vol1", "--svm", "tenant_a"])
 
         assert result.exit_code == 0
         assert "Deleting volume: vol1" in result.stdout
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "vol1")
+        )
 
 
 class TestVolumeList:
@@ -86,7 +122,9 @@ class TestVolumeList:
     def test_list_volumes_paginates_all_records(self, fake_context):
         """List all volumes, not only the DB default first page."""
         for i in range(105):
-            volume = Volume(spec=VolumeSpec(name=f"vol_{i:03d}", svm="tenant_a", size_gib=1))
+            volume = Volume(
+                spec=VolumeSpec(name=f"vol_{i:03d}", svm="tenant_a", size_gib=1)
+            )
             volume.status.phase = Phase.READY
             fake_context.db.insert_volume(volume)
 
@@ -102,13 +140,16 @@ class TestVolumeList:
     def test_list_volumes_supports_json_cursor_page(self, fake_context):
         """List an explicit volume page as JSON with a follow-up cursor."""
         for i in range(3):
-            volume = Volume(spec=VolumeSpec(name=f"vol_{i:03d}", svm="tenant_a", size_gib=1))
+            volume = Volume(
+                spec=VolumeSpec(name=f"vol_{i:03d}", svm="tenant_a", size_gib=1)
+            )
             volume.status.phase = Phase.READY
             fake_context.db.insert_volume(volume)
 
         runner = CliRunner()
         result = runner.invoke(
-            app, ["volume", "list", "--svm", "tenant_a", "--limit", "2", "--format", "json"]
+            app,
+            ["volume", "list", "--svm", "tenant_a", "--limit", "2", "--format", "json"],
         )
 
         assert result.exit_code == 0

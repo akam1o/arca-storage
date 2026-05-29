@@ -24,7 +24,9 @@ def create(
     name: str = typer.Argument(..., help="Volume name"),
     svm: str = typer.Option(..., "--svm", help="SVM name"),
     size: int = typer.Option(..., "--size", help="Size in GiB"),
-    thin: bool = typer.Option(True, "--thin/--no-thin", help="Use thin provisioning (default: True)"),
+    thin: bool = typer.Option(
+        True, "--thin/--no-thin", help="Use thin provisioning (default: True)"
+    ),
 ):
     """Create a new volume."""
     try:
@@ -74,7 +76,9 @@ def resize(
 def delete(
     name: str = typer.Argument(..., help="Volume name"),
     svm: str = typer.Option(..., "--svm", help="SVM name"),
-    force: bool = typer.Option(False, "--force", help="Delete dependent snapshots before deleting"),
+    force: bool = typer.Option(
+        False, "--force", help="Delete dependent snapshots before deleting"
+    ),
 ):
     """Delete a volume after dependent exports/snapshots are handled."""
     try:
@@ -132,7 +136,9 @@ def list(
 
         if output_format == "json":
             typer.echo(
-                json.dumps({"items": volumes, "next_cursor": next_cursor}, sort_keys=True)
+                json.dumps(
+                    {"items": volumes, "next_cursor": next_cursor}, sort_keys=True
+                )
             )
             return
 

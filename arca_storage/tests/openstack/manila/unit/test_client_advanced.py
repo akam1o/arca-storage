@@ -64,7 +64,9 @@ class TestErrorMappingEdgeCases:
     # VLAN conflicts will be raised as generic ArcaManilaAPIError
 
     @patch("requests.Session.request")
-    def test_409_share_exists_maps_to_ArcaShareAlreadyExists(self, mock_request, client):
+    def test_409_share_exists_maps_to_ArcaShareAlreadyExists(
+        self, mock_request, client
+    ):
         """Test that share already exists maps to ArcaShareAlreadyExists."""
         resp = Mock()
         resp.status_code = 409
@@ -101,7 +103,9 @@ class TestErrorMappingEdgeCases:
             try:
                 client._make_request("POST", "/v1/volumes", json_data={"name": "test"})
             except exceptions.ArcaNetworkConflict:
-                pytest.fail("Should not raise ArcaNetworkConflict for non-network conflicts")
+                pytest.fail(
+                    "Should not raise ArcaNetworkConflict for non-network conflicts"
+                )
 
     @patch("requests.Session.request")
     def test_500_internal_server_error(self, mock_request, client):

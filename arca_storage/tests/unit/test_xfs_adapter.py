@@ -26,7 +26,9 @@ def test_format_skips_existing_xfs_filesystem(monkeypatch):
     def fake_run_cmd(cmd, **_kwargs):
         calls.append(cmd)
         if cmd[0] == "blkid":
-            return _completed(cmd, stdout='/dev/vg_pool_01/vol1: UUID="abc" TYPE="xfs"\n')
+            return _completed(
+                cmd, stdout='/dev/vg_pool_01/vol1: UUID="abc" TYPE="xfs"\n'
+            )
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(xfs.os.path, "exists", lambda _path: True)
@@ -44,7 +46,9 @@ def test_format_rejects_existing_non_xfs_filesystem(monkeypatch):
     def fake_run_cmd(cmd, **_kwargs):
         calls.append(cmd)
         if cmd[0] == "blkid":
-            return _completed(cmd, stdout='/dev/vg_pool_01/vol1: UUID="abc" TYPE="ext4"\n')
+            return _completed(
+                cmd, stdout='/dev/vg_pool_01/vol1: UUID="abc" TYPE="ext4"\n'
+            )
         raise AssertionError(f"unexpected command: {cmd}")
 
     monkeypatch.setattr(xfs.os.path, "exists", lambda _path: True)
@@ -80,10 +84,14 @@ def test_format_formats_device_without_existing_signature(monkeypatch):
         ["blkid", "/dev/vg_pool_01/vol1"],
         [
             "mkfs.xfs",
-            "-b", "size=4096",
-            "-m", "crc=1,finobt=1",
-            "-i", "size=512,maxpct=25",
-            "-d", "agcount=32,su=256k,sw=1",
+            "-b",
+            "size=4096",
+            "-m",
+            "crc=1,finobt=1",
+            "-i",
+            "size=512,maxpct=25",
+            "-d",
+            "agcount=32,su=256k,sw=1",
             "/dev/vg_pool_01/vol1",
         ],
     ]
@@ -105,7 +113,14 @@ def test_mount_is_idempotent_for_same_device(monkeypatch):
     adapter.mount("/dev/vg_pool_01/vol1", "/exports/tenant_a/vol1")
 
     assert calls == [
-        ["findmnt", "--mountpoint", "/exports/tenant_a/vol1", "--noheadings", "--output", "SOURCE"]
+        [
+            "findmnt",
+            "--mountpoint",
+            "/exports/tenant_a/vol1",
+            "--noheadings",
+            "--output",
+            "SOURCE",
+        ]
     ]
 
 
@@ -126,9 +141,21 @@ def test_mount_rejects_existing_mount_from_different_device(monkeypatch):
         adapter.mount("/dev/vg_pool_01/vol1", "/exports/tenant_a/vol1")
 
     assert exc_info.value.details == {"resource": "MountPoint"}
-    _assert_redacted(exc_info.value, "/exports/tenant_a/vol1", "/dev/vg_pool_01/other", "/dev/vg_pool_01/vol1")
+    _assert_redacted(
+        exc_info.value,
+        "/exports/tenant_a/vol1",
+        "/dev/vg_pool_01/other",
+        "/dev/vg_pool_01/vol1",
+    )
     assert calls == [
-        ["findmnt", "--mountpoint", "/exports/tenant_a/vol1", "--noheadings", "--output", "SOURCE"]
+        [
+            "findmnt",
+            "--mountpoint",
+            "/exports/tenant_a/vol1",
+            "--noheadings",
+            "--output",
+            "SOURCE",
+        ]
     ]
 
 
@@ -137,7 +164,11 @@ def test_mount_rejects_symlink_mount_point(tmp_path, monkeypatch):
     target.mkdir()
     mount_point = tmp_path / "mount-point"
     mount_point.symlink_to(target, target_is_directory=True)
-    monkeypatch.setattr(xfs, "run_cmd", lambda *_args, **_kwargs: pytest.fail("run_cmd should not be called"))
+    monkeypatch.setattr(
+        xfs,
+        "run_cmd",
+        lambda *_args, **_kwargs: pytest.fail("run_cmd should not be called"),
+    )
 
     adapter = xfs.SubprocessXFSAdapter()
     with pytest.raises(PreconditionFailedError) as exc_info:
@@ -150,7 +181,11 @@ def test_mount_rejects_symlink_mount_point(tmp_path, monkeypatch):
 def test_mount_rejects_non_directory_mount_point(tmp_path, monkeypatch):
     mount_point = tmp_path / "mount-point"
     mount_point.write_text("not a directory", encoding="utf-8")
-    monkeypatch.setattr(xfs, "run_cmd", lambda *_args, **_kwargs: pytest.fail("run_cmd should not be called"))
+    monkeypatch.setattr(
+        xfs,
+        "run_cmd",
+        lambda *_args, **_kwargs: pytest.fail("run_cmd should not be called"),
+    )
 
     adapter = xfs.SubprocessXFSAdapter()
     with pytest.raises(PreconditionFailedError) as exc_info:
@@ -175,10 +210,19 @@ def test_mount_runs_mount_when_mountpoint_is_free(monkeypatch):
     monkeypatch.setattr(xfs.os, "makedirs", lambda *_args, **_kwargs: None)
 
     adapter = xfs.SubprocessXFSAdapter()
-    adapter.mount("/dev/vg_pool_01/vol1", "/exports/tenant_a/vol1", extra_options=["nouuid"])
+    adapter.mount(
+        "/dev/vg_pool_01/vol1", "/exports/tenant_a/vol1", extra_options=["nouuid"]
+    )
 
     assert calls == [
-        ["findmnt", "--mountpoint", "/exports/tenant_a/vol1", "--noheadings", "--output", "SOURCE"],
+        [
+            "findmnt",
+            "--mountpoint",
+            "/exports/tenant_a/vol1",
+            "--noheadings",
+            "--output",
+            "SOURCE",
+        ],
         [
             "mount",
             "-o",

@@ -79,7 +79,7 @@ jobs:
         run: docker build -t csi-arca-storage:ci .
 
       - name: Run Trivy image scan
-        uses: aquasecurity/trivy-action@0.28.0
+        uses: aquasecurity/trivy-action@v0.28.0
         with:
           image-ref: csi-arca-storage:ci
           format: table
@@ -107,8 +107,11 @@ jobs:
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
           sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
 
-      - name: Prepare production overlay fixture
+      - name: Prepare kustomize overlay fixtures
         run: |
+          cp \
+            csi-arca-storage/deploy/kustomize/overlays/development/secrets.env.example \
+            csi-arca-storage/deploy/kustomize/overlays/development/secrets.env
           cp \
             csi-arca-storage/deploy/kustomize/overlays/production/secrets.env.example \
             csi-arca-storage/deploy/kustomize/overlays/production/secrets.env

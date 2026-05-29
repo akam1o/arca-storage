@@ -37,8 +37,11 @@ class TestPerProjectNetworkConflictRetry:
             rendered.extend(str(call.args) for call in mock_log.call_args_list)
         return " ".join(rendered)
 
-    def test_create_svm_retries_on_ip_conflict(self, driver, mock_arca_client, mock_manila_share):
+    def test_create_svm_retries_on_ip_conflict(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
         """Test that SVM creation retries on IP conflict."""
+
         def get_svm_side_effect(name):
             if name == "manila_test-project-id":
                 raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
@@ -49,8 +52,12 @@ class TestPerProjectNetworkConflictRetry:
 
         # First two attempts fail with IP conflict, third succeeds
         mock_arca_client.create_svm.side_effect = [
-            arca_exceptions.ArcaNetworkConflict("IP address 192.168.100.10 is already in use"),
-            arca_exceptions.ArcaNetworkConflict("IP address 192.168.100.11 is already in use"),
+            arca_exceptions.ArcaNetworkConflict(
+                "IP address 192.168.100.10 is already in use"
+            ),
+            arca_exceptions.ArcaNetworkConflict(
+                "IP address 192.168.100.11 is already in use"
+            ),
             {
                 "name": "manila_test-project-id",
                 "vip": "192.168.100.12",
@@ -70,8 +77,11 @@ class TestPerProjectNetworkConflictRetry:
         assert mock_arca_client.create_svm.call_count == 3
         assert exports[0]["path"].endswith("/share-share-123")
 
-    def test_create_svm_exhausts_retries_on_persistent_conflict(self, driver, mock_arca_client, mock_manila_share):
+    def test_create_svm_exhausts_retries_on_persistent_conflict(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
         """Test that persistent IP conflicts eventually raise an error."""
+
         def get_svm_side_effect(name):
             if name == "manila_test-project-id":
                 raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
@@ -85,7 +95,10 @@ class TestPerProjectNetworkConflictRetry:
             "IP address already in use"
         )
 
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="Failed to allocate"):
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="Failed to allocate",
+        ):
             driver.create_share(Mock(), mock_manila_share, None)
 
         # Should have attempted max_retries (3) times before giving up
@@ -116,7 +129,11 @@ class TestPerProjectNetworkConflictRetry:
     ):
         mock_arca_client.get_svm.side_effect = [
             arca_exceptions.ArcaSVMNotFound(svm_name="manila_project-secret-token"),
-            {"name": "manila_project-secret-token", "vip": "192.168.100.10", "vlan_id": 100},
+            {
+                "name": "manila_project-secret-token",
+                "vip": "192.168.100.10",
+                "vlan_id": 100,
+            },
         ]
         driver._network_allocator.allocate = Mock(
             return_value=Mock(
@@ -127,7 +144,9 @@ class TestPerProjectNetworkConflictRetry:
             )
         )
         driver._network_allocator.deallocate = Mock(
-            side_effect=RuntimeError("Authorization: Bearer secret-token password=hunter2")
+            side_effect=RuntimeError(
+                "Authorization: Bearer secret-token password=hunter2"
+            )
         )
         mock_arca_client.create_svm.side_effect = arca_exceptions.ArcaSVMAlreadyExists(
             svm_name="manila_project-secret-token"
@@ -147,7 +166,10 @@ class TestPerProjectNetworkConflictRetry:
         assert "secret-token" not in rendered_calls
         assert "hunter2" not in rendered_calls
         assert "Per-project SVM was created by another process" in rendered_calls
-        assert "Failed to cleanup network allocation after concurrent SVM creation" in rendered_calls
+        assert (
+            "Failed to cleanup network allocation after concurrent SVM creation"
+            in rendered_calls
+        )
 
     def test_create_svm_redacts_sensitive_conflict_after_retries(
         self, driver, mock_arca_client
@@ -189,7 +211,10 @@ class TestPerProjectNetworkConflictRetry:
         assert "192.168.100.10" not in rendered_calls
         assert "secret-token" not in rendered_calls
         assert "hunter2" not in rendered_calls
-        assert "Network conflict on attempt %d/%d during per-project SVM allocation" in rendered_calls
+        assert (
+            "Network conflict on attempt %d/%d during per-project SVM allocation"
+            in rendered_calls
+        )
 
     def test_create_svm_redacts_sensitive_non_retryable_network_errors(
         self, driver, mock_arca_client
@@ -220,7 +245,10 @@ class TestPerProjectNetworkConflictRetry:
         assert "manila_test-project-id" not in rendered_calls
         assert "secret-token" not in rendered_calls
         assert "hunter2" not in rendered_calls
-        assert "Non-retryable network error during per-project SVM allocation" in rendered_calls
+        assert (
+            "Non-retryable network error during per-project SVM allocation"
+            in rendered_calls
+        )
 
     def test_create_svm_redacts_sensitive_unexpected_backend_errors(
         self, driver, mock_arca_client
@@ -263,8 +291,11 @@ class TestPerProjectNetworkConflictRetry:
         assert "hunter2" not in rendered_calls
         assert "Failed to create per-project SVM" in rendered_calls
 
-    def test_create_svm_handles_vlan_conflict(self, driver, mock_arca_client, mock_manila_share):
+    def test_create_svm_handles_vlan_conflict(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
         """Test that VLAN conflicts are also retried."""
+
         def get_svm_side_effect(name):
             if name == "manila_test-project-id":
                 raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
@@ -294,7 +325,9 @@ class TestPerProjectNetworkConflictRetry:
         assert mock_arca_client.create_svm.call_count == 2
         assert exports[0]["path"].endswith("/share-share-123")
 
-    def test_create_svm_handles_race_condition_svm_exists(self, driver, mock_arca_client, mock_manila_share):
+    def test_create_svm_handles_race_condition_svm_exists(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
         """Test handling of race where another worker creates the SVM."""
         call_count = {"value": 0}
 
@@ -337,7 +370,9 @@ class TestPerProjectNetworkConflictRetry:
 class TestPerProjectPoolValidation:
     """Test IP/VLAN pool parsing and validation."""
 
-    def test_invalid_pool_format_raises_error(self, mock_manila_driver_config, mock_arca_client):
+    def test_invalid_pool_format_raises_error(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
         """Test that invalid pool format raises configuration error."""
         with patch(
             "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
@@ -354,7 +389,9 @@ class TestPerProjectPoolValidation:
             with pytest.raises(manila_driver.manila_exception.ManilaException):
                 drv.do_setup(Mock())
 
-    def test_gateway_in_allocatable_range_raises_error(self, mock_manila_driver_config, mock_arca_client):
+    def test_gateway_in_allocatable_range_raises_error(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
         """Test that gateway IP in allocatable range raises error."""
         with patch(
             "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
@@ -369,10 +406,14 @@ class TestPerProjectPoolValidation:
                 "192.168.100.0/24|192.168.100.1-192.168.100.10:100"
             ]
 
-            with pytest.raises(manila_driver.manila_exception.ManilaException, match="[Gg]ateway"):
+            with pytest.raises(
+                manila_driver.manila_exception.ManilaException, match="[Gg]ateway"
+            ):
                 drv.do_setup(Mock())
 
-    def test_network_address_excluded_from_pool(self, mock_manila_driver_config, mock_arca_client):
+    def test_network_address_excluded_from_pool(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
         """Test that network and broadcast addresses are excluded."""
         with patch(
             "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
@@ -390,7 +431,9 @@ class TestPerProjectPoolValidation:
             # Verify pool was parsed (should succeed without gateway conflict)
             assert len(drv._network_allocator._ip_vlan_pools) == 1
 
-    def test_multiple_pools_parsed_correctly(self, mock_manila_driver_config, mock_arca_client):
+    def test_multiple_pools_parsed_correctly(
+        self, mock_manila_driver_config, mock_arca_client
+    ):
         """Test that multiple IP/VLAN pools are parsed correctly."""
         with patch(
             "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
@@ -435,7 +478,9 @@ class TestPerProjectCrossProjectRestrictions:
         """Test that cross-project snapshot cloning is blocked."""
         # Snapshot from project A
         mock_manila_snapshot["share"]["project_id"] = "project-a"
-        mock_manila_snapshot["share"]["metadata"] = {"arca_svm_name": "manila_project-a"}
+        mock_manila_snapshot["share"]["metadata"] = {
+            "arca_svm_name": "manila_project-a"
+        }
 
         # New share in project B
         new_share = {
@@ -445,14 +490,23 @@ class TestPerProjectCrossProjectRestrictions:
             "metadata": {},
         }
 
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="[Cc]ross-project"):
-            driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="[Cc]ross-project",
+        ):
+            driver.create_share_from_snapshot(
+                Mock(), new_share, mock_manila_snapshot, None
+            )
 
-    def test_same_project_snapshot_clone_allowed(self, driver, mock_arca_client, mock_manila_snapshot):
+    def test_same_project_snapshot_clone_allowed(
+        self, driver, mock_arca_client, mock_manila_snapshot
+    ):
         """Test that same-project snapshot cloning is allowed."""
         # Snapshot from project A
         mock_manila_snapshot["share"]["project_id"] = "test-project-id"
-        mock_manila_snapshot["share"]["metadata"] = {"arca_svm_name": "manila_test-project-id"}
+        mock_manila_snapshot["share"]["metadata"] = {
+            "arca_svm_name": "manila_test-project-id"
+        }
 
         # New share in same project A
         new_share = {
@@ -467,12 +521,16 @@ class TestPerProjectCrossProjectRestrictions:
             "export_path": "192.168.100.10:/exports/manila_test-project-id/share-share-456",
         }
 
-        exports = driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+        exports = driver.create_share_from_snapshot(
+            Mock(), new_share, mock_manila_snapshot, None
+        )
 
         assert exports[0]["path"].endswith("/share-share-456")
         mock_arca_client.clone_volume_from_snapshot.assert_called_once()
 
-    def test_missing_snapshot_project_id_fails_closed(self, driver, mock_manila_snapshot):
+    def test_missing_snapshot_project_id_fails_closed(
+        self, driver, mock_manila_snapshot
+    ):
         """Test that missing project ID fails closed (rejects operation)."""
         # Snapshot without project_id
         mock_manila_snapshot["share"]["project_id"] = None
@@ -486,12 +544,18 @@ class TestPerProjectCrossProjectRestrictions:
         }
 
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
-            driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+            driver.create_share_from_snapshot(
+                Mock(), new_share, mock_manila_snapshot, None
+            )
 
-    def test_missing_new_share_project_id_fails_closed(self, driver, mock_manila_snapshot):
+    def test_missing_new_share_project_id_fails_closed(
+        self, driver, mock_manila_snapshot
+    ):
         """Test that missing project ID on new share fails closed."""
         mock_manila_snapshot["share"]["project_id"] = "test-project-id"
-        mock_manila_snapshot["share"]["metadata"] = {"arca_svm_name": "manila_test-project-id"}
+        mock_manila_snapshot["share"]["metadata"] = {
+            "arca_svm_name": "manila_test-project-id"
+        }
 
         # New share without project_id
         new_share = {
@@ -502,7 +566,9 @@ class TestPerProjectCrossProjectRestrictions:
         }
 
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
-            driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+            driver.create_share_from_snapshot(
+                Mock(), new_share, mock_manila_snapshot, None
+            )
 
     def test_missing_parent_share_fails_closed(self, driver, mock_arca_client):
         """Test that missing parent share fails closed for project isolation."""
@@ -514,7 +580,10 @@ class TestPerProjectCrossProjectRestrictions:
             "metadata": {},
         }
 
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="project isolation"):
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="project isolation",
+        ):
             driver.create_share_from_snapshot(Mock(), new_share, snapshot, None)
 
         mock_arca_client.clone_volume_from_snapshot.assert_not_called()
@@ -542,8 +611,11 @@ class TestPerProjectPoolExhaustion:
             drv.do_setup(Mock())
             return drv
 
-    def test_ip_pool_exhaustion_raises_error(self, driver_small_pool, mock_arca_client, mock_manila_share):
+    def test_ip_pool_exhaustion_raises_error(
+        self, driver_small_pool, mock_arca_client, mock_manila_share
+    ):
         """Test that IP pool exhaustion raises appropriate error."""
+
         def get_svm_side_effect(name):
             if name == "manila_test-project-id":
                 raise arca_exceptions.ArcaSVMNotFound(svm_name=name)
@@ -561,5 +633,8 @@ class TestPerProjectPoolExhaustion:
             "IP address already in use"
         )
 
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException, match="No available|exhausted"):
+        with pytest.raises(
+            manila_driver.manila_exception.ShareBackendException,
+            match="No available|exhausted",
+        ):
             driver_small_pool.create_share(Mock(), mock_manila_share, None)

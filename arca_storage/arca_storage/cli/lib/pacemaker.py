@@ -69,7 +69,12 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
 def _parse_resource_attribute(text: str, name: str) -> Optional[str]:
     for match in _RESOURCE_ATTR_RE.finditer(text):
         if match.group("name") == name:
-            return match.group("double") or match.group("single") or match.group("bare") or ""
+            return (
+                match.group("double")
+                or match.group("single")
+                or match.group("bare")
+                or ""
+            )
     return None
 
 
@@ -93,7 +98,9 @@ def _group_members(group_name: str) -> list[str]:
     result = _run(["pcs", "resource", "config", group_name])
     if result.returncode != 0:
         result = _run(["pcs", "resource", "show", group_name])
-    return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+    return _parse_group_members(
+        group_name, (result.stdout or "") + "\n" + (result.stderr or "")
+    )
 
 
 def _resource_text(name: str) -> str:
@@ -116,28 +123,36 @@ def _ensure_group_members(group_name: str, resources: list[str]) -> None:
     for index, resource in enumerate(resources):
         if _group_member_is_ordered(resource, resources, index, members):
             continue
-        command, before, after = _group_add_command(group_name, resource, resources, index, members)
+        command, before, after = _group_add_command(
+            group_name, resource, resources, index, members
+        )
         result = _run(command)
         if result.returncode != 0:
             raise RuntimeError("Failed to add Pacemaker resource to group")
         members = _insert_group_member(members, resource, before=before, after=after)
 
 
-def _previous_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
+def _previous_desired_member(
+    resources: list[str], index: int, members: list[str]
+) -> Optional[str]:
     for resource in reversed(resources[:index]):
         if resource in members:
             return resource
     return None
 
 
-def _next_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
-    for resource in resources[index + 1:]:
+def _next_desired_member(
+    resources: list[str], index: int, members: list[str]
+) -> Optional[str]:
+    for resource in resources[index + 1 :]:
         if resource in members:
             return resource
     return None
 
 
-def _group_member_is_ordered(resource: str, resources: list[str], index: int, members: list[str]) -> bool:
+def _group_member_is_ordered(
+    resource: str, resources: list[str], index: int, members: list[str]
+) -> bool:
     if resource not in members:
         return False
     resource_index = members.index(resource)
@@ -159,13 +174,52 @@ def _group_add_command(
 ) -> tuple[list[str], Optional[str], Optional[str]]:
     previous = _previous_desired_member(resources, index, members)
     if resource in members and previous is not None:
-        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+        return (
+            [
+                "pcs",
+                "resource",
+                "group",
+                "add",
+                group_name,
+                resource,
+                "--after",
+                previous,
+            ],
+            None,
+            previous,
+        )
 
     next_member = _next_desired_member(resources, index, members)
     if next_member is not None:
-        return ["pcs", "resource", "group", "add", group_name, resource, "--before", next_member], next_member, None
+        return (
+            [
+                "pcs",
+                "resource",
+                "group",
+                "add",
+                group_name,
+                resource,
+                "--before",
+                next_member,
+            ],
+            next_member,
+            None,
+        )
     if previous is not None:
-        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+        return (
+            [
+                "pcs",
+                "resource",
+                "group",
+                "add",
+                group_name,
+                resource,
+                "--after",
+                previous,
+            ],
+            None,
+            previous,
+        )
     return ["pcs", "resource", "group", "add", group_name, resource], None, None
 
 
@@ -241,7 +295,15 @@ def ensure_order(master_name: str, target_resource: str) -> None:
     needle = f"order {master_name}:promote {target_resource}:start"
     if needle in _constraints_text():
         return
-    result = _run(["pcs", "constraint", "order", f"{master_name}:promote", f"{target_resource}:start"])
+    result = _run(
+        [
+            "pcs",
+            "constraint",
+            "order",
+            f"{master_name}:promote",
+            f"{target_resource}:start",
+        ]
+    )
     if result.returncode != 0:
         raise RuntimeError("Failed to create Pacemaker order constraint")
 
@@ -253,7 +315,17 @@ def ensure_colocation(group_name: str, master_name: str) -> None:
     needle = f"colocation {group_name} with {master_name}:Master"
     if needle in _constraints_text():
         return
-    result = _run(["pcs", "constraint", "colocation", "add", group_name, "with", f"{master_name}:Master"])
+    result = _run(
+        [
+            "pcs",
+            "constraint",
+            "colocation",
+            "add",
+            group_name,
+            "with",
+            f"{master_name}:Master",
+        ]
+    )
     if result.returncode != 0:
         raise RuntimeError("Failed to create Pacemaker colocation constraint")
 
@@ -277,7 +349,7 @@ def create_group(
 ) -> None:
     """
     Create a Pacemaker resource group for an SVM.
-    
+
     Args:
         svm_name: SVM name
         mount_path: Filesystem mount path
@@ -291,7 +363,7 @@ def create_group(
         vg_name: Volume group name for Filesystem resource device path
         filesystem_lv_name: Optional logical volume name for the Filesystem resource.
         create_filesystem: Whether to create Filesystem resource (default: True)
-        
+
     Raises:
         RuntimeError: If resource group creation fails
     """
@@ -408,7 +480,11 @@ def create_group(
     # Constraints (DRBD -> group/fs ordering, group colocation with DRBD master)
     if master_name:
         # Prefer ordering on filesystem if present, otherwise on first resource in group.
-        target = fs_resource if (create_filesystem and fs_resource in resources) else resources[0]
+        target = (
+            fs_resource
+            if (create_filesystem and fs_resource in resources)
+            else resources[0]
+        )
         ensure_order(master_name, target)
         ensure_colocation(group_name, master_name)
 
@@ -416,23 +492,23 @@ def create_group(
 def delete_group(svm_name: str) -> None:
     """
     Delete a Pacemaker resource group for an SVM.
-    
+
     Args:
         svm_name: SVM name
-        
+
     Raises:
         RuntimeError: If resource group deletion fails
     """
     group_name = f"g_svm_{svm_name}"
-    
+
     # Check if group exists
     if not _resource_exists(group_name):
         # Group doesn't exist, skip
         return
-    
+
     # Stop and delete group
     _run(["pcs", "resource", "disable", group_name])
     result = _run(["pcs", "resource", "delete", group_name])
-    
+
     if result.returncode != 0:
         raise RuntimeError("Failed to delete resource group")

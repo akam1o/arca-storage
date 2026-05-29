@@ -8,7 +8,11 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
-from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 
 
 _LOGICAL_VOLUME_REF = "<logical-volume>"
@@ -35,7 +39,9 @@ class LVInfo:
 
     @property
     def is_snapshot(self) -> bool:
-        return bool(self.origin) or self.attr.startswith("s") or self.segtype == "snapshot"
+        return (
+            bool(self.origin) or self.attr.startswith("s") or self.segtype == "snapshot"
+        )
 
 
 @runtime_checkable
@@ -261,6 +267,8 @@ class FakeLVMAdapter:
         return f"/dev/{snap_key}"
 
     def get_vg_capacity(self, vg: str) -> dict[str, float]:
-        provisioned = float(sum(size for key, size in self.volumes.items() if key.startswith(f"{vg}/")))
+        provisioned = float(
+            sum(size for key, size in self.volumes.items() if key.startswith(f"{vg}/"))
+        )
         total = max(1000.0, provisioned)
         return {"total_gb": total, "free_gb": max(total - provisioned, 0.0)}

@@ -30,6 +30,7 @@ def _template_path() -> Path:
     # arca_storage/cli/lib/ganesha.py -> arca_storage/templates/ganesha.conf.j2
     return Path(__file__).resolve().parents[2] / "templates" / "ganesha.conf.j2"
 
+
 def _config_snapshot_dir(settings: Optional[ArcaSettings] = None) -> Path:
     # Keep snapshots under the same persistent state directory as exports.*.json.
     if settings is not None:
@@ -48,21 +49,33 @@ def _safe_snapshot_version(config_version: str, *, allow_latest: bool = False) -
     if allow_latest and value == "latest":
         return value
     if not _SNAPSHOT_VERSION_RE.fullmatch(value):
-        expected = "'latest' or a 12-character lowercase hex digest" if allow_latest else "a 12-character lowercase hex digest"
+        expected = (
+            "'latest' or a 12-character lowercase hex digest"
+            if allow_latest
+            else "a 12-character lowercase hex digest"
+        )
         raise ValueError(f"config_version must be {expected}")
     return value
 
 
-def _snapshot_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+def _snapshot_path(
+    svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None
+) -> Path:
     svm_name = _safe_resource_name(svm_name)
     config_version = _safe_snapshot_version(config_version)
-    return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.conf"
+    return (
+        snapshot_dir or _config_snapshot_dir()
+    ) / f"ganesha.{svm_name}.{config_version}.conf"
 
 
-def _snapshot_meta_path(svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None) -> Path:
+def _snapshot_meta_path(
+    svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None
+) -> Path:
     svm_name = _safe_resource_name(svm_name)
     config_version = _safe_snapshot_version(config_version)
-    return (snapshot_dir or _config_snapshot_dir()) / f"ganesha.{svm_name}.{config_version}.json"
+    return (
+        snapshot_dir or _config_snapshot_dir()
+    ) / f"ganesha.{svm_name}.{config_version}.json"
 
 
 def _render_sectype(value: object) -> str:
@@ -70,7 +83,9 @@ def _render_sectype(value: object) -> str:
     if isinstance(value, list):
         raw_tokens = [str(v).strip().lower() for v in value if str(v).strip()]
     else:
-        raw_tokens = [token.strip().lower() for token in str(value).split(",") if token.strip()]
+        raw_tokens = [
+            token.strip().lower() for token in str(value).split(",") if token.strip()
+        ]
 
     tokens = raw_tokens or ["sys"]
     unsupported = [token for token in tokens if token not in _GANESHA_SEC_TYPES]
@@ -85,7 +100,9 @@ def _ganesha_quoted_string(value: object, field: str) -> str:
     raw = str(value)
     if not raw:
         raise ValueError(f"Missing Ganesha {field}")
-    invalid = [ch for ch in raw if ch in {'"', "\\"} or ord(ch) < 0x20 or ord(ch) == 0x7F]
+    invalid = [
+        ch for ch in raw if ch in {'"', "\\"} or ord(ch) < 0x20 or ord(ch) == 0x7F
+    ]
     if invalid:
         raise ValueError(f"Unsafe Ganesha {field}: contains unsupported characters")
     return raw
@@ -126,7 +143,9 @@ def _stable_config_version(
             for e in exports
         ],
     }
-    digest = hashlib.sha256(json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")).hexdigest()
+    digest = hashlib.sha256(
+        json.dumps(payload, sort_keys=True, ensure_ascii=False).encode("utf-8")
+    ).hexdigest()
     return digest[:12]
 
 
@@ -181,11 +200,11 @@ def render_config(
 ) -> str:
     """
     Render ganesha.conf configuration file.
-    
+
     Args:
         svm_name: SVM name
         exports: List of export dictionaries
-        
+
     Returns:
         Path to the generated config file
     """
@@ -193,7 +212,7 @@ def render_config(
     cfg = settings or load_settings()
     config_dir = Path(cfg.ganesha.config_dir)
     config_dir.mkdir(parents=True, exist_ok=True)
-    
+
     config_path = config_dir / f"ganesha.{svm_name}.conf"
 
     # Render template from templates/ganesha.conf.j2 (single source of truth).
@@ -222,8 +241,12 @@ def render_config(
                 "path": _ganesha_quoted_string(e.get("path"), "Path"),
                 "pseudo": _ganesha_quoted_string(e.get("pseudo"), "Pseudo"),
                 "client": _ganesha_quoted_string(e.get("client"), "Clients"),
-                "access": _ganesha_token(e.get("access", "RW"), "Access_Type", _GANESHA_ACCESS_TYPES),
-                "squash": _ganesha_token(e.get("squash", "Root_Squash"), "Squash", _GANESHA_SQUASH_TYPES),
+                "access": _ganesha_token(
+                    e.get("access", "RW"), "Access_Type", _GANESHA_ACCESS_TYPES
+                ),
+                "squash": _ganesha_token(
+                    e.get("squash", "Root_Squash"), "Squash", _GANESHA_SQUASH_TYPES
+                ),
                 "sec_render": _render_sectype(sec),
             }
         )
@@ -270,23 +293,27 @@ def render_config(
     # Save snapshots for rollback purposes.
     snapshot_dir = _config_snapshot_dir(cfg)
     snapshot_dir.mkdir(parents=True, exist_ok=True)
-    _write_if_changed(_snapshot_path(svm_name, config_version, snapshot_dir), config_content)
+    _write_if_changed(
+        _snapshot_path(svm_name, config_version, snapshot_dir), config_content
+    )
     _write_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.conf", config_content)
-    _write_json_if_changed(_snapshot_meta_path(svm_name, config_version, snapshot_dir), meta)
+    _write_json_if_changed(
+        _snapshot_meta_path(svm_name, config_version, snapshot_dir), meta
+    )
     _write_json_if_changed(snapshot_dir / f"ganesha.{svm_name}.latest.json", meta)
 
     _write_if_changed(config_path, config_content)
-    
+
     return str(config_path)
 
 
 def reload(svm_name: str, *, host_network: bool = False) -> None:
     """
     Reload NFS-Ganesha service for an SVM.
-    
+
     Args:
         svm_name: SVM name
-        
+
     Raises:
         RuntimeError: If reload fails
     """
@@ -303,7 +330,7 @@ def reload(svm_name: str, *, host_network: bool = False) -> None:
         check=False,
         timeout=_DEFAULT_COMMAND_TIMEOUT_SECONDS,
     )
-    
+
     if result.returncode != 0:
         raise RuntimeError("Failed to reload NFS-Ganesha")
 
@@ -318,14 +345,14 @@ def add_export(
 ) -> None:
     """
     Add an export to the ganesha configuration.
-    
+
     Args:
         svm_name: SVM name
         volume_name: Volume name
         client: Client CIDR
         access: Access type (rw or ro)
         root_squash: Enable root squash
-        
+
     Raises:
         RuntimeError: If adding export fails
     """
@@ -334,10 +361,10 @@ def add_export(
 
     # Load existing exports
     exports = _load_exports(svm_name)
-    
+
     # Generate export ID (simple increment)
     export_id = max([e.get("export_id", 0) for e in exports], default=0) + 1
-    
+
     # Create export entry
     cfg = load_settings()
     export_dir = cfg.ganesha.export_dir.rstrip("/")
@@ -350,13 +377,13 @@ def add_export(
         "sec": sec or ["sys"],
         "client": client,
     }
-    
+
     exports.append(export_entry)
-    
+
     # Save exports and regenerate config
     _save_exports(svm_name, exports)
     render_config(svm_name, exports)
-    
+
     # Reload service
     reload(svm_name)
 
@@ -364,12 +391,12 @@ def add_export(
 def remove_export(svm_name: str, volume_name: str, client: str) -> None:
     """
     Remove an export from the ganesha configuration.
-    
+
     Args:
         svm_name: SVM name
         volume_name: Volume name
         client: Client CIDR
-        
+
     Raises:
         RuntimeError: If removing export fails
     """
@@ -378,20 +405,23 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
 
     # Load existing exports
     exports = _load_exports(svm_name)
-    
+
     # Remove matching export
     cfg = load_settings()
     export_dir = cfg.ganesha.export_dir.rstrip("/")
     exports = [
         e
         for e in exports
-        if not (e.get("path") == f"{export_dir}/{svm_name}/{volume_name}" and e.get("client") == client)
+        if not (
+            e.get("path") == f"{export_dir}/{svm_name}/{volume_name}"
+            and e.get("client") == client
+        )
     ]
-    
+
     # Save exports and regenerate config
     _save_exports(svm_name, exports)
     render_config(svm_name, exports)
-    
+
     # Reload service
     reload(svm_name)
 
@@ -401,13 +431,13 @@ def _load_exports(svm_name: str) -> List[Dict]:
     svm_name = _safe_resource_name(svm_name)
     state_dir = get_state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
-    
+
     state_file = state_dir / f"exports.{svm_name}.json"
-    
+
     if state_file.exists():
         with open(state_file, "r") as f:
             return json.load(f)
-    
+
     return []
 
 
@@ -416,10 +446,12 @@ def _save_exports(svm_name: str, exports: List[Dict]) -> None:
     svm_name = _safe_resource_name(svm_name)
     state_dir = get_state_dir()
     state_dir.mkdir(parents=True, exist_ok=True)
-    
+
     state_file = state_dir / f"exports.{svm_name}.json"
 
-    tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{state_file.name}.", dir=str(state_file.parent))
+    tmp_fd, tmp_path = tempfile.mkstemp(
+        prefix=f".{state_file.name}.", dir=str(state_file.parent)
+    )
     try:
         with os.fdopen(tmp_fd, "w", encoding="utf-8") as f:
             json.dump(exports, f, indent=2, ensure_ascii=False, sort_keys=True)
@@ -432,7 +464,9 @@ def _save_exports(svm_name: str, exports: List[Dict]) -> None:
             pass
 
 
-def list_exports(svm_name: Optional[str] = None, volume_name: Optional[str] = None) -> List[Dict]:
+def list_exports(
+    svm_name: Optional[str] = None, volume_name: Optional[str] = None
+) -> List[Dict]:
     """
     List exports from state files.
     """
@@ -449,13 +483,17 @@ def list_exports(svm_name: Optional[str] = None, volume_name: Optional[str] = No
     if svm_name:
         per_svm = _load_exports(svm_name)
         for e in per_svm:
-            exports.append({"svm": svm_name, "volume": _volume_from_path(e.get("path", "")), **e})
+            exports.append(
+                {"svm": svm_name, "volume": _volume_from_path(e.get("path", "")), **e}
+            )
     else:
         for path in state_dir.glob("exports.*.json"):
             name = path.name[len("exports.") : -len(".json")]
             per_svm = _load_exports(name)
             for e in per_svm:
-                exports.append({"svm": name, "volume": _volume_from_path(e.get("path", "")), **e})
+                exports.append(
+                    {"svm": name, "volume": _volume_from_path(e.get("path", "")), **e}
+                )
 
     if volume_name:
         exports = [e for e in exports if e.get("volume") == volume_name]
@@ -503,7 +541,9 @@ def list_config_snapshots(svm_name: str) -> List[Dict]:
     return results
 
 
-def rollback_config(svm_name: str, config_version: str, *, host_network: bool = False) -> str:
+def rollback_config(
+    svm_name: str, config_version: str, *, host_network: bool = False
+) -> str:
     """
     Restore ganesha.<svm>.conf from a saved snapshot and reload the service.
 

@@ -58,7 +58,10 @@ class TestAddExport:
     @pytest.mark.integration
     def test_add_export_invalid_client(self, client):
         """Test adding export with invalid client CIDR."""
-        response = client.post("/v1/exports", json={"svm": "tenant_a", "volume": "vol1", "client": "invalid-cidr"})
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "invalid-cidr"},
+        )
 
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
@@ -66,11 +69,16 @@ class TestAddExport:
     @pytest.mark.integration
     def test_add_export_rejects_default_route_client(self, client):
         """Test adding export refuses world-open client CIDRs."""
-        response = client.post("/v1/exports", json={"svm": "tenant_a", "volume": "vol1", "client": "0.0.0.0/0"})
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "0.0.0.0/0"},
+        )
 
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
-        assert "default route" in response.json()["error"]["details"]["errors"][0]["msg"]
+        assert (
+            "default route" in response.json()["error"]["details"]["errors"][0]["msg"]
+        )
 
     @pytest.mark.integration
     def test_add_export_rejects_unsupported_sec_type(self, client):
@@ -88,18 +96,34 @@ class TestAddExport:
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
-    def test_add_export_rolls_back_rendered_config_on_reload_failure(self, fake_context):
+    def test_add_export_rolls_back_rendered_config_on_reload_failure(
+        self, fake_context
+    ):
         client = TestClient(app, raise_server_exceptions=False)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "ready", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "ready", "svm": "tenant_a", "size_gib": 10}
+        )
         client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "ready", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "ready",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
-        client.post("/v1/volumes", json={"name": "failed", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "failed", "svm": "tenant_a", "size_gib": 10}
+        )
 
         def fail_reload(_svm, *, host_network=False):
             raise RuntimeError("reload failed")
@@ -108,26 +132,43 @@ class TestAddExport:
 
         response = client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "failed", "client": "10.0.1.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "failed",
+                "client": "10.0.1.0/24",
+                "access": "rw",
+            },
         )
 
         assert response.status_code == 500
-        assert [entry["path"] for entry in fake_context.adapters.ganesha.exports["tenant_a"]] == [
-            "/exports/tenant_a/ready"
-        ]
+        assert [
+            entry["path"] for entry in fake_context.adapters.ganesha.exports["tenant_a"]
+        ] == ["/exports/tenant_a/ready"]
 
     @pytest.mark.integration
     def test_export_client_cidr_is_canonical_for_matching(self, fake_context):
         client = TestClient(app, raise_server_exceptions=False)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         response = client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.1/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.1/24",
+                "access": "rw",
+            },
         )
         assert response.status_code == 201
         assert response.json()["data"]["export"]["client"] == "10.0.0.0/24"
@@ -135,29 +176,54 @@ class TestAddExport:
 
         response = client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
         assert response.status_code == 409
 
-        response = client.get("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24")
+        response = client.get(
+            "/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24"
+        )
         assert response.status_code == 200
-        assert [item["client"] for item in response.json()["data"]["items"]] == ["10.0.0.0/24"]
+        assert [item["client"] for item in response.json()["data"]["items"]] == [
+            "10.0.0.0/24"
+        ]
 
-        response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24")
+        response = client.delete(
+            "/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.99/24"
+        )
         assert response.status_code == 200
         assert fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24") is None
 
     @pytest.mark.integration
-    def test_add_export_returns_conflict_when_existing_export_lease_is_not_acquired(self, fake_context, monkeypatch):
+    def test_add_export_returns_conflict_when_existing_export_lease_is_not_acquired(
+        self, fake_context, monkeypatch
+    ):
         client = TestClient(app, raise_server_exceptions=False)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
 
         original_can_resume = export_service._can_resume_create
@@ -167,11 +233,20 @@ class TestAddExport:
             return original_can_resume(record, requested_spec, owner=owner)
 
         monkeypatch.setattr(export_service, "_can_resume_create", can_resume_create)
-        monkeypatch.setattr(fake_context.db, "acquire_export_create_lease", lambda *_args, **_kwargs: None)
+        monkeypatch.setattr(
+            fake_context.db,
+            "acquire_export_create_lease",
+            lambda *_args, **_kwargs: None,
+        )
 
         response = client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
 
         assert response.status_code == 409
@@ -183,13 +258,25 @@ class TestAddExport:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        fake_context.db.insert_volume(Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10)))
+        fake_context.db.insert_volume(
+            Volume(spec=VolumeSpec(name="vol1", svm="tenant_a", size_gib=10))
+        )
 
         response = client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
 
         assert response.status_code == 412
@@ -209,7 +296,9 @@ class TestRemoveExport:
         """Test successful export removal."""
         mock_remove.return_value = None
 
-        response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.0/24")
+        response = client.delete(
+            "/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.0/24"
+        )
 
         assert response.status_code == 200
         data = response.json()
@@ -221,12 +310,24 @@ class TestRemoveExport:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
 
         def fail_reload(_svm, *, host_network=False):
@@ -234,16 +335,18 @@ class TestRemoveExport:
 
         fake_context.adapters.ganesha.reload = fail_reload
 
-        response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.0/24")
+        response = client.delete(
+            "/v1/exports?svm=tenant_a&volume=vol1&client=10.0.0.0/24"
+        )
 
         assert response.status_code == 500
         assert response.json()["error"]["code"] == "INTERNAL"
         record = fake_context.db.get_export("tenant_a", "vol1", "10.0.0.0/24")
         assert record["status"]["phase"] == "Failed"
         assert record["status"]["message"].startswith("Delete failed:")
-        assert [entry["path"] for entry in fake_context.adapters.ganesha.exports["tenant_a"]] == [
-            "/exports/tenant_a/vol1"
-        ]
+        assert [
+            entry["path"] for entry in fake_context.adapters.ganesha.exports["tenant_a"]
+        ] == ["/exports/tenant_a/vol1"]
 
 
 class TestListExports:
@@ -254,12 +357,24 @@ class TestListExports:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
         client.post(
             "/v1/exports",
-            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24", "access": "rw"},
+            json={
+                "svm": "tenant_a",
+                "volume": "vol1",
+                "client": "10.0.0.0/24",
+                "access": "rw",
+            },
         )
 
         response = client.get("/v1/exports?svm=tenant_a&volume=vol1")

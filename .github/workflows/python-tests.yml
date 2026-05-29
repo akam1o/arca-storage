@@ -145,8 +145,9 @@ jobs:
           # Copy tests and config to a temp directory to avoid importing from source
           cp -r arca_storage/tests /tmp/tests
           cp arca_storage/pytest.ini /tmp/pytest.ini
+          cp arca_storage/.coveragerc-core /tmp/.coveragerc-core
           cd /tmp
-          python -m pytest tests/unit tests/integration -v -m "not slow" --cov=arca_storage --cov-report=xml --cov-report=term --cov-fail-under=70
+          python -m pytest tests/unit tests/integration -v -m "not slow" --cov=arca_storage --cov-config=.coveragerc-core --cov-report=xml --cov-report=term --cov-fail-under=70
           # Copy coverage results back
           cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 

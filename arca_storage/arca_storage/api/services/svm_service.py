@@ -93,7 +93,9 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
     return _svm_to_dict(svm, ctx)
 
 
-def list_svms(name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None) -> Dict[str, Any]:
+def list_svms(
+    name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None
+) -> Dict[str, Any]:
     """List SVMs from the database."""
     ctx = get_context()
     try:
@@ -129,7 +131,9 @@ def get_svm_capacity(name: str) -> Dict[str, Any]:
     vg_name = cfg["vg_name"]
     vg_capacity = ctx.adapters.lvm.get_vg_capacity(vg_name)
     volumes = ctx.db.list_all_volumes(svm=name)
-    provisioned_gb = float(sum(int(v.get("spec", {}).get("size_gib") or 0) for v in volumes))
+    provisioned_gb = float(
+        sum(int(v.get("spec", {}).get("size_gib") or 0) for v in volumes)
+    )
     total_gb = float(vg_capacity["total_gb"])
     free_gb = float(vg_capacity["free_gb"])
     used_gb = max(total_gb - free_gb, 0.0)
@@ -214,7 +218,9 @@ def _svm_to_dict(svm: SVM, ctx: Optional[Any] = None) -> Dict[str, Any]:
     }
 
 
-def _svm_record_to_dict(record: Dict[str, Any], ctx: Optional[Any] = None) -> Dict[str, Any]:
+def _svm_record_to_dict(
+    record: Dict[str, Any], ctx: Optional[Any] = None
+) -> Dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     ip_cidr = str(spec.get("ip_cidr") or "")
@@ -255,7 +261,9 @@ def _export_root(svm_name: str, ctx: Optional[Any] = None) -> str:
 
 
 def _safe_export_dir(ctx: Any) -> str:
-    raw = str(ctx.settings.to_reconciler_config().get("export_dir", "/exports") or "").strip()
+    raw = str(
+        ctx.settings.to_reconciler_config().get("export_dir", "/exports") or ""
+    ).strip()
     if not raw or not raw.startswith("/"):
         return "/exports"
     if any(ord(char) < 32 or ord(char) == 127 for char in raw):
@@ -273,10 +281,16 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 
 def _parse_status(record: Dict[str, Any], kind: str) -> Any:
     from arca_storage.models.svm import SVMStatus
+
     return SVMStatus.model_validate(record["status"])
 
 
-def _can_resume_create(record: Optional[Dict[str, Any]], requested_spec: SVMSpec, *, owner: Optional[str] = None) -> bool:
+def _can_resume_create(
+    record: Optional[Dict[str, Any]],
+    requested_spec: SVMSpec,
+    *,
+    owner: Optional[str] = None,
+) -> bool:
     if not record:
         return False
     status = record.get("status", {})
@@ -328,7 +342,9 @@ def _reconcile_svm_create(ctx: Any, svm: SVM, owner: str) -> SVM:
         return ctx.svm_reconciler.reconcile(svm)
 
 
-def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: bool) -> None:
+def _cleanup_or_reject_remaining_dependents(
+    ctx: Any, svm_name: str, *, force: bool
+) -> None:
     snapshots = ctx.db.list_all_snapshots(svm=svm_name)
     if snapshots:
         if not force:
@@ -346,7 +362,9 @@ def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: b
 
         for snapshot in snapshots:
             spec = snapshot["spec"]
-            snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+            snapshot_service.delete_snapshot(
+                spec["name"], spec["svm"], spec["volume"], force=True
+            )
 
     exports = ctx.db.list_all_exports(svm=svm_name)
     if exports:
@@ -366,9 +384,13 @@ def _cleanup_or_reject_remaining_dependents(ctx: Any, svm_name: str, *, force: b
         for export in exports:
             spec = export["spec"]
             if spec.get("owner", "api") == "api":
-                export_service.remove_export(spec["svm"], spec["volume"], spec["client"])
+                export_service.remove_export(
+                    spec["svm"], spec["volume"], spec["client"]
+                )
             else:
-                export_service.remove_internal_export(spec["svm"], spec["volume"], spec["client"])
+                export_service.remove_internal_export(
+                    spec["svm"], spec["volume"], spec["client"]
+                )
 
 
 def _mark_svm_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:

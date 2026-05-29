@@ -30,10 +30,14 @@ def run_cmd(
             timeout=timeout,
         )
     except subprocess.TimeoutExpired:
-        raise ArcaTimeoutError(operation=_safe_operation_name(cmd), timeout_seconds=timeout)
+        raise ArcaTimeoutError(
+            operation=_safe_operation_name(cmd), timeout_seconds=timeout
+        )
 
     if check and result.returncode != 0:
-        raise SubprocessError(cmd=cmd, returncode=result.returncode, stderr=result.stderr.strip())
+        raise SubprocessError(
+            cmd=cmd, returncode=result.returncode, stderr=result.stderr.strip()
+        )
 
     return result
 

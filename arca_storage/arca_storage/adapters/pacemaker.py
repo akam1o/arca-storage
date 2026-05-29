@@ -48,7 +48,9 @@ class SubprocessPacemakerAdapter:
         self._timeout = timeout
 
     def resource_exists(self, name: str) -> bool:
-        result = run_cmd(["pcs", "resource", "show", name], timeout=self._timeout, check=False)
+        result = run_cmd(
+            ["pcs", "resource", "show", name], timeout=self._timeout, check=False
+        )
         return result.returncode == 0
 
     def create_group(
@@ -85,10 +87,17 @@ class SubprocessPacemakerAdapter:
             if not self.resource_exists(fs_resource):
                 run_cmd(
                     [
-                        "pcs", "resource", "create", fs_resource,
+                        "pcs",
+                        "resource",
+                        "create",
+                        fs_resource,
                         "ocf:heartbeat:Filesystem",
-                        f"device={device}", f"directory={mount_path}", "fstype=xfs",
-                        "op", "monitor", "interval=10s",
+                        f"device={device}",
+                        f"directory={mount_path}",
+                        "fstype=xfs",
+                        "op",
+                        "monitor",
+                        "interval=10s",
                     ],
                     timeout=self._timeout,
                 )
@@ -101,10 +110,17 @@ class SubprocessPacemakerAdapter:
             if not self.resource_exists(ip_resource):
                 run_cmd(
                     [
-                        "pcs", "resource", "create", ip_resource,
+                        "pcs",
+                        "resource",
+                        "create",
+                        ip_resource,
                         "ocf:heartbeat:IPaddr2",
-                        f"ip={ip}", f"cidr_netmask={prefix}", f"nic={parent_if}",
-                        "op", "monitor", "interval=10s",
+                        f"ip={ip}",
+                        f"cidr_netmask={prefix}",
+                        f"nic={parent_if}",
+                        "op",
+                        "monitor",
+                        "interval=10s",
                     ],
                     timeout=self._timeout,
                 )
@@ -117,12 +133,22 @@ class SubprocessPacemakerAdapter:
                 resolved_ifname = ifname or make_vlan_ifname(svm_name, vlan_id)
                 run_cmd(
                     [
-                        "pcs", "resource", "create", netns_resource,
+                        "pcs",
+                        "resource",
+                        "create",
+                        netns_resource,
                         "ocf:local:NetnsVlan",
-                        f"ns={svm_name}", f"vlan_id={vlan_id}", f"parent_if={parent_if}",
-                        f"ifname={resolved_ifname}", f"ip={ip}", f"prefix={prefix}",
-                        f"gw={gw}", f"mtu={mtu}",
-                        "op", "monitor", "interval=10s",
+                        f"ns={svm_name}",
+                        f"vlan_id={vlan_id}",
+                        f"parent_if={parent_if}",
+                        f"ifname={resolved_ifname}",
+                        f"ip={ip}",
+                        f"prefix={prefix}",
+                        f"gw={gw}",
+                        f"mtu={mtu}",
+                        "op",
+                        "monitor",
+                        "interval=10s",
                     ],
                     timeout=self._timeout,
                 )
@@ -134,9 +160,14 @@ class SubprocessPacemakerAdapter:
         if not self.resource_exists(ganesha_resource):
             run_cmd(
                 [
-                    "pcs", "resource", "create", ganesha_resource,
+                    "pcs",
+                    "resource",
+                    "create",
+                    ganesha_resource,
                     f"systemd:{ganesha_unit}@{svm_name}",
-                    "op", "monitor", "interval=10s",
+                    "op",
+                    "monitor",
+                    "interval=10s",
                 ],
                 timeout=self._timeout,
             )
@@ -152,7 +183,11 @@ class SubprocessPacemakerAdapter:
 
         # Constraints
         if master_name:
-            target = fs_resource if (create_filesystem and fs_resource in resources) else resources[0]
+            target = (
+                fs_resource
+                if (create_filesystem and fs_resource in resources)
+                else resources[0]
+            )
             self._ensure_order(master_name, target)
             self._ensure_colocation(group_name, master_name)
 
@@ -160,7 +195,11 @@ class SubprocessPacemakerAdapter:
         group_name = f"g_svm_{svm_name}"
         if not self.resource_exists(group_name):
             return  # idempotent
-        run_cmd(["pcs", "resource", "disable", group_name], timeout=self._timeout, check=False)
+        run_cmd(
+            ["pcs", "resource", "disable", group_name],
+            timeout=self._timeout,
+            check=False,
+        )
         run_cmd(["pcs", "resource", "delete", group_name], timeout=self._timeout)
 
     # ---- internal helpers ----
@@ -171,51 +210,88 @@ class SubprocessPacemakerAdapter:
         if not self.resource_exists(primitive):
             run_cmd(
                 [
-                    "pcs", "resource", "create", primitive,
-                    "ocf:linbit:drbd", f"drbd_resource={drbd_resource_name}",
-                    "op", "monitor", "interval=15s", "role=Master",
+                    "pcs",
+                    "resource",
+                    "create",
+                    primitive,
+                    "ocf:linbit:drbd",
+                    f"drbd_resource={drbd_resource_name}",
+                    "op",
+                    "monitor",
+                    "interval=15s",
+                    "role=Master",
                 ],
                 timeout=self._timeout,
             )
         if not self.resource_exists(master):
             run_cmd(
                 [
-                    "pcs", "resource", "master", master, primitive,
-                    "master-max=1", "master-node-max=1", "clone-max=2", "clone-node-max=1",
+                    "pcs",
+                    "resource",
+                    "master",
+                    master,
+                    primitive,
+                    "master-max=1",
+                    "master-node-max=1",
+                    "clone-max=2",
+                    "clone-node-max=1",
                 ],
                 timeout=self._timeout,
             )
         return master
 
     def _constraints_text(self) -> str:
-        result = run_cmd(["pcs", "constraint", "show", "--full"], timeout=self._timeout, check=False)
+        result = run_cmd(
+            ["pcs", "constraint", "show", "--full"], timeout=self._timeout, check=False
+        )
         return (result.stdout or "") + "\n" + (result.stderr or "")
 
     def _group_members(self, group_name: str) -> list[str]:
-        result = run_cmd(["pcs", "resource", "config", group_name], timeout=self._timeout, check=False)
+        result = run_cmd(
+            ["pcs", "resource", "config", group_name],
+            timeout=self._timeout,
+            check=False,
+        )
         if result.returncode != 0:
-            result = run_cmd(["pcs", "resource", "show", group_name], timeout=self._timeout, check=False)
-        return _parse_group_members(group_name, (result.stdout or "") + "\n" + (result.stderr or ""))
+            result = run_cmd(
+                ["pcs", "resource", "show", group_name],
+                timeout=self._timeout,
+                check=False,
+            )
+        return _parse_group_members(
+            group_name, (result.stdout or "") + "\n" + (result.stderr or "")
+        )
 
     def _resource_text(self, name: str) -> str:
-        result = run_cmd(["pcs", "resource", "config", name], timeout=self._timeout, check=False)
+        result = run_cmd(
+            ["pcs", "resource", "config", name], timeout=self._timeout, check=False
+        )
         if result.returncode != 0:
-            result = run_cmd(["pcs", "resource", "show", name], timeout=self._timeout, check=False)
+            result = run_cmd(
+                ["pcs", "resource", "show", name], timeout=self._timeout, check=False
+            )
         return (result.stdout or "") + "\n" + (result.stderr or "")
 
     def _ensure_resource_attribute(self, resource: str, name: str, value: str) -> None:
         if _parse_resource_attribute(self._resource_text(resource), name) == value:
             return
-        run_cmd(["pcs", "resource", "update", resource, f"{name}={value}"], timeout=self._timeout)
+        run_cmd(
+            ["pcs", "resource", "update", resource, f"{name}={value}"],
+            timeout=self._timeout,
+        )
 
     def _ensure_group_members(self, group_name: str, resources: list[str]) -> None:
         members = self._group_members(group_name)
         for index, resource in enumerate(resources):
             if _group_member_is_ordered(resource, resources, index, members):
                 continue
-            command, before, after = _group_add_command(group_name, resource, resources, index, members)
+            command, before, after = _group_add_command(
+                group_name, resource, resources, index, members
+            )
             run_cmd(command, timeout=self._timeout)
-            members = _insert_group_member(members, resource, before=before, after=after)
+            members = _insert_group_member(
+                members, resource, before=before, after=after
+            )
 
     def _ensure_order(self, master_name: str, target: str) -> None:
         needle = f"order {master_name}:promote {target}:start"
@@ -231,7 +307,15 @@ class SubprocessPacemakerAdapter:
         if needle in self._constraints_text():
             return
         run_cmd(
-            ["pcs", "constraint", "colocation", "add", group_name, "with", f"{master_name}:Master"],
+            [
+                "pcs",
+                "constraint",
+                "colocation",
+                "add",
+                group_name,
+                "with",
+                f"{master_name}:Master",
+            ],
             timeout=self._timeout,
         )
 
@@ -282,19 +366,25 @@ class FakePacemakerAdapter:
             resources.append(fs)
         if vlan_id is None:
             ip_res = f"ip_{svm_name}"
-            self.resources.setdefault(ip_res, {"type": "IPaddr2", "ip": ip, "prefix": prefix})
+            self.resources.setdefault(
+                ip_res, {"type": "IPaddr2", "ip": ip, "prefix": prefix}
+            )
             resources.append(ip_res)
         else:
             netns = f"netns_{svm_name}"
             self.resources.setdefault(netns, {"type": "NetnsVlan"})
             resources.append(netns)
         ganesha = f"ganesha_{svm_name}"
-        self.resources.setdefault(ganesha, {"type": "nfs-ganesha-host" if vlan_id is None else "nfs-ganesha"})
+        self.resources.setdefault(
+            ganesha, {"type": "nfs-ganesha-host" if vlan_id is None else "nfs-ganesha"}
+        )
         resources.append(ganesha)
         if not group_exists:
             self.groups[group_name] = list(resources)
         else:
-            self.groups[group_name] = _reconcile_group_members(self.groups[group_name], resources)
+            self.groups[group_name] = _reconcile_group_members(
+                self.groups[group_name], resources
+            )
 
     def delete_group(self, svm_name: str) -> None:
         group_name = f"g_svm_{svm_name}"
@@ -339,7 +429,12 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
 def _parse_resource_attribute(text: str, name: str) -> Optional[str]:
     for match in _RESOURCE_ATTR_RE.finditer(text):
         if match.group("name") == name:
-            return match.group("double") or match.group("single") or match.group("bare") or ""
+            return (
+                match.group("double")
+                or match.group("single")
+                or match.group("bare")
+                or ""
+            )
     return None
 
 
@@ -359,21 +454,27 @@ def _name_after_colon(line: str) -> str:
     return rest.split()[0].rstrip(":")
 
 
-def _previous_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
+def _previous_desired_member(
+    resources: list[str], index: int, members: list[str]
+) -> Optional[str]:
     for resource in reversed(resources[:index]):
         if resource in members:
             return resource
     return None
 
 
-def _next_desired_member(resources: list[str], index: int, members: list[str]) -> Optional[str]:
-    for resource in resources[index + 1:]:
+def _next_desired_member(
+    resources: list[str], index: int, members: list[str]
+) -> Optional[str]:
+    for resource in resources[index + 1 :]:
         if resource in members:
             return resource
     return None
 
 
-def _group_member_is_ordered(resource: str, resources: list[str], index: int, members: list[str]) -> bool:
+def _group_member_is_ordered(
+    resource: str, resources: list[str], index: int, members: list[str]
+) -> bool:
     if resource not in members:
         return False
     resource_index = members.index(resource)
@@ -395,13 +496,52 @@ def _group_add_command(
 ) -> tuple[list[str], Optional[str], Optional[str]]:
     previous = _previous_desired_member(resources, index, members)
     if resource in members and previous is not None:
-        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+        return (
+            [
+                "pcs",
+                "resource",
+                "group",
+                "add",
+                group_name,
+                resource,
+                "--after",
+                previous,
+            ],
+            None,
+            previous,
+        )
 
     next_member = _next_desired_member(resources, index, members)
     if next_member is not None:
-        return ["pcs", "resource", "group", "add", group_name, resource, "--before", next_member], next_member, None
+        return (
+            [
+                "pcs",
+                "resource",
+                "group",
+                "add",
+                group_name,
+                resource,
+                "--before",
+                next_member,
+            ],
+            next_member,
+            None,
+        )
     if previous is not None:
-        return ["pcs", "resource", "group", "add", group_name, resource, "--after", previous], None, previous
+        return (
+            [
+                "pcs",
+                "resource",
+                "group",
+                "add",
+                group_name,
+                resource,
+                "--after",
+                previous,
+            ],
+            None,
+            previous,
+        )
     return ["pcs", "resource", "group", "add", group_name, resource], None, None
 
 

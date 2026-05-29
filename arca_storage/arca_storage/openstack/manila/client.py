@@ -4,7 +4,11 @@ import ipaddress
 from typing import Any, Dict, List, Optional
 from urllib.parse import quote, unquote, urlparse
 
-from arca_storage.openstack.http_errors import redact_sensitive, response_error_message, safe_error_detail
+from arca_storage.openstack.http_errors import (
+    redact_sensitive,
+    response_error_message,
+    safe_error_detail,
+)
 
 try:
     import requests  # type: ignore[import-untyped]
@@ -18,10 +22,12 @@ except ImportError:
 
 try:
     from oslo_log import log as logging  # type: ignore[import-untyped]
+
     _HAS_OSLO_LOG = True
 except ImportError:
     # oslo_log is optional for standalone usage
     import logging
+
     _HAS_OSLO_LOG = False
 
 from .exceptions import (
@@ -38,7 +44,9 @@ from .exceptions import (
 
 LOG = logging.getLogger(__name__)
 
-_RESOURCE_ID_PATH_SEGMENTS = frozenset({"volumes", "shares", "snapshots", "svms", "exports"})
+_RESOURCE_ID_PATH_SEGMENTS = frozenset(
+    {"volumes", "shares", "snapshots", "svms", "exports"}
+)
 
 
 def _quote_path_segment(value: str) -> str:
@@ -165,7 +173,9 @@ class ArcaManilaClient:
             )
             self.session.headers.update({"Authorization": f"Bearer {normalized_token}"})
         elif auth_type and auth_type != "none":
-            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
+            raise ValueError(
+                f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'"
+            )
 
         # Configure mTLS (client certificate)
         if client_key and not client_cert:
@@ -334,7 +344,9 @@ class ArcaManilaClient:
                         raise ArcaShareNotFound(share_id=resource_id)
                     else:
                         # Generic 404 - use error message as details
-                        raise ArcaManilaAPIError(details=f"Resource not found: {error_msg}")
+                        raise ArcaManilaAPIError(
+                            details=f"Resource not found: {error_msg}"
+                        )
 
                 elif response.status_code == 409:
                     LOG.warning("Conflict error: %s", safe_path)
@@ -369,15 +381,17 @@ class ArcaManilaClient:
                         r"\bip address\b.*\balready\b.*\bin use\b",
                     ]
 
-                    if any(pattern in error_lower for pattern in ip_conflict_patterns) or any(
-                        re.search(rx, error_lower) for rx in ip_in_use_patterns
-                    ):
+                    if any(
+                        pattern in error_lower for pattern in ip_conflict_patterns
+                    ) or any(re.search(rx, error_lower) for rx in ip_in_use_patterns):
                         # IP address conflict (VLAN reuse is allowed, so only check for IP conflicts)
                         raise ArcaNetworkConflict(details=error_msg)
                     elif "already exists" in error_lower and "/svms" in path:
                         # SVM name already exists - use specific SVM exception
                         raise ArcaSVMAlreadyExists(svm_name=resource_id)
-                    elif "already exists" in error_lower and ("/volumes" in path or "/shares" in path):
+                    elif "already exists" in error_lower and (
+                        "/volumes" in path or "/shares" in path
+                    ):
                         # Share/volume already exists
                         raise ArcaShareAlreadyExists(share_id=resource_id)
                     elif "already exists" in error_lower:
@@ -387,7 +401,9 @@ class ArcaManilaClient:
                         raise ArcaManilaAPIError(details=f"Conflict: {error_msg}")
 
                 else:
-                    LOG.error("API error: HTTP %s for %s", response.status_code, safe_path)
+                    LOG.error(
+                        "API error: HTTP %s for %s", response.status_code, safe_path
+                    )
                     raise ArcaManilaAPIError(
                         details=f"HTTP {response.status_code}: {error_msg}"
                     )
@@ -436,7 +452,12 @@ class ArcaManilaClient:
     # Volume operations (shares stored as volumes)
 
     def create_volume(
-        self, name: str, svm: str, size_gib: int, thin: bool = True, fs_type: str = "xfs"
+        self,
+        name: str,
+        svm: str,
+        size_gib: int,
+        thin: bool = True,
+        fs_type: str = "xfs",
     ) -> Dict[str, Any]:
         """Create a volume (share).
 
@@ -491,7 +512,9 @@ class ArcaManilaClient:
         """
         params = {"svm": svm, "force": str(force).lower()}
         try:
-            self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(name)}", params=params)
+            self._make_request(
+                "DELETE", f"/v1/volumes/{_quote_path_segment(name)}", params=params
+            )
             LOG.info("Deleted volume through ARCA API")
         except ArcaAPITimeout:
             # Timeout occurred - check if volume was actually deleted
@@ -522,7 +545,9 @@ class ArcaManilaClient:
             ArcaManilaAPIError: API error
         """
         data = {"svm": svm, "new_size_gib": new_size_gib}
-        response = self._make_request("PATCH", f"/v1/volumes/{_quote_path_segment(name)}", json_data=data)
+        response = self._make_request(
+            "PATCH", f"/v1/volumes/{_quote_path_segment(name)}", json_data=data
+        )
         return response.get("data", {}).get("volume", {})
 
     def list_volumes(
@@ -723,7 +748,9 @@ class ArcaManilaClient:
         """
         params = {"svm": svm, "volume": volume}
         try:
-            self._make_request("DELETE", f"/v1/snapshots/{_quote_path_segment(name)}", params=params)
+            self._make_request(
+                "DELETE", f"/v1/snapshots/{_quote_path_segment(name)}", params=params
+            )
         except ArcaAPITimeout:
             # Timeout occurred - check if snapshot was actually deleted
             snapshots = self.list_snapshots(svm=svm, volume=volume)
@@ -799,7 +826,9 @@ class ArcaManilaClient:
             data["size_gib"] = size_gib
 
         response = self._make_request(
-            "POST", f"/v1/volumes/{_quote_path_segment(source_volume)}/clone", json_data=data
+            "POST",
+            f"/v1/volumes/{_quote_path_segment(source_volume)}/clone",
+            json_data=data,
         )
         return response.get("data", {}).get("volume", {})
 
@@ -933,7 +962,9 @@ class ArcaManilaClient:
         if write_bps is not None:
             data["write_bps"] = write_bps
 
-        response = self._make_request("PATCH", f"/v1/volumes/{_quote_path_segment(volume)}/qos", json_data=data)
+        response = self._make_request(
+            "PATCH", f"/v1/volumes/{_quote_path_segment(volume)}/qos", json_data=data
+        )
         return response.get("data", {}).get("qos", {})
 
     def remove_qos(self, volume: str, svm: str) -> None:
@@ -947,7 +978,9 @@ class ArcaManilaClient:
             ArcaManilaAPIError: API error
         """
         params = {"svm": svm}
-        self._make_request("DELETE", f"/v1/volumes/{_quote_path_segment(volume)}/qos", params=params)
+        self._make_request(
+            "DELETE", f"/v1/volumes/{_quote_path_segment(volume)}/qos", params=params
+        )
 
     # Capacity operations
 
@@ -966,5 +999,7 @@ class ArcaManilaClient:
         Note:
             This endpoint may need to be added to ARCA API if not present.
         """
-        response = self._make_request("GET", f"/v1/svms/{_quote_path_segment(svm)}/capacity")
+        response = self._make_request(
+            "GET", f"/v1/svms/{_quote_path_segment(svm)}/capacity"
+        )
         return response.get("data", {}).get("capacity", {})

@@ -9,20 +9,28 @@ from datetime import datetime, timezone
 from math import ceil
 from typing import Optional
 
-from arca_storage.cli.lib.validators import legacy_snapshot_lv_name, legacy_volume_lv_name, snapshot_lv_name
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    legacy_volume_lv_name,
+    snapshot_lv_name,
+)
 from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError, PreconditionFailedError
 from arca_storage.models.base import Phase
 from arca_storage.models.snapshot import Snapshot
 from arca_storage.reconcilers.adapters import Adapters
-from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing_with_result
+from arca_storage.reconcilers.lvm_resume import (
+    create_snapshot_lv_or_accept_existing_with_result,
+)
 
 logger = logging.getLogger(__name__)
 
 
 class SnapshotReconciler:
-    def __init__(self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None) -> None:
+    def __init__(
+        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+    ) -> None:
         self.db = db
         self.adapters = adapters
         self._cfg = config or {}
@@ -48,7 +56,9 @@ class SnapshotReconciler:
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
         source_lv = self._source_volume_lv_name(spec.svm, spec.volume)
-        snap_lv = snapshot.status.lv_name or snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        snap_lv = snapshot.status.lv_name or snapshot_lv_name(
+            spec.svm, spec.volume, spec.name
+        )
         snapshot.status.lv_name = snap_lv
 
         if not snapshot.status.lv_created:
@@ -75,7 +85,9 @@ class SnapshotReconciler:
                 )
             except CreateLeaseLostError:
                 if created_snap_lv:
-                    self._delete_created_snapshot_lv_if_untracked(snapshot, vg_name, snap_lv)
+                    self._delete_created_snapshot_lv_if_untracked(
+                        snapshot, vg_name, snap_lv
+                    )
                 raise
             except PreconditionFailedError:
                 if created_snap_lv:
@@ -91,8 +103,18 @@ class SnapshotReconciler:
                 expected_owner = create_owner
                 clear_create_lease(snapshot.status)
                 snapshot.status.message = f"Create failed: {e}"
-                self._persist(snapshot, snapshot.status.message, expected_create_owner=expected_owner)
-                logger.error("Snapshot %s/%s/%s create failed: %s", spec.svm, spec.volume, spec.name, e)
+                self._persist(
+                    snapshot,
+                    snapshot.status.message,
+                    expected_create_owner=expected_owner,
+                )
+                logger.error(
+                    "Snapshot %s/%s/%s create failed: %s",
+                    spec.svm,
+                    spec.volume,
+                    spec.name,
+                    e,
+                )
                 return snapshot
 
         if snapshot.status.size_gib is None:
@@ -103,8 +125,18 @@ class SnapshotReconciler:
                 expected_owner = create_owner
                 clear_create_lease(snapshot.status)
                 snapshot.status.message = f"Create failed: {e}"
-                self._persist(snapshot, snapshot.status.message, expected_create_owner=expected_owner)
-                logger.error("Snapshot %s/%s/%s create failed: %s", spec.svm, spec.volume, spec.name, e)
+                self._persist(
+                    snapshot,
+                    snapshot.status.message,
+                    expected_create_owner=expected_owner,
+                )
+                logger.error(
+                    "Snapshot %s/%s/%s create failed: %s",
+                    spec.svm,
+                    spec.volume,
+                    spec.name,
+                    e,
+                )
                 return snapshot
 
         snapshot.status.phase = Phase.READY
@@ -123,13 +155,17 @@ class SnapshotReconciler:
     def _reconcile_delete(self, snapshot: Snapshot) -> Snapshot:
         spec = snapshot.spec
         vg_name = self._cfg.get("vg_name", "vg_pool_01")
-        snap_lv = snapshot.status.lv_name or legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
+        snap_lv = snapshot.status.lv_name or legacy_snapshot_lv_name(
+            spec.svm, spec.volume, spec.name
+        )
         try:
             snapshot.status.phase = Phase.DELETING
             self._persist(snapshot, "snapshot delete reserved")
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
             self.db.delete_snapshot(spec.svm, spec.volume, spec.name)
-            self.db.log_operation("Snapshot", snapshot.metadata.id, "delete", "completed")
+            self.db.log_operation(
+                "Snapshot", snapshot.metadata.id, "delete", "completed"
+            )
         except Exception as e:
             snapshot.status.phase = Phase.FAILED
             snapshot.status.message = f"Delete failed: {e}"
@@ -150,9 +186,16 @@ class SnapshotReconciler:
             require_ready_volume=require_ready_volume,
             require_ready_svm=require_ready_volume,
         ):
-            raise CreateLeaseLostError("Snapshot", f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}")
+            raise CreateLeaseLostError(
+                "Snapshot",
+                f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
+            )
         self.db.log_operation(
-            "Snapshot", snapshot.metadata.id, "reconcile", snapshot.status.phase.value, detail
+            "Snapshot",
+            snapshot.metadata.id,
+            "reconcile",
+            snapshot.status.phase.value,
+            detail,
         )
 
     @staticmethod
@@ -163,7 +206,9 @@ class SnapshotReconciler:
         try:
             return int(ceil(float(self.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
         except Exception as e:
-            logger.warning("Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e)
+            logger.warning(
+                "Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e
+            )
             raise RuntimeError("Snapshot size is unavailable") from e
 
     def _source_volume_lv_name(self, svm: str, volume: str) -> str:
@@ -173,17 +218,24 @@ class SnapshotReconciler:
                 f"Volume '{svm}/{volume}' is not ready",
                 {"resource": "Volume", "name": f"{svm}/{volume}", "phase": ""},
             )
-        return str(record.get("status", {}).get("lv_name") or legacy_volume_lv_name(svm, volume))
+        return str(
+            record.get("status", {}).get("lv_name")
+            or legacy_volume_lv_name(svm, volume)
+        )
 
     def _delete_created_snapshot_lv(self, vg_name: str, snap_lv: str) -> bool:
         try:
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
             return True
         except Exception as e:
-            logger.warning("Failed to delete unrecorded snapshot LV %s/%s: %s", vg_name, snap_lv, e)
+            logger.warning(
+                "Failed to delete unrecorded snapshot LV %s/%s: %s", vg_name, snap_lv, e
+            )
             return False
 
-    def _delete_created_snapshot_lv_if_untracked(self, snapshot: Snapshot, vg_name: str, snap_lv: str) -> None:
+    def _delete_created_snapshot_lv_if_untracked(
+        self, snapshot: Snapshot, vg_name: str, snap_lv: str
+    ) -> None:
         cleanup_owner = snapshot.status.create_owner or snapshot.metadata.id
         try:
             reserved = self.db.reserve_snapshot_cleanup(
@@ -193,11 +245,20 @@ class SnapshotReconciler:
                 cleanup_owner,
             )
         except Exception as e:
-            logger.warning("Skipping snapshot LV cleanup after lost lease for %s/%s: %s", vg_name, snap_lv, e)
+            logger.warning(
+                "Skipping snapshot LV cleanup after lost lease for %s/%s: %s",
+                vg_name,
+                snap_lv,
+                e,
+            )
             return
 
         if not reserved:
-            logger.info("Keeping snapshot LV %s/%s because the snapshot record is tracked or cleanup is reserved", vg_name, snap_lv)
+            logger.info(
+                "Keeping snapshot LV %s/%s because the snapshot record is tracked or cleanup is reserved",
+                vg_name,
+                snap_lv,
+            )
             return
 
         if self._delete_created_snapshot_lv(vg_name, snap_lv):
@@ -209,4 +270,9 @@ class SnapshotReconciler:
                     cleanup_owner,
                 )
             except Exception as e:
-                logger.warning("Failed to release snapshot LV cleanup reservation for %s/%s: %s", vg_name, snap_lv, e)
+                logger.warning(
+                    "Failed to release snapshot LV cleanup reservation for %s/%s: %s",
+                    vg_name,
+                    snap_lv,
+                    e,
+                )

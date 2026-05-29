@@ -21,7 +21,9 @@ from arca_storage.errors import InternalError
         ("delete", "/v1/exports?svm=!bad&volume=vol1&client=10.0.0.0/24"),
     ],
 )
-def test_path_and_query_validation_errors_return_invalid_argument(method: str, path: str):
+def test_path_and_query_validation_errors_return_invalid_argument(
+    method: str, path: str
+):
     client = TestClient(app, raise_server_exceptions=False)
 
     response = getattr(client, method)(path)
@@ -135,7 +137,9 @@ def test_request_validation_error_messages_do_not_echo_derived_input_values():
 def test_value_error_messages_do_not_echo_derived_query_values():
     client = TestClient(app, raise_server_exceptions=False)
 
-    response = client.delete("/v1/exports?svm=tenant_a&volume=vol1&client=secret-token/24")
+    response = client.delete(
+        "/v1/exports?svm=tenant_a&volume=vol1&client=secret-token/24"
+    )
 
     payload = response.json()
     assert response.status_code == 400
@@ -199,7 +203,11 @@ def test_global_exception_log_redacts_sensitive_values(caplog):
 
     payload = response.json()
     assert response.status_code == 500
-    assert payload["error"] == {"code": "INTERNAL", "message": "Internal server error", "details": {}}
+    assert payload["error"] == {
+        "code": "INTERNAL",
+        "message": "Internal server error",
+        "details": {},
+    }
     assert "secret-token" not in caplog.text
     assert "hunter2" not in caplog.text
     assert "RuntimeError" in caplog.text

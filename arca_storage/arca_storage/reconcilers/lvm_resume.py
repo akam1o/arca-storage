@@ -44,7 +44,9 @@ def create_snapshot_lv_or_accept_existing(
     source_lv: str,
     snap_lv: str,
 ) -> str:
-    return create_snapshot_lv_or_accept_existing_with_result(lvm, vg, source_lv, snap_lv).path
+    return create_snapshot_lv_or_accept_existing_with_result(
+        lvm, vg, source_lv, snap_lv
+    ).path
 
 
 def create_snapshot_lv_or_accept_existing_with_result(
@@ -55,7 +57,9 @@ def create_snapshot_lv_or_accept_existing_with_result(
 ) -> CreateSnapshotLVResult:
     """Create a snapshot LV, or accept an existing snapshot of the same origin."""
     try:
-        return CreateSnapshotLVResult(path=lvm.create_snapshot(vg, source_lv, snap_lv), created=True)
+        return CreateSnapshotLVResult(
+            path=lvm.create_snapshot(vg, source_lv, snap_lv), created=True
+        )
     except AlreadyExistsError:
         info = lvm.get_lv_info(vg, snap_lv)
         if not info.is_snapshot:
@@ -74,8 +78,12 @@ def create_snapshot_lv_or_accept_existing_with_result(
         return CreateSnapshotLVResult(path=f"/dev/{vg}/{snap_lv}", created=False)
 
 
-def _ensure_volume_lv_matches(info: LVInfo, lv_path: str, size_gib: int, *, thin: bool) -> None:
-    if not math.isclose(info.size_gib, float(size_gib), rel_tol=0.0, abs_tol=_SIZE_ABS_TOLERANCE_GIB):
+def _ensure_volume_lv_matches(
+    info: LVInfo, lv_path: str, size_gib: int, *, thin: bool
+) -> None:
+    if not math.isclose(
+        info.size_gib, float(size_gib), rel_tol=0.0, abs_tol=_SIZE_ABS_TOLERANCE_GIB
+    ):
         raise PreconditionFailedError(
             "Existing logical volume has a different size",
             {

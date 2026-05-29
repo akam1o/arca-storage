@@ -7,7 +7,10 @@ def test_drbd_role_validates_resource_name(repo_root):
 
     assert "Validate DRBD resource name" in content
     assert "drbd_resource_name is string" in content
-    assert "(drbd_resource_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')" in content
+    assert (
+        "(drbd_resource_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')"
+        in content
+    )
     assert "drbd_resource_name must be a single safe path component" in content
 
 

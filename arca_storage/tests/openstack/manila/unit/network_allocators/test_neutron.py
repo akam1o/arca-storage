@@ -5,7 +5,9 @@ from unittest.mock import Mock, patch
 import pytest
 
 from arca_storage.openstack.manila import exceptions as arca_exceptions
-from arca_storage.openstack.manila.network_allocators import neutron as neutron_allocator
+from arca_storage.openstack.manila.network_allocators import (
+    neutron as neutron_allocator,
+)
 from arca_storage.openstack.manila.network_allocators.neutron import NeutronAllocator
 from arca_storage.openstack.manila.network_allocators.base import NetworkAllocation
 
@@ -345,13 +347,17 @@ class TestNeutronAllocator:
                 "id": "port-old",
                 "network_id": "net-uuid-123",
                 "created_at": "2025-01-01T00:00:00Z",
-                "fixed_ips": [{"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.10"}],
+                "fixed_ips": [
+                    {"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.10"}
+                ],
             },
             {
                 "id": "port-new",
                 "network_id": "net-uuid-123",
                 "created_at": "2025-01-01T00:01:00Z",
-                "fixed_ips": [{"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.11"}],
+                "fixed_ips": [
+                    {"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.11"}
+                ],
             },
         ]
 
@@ -380,7 +386,9 @@ class TestNeutronAllocator:
         assert "net-uuid-123" not in rendered_calls
         assert "192.168.100.10" not in rendered_calls
         assert "192.168.100.11" not in rendered_calls
-        assert "Detected %d duplicate Neutron ports for SVM allocation" in rendered_calls
+        assert (
+            "Detected %d duplicate Neutron ports for SVM allocation" in rendered_calls
+        )
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
@@ -400,7 +408,9 @@ class TestNeutronAllocator:
 
         # Execute and verify exception
         # Note: Generic Exception is wrapped as ArcaNetworkConflict with updated message
-        with pytest.raises(arca_exceptions.ArcaNetworkConflict, match="Failed to create port"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConflict, match="Failed to create port"
+        ):
             allocator.allocate("project-123", "manila_project-123")
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
@@ -711,7 +721,11 @@ class TestNeutronAllocatorMultipleNetworks:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_validate_config_multiple_networks(
-        self, mock_neutron_module, mock_ks_loading, allocator_multi, mock_neutron_client_multi
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        allocator_multi,
+        mock_neutron_client_multi,
     ):
         """Test configuration validation with multiple networks."""
         # Mock auth and session loading
@@ -735,7 +749,11 @@ class TestNeutronAllocatorMultipleNetworks:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_allocate_round_robin_selection(
-        self, mock_neutron_module, mock_ks_loading, allocator_multi, mock_neutron_client_multi
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        allocator_multi,
+        mock_neutron_client_multi,
     ):
         """Test round-robin network selection across multiple allocations."""
         # Setup
@@ -814,7 +832,11 @@ class TestNeutronAllocatorMultipleNetworks:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_extract_allocation_from_existing_port_multi_network(
-        self, mock_neutron_module, mock_ks_loading, allocator_multi, mock_neutron_client_multi
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        allocator_multi,
+        mock_neutron_client_multi,
     ):
         """Test extracting allocation from existing port in multi-network setup."""
         # Setup

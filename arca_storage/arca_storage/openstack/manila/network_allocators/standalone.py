@@ -136,9 +136,7 @@ class StandaloneAllocator(NetworkAllocator):
             # Unknown error - treat as retryable conflict
             details = safe_error_detail(e)
             LOG.error("Failed to allocate standalone network")
-            raise ArcaNetworkConflict(
-                details=f"Network allocation failed: {details}"
-            )
+            raise ArcaNetworkConflict(details=f"Network allocation failed: {details}")
 
     def deallocate(self, allocation_id: str) -> None:
         """Deallocate network resources.
@@ -190,9 +188,7 @@ class StandaloneAllocator(NetworkAllocator):
                     )
 
                 if vlan_id < 1 or vlan_id > 4094:
-                    raise ValueError(
-                        f"VLAN ID {vlan_id} out of range (must be 1-4094)"
-                    )
+                    raise ValueError(f"VLAN ID {vlan_id} out of range (must be 1-4094)")
 
                 # IP range is mandatory (must contain "|")
                 if "|" not in ip_part:
@@ -243,13 +239,9 @@ class StandaloneAllocator(NetworkAllocator):
 
                 # Validate IPs are within CIDR
                 if start_ip not in ip_network:
-                    raise ValueError(
-                        f"Start IP {start_ip} is not in CIDR {ip_network}"
-                    )
+                    raise ValueError(f"Start IP {start_ip} is not in CIDR {ip_network}")
                 if end_ip not in ip_network:
-                    raise ValueError(
-                        f"End IP {end_ip} is not in CIDR {ip_network}"
-                    )
+                    raise ValueError(f"End IP {end_ip} is not in CIDR {ip_network}")
 
                 # Validate range order (allow single-IP pools where start == end)
                 if start_ip > end_ip:
@@ -262,9 +254,7 @@ class StandaloneAllocator(NetworkAllocator):
                 num_hosts = int(end_ip) - int(start_ip) + 1
 
                 if num_hosts <= 0:
-                    raise ValueError(
-                        "IP pool has no usable host addresses"
-                    )
+                    raise ValueError("IP pool has no usable host addresses")
 
                 # Infer gateway from CIDR (typically first IP in subnet)
                 # For most networks: x.x.x.1 is the gateway
@@ -302,19 +292,18 @@ class StandaloneAllocator(NetworkAllocator):
                             f"End IP must be at most {ip_network.broadcast_address - 1}"
                         )
 
-                pools.append({
-                    "ip_network": ip_network,
-                    "vlan_id": vlan_id,
-                    "gateway": gateway,
-                    "num_hosts": num_hosts,
-                    "first_host": first_host,
-                    "last_host": last_host,
-                })
-
-                LOG.debug(
-                    "Parsed standalone IP pool %d with %d IPs",
-                    i, num_hosts
+                pools.append(
+                    {
+                        "ip_network": ip_network,
+                        "vlan_id": vlan_id,
+                        "gateway": gateway,
+                        "num_hosts": num_hosts,
+                        "first_host": first_host,
+                        "last_host": last_host,
+                    }
                 )
+
+                LOG.debug("Parsed standalone IP pool %d with %d IPs", i, num_hosts)
 
             except ValueError as e:
                 raise ValueError(
@@ -328,7 +317,9 @@ class StandaloneAllocator(NetworkAllocator):
 
         return pools
 
-    def _allocate_from_multi_pool(self, project_id: str, retry_attempt: int = 0) -> tuple:
+    def _allocate_from_multi_pool(
+        self, project_id: str, retry_attempt: int = 0
+    ) -> tuple:
         """Allocate network from pools using round-robin with collision detection.
 
         IMPORTANT: This method assumes it's called within the allocation lock
@@ -357,17 +348,16 @@ class StandaloneAllocator(NetworkAllocator):
 
             try:
                 # Try to allocate from this pool, passing retry attempt for randomization
-                vlan_id, ip_cidr = self._find_free_slot_in_pool(pool, attempt=retry_attempt)
+                vlan_id, ip_cidr = self._find_free_slot_in_pool(
+                    pool, attempt=retry_attempt
+                )
 
                 # Success! Increment counter for next allocation
                 self._pool_allocation_counter += 1
 
                 gateway = pool["gateway"]
 
-                LOG.debug(
-                    "Allocated standalone network from pool %d",
-                    pool_idx
-                )
+                LOG.debug("Allocated standalone network from pool %d", pool_idx)
 
                 return vlan_id, ip_cidr, gateway
 
@@ -378,7 +368,9 @@ class StandaloneAllocator(NetworkAllocator):
                 continue
             except Exception:
                 # Unknown error in this pool - log and try next pool
-                LOG.warning("Standalone network pool allocation failed with unexpected error")
+                LOG.warning(
+                    "Standalone network pool allocation failed with unexpected error"
+                )
                 continue
 
         # All pools exhausted or failed - raise non-retryable error
@@ -456,9 +448,7 @@ class StandaloneAllocator(NetworkAllocator):
 
         return used_ips
 
-    def _find_free_slot_in_pool(
-        self, pool: Dict[str, Any], attempt: int = 0
-    ) -> tuple:
+    def _find_free_slot_in_pool(self, pool: Dict[str, Any], attempt: int = 0) -> tuple:
         """Find first free IP slot in a pool.
 
         Args:
@@ -500,16 +490,11 @@ class StandaloneAllocator(NetworkAllocator):
             if ip_addr not in used_ips:
                 # Found free slot
                 ip_cidr = f"{ip_addr}/{ip_network.prefixlen}"
-                LOG.debug(
-                    "Found free IP in standalone pool (attempt %d)",
-                    attempt
-                )
+                LOG.debug("Found free IP in standalone pool (attempt %d)", attempt)
                 return vlan_id, ip_cidr
 
         # Pool exhausted - raise internal exception for classification
-        raise PoolExhaustedException(
-            f"Pool exhausted: all {num_hosts} IP slots used"
-        )
+        raise PoolExhaustedException(f"Pool exhausted: all {num_hosts} IP slots used")
 
 
 class PoolExhaustedException(Exception):
@@ -518,4 +503,5 @@ class PoolExhaustedException(Exception):
     This exception is used internally to distinguish pool exhaustion from
     other failures, allowing proper error classification at the allocator level.
     """
+
     pass

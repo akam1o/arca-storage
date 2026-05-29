@@ -16,22 +16,24 @@ _RESOURCE_NAME_RE = re.compile(r"[a-zA-Z0-9][a-zA-Z0-9._-]*")
 def validate_name(name: str) -> None:
     """
     Validate a name (SVM, volume, etc.).
-    
+
     Args:
         name: Name to validate
-        
+
     Raises:
         ValueError: If name is invalid
     """
     if not name:
         raise ValueError("Name cannot be empty")
-    
+
     if len(name) < 1 or len(name) > 64:
         raise ValueError("Name must be between 1 and 64 characters")
-    
+
     # Allow alphanumeric, dots, underscores, hyphens
     if not _RESOURCE_NAME_RE.fullmatch(name):
-        raise ValueError("Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens")
+        raise ValueError(
+            "Name must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens"
+        )
 
 
 def validate_lvm_name(name: str, *, resource: str = "Logical volume") -> None:
@@ -89,10 +91,10 @@ def legacy_snapshot_lv_name(svm: str, volume: str, snapshot: str) -> str:
 def validate_vlan(vlan_id: int) -> None:
     """
     Validate a VLAN ID.
-    
+
     Args:
         vlan_id: VLAN ID to validate
-        
+
     Raises:
         ValueError: If VLAN ID is invalid
     """
@@ -103,13 +105,13 @@ def validate_vlan(vlan_id: int) -> None:
 def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
     """
     Validate an IP address with CIDR notation.
-    
+
     Args:
         cidr: IP address with CIDR (e.g., "192.168.10.5/24")
-        
+
     Returns:
         Tuple of (ip_address, prefix_length)
-        
+
     Raises:
         ValueError: If CIDR is invalid
     """
@@ -117,19 +119,19 @@ def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
         parts = cidr.split("/")
         if len(parts) != 2:
             raise ValueError("CIDR must be in format IP/PREFIX (e.g., 192.168.10.5/24)")
-        
+
         ip_addr = parts[0]
         prefix = int(parts[1])
-        
+
         # Validate IP address
         ipaddress.IPv4Address(ip_addr)
-        
+
         # Validate prefix
         if prefix < 0 or prefix > 32:
             raise ValueError("Prefix length must be between 0 and 32")
-        
+
         return ip_addr, prefix
-        
+
     except ValueError as e:
         raise ValueError(f"Invalid CIDR format: {e}")
     except Exception as e:
@@ -161,7 +163,10 @@ def validate_svm_ip_cidr(cidr: str) -> Tuple[str, int]:
         raise ValueError("SVM IP address must not be loopback")
     if ip_addr.is_reserved:
         raise ValueError("SVM IP address must not be reserved")
-    if network.prefixlen < 31 and ip_addr in (network.network_address, network.broadcast_address):
+    if network.prefixlen < 31 and ip_addr in (
+        network.network_address,
+        network.broadcast_address,
+    ):
         raise ValueError("SVM IP address must be a usable host address")
 
     return str(ip_addr), network.prefixlen
@@ -189,7 +194,9 @@ def normalize_nfs_client_cidr(cidr: str) -> str:
     network = ipaddress.IPv4Network(normalized)
 
     if network.prefixlen == 0:
-        raise ValueError("NFS export client CIDR must not include the IPv4 default route")
+        raise ValueError(
+            "NFS export client CIDR must not include the IPv4 default route"
+        )
     if network.is_multicast:
         raise ValueError("NFS export client CIDR must not be multicast")
     if network.is_loopback:
@@ -237,7 +244,10 @@ def validate_gateway_for_ip_cidr(ip_cidr: str, gateway: str) -> None:
         raise ValueError(f"Gateway {gateway} must be inside SVM network {network}")
     if gateway_ip == iface.ip:
         raise ValueError("Gateway must not be the SVM IP address")
-    if network.prefixlen < 31 and gateway_ip in (network.network_address, network.broadcast_address):
+    if network.prefixlen < 31 and gateway_ip in (
+        network.network_address,
+        network.broadcast_address,
+    ):
         raise ValueError("Gateway cannot be the network or broadcast address")
 
 
@@ -259,11 +269,15 @@ def infer_gateway_from_ip_cidr(cidr: str) -> str:
         raise ValueError(f"Invalid CIDR format: {e}")
 
     if iface.network.prefixlen >= 31:
-        raise ValueError("Gateway cannot be inferred for /31 or /32; please specify gateway explicitly")
+        raise ValueError(
+            "Gateway cannot be inferred for /31 or /32; please specify gateway explicitly"
+        )
 
     ip = iface.ip
     for host in iface.network.hosts():
         if host != ip:
             return str(host)
 
-    raise ValueError("Gateway could not be inferred from CIDR; please specify gateway explicitly")
+    raise ValueError(
+        "Gateway could not be inferred from CIDR; please specify gateway explicitly"
+    )

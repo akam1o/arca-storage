@@ -30,7 +30,11 @@ from arca_storage.errors import (
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import validate_name, validate_svm_ip_cidr, volume_lv_name
+from arca_storage.cli.lib.validators import (
+    validate_name,
+    validate_svm_ip_cidr,
+    volume_lv_name,
+)
 from arca_storage.api.services.svm_service import require_svm_ready_record
 
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
@@ -77,7 +81,9 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     volume = _reconcile_volume_create(ctx, volume, owner)
 
     if volume.status.phase == Phase.FAILED:
-        raise ReconcileFailedError("Volume", f"{volume_data.svm}/{volume_data.name}", volume.status.message)
+        raise ReconcileFailedError(
+            "Volume", f"{volume_data.svm}/{volume_data.name}", volume.status.message
+        )
 
     return _volume_to_dict(volume, ctx)
 
@@ -130,11 +136,15 @@ def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
             try:
                 ctx.adapters.lvm.resize_lv(vg_name, lv_name, new_size_gib)
             except PreconditionFailedError as e:
-                recovered_size = _recoverable_backend_resize_size(e, current_size, new_size_gib)
+                recovered_size = _recoverable_backend_resize_size(
+                    e, current_size, new_size_gib
+                )
                 if recovered_size is None:
                     raise
                 ctx.adapters.xfs.grow(mount_path)
-                if not ctx.db.recover_volume_size_from_backend(svm, name, owner, recovered_size):
+                if not ctx.db.recover_volume_size_from_backend(
+                    svm, name, owner, recovered_size
+                ):
                     raise ConflictError(
                         f"Volume '{svm}/{name}' changed during resize recovery",
                         {
@@ -193,7 +203,9 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
 
             for snapshot in snapshots:
                 spec = snapshot["spec"]
-                snapshot_service.delete_snapshot(spec["name"], spec["svm"], spec["volume"], force=True)
+                snapshot_service.delete_snapshot(
+                    spec["name"], spec["svm"], spec["volume"], force=True
+                )
     except Exception as e:
         _mark_volume_delete_failed(ctx, record, f"Delete failed: {e}")
         raise
@@ -213,12 +225,17 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
 
 
 def list_volumes(
-    svm: Optional[str] = None, name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None
+    svm: Optional[str] = None,
+    name: Optional[str] = None,
+    limit: int = 100,
+    cursor: Optional[str] = None,
 ) -> Dict[str, Any]:
     """List volumes from the database."""
     ctx = get_context()
     try:
-        records = ctx.db.list_volumes(svm=svm, name=name, limit=limit + 1, cursor=cursor)
+        records = ctx.db.list_volumes(
+            svm=svm, name=name, limit=limit + 1, cursor=cursor
+        )
     except ValueError as e:
         raise InvalidArgumentError(str(e), {"field": "cursor"}) from e
     next_cursor = None
@@ -227,7 +244,10 @@ def list_volumes(
         next_cursor = encode_cursor([spec["svm"], spec["name"]])
         records = records[:limit]
     svm_records: dict[str, Optional[dict[str, Any]]] = {}
-    items = [_volume_record_to_dict(record, ctx, svm_records=svm_records) for record in records]
+    items = [
+        _volume_record_to_dict(record, ctx, svm_records=svm_records)
+        for record in records
+    ]
     return {"items": items, "next_cursor": next_cursor}
 
 
@@ -242,7 +262,9 @@ def _volume_to_dict(vol: Volume, ctx: Optional[Any] = None) -> Dict[str, Any]:
         "mount_path": vol.status.mount_path,
         "lv_path": vol.status.lv_path,
         "lv_name": vol.status.lv_name,
-        "export_path": build_volume_export_path(ctx, vol.spec.svm, vol.status.mount_path, vol.spec.name),
+        "export_path": build_volume_export_path(
+            ctx, vol.spec.svm, vol.status.mount_path, vol.spec.name
+        ),
         "status": vol.status.phase.value,
         "created_at": vol.metadata.created_at,
     }
@@ -266,7 +288,9 @@ def _volume_record_to_dict(
         "mount_path": mount_path,
         "lv_path": status.get("lv_path"),
         "lv_name": status.get("lv_name"),
-        "export_path": build_volume_export_path(ctx, spec.get("svm"), mount_path, spec.get("name"), svm_records=svm_records),
+        "export_path": build_volume_export_path(
+            ctx, spec.get("svm"), mount_path, spec.get("name"), svm_records=svm_records
+        ),
         "status": status.get("phase"),
         "created_at": record.get("created_at"),
     }
@@ -343,7 +367,9 @@ def _safe_resource_name(value: Any) -> Optional[str]:
     return name
 
 
-def _safe_volume_mount_path(svm: str, volume: Optional[str], mount_path: Any) -> Optional[str]:
+def _safe_volume_mount_path(
+    svm: str, volume: Optional[str], mount_path: Any
+) -> Optional[str]:
     safe_mount_path = _normalize_absolute_volume_path(mount_path)
     if not safe_mount_path:
         return None
@@ -395,11 +421,15 @@ def _meta_from_record(record: Dict[str, Any]) -> Any:
 
 def _parse_status(record: Dict[str, Any]) -> Any:
     from arca_storage.models.volume import VolumeStatus
+
     return VolumeStatus.model_validate(record["status"])
 
 
 def _can_resume_create(
-    record: Optional[Dict[str, Any]], requested_spec: VolumeSpec, *, owner: Optional[str] = None
+    record: Optional[Dict[str, Any]],
+    requested_spec: VolumeSpec,
+    *,
+    owner: Optional[str] = None,
 ) -> bool:
     if not record:
         return False
@@ -421,10 +451,15 @@ def _is_failed_delete(status: Dict[str, Any]) -> bool:
 
 
 def _has_pending_create_step(status: Dict[str, Any]) -> bool:
-    return any(not status.get(field, False) for field in ("lv_created", "fs_formatted", "mounted"))
+    return any(
+        not status.get(field, False)
+        for field in ("lv_created", "fs_formatted", "mounted")
+    )
 
 
-def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
+def _resume_volume_create(
+    ctx: Any, record: Dict[str, Any], owner: str
+) -> Dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
         spec=VolumeSpec.model_validate(record["spec"]),
@@ -434,7 +469,9 @@ def _resume_volume_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[
     volume.status.message = ""
     volume = _reconcile_volume_create(ctx, volume, owner)
     if volume.status.phase == Phase.FAILED:
-        raise ReconcileFailedError("Volume", f"{volume.spec.svm}/{volume.spec.name}", volume.status.message)
+        raise ReconcileFailedError(
+            "Volume", f"{volume.spec.svm}/{volume.spec.name}", volume.status.message
+        )
     return _volume_to_dict(volume, ctx)
 
 
@@ -477,7 +514,9 @@ def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
         for export in ctx.db.list_all_exports(svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME):
             spec = export.get("spec", {})
             if spec.get("owner") == "csi":
-                export_service.remove_internal_export(svm, _CSI_ROOT_EXPORT_VOLUME, spec["client"])
+                export_service.remove_internal_export(
+                    svm, _CSI_ROOT_EXPORT_VOLUME, spec["client"]
+                )
 
 
 def _mark_volume_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:

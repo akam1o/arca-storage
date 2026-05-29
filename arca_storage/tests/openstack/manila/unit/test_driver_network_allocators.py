@@ -18,10 +18,10 @@ class TestDriverNetworkAllocators:
     def setup_oslo_config(self):
         """Setup oslo.config for tests."""
         # Set lock_path for oslo_concurrency
-        CONF.set_override('lock_path', '/tmp', group='oslo_concurrency')
+        CONF.set_override("lock_path", "/tmp", group="oslo_concurrency")
         yield
         # Cleanup
-        CONF.clear_override('lock_path', group='oslo_concurrency')
+        CONF.clear_override("lock_path", group="oslo_concurrency")
 
     @pytest.fixture
     def mock_arca_client(self):
@@ -52,7 +52,9 @@ class TestDriverNetworkAllocators:
         return config
 
     @patch("arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient")
-    def test_driver_init_standalone_mode(self, mock_client_class, base_config, mock_arca_client):
+    def test_driver_init_standalone_mode(
+        self, mock_client_class, base_config, mock_arca_client
+    ):
         """Test driver initialization with standalone mode."""
         # Setup
         base_config.arca_storage_svm_strategy = "per_project"
@@ -74,7 +76,12 @@ class TestDriverNetworkAllocators:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_driver_init_neutron_mode(
-        self, mock_neutron_module, mock_ks_loading, mock_client_class, base_config, mock_arca_client
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        mock_client_class,
+        base_config,
+        mock_arca_client,
     ):
         """Test driver initialization with Neutron mode."""
         # Setup
@@ -121,7 +128,9 @@ class TestDriverNetworkAllocators:
         assert driver._network_allocator.__class__.__name__ == "NeutronAllocator"
 
     @patch("arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient")
-    def test_driver_init_invalid_network_mode(self, mock_client_class, base_config, mock_arca_client):
+    def test_driver_init_invalid_network_mode(
+        self, mock_client_class, base_config, mock_arca_client
+    ):
         """Test driver initialization fails with invalid network mode."""
         # Setup
         base_config.arca_storage_svm_strategy = "per_project"
@@ -149,7 +158,9 @@ class TestDriverNetworkAllocators:
         mock_client_class.return_value = mock_arca_client
 
         # Mock SVM not found, then created
-        mock_arca_client.get_svm.side_effect = arca_exceptions.ArcaSVMNotFound(svm_name="test")
+        mock_arca_client.get_svm.side_effect = arca_exceptions.ArcaSVMNotFound(
+            svm_name="test"
+        )
         mock_arca_client.create_svm.return_value = {
             "name": "manila_project-123",
             "vip": "192.168.100.10",
@@ -174,7 +185,12 @@ class TestDriverNetworkAllocators:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_driver_per_project_svm_allocation_neutron(
-        self, mock_neutron_module, mock_ks_loading, mock_client_class, base_config, mock_arca_client
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        mock_client_class,
+        base_config,
+        mock_arca_client,
     ):
         """Test per-project SVM allocation with Neutron mode."""
         # Setup
@@ -223,7 +239,9 @@ class TestDriverNetworkAllocators:
         mock_neutron_module.Client.return_value = mock_neutron_client
 
         # Mock SVM not found, then created
-        mock_arca_client.get_svm.side_effect = arca_exceptions.ArcaSVMNotFound(svm_name="test")
+        mock_arca_client.get_svm.side_effect = arca_exceptions.ArcaSVMNotFound(
+            svm_name="test"
+        )
         mock_arca_client.create_svm.return_value = {
             "name": "manila_project-123",
             "vip": "192.168.100.10",
@@ -251,7 +269,12 @@ class TestDriverNetworkAllocators:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_driver_network_conflict_cleanup(
-        self, mock_neutron_module, mock_ks_loading, mock_client_class, base_config, mock_arca_client
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        mock_client_class,
+        base_config,
+        mock_arca_client,
     ):
         """Test driver cleans up allocated port on SVM creation failure."""
         # Setup
@@ -300,7 +323,9 @@ class TestDriverNetworkAllocators:
         mock_neutron_module.Client.return_value = mock_neutron_client
 
         # Mock SVM not found, then creation fails
-        mock_arca_client.get_svm.side_effect = arca_exceptions.ArcaSVMNotFound(svm_name="test")
+        mock_arca_client.get_svm.side_effect = arca_exceptions.ArcaSVMNotFound(
+            svm_name="test"
+        )
         mock_arca_client.create_svm.side_effect = Exception("Backend error")
 
         # Create driver
@@ -315,7 +340,9 @@ class TestDriverNetworkAllocators:
         mock_neutron_client.delete_port.assert_called_once_with("port-uuid-789")
 
     @patch("arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient")
-    def test_driver_shared_strategy_no_allocator(self, mock_client_class, base_config, mock_arca_client):
+    def test_driver_shared_strategy_no_allocator(
+        self, mock_client_class, base_config, mock_arca_client
+    ):
         """Test driver with shared strategy does not initialize allocator."""
         # Setup
         base_config.arca_storage_svm_strategy = "shared"
@@ -333,4 +360,7 @@ class TestDriverNetworkAllocators:
         driver.do_setup(Mock())
 
         # Verify no allocator initialized (shared strategy doesn't need it)
-        assert not hasattr(driver, "_network_allocator") or driver._network_allocator is None
+        assert (
+            not hasattr(driver, "_network_allocator")
+            or driver._network_allocator is None
+        )

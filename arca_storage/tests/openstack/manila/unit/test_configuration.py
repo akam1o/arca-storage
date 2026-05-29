@@ -37,7 +37,9 @@ def test_insecure_api_token_transport_requires_opt_in():
 
 def test_per_project_ip_pools_is_multistr():
     opts = configuration.get_arca_manila_opts()
-    pools_opt = next(opt for opt in opts if opt.name == "arca_storage_per_project_ip_pools")
+    pools_opt = next(
+        opt for opt in opts if opt.name == "arca_storage_per_project_ip_pools"
+    )
     # oslo.config uses MultiStrOpt class; type name is stable enough for this assertion.
     assert pools_opt.__class__.__name__ == "MultiStrOpt"
 

@@ -29,7 +29,9 @@ class SubprocessSystemdAdapter:
         run_cmd(["systemctl", "stop", unit], timeout=self._timeout)
 
     def is_active(self, unit: str) -> bool:
-        result = run_cmd(["systemctl", "is-active", unit], timeout=self._timeout, check=False)
+        result = run_cmd(
+            ["systemctl", "is-active", unit], timeout=self._timeout, check=False
+        )
         return result.returncode == 0
 
 

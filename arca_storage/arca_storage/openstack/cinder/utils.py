@@ -177,7 +177,9 @@ def unmount_nfs(mount_point: str, force: bool = False) -> None:
                 lazy_unmount(mount_point)
             except ArcaStorageException as lazy_error:
                 # If lazy unmount also fails, raise the original error
-                raise ArcaStorageException("Failed to unmount NFS export") from lazy_error
+                raise ArcaStorageException(
+                    "Failed to unmount NFS export"
+                ) from lazy_error
         else:
             raise ArcaStorageException("Failed to unmount NFS export") from e
 
@@ -438,7 +440,9 @@ def _stat_regular_file_no_follow(path: str, description: str) -> os.stat_result:
     """Stat a regular file through an fd opened without following symlinks."""
     nofollow = getattr(os, "O_NOFOLLOW", None)
     if nofollow is None:
-        raise ArcaStorageException("Secure existing file opening is not supported on this platform")
+        raise ArcaStorageException(
+            "Secure existing file opening is not supported on this platform"
+        )
 
     try:
         fd = os.open(path, os.O_RDONLY | nofollow)
@@ -446,13 +450,17 @@ def _stat_regular_file_no_follow(path: str, description: str) -> os.stat_result:
         raise ArcaStorageException(f"{description.capitalize()} does not exist") from e
     except OSError as e:
         if e.errno == errno.ELOOP:
-            raise ArcaStorageException(f"{description.capitalize()} is not a regular file") from e
+            raise ArcaStorageException(
+                f"{description.capitalize()} is not a regular file"
+            ) from e
         raise ArcaStorageException(f"Failed to open {description}") from e
 
     try:
         file_stat = os.fstat(fd)
         if not stat.S_ISREG(file_stat.st_mode):
-            raise ArcaStorageException(f"{description.capitalize()} is not a regular file")
+            raise ArcaStorageException(
+                f"{description.capitalize()} is not a regular file"
+            )
         return file_stat
     except ArcaStorageException:
         raise
@@ -624,9 +632,7 @@ def _open_regular_file_no_follow(path: str) -> int:
 
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ArcaStorageException(
-                "Source must be a regular file, not a symlink"
-            )
+            raise ArcaStorageException("Source must be a regular file, not a symlink")
     except Exception:
         os.close(fd)
         raise
@@ -728,7 +734,9 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
                 _rename_noreplace(temp_path, dest_path)
                 dest_installed = True
             except FileExistsError:
-                raise ArcaStorageException("Destination file was created by another worker")
+                raise ArcaStorageException(
+                    "Destination file was created by another worker"
+                )
             except OSError as rename_error:
                 raise ArcaStorageException(
                     "Failed to atomically install copied file without overwriting destination"

@@ -49,7 +49,9 @@ def list_all_volumes(
     name: Optional[str] = None,
 ) -> list[Record]:
     return _collect_pages(
-        lambda cursor: db.list_volumes(svm=svm, name=name, limit=_PAGE_SIZE, cursor=cursor),
+        lambda cursor: db.list_volumes(
+            svm=svm, name=name, limit=_PAGE_SIZE, cursor=cursor
+        ),
         lambda record: [str(record["spec"]["svm"]), str(record["spec"]["name"])],
     )
 
@@ -61,7 +63,9 @@ def list_all_exports(
     volume: Optional[str] = None,
 ) -> list[Record]:
     return _collect_pages(
-        lambda cursor: db.list_exports(svm=svm, volume=volume, limit=_PAGE_SIZE, cursor=cursor),
+        lambda cursor: db.list_exports(
+            svm=svm, volume=volume, limit=_PAGE_SIZE, cursor=cursor
+        ),
         lambda record: [
             str(record["spec"]["svm"]),
             str(record["spec"]["volume"]),

@@ -14,7 +14,13 @@ from arca_storage.errors import NotFoundError, PreconditionFailedError
 @runtime_checkable
 class XFSAdapter(Protocol):
     def format_xfs(self, device: str) -> None: ...
-    def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None: ...
+    def mount(
+        self,
+        device: str,
+        mount_point: str,
+        *,
+        extra_options: Optional[list[str]] = None,
+    ) -> None: ...
     def umount(self, mount_point: str) -> None: ...
     def grow(self, mount_point: str) -> None: ...
     def is_mounted(self, mount_point: str) -> bool: ...
@@ -41,16 +47,26 @@ class SubprocessXFSAdapter:
         run_cmd(
             [
                 "mkfs.xfs",
-                "-b", "size=4096",
-                "-m", "crc=1,finobt=1",
-                "-i", "size=512,maxpct=25",
-                "-d", "agcount=32,su=256k,sw=1",
+                "-b",
+                "size=4096",
+                "-m",
+                "crc=1,finobt=1",
+                "-i",
+                "size=512,maxpct=25",
+                "-d",
+                "agcount=32,su=256k,sw=1",
                 device,
             ],
             timeout=self._timeout,
         )
 
-    def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None:
+    def mount(
+        self,
+        device: str,
+        mount_point: str,
+        *,
+        extra_options: Optional[list[str]] = None,
+    ) -> None:
         self._ensure_safe_mount_point(mount_point)
         os.makedirs(mount_point, exist_ok=True)
         mounted_source = self._mounted_source(mount_point)
@@ -91,7 +107,14 @@ class SubprocessXFSAdapter:
 
     def _mounted_source(self, mount_point: str) -> Optional[str]:
         result = run_cmd(
-            ["findmnt", "--mountpoint", mount_point, "--noheadings", "--output", "SOURCE"],
+            [
+                "findmnt",
+                "--mountpoint",
+                mount_point,
+                "--noheadings",
+                "--output",
+                "SOURCE",
+            ],
             timeout=self._timeout,
             check=False,
         )
@@ -131,7 +154,13 @@ class FakeXFSAdapter:
     def format_xfs(self, device: str) -> None:
         self.formatted.add(device)
 
-    def mount(self, device: str, mount_point: str, *, extra_options: Optional[list[str]] = None) -> None:
+    def mount(
+        self,
+        device: str,
+        mount_point: str,
+        *,
+        extra_options: Optional[list[str]] = None,
+    ) -> None:
         self.mounts[mount_point] = device
         self.mount_options[mount_point] = list(extra_options or [])
 

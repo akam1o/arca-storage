@@ -48,7 +48,10 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     assert record["spec"]["size_gib"] == 2
 
     exports = fake_context.adapters.ganesha.exports[svm_name]
-    assert _export_paths(exports) == [f"/exports/{svm_name}", f"/exports/{svm_name}/{volume_path}"]
+    assert _export_paths(exports) == [
+        f"/exports/{svm_name}",
+        f"/exports/{svm_name}/{volume_path}",
+    ]
     assert all(export["owner"] == "csi" for export in exports)
     assert {(export["client"], export["squash"]) for export in exports} == {
         ("10.0.0.0/24", "Root_Squash")
@@ -63,7 +66,9 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
         },
     )
     assert response.status_code == 201
-    assert _export_paths(fake_context.adapters.ganesha.exports[svm_name]) == _export_paths(exports)
+    assert _export_paths(
+        fake_context.adapters.ganesha.exports[svm_name]
+    ) == _export_paths(exports)
 
     response = client.post(
         "/v1/quotas",
@@ -81,7 +86,9 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     assert response.status_code == 200
     assert response.json()["data"]["quota_bytes"] == 3 * GIB
 
-    response = client.delete(f"/v1/directories/{svm_name}", params={"path": volume_path})
+    response = client.delete(
+        f"/v1/directories/{svm_name}", params={"path": volume_path}
+    )
     assert response.status_code == 200
     assert fake_context.db.get_volume(svm_name, volume_path) is None
     assert fake_context.adapters.ganesha.exports[svm_name] == []
@@ -208,15 +215,21 @@ def test_csi_directory_delete_rejects_existing_snapshots(fake_context):
     assert response.status_code == 201
     exports = list(fake_context.adapters.ganesha.exports[svm_name])
 
-    response = client.post("/v1/snapshots", json={"name": "snap1", "svm": svm_name, "volume": volume_path})
+    response = client.post(
+        "/v1/snapshots", json={"name": "snap1", "svm": svm_name, "volume": volume_path}
+    )
     assert response.status_code == 201
 
-    response = client.delete(f"/v1/directories/{svm_name}", params={"path": volume_path})
+    response = client.delete(
+        f"/v1/directories/{svm_name}", params={"path": volume_path}
+    )
 
     assert response.status_code == 412
     assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
     assert fake_context.db.get_volume(svm_name, volume_path) is not None
-    assert fake_context.db.list_snapshots(svm=svm_name, volume=volume_path, name="snap1")
+    assert fake_context.db.list_snapshots(
+        svm=svm_name, volume=volume_path, name="snap1"
+    )
     assert fake_context.adapters.ganesha.exports[svm_name] == exports
 
 
@@ -227,7 +240,14 @@ def test_csi_directory_rejects_unready_svm(fake_context):
     svm_name = "k8s-default"
     volume_path = "pvc-1234567890abcdef"
     fake_context.db.insert_svm(
-        SVM(spec=SVMSpec(name=svm_name, vlan_id=100, ip_cidr="192.168.10.5/24", gateway="192.168.10.1"))
+        SVM(
+            spec=SVMSpec(
+                name=svm_name,
+                vlan_id=100,
+                ip_cidr="192.168.10.5/24",
+                gateway="192.168.10.1",
+            )
+        )
     )
 
     response = client.post(
@@ -267,7 +287,9 @@ def test_csi_directory_rejects_existing_unready_volume(fake_context):
         },
     )
     assert response.status_code == 201
-    fake_context.db.insert_volume(Volume(spec=VolumeSpec(name=volume_path, svm=svm_name, size_gib=2)))
+    fake_context.db.insert_volume(
+        Volume(spec=VolumeSpec(name=volume_path, svm=svm_name, size_gib=2))
+    )
 
     response = client.post(
         "/v1/directories",
@@ -399,7 +421,9 @@ def test_csi_directory_normalizes_configured_client_cidrs(fake_context):
         ("240.0.0.0/4", "reserved"),
     ],
 )
-def test_csi_directory_rejects_unsafe_configured_client_cidrs(fake_context, cidr, message):
+def test_csi_directory_rejects_unsafe_configured_client_cidrs(
+    fake_context, cidr, message
+):
     client = TestClient(app)
     svm_name = "k8s-default"
     volume_path = "pvc-1234567890abcdef"

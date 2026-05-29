@@ -76,7 +76,9 @@ class TestArcaStorageClient(unittest.TestCase):
 
         client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
 
-        with pytest.raises(arca_exceptions.ArcaAPIError, match="not valid JSON") as exc_info:
+        with pytest.raises(
+            arca_exceptions.ArcaAPIError, match="not valid JSON"
+        ) as exc_info:
             client._make_request("GET", "/v1/volumes")
 
         assert exc_info.value.status_code == 200
@@ -92,10 +94,15 @@ class TestArcaStorageClient(unittest.TestCase):
         mock_session.request.return_value = mock_response
         mock_requests.Session.return_value = mock_session
 
-        client = arca_client.ArcaStorageClient(api_endpoint="https://storage.example.com/arca")
+        client = arca_client.ArcaStorageClient(
+            api_endpoint="https://storage.example.com/arca"
+        )
         client._make_request("GET", "/v1/volumes")
 
-        assert mock_session.request.call_args.kwargs["url"] == "https://storage.example.com/arca/v1/volumes"
+        assert (
+            mock_session.request.call_args.kwargs["url"]
+            == "https://storage.example.com/arca/v1/volumes"
+        )
 
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_make_request_404_error(self, mock_requests):
@@ -133,7 +140,9 @@ class TestArcaStorageClient(unittest.TestCase):
                 "details": {"auth_token": "secret-token", "safe": "kept"},
             }
         }
-        mock_response.text = "backend failed with bearer secret-token and password=hunter2"
+        mock_response.text = (
+            "backend failed with bearer secret-token and password=hunter2"
+        )
 
         mock_session = Mock()
         mock_session.request.return_value = mock_response
@@ -146,7 +155,10 @@ class TestArcaStorageClient(unittest.TestCase):
 
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
-        assert exc_info.value.response_data["error"]["details"]["auth_token"] == "<redacted>"
+        assert (
+            exc_info.value.response_data["error"]["details"]["auth_token"]
+            == "<redacted>"
+        )
         assert exc_info.value.response_data["error"]["details"]["safe"] == "kept"
 
     @patch("arca_storage.openstack.cinder.client.requests")
@@ -171,6 +183,7 @@ class TestArcaStorageClient(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_make_request_timeout(self, mock_requests):
         """Test API request timeout."""
+
         # Create a proper exception class
         class TimeoutException(Exception):
             pass
@@ -424,7 +437,9 @@ class TestArcaStorageClient(unittest.TestCase):
 
         client = arca_client.ArcaStorageClient(api_endpoint=self.api_endpoint)
 
-        with pytest.raises(arca_exceptions.ArcaAPIError, match="Repeated pagination cursor") as exc:
+        with pytest.raises(
+            arca_exceptions.ArcaAPIError, match="Repeated pagination cursor"
+        ) as exc:
             client.list_volumes(svm="test-svm", limit=1)
 
         assert "cursor-1" not in str(exc.value)
@@ -453,7 +468,10 @@ class TestArcaStorageClient(unittest.TestCase):
 
         assert [item["client"] for item in result] == ["10.0.0.0/24", "10.0.1.0/24"]
         assert mock_session.request.call_count == 2
-        assert mock_session.request.call_args_list[1].kwargs["params"]["cursor"] == "cursor-1"
+        assert (
+            mock_session.request.call_args_list[1].kwargs["params"]["cursor"]
+            == "cursor-1"
+        )
 
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_list_svms_success(self, mock_requests):
@@ -568,7 +586,9 @@ class TestArcaStorageClient(unittest.TestCase):
 
         assert result["total_gb"] == 1000
         assert result["free_gb"] == 750
-        assert mock_session.request.call_args.kwargs["url"].endswith("/v1/svms/test-svm/capacity")
+        assert mock_session.request.call_args.kwargs["url"].endswith(
+            "/v1/svms/test-svm/capacity"
+        )
 
     @patch("arca_storage.openstack.cinder.client.requests")
     def test_context_manager(self, mock_requests):
@@ -645,9 +665,7 @@ class TestArcaStorageClient(unittest.TestCase):
         """Test successful QoS removal."""
         mock_response = Mock()
         mock_response.status_code = 200
-        mock_response.json.return_value = {
-            "data": {"message": "QoS limits removed"}
-        }
+        mock_response.json.return_value = {"data": {"message": "QoS limits removed"}}
 
         mock_session = Mock()
         mock_session.request.return_value = mock_response

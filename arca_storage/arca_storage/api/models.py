@@ -20,7 +20,9 @@ def _validate_resource_name(value: str) -> str:
     return value
 
 
-CSI_VOLUME_PATH_DESCRIPTION = "CSI volume name within the SVM; nested paths are not supported"
+CSI_VOLUME_PATH_DESCRIPTION = (
+    "CSI volume name within the SVM; nested paths are not supported"
+)
 PositiveBytes = Annotated[int, Field(gt=0)]
 PositiveGiB = Annotated[int, Field(gt=0)]
 PositiveQoSLimit = Annotated[int, Field(gt=0)]
@@ -81,8 +83,12 @@ class SVMCreate(StrictRequestModel):
 
     name: str = Field(..., description="SVM name", min_length=1, max_length=64)
     vlan_id: Optional[int] = Field(None, description="Optional VLAN ID", ge=1, le=4094)
-    ip_cidr: str = Field(..., description="IP address with CIDR (e.g., 192.168.10.5/24)")
-    gateway: Optional[str] = Field(None, description="Gateway IP (optional; inferred if omitted)")
+    ip_cidr: str = Field(
+        ..., description="IP address with CIDR (e.g., 192.168.10.5/24)"
+    )
+    gateway: Optional[str] = Field(
+        None, description="Gateway IP (optional; inferred if omitted)"
+    )
     mtu: int = Field(1500, description="MTU size", ge=68, le=9000)
     root_volume_size_gib: Optional[PositiveGiB] = Field(
         None, description="Optional root LV size in GiB (creates /dev/<vg>/vol_<svm>)"
@@ -162,8 +168,12 @@ class DirectoryCreate(StrictRequestModel):
     """Request model for CSI directory-backed volume creation."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64)
-    quota_bytes: Optional[PositiveBytes] = Field(None, description="Optional quota/capacity in bytes")
+    path: str = Field(
+        ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
+    )
+    quota_bytes: Optional[PositiveBytes] = Field(
+        None, description="Optional quota/capacity in bytes"
+    )
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
@@ -174,7 +184,9 @@ class QuotaSet(StrictRequestModel):
     """Request model for CSI quota/capacity updates."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64)
+    path: str = Field(
+        ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
+    )
     quota_bytes: PositiveBytes = Field(..., description="Quota/capacity in bytes")
 
     @field_validator("svm_name", "path")
@@ -186,8 +198,12 @@ class QuotaExpand(StrictRequestModel):
     """Request model for CSI quota expansion."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64)
-    new_quota_bytes: PositiveBytes = Field(..., description="New quota/capacity in bytes")
+    path: str = Field(
+        ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
+    )
+    new_quota_bytes: PositiveBytes = Field(
+        ..., description="New quota/capacity in bytes"
+    )
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
@@ -235,8 +251,12 @@ class VolumeQoSApply(StrictRequestModel):
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
     read_iops: Optional[PositiveQoSLimit] = Field(None, description="Read IOPS limit")
     write_iops: Optional[PositiveQoSLimit] = Field(None, description="Write IOPS limit")
-    read_bps: Optional[PositiveQoSLimit] = Field(None, description="Read bandwidth limit (bytes/sec)")
-    write_bps: Optional[PositiveQoSLimit] = Field(None, description="Write bandwidth limit (bytes/sec)")
+    read_bps: Optional[PositiveQoSLimit] = Field(
+        None, description="Read bandwidth limit (bytes/sec)"
+    )
+    write_bps: Optional[PositiveQoSLimit] = Field(
+        None, description="Write bandwidth limit (bytes/sec)"
+    )
 
     @field_validator("svm")
     def validate_svm(cls, v: str) -> str:
@@ -318,7 +338,9 @@ class SnapshotCreate(StrictRequestModel):
 
     name: str = Field(..., description="Snapshot name", min_length=1, max_length=64)
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    volume: str = Field(..., description="Source volume name", min_length=1, max_length=64)
+    volume: str = Field(
+        ..., description="Source volume name", min_length=1, max_length=64
+    )
 
     @field_validator("name", "svm", "volume")
     def validate_name(cls, v: str) -> str:
@@ -330,8 +352,12 @@ class VolumeCloneCreate(StrictRequestModel):
 
     name: str = Field(..., description="New volume name", min_length=1, max_length=64)
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    snapshot: str = Field(..., description="Source snapshot name", min_length=1, max_length=64)
-    size_gib: Optional[PositiveGiB] = Field(None, description="Size in GiB (optional, defaults to snapshot size)")
+    snapshot: str = Field(
+        ..., description="Source snapshot name", min_length=1, max_length=64
+    )
+    size_gib: Optional[PositiveGiB] = Field(
+        None, description="Size in GiB (optional, defaults to snapshot size)"
+    )
 
     @field_validator("name", "svm", "snapshot")
     def validate_name(cls, v: str) -> str:
@@ -390,7 +416,9 @@ class ExportCreate(StrictRequestModel):
     client: str = Field(..., description="Client CIDR (e.g., 10.0.0.0/24)")
     access: str = Field("rw", description="Access type: rw or ro")
     root_squash: bool = Field(True, description="Enable root squash")
-    sec: List[str] = Field(default_factory=lambda: ["sys"], description="Security types")
+    sec: List[str] = Field(
+        default_factory=lambda: ["sys"], description="Security types"
+    )
 
     @field_validator("svm", "volume")
     def validate_name(cls, v: str) -> str:

@@ -7,7 +7,10 @@ def test_pacemaker_role_validates_cluster_identifiers(repo_root):
 
     assert "Validate Pacemaker cluster identifiers" in content
     assert "pacemaker_cluster_name is string" in content
-    assert "(pacemaker_cluster_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')" in content
+    assert (
+        "(pacemaker_cluster_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')"
+        in content
+    )
     assert "(pacemaker_nodes | length) >= 2" in content
     assert "must contain at least two unique DNS hostnames" in content
 

@@ -59,10 +59,14 @@ class TestFormatXfs:
         format_xfs("/dev/vg_pool_01/vol1")
 
     @pytest.mark.unit
-    def test_format_rejects_existing_non_xfs_filesystem(self, mock_subprocess, mock_path_exists):
+    def test_format_rejects_existing_non_xfs_filesystem(
+        self, mock_subprocess, mock_path_exists
+    ):
         """Test formatting rejects devices with another filesystem."""
         mock_path_exists.return_value = True
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout='TYPE="ext4" /dev/vg_pool_01/vol1 secret-token')
+        mock_subprocess.return_value = MagicMock(
+            returncode=0, stdout='TYPE="ext4" /dev/vg_pool_01/vol1 secret-token'
+        )
 
         with pytest.raises(RuntimeError, match="non-XFS filesystem") as exc_info:
             format_xfs("/dev/vg_pool_01/vol1")
@@ -90,7 +94,9 @@ class TestFormatXfs:
         mock_path_exists.return_value = True
         mock_subprocess.side_effect = [
             MagicMock(returncode=1),  # blkid (not formatted)
-            MagicMock(returncode=1, stderr="secret-token /dev/vg_pool_01/vol1"),  # mkfs.xfs fails
+            MagicMock(
+                returncode=1, stderr="secret-token /dev/vg_pool_01/vol1"
+            ),  # mkfs.xfs fails
         ]
 
         with pytest.raises(RuntimeError, match="Failed to format XFS") as exc_info:
@@ -143,13 +149,20 @@ class TestMountXfs:
         """Test mounting fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=1),  # mountpoint (not mounted)
-            MagicMock(returncode=1, stderr="secret-token /exports/tenant_a/vol1"),  # mount fails
+            MagicMock(
+                returncode=1, stderr="secret-token /exports/tenant_a/vol1"
+            ),  # mount fails
         ]
 
         with pytest.raises(RuntimeError, match="Failed to mount XFS") as exc_info:
             mount_xfs("/dev/vg_pool_01/vol1", "/exports/tenant_a/vol1")
 
-        _assert_redacted(exc_info.value, "secret-token", "/exports/tenant_a/vol1", "/dev/vg_pool_01/vol1")
+        _assert_redacted(
+            exc_info.value,
+            "secret-token",
+            "/exports/tenant_a/vol1",
+            "/dev/vg_pool_01/vol1",
+        )
 
 
 class TestUmountXfs:
@@ -176,7 +189,9 @@ class TestUmountXfs:
     @pytest.mark.unit
     def test_umount_not_mounted(self, mock_subprocess):
         """Test unmounting filesystem that's not mounted."""
-        mock_subprocess.return_value = MagicMock(returncode=1)  # mountpoint (not mounted)
+        mock_subprocess.return_value = MagicMock(
+            returncode=1
+        )  # mountpoint (not mounted)
 
         # Should not raise error, just skip
         umount_xfs("/exports/tenant_a/vol1")
@@ -186,7 +201,9 @@ class TestUmountXfs:
         """Test unmounting fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0),  # mountpoint (mounted)
-            MagicMock(returncode=1, stderr="secret-token /exports/tenant_a/vol1"),  # umount fails
+            MagicMock(
+                returncode=1, stderr="secret-token /exports/tenant_a/vol1"
+            ),  # umount fails
         ]
 
         with pytest.raises(RuntimeError, match="Failed to unmount XFS") as exc_info:
@@ -219,7 +236,9 @@ class TestGrowXfs:
     @pytest.mark.unit
     def test_grow_not_mounted(self, mock_subprocess):
         """Test growing filesystem that's not mounted."""
-        mock_subprocess.return_value = MagicMock(returncode=1)  # mountpoint (not mounted)
+        mock_subprocess.return_value = MagicMock(
+            returncode=1
+        )  # mountpoint (not mounted)
 
         with pytest.raises(RuntimeError, match="is not mounted") as exc_info:
             grow_xfs("/exports/tenant_a/vol1")
@@ -231,7 +250,9 @@ class TestGrowXfs:
         """Test growing filesystem fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0),  # mountpoint (mounted)
-            MagicMock(returncode=1, stderr="secret-token /exports/tenant_a/vol1"),  # xfs_growfs fails
+            MagicMock(
+                returncode=1, stderr="secret-token /exports/tenant_a/vol1"
+            ),  # xfs_growfs fails
         ]
 
         with pytest.raises(RuntimeError, match="Failed to grow XFS") as exc_info:
