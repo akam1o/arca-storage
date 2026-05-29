@@ -126,6 +126,19 @@ type racingCreateSnapshotStore struct {
 	existing *store.SnapshotInfo
 }
 
+type fakeLifecycleLockState struct {
+	done chan struct{}
+	err  error
+}
+
+func (l *fakeLifecycleLockState) Done() <-chan struct{} {
+	return l.done
+}
+
+func (l *fakeLifecycleLockState) Err() error {
+	return l.err
+}
+
 func (s *racingCreateSnapshotStore) CreateSnapshot(ctx context.Context, info *store.SnapshotInfo) error {
 	if s.existing != nil && s.existing.SnapshotID == info.SnapshotID {
 		if err := s.MemoryStore.CreateSnapshot(ctx, s.existing); err != nil && !store.IsAlreadyExists(err) {
@@ -603,7 +616,7 @@ func TestCreateVolumeDoesNotRestoreSnapshotWhenMetadataStoreFails(t *testing.T) 
 	}
 }
 
-func TestCreateVolumeSkipsProvisionedCleanupWhenLifecycleContextCanceled(t *testing.T) {
+func TestCreateVolumeCleansUpProvisionedBackendWhenRequestContextCanceled(t *testing.T) {
 	st := &failingCreateStore{
 		MemoryStore: store.NewMemoryStore(),
 		failCreate:  true,
@@ -661,8 +674,8 @@ func TestCreateVolumeSkipsProvisionedCleanupWhenLifecycleContextCanceled(t *test
 	if !directoryCreated {
 		t.Fatalf("directory endpoint was not called")
 	}
-	if cleanupCalled {
-		t.Fatalf("backend volume cleanup ran after lifecycle context was canceled")
+	if !cleanupCalled {
+		t.Fatalf("backend volume cleanup did not run after request context was canceled")
 	}
 }
 
@@ -1721,7 +1734,7 @@ func TestCreateSnapshotCleansUpBackendWhenMetadataStoreFails(t *testing.T) {
 	}
 }
 
-func TestCreateSnapshotSkipsBackendCleanupWhenLifecycleContextCanceled(t *testing.T) {
+func TestCreateSnapshotCleansUpBackendWhenRequestContextCanceled(t *testing.T) {
 	st := &failingCreateStore{
 		MemoryStore:        store.NewMemoryStore(),
 		failCreateSnapshot: true,
@@ -1782,8 +1795,8 @@ func TestCreateSnapshotSkipsBackendCleanupWhenLifecycleContextCanceled(t *testin
 	if !snapshotCreated {
 		t.Fatalf("snapshot endpoint was not called")
 	}
-	if cleanupCalled {
-		t.Fatalf("backend snapshot cleanup ran after lifecycle context was canceled")
+	if !cleanupCalled {
+		t.Fatalf("backend snapshot cleanup did not run after request context was canceled")
 	}
 }
 
@@ -2037,7 +2050,7 @@ func TestCreateVolumeKeepsPendingTemporaryCloneSnapshotOnCloneFailure(t *testing
 	}
 }
 
-func TestCleanupTemporaryCloneSnapshotSkipsCanceledLifecycleContext(t *testing.T) {
+func TestCleanupTemporaryCloneSnapshotUsesBackgroundContextAfterRequestCancel(t *testing.T) {
 	var snapshotDeleted bool
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Content-Type", "application/json")
@@ -2073,11 +2086,62 @@ func TestCleanupTemporaryCloneSnapshotSkipsCanceledLifecycleContext(t *testing.T
 
 	err = driver.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol)
 
-	if !errors.Is(err, context.Canceled) {
-		t.Fatalf("cleanup error = %v, want context canceled", err)
+	if err != nil {
+		t.Fatalf("cleanupTemporaryCloneSnapshot() error = %v", err)
+	}
+	if !snapshotDeleted {
+		t.Fatalf("temporary snapshot cleanup did not run after request context was canceled")
+	}
+	if volumeInfo.TemporaryCloneSnapshot != "" || volumeInfo.TemporaryCloneSourceVolumePath != "" {
+		t.Fatalf("temporary clone metadata was not cleared after backend cleanup")
+	}
+}
+
+func TestCleanupTemporaryCloneSnapshotSkipsLostLifecycleLock(t *testing.T) {
+	var snapshotDeleted bool
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method == http.MethodDelete && r.URL.Path == "/v1/snapshots/temp-snap" {
+			snapshotDeleted = true
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"deleted":true}}`))
+			return
+		}
+		http.NotFound(w, r)
+	}))
+	defer server.Close()
+
+	client, err := arca.NewClient(&arca.ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	driver := &Driver{
+		mode:       "controller",
+		arcaClient: client,
+	}
+	volumeInfo := &store.VolumeInfo{
+		VolumeID:                       "target-vol",
+		TemporaryCloneSnapshot:         "temp-snap",
+		TemporaryCloneSourceVolumePath: "source-path",
+	}
+	sourceVol := &store.VolumeInfo{
+		SVMName: "svm-a",
+		Path:    "source-path",
+	}
+	done := make(chan struct{})
+	close(done)
+	ctx := withLifecycleLock(context.Background(), &fakeLifecycleLockState{
+		done: done,
+		err:  lock.ErrLockLost,
+	})
+
+	err = driver.cleanupTemporaryCloneSnapshot(ctx, volumeInfo, sourceVol)
+
+	if !errors.Is(err, lock.ErrLockLost) {
+		t.Fatalf("cleanup error = %v, want lock lost", err)
 	}
 	if snapshotDeleted {
-		t.Fatalf("temporary snapshot cleanup ran after lifecycle context was canceled")
+		t.Fatalf("temporary snapshot cleanup ran after lifecycle lock was lost")
 	}
 	if volumeInfo.TemporaryCloneSnapshot == "" || volumeInfo.TemporaryCloneSourceVolumePath == "" {
 		t.Fatalf("temporary clone metadata was cleared without backend cleanup")

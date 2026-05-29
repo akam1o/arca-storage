@@ -18,6 +18,22 @@ type volumeCreateLock struct {
 	refCount int
 }
 
+type lifecycleLockContextKey struct{}
+
+type lifecycleLockState interface {
+	Done() <-chan struct{}
+	Err() error
+}
+
+func withLifecycleLock(ctx context.Context, lockState lifecycleLockState) context.Context {
+	return context.WithValue(ctx, lifecycleLockContextKey{}, lockState)
+}
+
+func lifecycleLockFromContext(ctx context.Context) lifecycleLockState {
+	lockState, _ := ctx.Value(lifecycleLockContextKey{}).(lifecycleLockState)
+	return lockState
+}
+
 func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (context.Context, func(), error) {
 	return d.acquireVolumeLifecycleLock(ctx, volumeID, "create")
 }
@@ -43,6 +59,7 @@ func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, opera
 	}
 
 	lockedCtx, cancelLockedCtx := distributedLock.Context(ctx)
+	lockedCtx = withLifecycleLock(lockedCtx, distributedLock)
 	return lockedCtx, func() {
 		cancelLockedCtx()
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)

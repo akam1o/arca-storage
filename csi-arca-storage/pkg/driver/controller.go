@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sync"
 	"time"
 
 	"github.com/container-storage-interface/spec/lib/go/csi"
@@ -628,11 +629,33 @@ func (d *Driver) ensureTemporaryCloneSnapshot(ctx context.Context, volumeInfo, s
 }
 
 func lifecycleCleanupContext(ctx context.Context) (context.Context, context.CancelFunc, error) {
-	if err := ctx.Err(); err != nil {
-		return ctx, func() {}, err
+	lockState := lifecycleLockFromContext(ctx)
+	if lockState != nil {
+		if err := lockState.Err(); err != nil {
+			return ctx, func() {}, err
+		}
 	}
-	cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	return cleanupCtx, cancel, nil
+
+	cleanupCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if lockState == nil {
+		return cleanupCtx, cancel, nil
+	}
+
+	done := make(chan struct{})
+	var stopWatcher sync.Once
+	go func() {
+		select {
+		case <-lockState.Done():
+			cancel()
+		case <-done:
+		}
+	}()
+	return cleanupCtx, func() {
+		stopWatcher.Do(func() {
+			close(done)
+		})
+		cancel()
+	}, nil
 }
 
 func (d *Driver) cleanupTemporaryCloneSnapshot(ctx context.Context, volumeInfo, sourceVol *store.VolumeInfo) error {
