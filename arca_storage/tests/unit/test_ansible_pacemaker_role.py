@@ -12,6 +12,8 @@ def test_pacemaker_role_validates_cluster_identifiers(repo_root):
         in content
     )
     assert "(pacemaker_nodes | length) >= 2" in content
+    assert "reject('match', '^.{254,}$')" not in content
+    assert "select('match', '^.{254,}$')" in content
     assert "must contain at least two unique DNS hostnames" in content
 
 
