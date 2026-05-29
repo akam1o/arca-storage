@@ -137,7 +137,7 @@
       - resource
       - create
       - netns_tenant_a
-      - ocf:local:NetnsVlan
+      - "ocf:{{ pacemaker_ra_vendor }}:NetnsVlan"
       - "ns={{ pacemaker_netnsvlan_ns | default('tenant_a') }}"
       - "vlan_id={{ pacemaker_netnsvlan_vlan_id | default(100) }}"
       - "parent_if={{ pacemaker_netnsvlan_parent_if | default('bond0') }}"

@@ -39,6 +39,8 @@ def test_pacemaker_resources_use_argv_for_pcs_commands(repo_root):
     assert content.count("argv:") == 15
     assert "drbd_resource={{ drbd_resource_name }}" in content
     assert "device={{ pacemaker_fs_device | default" in content
+    assert "ocf:local:NetnsVlan" not in content
+    assert "ocf:{{ pacemaker_ra_vendor }}:NetnsVlan" in content
     assert "systemd:nfs-ganesha@{{ pacemaker_ganesha_instance" in content
 
 
