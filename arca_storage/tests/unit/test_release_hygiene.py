@@ -1,6 +1,9 @@
 """Regression tests for release and CI guardrails."""
 
-import tomli
+try:
+    import tomllib
+except ModuleNotFoundError:
+    import tomli as tomllib
 
 
 def test_top_level_ci_runs_on_main_and_develop(repo_root):
@@ -66,7 +69,7 @@ def test_python_slow_tests_run_on_schedule(repo_root):
 
 
 def test_runtime_dependencies_use_single_requirements_source(repo_root):
-    pyproject = tomli.loads(
+    pyproject = tomllib.loads(
         (repo_root / "arca_storage/pyproject.toml").read_text(encoding="utf-8")
     )
     vendor_script = (repo_root / "packaging/vendor-wheels.sh").read_text(
