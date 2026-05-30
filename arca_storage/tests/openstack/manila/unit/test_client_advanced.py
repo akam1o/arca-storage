@@ -64,7 +64,9 @@ class TestErrorMappingEdgeCases:
     # VLAN conflicts will be raised as generic ArcaManilaAPIError
 
     @patch("requests.Session.request")
-    def test_409_share_exists_maps_to_ArcaShareAlreadyExists(self, mock_request, client):
+    def test_409_share_exists_maps_to_ArcaShareAlreadyExists(
+        self, mock_request, client
+    ):
         """Test that share already exists maps to ArcaShareAlreadyExists."""
         resp = Mock()
         resp.status_code = 409
@@ -101,7 +103,9 @@ class TestErrorMappingEdgeCases:
             try:
                 client._make_request("POST", "/v1/volumes", json_data={"name": "test"})
             except exceptions.ArcaNetworkConflict:
-                pytest.fail("Should not raise ArcaNetworkConflict for non-network conflicts")
+                pytest.fail(
+                    "Should not raise ArcaNetworkConflict for non-network conflicts"
+                )
 
     @patch("requests.Session.request")
     def test_500_internal_server_error(self, mock_request, client):
@@ -125,6 +129,18 @@ class TestErrorMappingEdgeCases:
         mock_request.return_value = resp
 
         with pytest.raises(exceptions.ArcaManilaAPIError):
+            client._make_request("GET", "/v1/svms")
+
+    @patch("requests.Session.request")
+    def test_success_response_invalid_json_raises_api_error(self, mock_request, client):
+        """Invalid successful API JSON should be surfaced as a Manila client error."""
+        resp = Mock()
+        resp.status_code = 200
+        resp.text = "not-json"
+        resp.json.side_effect = ValueError("Not JSON")
+        mock_request.return_value = resp
+
+        with pytest.raises(exceptions.ArcaManilaAPIError, match="Invalid JSON"):
             client._make_request("GET", "/v1/svms")
 
     @patch("requests.Session.request")
@@ -251,6 +267,16 @@ class TestAuthenticationEdgeCases:
             auth_type="none",
         )
         assert client.session.cert == "/path/to/client.pem"
+
+    def test_client_key_without_cert_rejected(self):
+        """Test that a private key without a certificate fails closed."""
+        with pytest.raises(ValueError, match="client_key requires client_cert"):
+            manila_client.ArcaManilaClient(
+                api_endpoint="https://192.168.10.5:8443",
+                client_key="/path/to/client.key",
+                verify_ssl=False,
+                auth_type="none",
+            )
 
     def test_invalid_auth_type(self):
         """Test that invalid auth type raises ValueError."""

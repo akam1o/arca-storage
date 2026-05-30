@@ -8,18 +8,21 @@ through the SVM's NFS-Ganesha instance.
 
 from __future__ import annotations
 
+import logging
 import math
+import os
 import zlib
 from typing import Any, Dict, Optional
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
 from arca_storage.api.services import export_service, svm_service, volume_service
-from arca_storage.cli.lib.validators import normalize_ip_cidr, validate_name
+from arca_storage.cli.lib.validators import normalize_nfs_client_cidr, validate_name
 from arca_storage.context import get_context
 from arca_storage.errors import NotFoundError, PreconditionFailedError
 
 GIB = 1024**3
 CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
+logger = logging.getLogger(__name__)
 
 
 def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
@@ -89,10 +92,11 @@ def get_quota(svm_name: str, path: str) -> Dict[str, Any]:
 
     size_gib = int(record.get("spec", {}).get("size_gib") or 0)
     quota_bytes = size_gib * GIB
+    used_bytes = _volume_used_bytes(ctx, record, svm_name, path)
     return {
         "path": path,
         "quota_bytes": quota_bytes,
-        "used_bytes": 0,
+        "used_bytes": used_bytes,
         "project_id": zlib.crc32(f"{svm_name}/{path}".encode("utf-8")) & 0x7FFFFFFF,
     }
 
@@ -102,7 +106,9 @@ def _ensure_volume(svm: str, path: str, size_gib: int) -> Dict[str, Any]:
     record = ctx.db.get_volume(svm, path)
     if not record:
         return volume_service.create_volume(
-            VolumeCreate(name=path, svm=svm, size_gib=size_gib, thin=True, fs_type="xfs")
+            VolumeCreate(
+                name=path, svm=svm, size_gib=size_gib, thin=True, fs_type="xfs"
+            )
         )
 
     volume_service.require_volume_ready_record(record, svm, path)
@@ -145,30 +151,17 @@ def _ensure_csi_exports(ctx: Any, svm: str, path: str, client_cidrs: list[str]) 
 
 
 def _remove_stale_csi_exports(ctx: Any, svm: str, desired_clients: set[str]) -> None:
-    for export in ctx.db.list_exports(svm=svm, limit=1_000_000):
+    for export in ctx.db.list_all_exports(svm=svm, owner="csi"):
         spec = export.get("spec", {})
         volume = spec.get("volume")
         client = spec.get("client")
-        if volume and client and spec.get("owner") == "csi" and client not in desired_clients:
+        if (
+            volume
+            and client
+            and spec.get("owner") == "csi"
+            and client not in desired_clients
+        ):
             export_service.remove_internal_export(svm, volume, client)
-
-
-def _remove_csi_exports(ctx: Any, svm: str, path: str) -> None:
-    for export in ctx.db.list_exports(svm=svm, volume=path, limit=1_000_000):
-        spec = export.get("spec", {})
-        if spec.get("owner") == "csi":
-            export_service.remove_internal_export(svm, path, spec["client"])
-
-    has_other_csi_volume = any(
-        e.get("spec", {}).get("owner") == "csi"
-        and e.get("spec", {}).get("volume") != CSI_ROOT_EXPORT_VOLUME
-        for e in ctx.db.list_exports(svm=svm, limit=1_000_000)
-    )
-    if not has_other_csi_volume:
-        for export in ctx.db.list_exports(svm=svm, volume=CSI_ROOT_EXPORT_VOLUME, limit=1_000_000):
-            spec = export.get("spec", {})
-            if spec.get("owner") == "csi":
-                export_service.remove_internal_export(svm, CSI_ROOT_EXPORT_VOLUME, spec["client"])
 
 
 def _csi_client_cidrs(ctx: Any) -> list[str]:
@@ -179,7 +172,7 @@ def _csi_client_cidrs(ctx: Any) -> list[str]:
             "CSI NFS client CIDRs are not configured",
             {"resource": "CSIExport", "config": "csi.client_cidrs"},
         )
-    return [normalize_ip_cidr(cidr) for cidr in client_cidrs]
+    return [normalize_nfs_client_cidr(cidr) for cidr in client_cidrs]
 
 
 def _csi_root_squash(ctx: Any) -> bool:
@@ -191,6 +184,25 @@ def _quota_bytes_to_gib(quota_bytes: Optional[int]) -> int:
     if quota_bytes is None:
         return 1
     return max(1, int(math.ceil(quota_bytes / GIB)))
+
+
+def _volume_used_bytes(ctx: Any, record: dict[str, Any], svm: str, path: str) -> int:
+    mount_path = record.get("status", {}).get("mount_path")
+    if not mount_path:
+        cfg = ctx.settings.to_reconciler_config()
+        export_dir = str(cfg.get("export_dir", "/exports")).rstrip("/")
+        mount_path = f"{export_dir}/{svm}/{path}"
+    try:
+        stats = os.statvfs(str(mount_path))
+    except OSError as e:
+        logger.warning("Failed to stat CSI quota mount path %s: %s", mount_path, e)
+        return 0
+
+    block_size = int(stats.f_bsize or stats.f_frsize)
+    if block_size <= 0:
+        return 0
+    used_blocks = max(int(stats.f_blocks) - int(stats.f_bfree), 0)
+    return used_blocks * block_size
 
 
 def _validate_directory(svm: str, path: str) -> None:

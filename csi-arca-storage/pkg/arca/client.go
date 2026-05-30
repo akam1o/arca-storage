@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"math"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -19,7 +20,14 @@ import (
 	"k8s.io/klog/v2"
 )
 
-const bytesPerGiB = int64(1024 * 1024 * 1024)
+const (
+	bytesPerGiB          = int64(1024 * 1024 * 1024)
+	maxResponseBodyBytes = 8 * 1024 * 1024
+)
+
+func pathSegment(value string) string {
+	return url.PathEscape(value)
+}
 
 // Client is an ARCA REST API client
 type Client struct {
@@ -32,11 +40,12 @@ type Client struct {
 
 // ClientConfig holds configuration for the ARCA client
 type ClientConfig struct {
-	BaseURL    string
-	Timeout    time.Duration
-	RetryCount int
-	AuthToken  string
-	TLSConfig  *TLSConfig
+	BaseURL                     string
+	Timeout                     time.Duration
+	RetryCount                  int
+	AuthToken                   string
+	AllowInsecureTokenTransport bool
+	TLSConfig                   *TLSConfig
 }
 
 // TLSConfig holds TLS configuration
@@ -54,6 +63,9 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	}
 	if config.RetryCount == 0 {
 		config.RetryCount = 3
+	}
+	if err := ValidateTokenTransport(config.BaseURL, config.AuthToken, config.AllowInsecureTokenTransport); err != nil {
+		return nil, err
 	}
 
 	httpClient := &http.Client{
@@ -80,10 +92,44 @@ func NewClient(config *ClientConfig) (*Client, error) {
 	}, nil
 }
 
+// ValidateTokenTransport rejects bearer tokens over remote plain HTTP unless explicitly allowed.
+func ValidateTokenTransport(baseURL, authToken string, allowInsecureTokenTransport bool) error {
+	if authToken == "" || allowInsecureTokenTransport {
+		return nil
+	}
+
+	parsed, err := url.Parse(baseURL)
+	if err != nil {
+		return fmt.Errorf("invalid ARCA base URL: %w", err)
+	}
+	if strings.EqualFold(parsed.Scheme, "http") && !isLoopbackHost(parsed.Hostname()) {
+		return fmt.Errorf("token authentication over remote plain HTTP requires allow_insecure_token_transport=true")
+	}
+	return nil
+}
+
+func isLoopbackHost(host string) bool {
+	if host == "" {
+		return false
+	}
+	if strings.EqualFold(host, "localhost") {
+		return true
+	}
+	ip := net.ParseIP(host)
+	return ip != nil && ip.IsLoopback()
+}
+
 // buildTLSConfig builds TLS configuration from file paths
 func buildTLSConfig(config *TLSConfig) (*tls.Config, error) {
+	hasClientCert := config.ClientCertPath != ""
+	hasClientKey := config.ClientKeyPath != ""
+	if hasClientCert != hasClientKey {
+		return nil, fmt.Errorf("client cert and key paths must be set together")
+	}
+
 	tlsConfig := &tls.Config{
-		InsecureSkipVerify: config.InsecureSkip,
+		MinVersion:         tls.VersionTLS12,
+		InsecureSkipVerify: config.InsecureSkip, // #nosec G402 -- explicit operator opt-out for private ARCA endpoints.
 	}
 
 	// Load CA certificate
@@ -200,9 +246,9 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 	}()
 
 	// Read response body
-	respBody, err := io.ReadAll(resp.Body)
+	respBody, err := readResponseBody(resp.Body)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read response body: %w", err)
+		return nil, err
 	}
 
 	// Check status code
@@ -224,6 +270,17 @@ func (c *Client) doRequestOnce(ctx context.Context, method, path string, body in
 	return respBody, nil
 }
 
+func readResponseBody(body io.Reader) ([]byte, error) {
+	respBody, err := io.ReadAll(io.LimitReader(body, maxResponseBodyBytes+1))
+	if err != nil {
+		return nil, fmt.Errorf("failed to read response body: %w", err)
+	}
+	if len(respBody) > maxResponseBodyBytes {
+		return nil, fmt.Errorf("%w: response body exceeds %d bytes", ErrInvalidResponse, maxResponseBodyBytes)
+	}
+	return respBody, nil
+}
+
 // isNonRetryableError checks if an error should not be retried
 func isNonRetryableError(err error) bool {
 	// Don't retry on 4xx errors except 408 (timeout) and 429 (rate limit)
@@ -240,6 +297,8 @@ func isNonRetryableError(err error) bool {
 		return true
 	case errors.Is(err, ErrSVMNotFound), errors.Is(err, ErrDirectoryNotFound), errors.Is(err, ErrVolumeNotFound), errors.Is(err, ErrSnapshotNotFound), errors.Is(err, ErrExportNotFound), errors.Is(err, ErrQuotaNotFound):
 		return true
+	case errors.Is(err, ErrInvalidResponse):
+		return true
 	}
 
 	return false
@@ -247,7 +306,7 @@ func isNonRetryableError(err error) bool {
 
 // GetSVM retrieves SVM information
 func (c *Client) GetSVM(ctx context.Context, name string) (*SVM, error) {
-	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s", name), nil)
+	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s", pathSegment(name)), nil)
 	if err != nil {
 		return nil, err
 	}
@@ -271,7 +330,7 @@ func (c *Client) CreateSVM(ctx context.Context, req *CreateSVMRequest) (*SVM, er
 
 // DeleteSVM deletes an SVM (idempotent)
 func (c *Client) DeleteSVM(ctx context.Context, name string) error {
-	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/svms/%s", name), nil)
+	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/svms/%s", pathSegment(name)), nil)
 	if err != nil {
 		if errors.Is(err, ErrSVMNotFound) {
 			return nil // Idempotent
@@ -285,6 +344,7 @@ func (c *Client) DeleteSVM(ctx context.Context, name string) error {
 func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 	var all []SVM
 	cursor := ""
+	seenCursors := map[string]struct{}{}
 
 	for {
 		params := url.Values{}
@@ -306,13 +366,17 @@ func (c *Client) ListSVMs(ctx context.Context) ([]SVM, error) {
 		if nextCursor == "" {
 			return all, nil
 		}
+		if _, ok := seenCursors[nextCursor]; ok {
+			return nil, fmt.Errorf("%w: repeated SVM pagination cursor", ErrInvalidResponse)
+		}
+		seenCursors[nextCursor] = struct{}{}
 		cursor = nextCursor
 	}
 }
 
 // GetSVMCapacity retrieves SVM capacity information
 func (c *Client) GetSVMCapacity(ctx context.Context, svmName string) (*CapacityInfo, error) {
-	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s/capacity", svmName), nil)
+	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/svms/%s/capacity", pathSegment(svmName)), nil)
 	if err != nil {
 		return nil, err
 	}

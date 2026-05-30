@@ -18,6 +18,19 @@ def test_cinder_client_sets_bearer_token_header():
         client.close()
 
 
+def test_cinder_client_trims_bearer_token_header():
+    client = ArcaStorageClient(
+        api_endpoint="http://127.0.0.1:8080",
+        auth_type="token",
+        api_token=" secret-token \n",
+    )
+
+    try:
+        assert client.session.headers["Authorization"] == "Bearer secret-token"
+    finally:
+        client.close()
+
+
 def test_cinder_client_ca_bundle_overrides_verify_ssl():
     client = ArcaStorageClient(
         api_endpoint="http://127.0.0.1:8080",
@@ -36,6 +49,38 @@ def test_cinder_client_rejects_missing_token():
         ArcaStorageClient(api_endpoint="http://127.0.0.1:8080", auth_type="token")
 
 
+def test_cinder_client_rejects_blank_token():
+    with pytest.raises(ValueError, match="api_token is required"):
+        ArcaStorageClient(
+            api_endpoint="http://127.0.0.1:8080",
+            auth_type="token",
+            api_token=" \t\n ",
+        )
+
+
 def test_cinder_client_rejects_basic_auth():
     with pytest.raises(ValueError, match="Must be 'token' or 'none'"):
         ArcaStorageClient(api_endpoint="http://127.0.0.1:8080", auth_type="basic")
+
+
+def test_cinder_client_rejects_remote_http_token_without_opt_in():
+    with pytest.raises(ValueError, match="remote plain HTTP"):
+        ArcaStorageClient(
+            api_endpoint="http://192.168.10.5:8080",
+            auth_type="token",
+            api_token="secret-token",
+        )
+
+
+def test_cinder_client_allows_remote_http_token_with_explicit_opt_in():
+    client = ArcaStorageClient(
+        api_endpoint="http://192.168.10.5:8080",
+        auth_type="token",
+        api_token="secret-token",
+        allow_insecure_token_transport=True,
+    )
+
+    try:
+        assert client.session.headers["Authorization"] == "Bearer secret-token"
+    finally:
+        client.close()

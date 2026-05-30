@@ -46,6 +46,7 @@ func TestArcaVolumeTemporaryCloneAnnotationRoundTrip(t *testing.T) {
 		CreatedAt:                      time.Now(),
 		TemporaryCloneSnapshot:         testTemporaryCloneSnapshot,
 		TemporaryCloneSourceVolumePath: "source-path",
+		TemporaryCloneCleanupOnly:      true,
 	})
 
 	if got := volume.Annotations[temporaryCloneSnapshotAnnotation]; got != testTemporaryCloneSnapshot {
@@ -54,9 +55,12 @@ func TestArcaVolumeTemporaryCloneAnnotationRoundTrip(t *testing.T) {
 	if got := volume.Annotations[temporaryCloneSourceVolumePathAnnotation]; got != "source-path" {
 		t.Fatalf("temporary clone source path annotation = %q", got)
 	}
+	if got := volume.Annotations[temporaryCloneCleanupOnlyAnnotation]; got != "true" {
+		t.Fatalf("temporary clone cleanup-only annotation = %q", got)
+	}
 	info := arcaVolumeToVolumeInfo(volume)
-	if info.TemporaryCloneSnapshot != testTemporaryCloneSnapshot || info.TemporaryCloneSourceVolumePath != "source-path" {
-		t.Fatalf("temporary clone metadata = (%q, %q)", info.TemporaryCloneSnapshot, info.TemporaryCloneSourceVolumePath)
+	if info.TemporaryCloneSnapshot != testTemporaryCloneSnapshot || info.TemporaryCloneSourceVolumePath != "source-path" || !info.TemporaryCloneCleanupOnly {
+		t.Fatalf("temporary clone metadata = (%q, %q, %t)", info.TemporaryCloneSnapshot, info.TemporaryCloneSourceVolumePath, info.TemporaryCloneCleanupOnly)
 	}
 }
 

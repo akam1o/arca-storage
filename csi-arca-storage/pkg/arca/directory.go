@@ -25,7 +25,7 @@ func (c *Client) DeleteDirectory(ctx context.Context, svmName, path string) erro
 	params := url.Values{}
 	params.Set("path", path)
 
-	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/directories/%s", svmName), nil, params)
+	_, err := c.doRequest(ctx, http.MethodDelete, fmt.Sprintf("/v1/directories/%s", pathSegment(svmName)), nil, params)
 	if err != nil {
 		if errors.Is(err, ErrDirectoryNotFound) {
 			return nil // Idempotent

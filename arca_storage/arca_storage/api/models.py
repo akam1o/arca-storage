@@ -4,12 +4,12 @@ Pydantic models for API requests and responses.
 
 from datetime import datetime
 from enum import Enum
-from typing import List, Optional, Union
+from typing import Annotated, Generic, List, Optional, TypeVar, Union
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from arca_storage.cli.lib.validators import (
-    normalize_ip_cidr,
+    normalize_nfs_client_cidr,
     validate_name as validate_resource_name,
     validate_svm_ip_cidr,
 )
@@ -18,6 +18,21 @@ from arca_storage.cli.lib.validators import (
 def _validate_resource_name(value: str) -> str:
     validate_resource_name(value)
     return value
+
+
+CSI_VOLUME_PATH_DESCRIPTION = (
+    "CSI volume name within the SVM; nested paths are not supported"
+)
+PositiveBytes = Annotated[int, Field(gt=0)]
+PositiveGiB = Annotated[int, Field(gt=0)]
+PositiveQoSLimit = Annotated[int, Field(gt=0)]
+DataT = TypeVar("DataT")
+
+
+class StrictRequestModel(BaseModel):
+    """Base class for API request bodies that should reject unknown fields."""
+
+    model_config = ConfigDict(extra="forbid")
 
 
 class SVMStatus(str, Enum):
@@ -63,16 +78,20 @@ class ExportStatus(str, Enum):
 # SVM Models
 
 
-class SVMCreate(BaseModel):
+class SVMCreate(StrictRequestModel):
     """Request model for creating an SVM."""
 
     name: str = Field(..., description="SVM name", min_length=1, max_length=64)
     vlan_id: Optional[int] = Field(None, description="Optional VLAN ID", ge=1, le=4094)
-    ip_cidr: str = Field(..., description="IP address with CIDR (e.g., 192.168.10.5/24)")
-    gateway: Optional[str] = Field(None, description="Gateway IP (optional; inferred if omitted)")
+    ip_cidr: str = Field(
+        ..., description="IP address with CIDR (e.g., 192.168.10.5/24)"
+    )
+    gateway: Optional[str] = Field(
+        None, description="Gateway IP (optional; inferred if omitted)"
+    )
     mtu: int = Field(1500, description="MTU size", ge=68, le=9000)
-    root_volume_size_gib: Optional[int] = Field(
-        None, description="Optional root LV size in GiB (creates /dev/<vg>/vol_<svm>)", gt=0
+    root_volume_size_gib: Optional[PositiveGiB] = Field(
+        None, description="Optional root LV size in GiB (creates /dev/<vg>/vol_<svm>)"
     )
 
     @field_validator("name")
@@ -145,36 +164,46 @@ class SVMListResponse(BaseModel):
 # CSI compatibility models
 
 
-class DirectoryCreate(BaseModel):
+class DirectoryCreate(StrictRequestModel):
     """Request model for CSI directory-backed volume creation."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
-    quota_bytes: Optional[int] = Field(None, description="Optional quota/capacity in bytes", gt=0)
+    path: str = Field(
+        ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
+    )
+    quota_bytes: Optional[PositiveBytes] = Field(
+        None, description="Optional quota/capacity in bytes"
+    )
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
         return _validate_resource_name(v)
 
 
-class QuotaSet(BaseModel):
+class QuotaSet(StrictRequestModel):
     """Request model for CSI quota/capacity updates."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
-    quota_bytes: int = Field(..., description="Quota/capacity in bytes", gt=0)
+    path: str = Field(
+        ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
+    )
+    quota_bytes: PositiveBytes = Field(..., description="Quota/capacity in bytes")
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
         return _validate_resource_name(v)
 
 
-class QuotaExpand(BaseModel):
+class QuotaExpand(StrictRequestModel):
     """Request model for CSI quota expansion."""
 
     svm_name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    path: str = Field(..., description="Directory path relative to SVM root", min_length=1, max_length=64)
-    new_quota_bytes: int = Field(..., description="New quota/capacity in bytes", gt=0)
+    path: str = Field(
+        ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
+    )
+    new_quota_bytes: PositiveBytes = Field(
+        ..., description="New quota/capacity in bytes"
+    )
 
     @field_validator("svm_name", "path")
     def validate_name(cls, v: str) -> str:
@@ -184,12 +213,12 @@ class QuotaExpand(BaseModel):
 # Volume Models
 
 
-class VolumeCreate(BaseModel):
+class VolumeCreate(StrictRequestModel):
     """Request model for creating a volume."""
 
     name: str = Field(..., description="Volume name", min_length=1, max_length=64)
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    size_gib: int = Field(..., description="Size in GiB", gt=0)
+    size_gib: PositiveGiB = Field(..., description="Size in GiB")
     thin: bool = Field(True, description="Use thin provisioning")
     fs_type: str = Field("xfs", description="Filesystem type")
 
@@ -205,25 +234,29 @@ class VolumeCreate(BaseModel):
         return normalized
 
 
-class VolumeResize(BaseModel):
+class VolumeResize(StrictRequestModel):
     """Request model for resizing a volume."""
 
     svm: str = Field(..., description="SVM name")
-    new_size_gib: int = Field(..., description="New size in GiB", gt=0)
+    new_size_gib: PositiveGiB = Field(..., description="New size in GiB")
 
     @field_validator("svm")
     def validate_svm(cls, v: str) -> str:
         return _validate_resource_name(v)
 
 
-class VolumeQoSApply(BaseModel):
+class VolumeQoSApply(StrictRequestModel):
     """Request model for applying QoS to a volume."""
 
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    read_iops: Optional[int] = Field(None, description="Read IOPS limit", gt=0)
-    write_iops: Optional[int] = Field(None, description="Write IOPS limit", gt=0)
-    read_bps: Optional[int] = Field(None, description="Read bandwidth limit (bytes/sec)", gt=0)
-    write_bps: Optional[int] = Field(None, description="Write bandwidth limit (bytes/sec)", gt=0)
+    read_iops: Optional[PositiveQoSLimit] = Field(None, description="Read IOPS limit")
+    write_iops: Optional[PositiveQoSLimit] = Field(None, description="Write IOPS limit")
+    read_bps: Optional[PositiveQoSLimit] = Field(
+        None, description="Read bandwidth limit (bytes/sec)"
+    )
+    write_bps: Optional[PositiveQoSLimit] = Field(
+        None, description="Write bandwidth limit (bytes/sec)"
+    )
 
     @field_validator("svm")
     def validate_svm(cls, v: str) -> str:
@@ -249,7 +282,7 @@ class VolumeQoSResponse(BaseModel):
 
     request_id: str
     status: str
-    data: dict
+    data: "VolumeQoSData"
 
 
 class Volume(BaseModel):
@@ -300,25 +333,31 @@ class VolumeListResponse(BaseModel):
 # Snapshot Models
 
 
-class SnapshotCreate(BaseModel):
+class SnapshotCreate(StrictRequestModel):
     """Request model for creating a snapshot."""
 
     name: str = Field(..., description="Snapshot name", min_length=1, max_length=64)
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    volume: str = Field(..., description="Source volume name", min_length=1, max_length=64)
+    volume: str = Field(
+        ..., description="Source volume name", min_length=1, max_length=64
+    )
 
     @field_validator("name", "svm", "volume")
     def validate_name(cls, v: str) -> str:
         return _validate_resource_name(v)
 
 
-class VolumeCloneCreate(BaseModel):
+class VolumeCloneCreate(StrictRequestModel):
     """Request model for creating a volume from a snapshot."""
 
     name: str = Field(..., description="New volume name", min_length=1, max_length=64)
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    snapshot: str = Field(..., description="Source snapshot name", min_length=1, max_length=64)
-    size_gib: Optional[int] = Field(None, description="Size in GiB (optional, defaults to snapshot size)", gt=0)
+    snapshot: str = Field(
+        ..., description="Source snapshot name", min_length=1, max_length=64
+    )
+    size_gib: Optional[PositiveGiB] = Field(
+        None, description="Size in GiB (optional, defaults to snapshot size)"
+    )
 
     @field_validator("name", "svm", "snapshot")
     def validate_name(cls, v: str) -> str:
@@ -369,7 +408,7 @@ class SnapshotListResponse(BaseModel):
 # Export Models
 
 
-class ExportCreate(BaseModel):
+class ExportCreate(StrictRequestModel):
     """Request model for creating an export."""
 
     svm: str = Field(..., description="SVM name")
@@ -377,7 +416,9 @@ class ExportCreate(BaseModel):
     client: str = Field(..., description="Client CIDR (e.g., 10.0.0.0/24)")
     access: str = Field("rw", description="Access type: rw or ro")
     root_squash: bool = Field(True, description="Enable root squash")
-    sec: List[str] = Field(default_factory=lambda: ["sys"], description="Security types")
+    sec: List[str] = Field(
+        default_factory=lambda: ["sys"], description="Security types"
+    )
 
     @field_validator("svm", "volume")
     def validate_name(cls, v: str) -> str:
@@ -391,7 +432,7 @@ class ExportCreate(BaseModel):
 
     @field_validator("client")
     def validate_client(cls, v: str) -> str:
-        return normalize_ip_cidr(v)
+        return normalize_nfs_client_cidr(v)
 
     @field_validator("sec")
     def validate_sec(cls, v: List[str]) -> List[str]:
@@ -452,12 +493,91 @@ class ExportListResponse(BaseModel):
 # Common Models
 
 
-class SuccessResponse(BaseModel):
-    """Generic success response."""
+class SuccessResponse(BaseModel, Generic[DataT]):
+    """Generic success response envelope."""
 
     request_id: str
     status: str
-    data: dict
+    data: DataT
+
+
+class SVMCapacity(BaseModel):
+    """SVM capacity details."""
+
+    svm: str
+    vg: str
+    total_gb: float
+    free_gb: float
+    used_gb: float
+    provisioned_gb: float
+
+
+class SVMCapacityData(BaseModel):
+    """Nested SVM capacity data envelope."""
+
+    capacity: SVMCapacity
+
+
+class SVMCapacityResponse(SuccessResponse[SVMCapacityData]):
+    """Response model for SVM capacity."""
+
+
+class DeletedData(BaseModel):
+    """Deletion result data envelope."""
+
+    deleted: bool
+
+
+class DeletedResponse(SuccessResponse[DeletedData]):
+    """Response model for delete operations."""
+
+
+class Directory(BaseModel):
+    """CSI directory-backed volume response model."""
+
+    svm_name: str
+    path: str
+    quota_bytes: int
+    volume: Volume
+
+
+class DirectoryData(BaseModel):
+    """Nested CSI directory data envelope."""
+
+    directory: Directory
+
+
+class DirectoryResponse(SuccessResponse[DirectoryData]):
+    """Response model for CSI directory operations."""
+
+
+class QuotaData(BaseModel):
+    """CSI quota details."""
+
+    path: str
+    quota_bytes: int
+    used_bytes: int
+    project_id: int
+
+
+class QuotaResponse(SuccessResponse[QuotaData]):
+    """Response model for CSI quota operations."""
+
+
+class VolumeQoSData(BaseModel):
+    """Nested QoS settings data envelope."""
+
+    qos: VolumeQoS
+
+
+class QoSRemovalData(BaseModel):
+    """QoS removal result data envelope."""
+
+    message: str
+
+
+class QoSRemovalResponse(SuccessResponse[QoSRemovalData]):
+    """Response model for QoS removal."""
 
 
 class ErrorResponse(BaseModel):

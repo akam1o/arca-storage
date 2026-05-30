@@ -14,6 +14,9 @@ arca:
   # Authentication token for ARCA API
   auth_token: "your-auth-token-here"
 
+  # Allow bearer tokens over non-loopback plain HTTP (development only)
+  allow_insecure_token_transport: false
+
   # TLS configuration (optional)
   tls:
     # Path to CA certificate for verifying ARCA API server

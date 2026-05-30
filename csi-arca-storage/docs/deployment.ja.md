@@ -215,9 +215,14 @@ kubectl apply -f deploy/examples/volumesnapshotclass.yaml
 
 ### Development overlay
 
-`deploy/kustomize/overlays/development/config.yaml` を編集してから適用します。
+`deploy/kustomize/overlays/development/config.yaml` を編集し、`secrets.env` を用意してから適用します。
 
 ```bash
+cd deploy/kustomize/overlays/development
+cp secrets.env.example secrets.env
+printf 'auth-token=%s\n' '<your-development-token>' > secrets.env
+cd ../../../..
+
 kubectl apply -k deploy/kustomize/overlays/development
 ```
 
@@ -225,7 +230,7 @@ Development overlay の特徴:
 
 - `csi-arca-storage:dev` を使用
 - `config.yaml` から `csi-arca-storage-config` を生成
-- `auth-token=dev-token` の `csi-arca-storage-secret` を生成
+- local `secrets.env` から `csi-arca-storage-secret` を生成
 - example config では `tls.insecure_skip_verify: true`
 
 ### Production overlay

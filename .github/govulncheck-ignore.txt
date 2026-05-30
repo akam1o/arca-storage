@@ -1,0 +1,2 @@
+# Temporary allowlist for REVIEW-057. Keep one govulncheck OSV ID per line.
+# No Go vulnerability IDs are currently allowlisted.

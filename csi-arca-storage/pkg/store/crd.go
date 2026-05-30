@@ -14,6 +14,7 @@ import (
 	"k8s.io/apimachinery/pkg/runtime"
 	"k8s.io/client-go/kubernetes"
 	"k8s.io/client-go/rest"
+	"k8s.io/client-go/util/retry"
 	"k8s.io/klog/v2"
 	"sigs.k8s.io/controller-runtime/pkg/client"
 )
@@ -95,9 +96,20 @@ func NewCRDStore(config *rest.Config, k8sClient kubernetes.Interface) (*CRDStore
 }
 
 // CreateVolume stores volume metadata as ArcaVolume CRD (idempotent)
-func (s *CRDStore) CreateVolume(info *VolumeInfo) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) CreateVolume(ctx context.Context, info *VolumeInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := validateVolumeInfo(info); err != nil {
+		volumeID := "<nil>"
+		if info != nil {
+			volumeID = info.VolumeID
+		}
+		return fmt.Errorf("invalid ArcaVolume metadata for %s: %w", volumeID, err)
+	}
 
 	av := volumeInfoToArcaVolume(info)
 
@@ -120,45 +132,62 @@ func (s *CRDStore) CreateVolume(info *VolumeInfo) error {
 }
 
 // UpdateVolume updates existing volume metadata
-func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) UpdateVolume(ctx context.Context, info *VolumeInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
-
-	// Get existing resource to preserve metadata
-	existing := &v1alpha1.ArcaVolume{}
-	if err := s.client.Get(ctx, client.ObjectKey{Name: info.VolumeID}, existing); err != nil {
-		return fmt.Errorf("failed to get existing ArcaVolume: %w", err)
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	// Update spec fields
-	updated := volumeInfoToArcaVolume(info)
-	if updated.Spec.CapacityBytes < existing.Spec.CapacityBytes {
-		updated.Spec.CapacityBytes = existing.Spec.CapacityBytes
-	}
-	existing.Spec = updated.Spec
-	if existing.Labels == nil {
-		existing.Labels = make(map[string]string)
-	}
-	for key, value := range updated.Labels {
-		existing.Labels[key] = value
-	}
-	if updated.Annotations != nil {
-		if existing.Annotations == nil {
-			existing.Annotations = make(map[string]string)
+	if err := validateVolumeInfo(info); err != nil {
+		volumeID := "<nil>"
+		if info != nil {
+			volumeID = info.VolumeID
 		}
-		for key, value := range updated.Annotations {
-			existing.Annotations[key] = value
-		}
-	}
-	if info.TemporaryCloneSnapshot == "" && existing.Annotations != nil {
-		delete(existing.Annotations, temporaryCloneSnapshotAnnotation)
-	}
-	if info.TemporaryCloneSourceVolumePath == "" && existing.Annotations != nil {
-		delete(existing.Annotations, temporaryCloneSourceVolumePathAnnotation)
+		return fmt.Errorf("invalid ArcaVolume metadata for %s: %w", volumeID, err)
 	}
 
-	if err := s.client.Update(ctx, existing); err != nil {
-		return fmt.Errorf("failed to update ArcaVolume: %w", err)
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get existing resource to preserve metadata and the latest resourceVersion.
+		existing := &v1alpha1.ArcaVolume{}
+		if err := s.client.Get(ctx, client.ObjectKey{Name: info.VolumeID}, existing); err != nil {
+			return err
+		}
+
+		// Update spec fields
+		updated := volumeInfoToArcaVolume(info)
+		if updated.Spec.CapacityBytes < existing.Spec.CapacityBytes {
+			updated.Spec.CapacityBytes = existing.Spec.CapacityBytes
+		}
+		existing.Spec = updated.Spec
+		if existing.Labels == nil {
+			existing.Labels = make(map[string]string)
+		}
+		for key, value := range updated.Labels {
+			existing.Labels[key] = value
+		}
+		if updated.Annotations != nil {
+			if existing.Annotations == nil {
+				existing.Annotations = make(map[string]string)
+			}
+			for key, value := range updated.Annotations {
+				existing.Annotations[key] = value
+			}
+		}
+		if info.TemporaryCloneSnapshot == "" && existing.Annotations != nil {
+			delete(existing.Annotations, temporaryCloneSnapshotAnnotation)
+		}
+		if info.TemporaryCloneSourceVolumePath == "" && existing.Annotations != nil {
+			delete(existing.Annotations, temporaryCloneSourceVolumePathAnnotation)
+		}
+		if !info.TemporaryCloneCleanupOnly && existing.Annotations != nil {
+			delete(existing.Annotations, temporaryCloneCleanupOnlyAnnotation)
+		}
+
+		return s.client.Update(ctx, existing)
+	})
+	if err != nil {
+		return fmt.Errorf("failed to update ArcaVolume: %w", MapKubernetesError(err, "ArcaVolume", info.VolumeID))
 	}
 
 	klog.Infof("Updated ArcaVolume %s", info.VolumeID)
@@ -166,9 +195,12 @@ func (s *CRDStore) UpdateVolume(info *VolumeInfo) error {
 }
 
 // GetVolume retrieves volume metadata
-func (s *CRDStore) GetVolume(volumeID string) (*VolumeInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) GetVolume(ctx context.Context, volumeID string) (*VolumeInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	av := &v1alpha1.ArcaVolume{}
 	err := s.client.Get(ctx, client.ObjectKey{Name: volumeID}, av)
@@ -177,13 +209,20 @@ func (s *CRDStore) GetVolume(volumeID string) (*VolumeInfo, error) {
 		return nil, MapKubernetesError(err, "ArcaVolume", volumeID)
 	}
 
-	return arcaVolumeToVolumeInfo(av), nil
+	info := arcaVolumeToVolumeInfo(av)
+	if err := validateVolumeInfo(info); err != nil {
+		return nil, fmt.Errorf("invalid stored ArcaVolume %s: %w", volumeID, err)
+	}
+	return info, nil
 }
 
 // DeleteVolume removes volume metadata (idempotent)
-func (s *CRDStore) DeleteVolume(volumeID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) DeleteVolume(ctx context.Context, volumeID string) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Get the volume
 	av := &v1alpha1.ArcaVolume{}
@@ -228,9 +267,12 @@ func (s *CRDStore) DeleteVolume(volumeID string) error {
 }
 
 // ListVolumes returns all volumes with optional pagination
-func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
+func (s *CRDStore) ListVolumes(ctx context.Context, startingToken string, maxEntries int) ([]*VolumeInfo, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 
 	avList := &v1alpha1.ArcaVolumeList{}
 	listOpts := &client.ListOptions{
@@ -248,7 +290,11 @@ func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeI
 
 	result := make([]*VolumeInfo, 0, len(avList.Items))
 	for i := range avList.Items {
-		result = append(result, arcaVolumeToVolumeInfo(&avList.Items[i]))
+		info := arcaVolumeToVolumeInfo(&avList.Items[i])
+		if err := validateVolumeInfo(info); err != nil {
+			return nil, "", fmt.Errorf("invalid stored ArcaVolume %s: %w", avList.Items[i].Name, err)
+		}
+		result = append(result, info)
 	}
 
 	// Return results in Kubernetes natural order to maintain pagination consistency
@@ -257,9 +303,20 @@ func (s *CRDStore) ListVolumes(startingToken string, maxEntries int) ([]*VolumeI
 }
 
 // CreateSnapshot stores snapshot metadata as ArcaSnapshot CRD (idempotent)
-func (s *CRDStore) CreateSnapshot(info *SnapshotInfo) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) CreateSnapshot(ctx context.Context, info *SnapshotInfo) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+
+	if err := validateSnapshotInfo(info); err != nil {
+		snapshotID := "<nil>"
+		if info != nil {
+			snapshotID = info.SnapshotID
+		}
+		return fmt.Errorf("invalid ArcaSnapshot metadata for %s: %w", snapshotID, err)
+	}
 
 	as := snapshotInfoToArcaSnapshot(info)
 
@@ -282,19 +339,25 @@ func (s *CRDStore) CreateSnapshot(info *SnapshotInfo) error {
 }
 
 // UpdateSnapshotStatus updates the status subresource of a snapshot (uses /status endpoint)
-func (s *CRDStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) UpdateSnapshotStatus(ctx context.Context, snapshotID string, readyToUse bool) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
-
-	// Get the snapshot first
-	as := &v1alpha1.ArcaSnapshot{}
-	if err := s.client.Get(ctx, client.ObjectKey{Name: snapshotID}, as); err != nil {
-		return fmt.Errorf("failed to get snapshot for status update: %w", MapKubernetesError(err, "ArcaSnapshot", snapshotID))
+	if err := ctx.Err(); err != nil {
+		return err
 	}
 
-	// Update only the status subresource using Status() writer
-	as.Status.ReadyToUse = readyToUse
-	if err := s.client.Status().Update(ctx, as); err != nil {
+	err := retry.RetryOnConflict(retry.DefaultRetry, func() error {
+		// Get the snapshot first to use the latest resourceVersion.
+		as := &v1alpha1.ArcaSnapshot{}
+		if err := s.client.Get(ctx, client.ObjectKey{Name: snapshotID}, as); err != nil {
+			return err
+		}
+
+		// Update only the status subresource using Status() writer.
+		as.Status.ReadyToUse = readyToUse
+		return s.client.Status().Update(ctx, as)
+	})
+	if err != nil {
 		return fmt.Errorf("failed to update snapshot status: %w", MapKubernetesError(err, "ArcaSnapshot", snapshotID))
 	}
 
@@ -303,9 +366,12 @@ func (s *CRDStore) UpdateSnapshotStatus(snapshotID string, readyToUse bool) erro
 }
 
 // GetSnapshot retrieves snapshot metadata
-func (s *CRDStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) GetSnapshot(ctx context.Context, snapshotID string) (*SnapshotInfo, error) {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
 
 	as := &v1alpha1.ArcaSnapshot{}
 	err := s.client.Get(ctx, client.ObjectKey{Name: snapshotID}, as)
@@ -314,13 +380,20 @@ func (s *CRDStore) GetSnapshot(snapshotID string) (*SnapshotInfo, error) {
 		return nil, MapKubernetesError(err, "ArcaSnapshot", snapshotID)
 	}
 
-	return arcaSnapshotToSnapshotInfo(as), nil
+	info := arcaSnapshotToSnapshotInfo(as)
+	if err := validateSnapshotInfo(info); err != nil {
+		return nil, fmt.Errorf("invalid stored ArcaSnapshot %s: %w", snapshotID, err)
+	}
+	return info, nil
 }
 
 // DeleteSnapshot removes snapshot metadata (idempotent)
-func (s *CRDStore) DeleteSnapshot(snapshotID string) error {
-	ctx, cancel := context.WithTimeout(context.Background(), crudTimeout)
+func (s *CRDStore) DeleteSnapshot(ctx context.Context, snapshotID string) error {
+	ctx, cancel := context.WithTimeout(ctx, crudTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return err
+	}
 
 	// Get the snapshot
 	as := &v1alpha1.ArcaSnapshot{}
@@ -365,9 +438,12 @@ func (s *CRDStore) DeleteSnapshot(snapshotID string) error {
 }
 
 // ListSnapshots returns all snapshots with optional filtering and pagination
-func (s *CRDStore) ListSnapshots(sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
-	ctx, cancel := context.WithTimeout(context.Background(), listTimeout)
+func (s *CRDStore) ListSnapshots(ctx context.Context, sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error) {
+	ctx, cancel := context.WithTimeout(ctx, listTimeout)
 	defer cancel()
+	if err := ctx.Err(); err != nil {
+		return nil, "", err
+	}
 
 	asList := &v1alpha1.ArcaSnapshotList{}
 	listOpts := &client.ListOptions{
@@ -394,7 +470,11 @@ func (s *CRDStore) ListSnapshots(sourceVolumeID, startingToken string, maxEntrie
 
 	result := make([]*SnapshotInfo, 0, len(asList.Items))
 	for i := range asList.Items {
-		result = append(result, arcaSnapshotToSnapshotInfo(&asList.Items[i]))
+		info := arcaSnapshotToSnapshotInfo(&asList.Items[i])
+		if err := validateSnapshotInfo(info); err != nil {
+			return nil, "", fmt.Errorf("invalid stored ArcaSnapshot %s: %w", asList.Items[i].Name, err)
+		}
+		result = append(result, info)
 	}
 
 	// Return results in Kubernetes natural order to maintain pagination consistency

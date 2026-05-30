@@ -14,10 +14,22 @@ from .helpers import cli_output
 def create_test_volume(runner: CliRunner) -> None:
     svm = runner.invoke(
         app,
-        ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24", "--gateway", "192.168.10.1"],
+        [
+            "svm",
+            "create",
+            "tenant_a",
+            "--vlan",
+            "100",
+            "--ip",
+            "192.168.10.5/24",
+            "--gateway",
+            "192.168.10.1",
+        ],
     )
     assert svm.exit_code == 0
-    volume = runner.invoke(app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "10"])
+    volume = runner.invoke(
+        app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "10"]
+    )
     assert volume.exit_code == 0
 
 
@@ -30,7 +42,19 @@ class TestExportAdd:
         runner = CliRunner()
         create_test_volume(runner)
         result = runner.invoke(
-            app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "10.0.0.0/24", "--access", "rw"]
+            app,
+            [
+                "export",
+                "add",
+                "--volume",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--client",
+                "10.0.0.0/24",
+                "--access",
+                "rw",
+            ],
         )
 
         assert result.exit_code == 0
@@ -41,11 +65,42 @@ class TestExportAdd:
         """Test adding export with invalid client CIDR."""
         runner = CliRunner()
         result = runner.invoke(
-            app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "invalid-cidr"]
+            app,
+            [
+                "export",
+                "add",
+                "--volume",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--client",
+                "invalid-cidr",
+            ],
         )
 
         assert result.exit_code == 1
         assert "Error" in cli_output(result)
+
+    @pytest.mark.integration
+    def test_add_export_rejects_default_route_client(self):
+        """Test adding export rejects world-open client CIDRs."""
+        runner = CliRunner()
+        result = runner.invoke(
+            app,
+            [
+                "export",
+                "add",
+                "--volume",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--client",
+                "0.0.0.0/0",
+            ],
+        )
+
+        assert result.exit_code == 1
+        assert "default route" in cli_output(result)
 
 
 class TestExportRemove:
@@ -57,11 +112,31 @@ class TestExportRemove:
         runner = CliRunner()
         create_test_volume(runner)
         runner.invoke(
-            app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "10.0.0.0/24"]
+            app,
+            [
+                "export",
+                "add",
+                "--volume",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--client",
+                "10.0.0.0/24",
+            ],
         )
 
         result = runner.invoke(
-            app, ["export", "remove", "--volume", "vol1", "--svm", "tenant_a", "--client", "10.0.0.0/24"]
+            app,
+            [
+                "export",
+                "remove",
+                "--volume",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--client",
+                "10.0.0.0/24",
+            ],
         )
 
         assert result.exit_code == 0
@@ -87,7 +162,9 @@ class TestExportList:
             fake_context.db.upsert_export(export)
 
         runner = CliRunner()
-        result = runner.invoke(app, ["export", "list", "--svm", "tenant_a", "--volume", "vol1"])
+        result = runner.invoke(
+            app, ["export", "list", "--svm", "tenant_a", "--volume", "vol1"]
+        )
 
         assert result.exit_code == 0
         assert "client=10.0.0.1/32" in result.stdout

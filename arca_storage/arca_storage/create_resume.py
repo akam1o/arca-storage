@@ -26,13 +26,17 @@ def lease_expiration(now: Optional[datetime] = None) -> datetime:
     return (now or datetime.now(timezone.utc)) + CREATE_LEASE_DURATION
 
 
-def assign_create_lease(status: Any, owner: str, now: Optional[datetime] = None) -> None:
+def assign_create_lease(
+    status: Any, owner: str, now: Optional[datetime] = None
+) -> None:
     status.phase = Phase.CREATING
     status.create_owner = owner
     status.create_lease_expires_at = lease_expiration(now)
 
 
-def extend_create_lease(status: Any, owner: str, now: Optional[datetime] = None) -> bool:
+def extend_create_lease(
+    status: Any, owner: str, now: Optional[datetime] = None
+) -> bool:
     phase = getattr(status, "phase", None)
     phase_value = phase.value if isinstance(phase, Phase) else phase
     if phase_value not in ACTIVE_CREATE_PHASES:
@@ -47,7 +51,9 @@ def clear_create_lease(status: Any) -> None:
     status.create_lease_expires_at = None
 
 
-def create_lease_expired(record: dict[str, Any], now: Optional[datetime] = None) -> bool:
+def create_lease_expired(
+    record: dict[str, Any], now: Optional[datetime] = None
+) -> bool:
     status = record.get("status", {})
     if status.get("phase") not in ACTIVE_CREATE_PHASES:
         return False
@@ -68,7 +74,9 @@ def create_lease_expired(record: dict[str, Any], now: Optional[datetime] = None)
 
 
 @contextmanager
-def create_lease_heartbeat(refresh: Any, *, interval: float = CREATE_LEASE_HEARTBEAT_INTERVAL):
+def create_lease_heartbeat(
+    refresh: Any, *, interval: float = CREATE_LEASE_HEARTBEAT_INTERVAL
+):
     stop = threading.Event()
 
     def beat() -> None:
@@ -80,7 +88,9 @@ def create_lease_heartbeat(refresh: Any, *, interval: float = CREATE_LEASE_HEART
             except Exception as e:
                 logger.warning("Failed to refresh create lease: %s", e)
 
-    thread = threading.Thread(target=beat, name="arca-create-lease-heartbeat", daemon=True)
+    thread = threading.Thread(
+        target=beat, name="arca-create-lease-heartbeat", daemon=True
+    )
     thread.start()
     try:
         yield

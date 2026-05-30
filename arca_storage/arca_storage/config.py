@@ -2,15 +2,88 @@
 
 from __future__ import annotations
 
-import ipaddress
 import os
-from pathlib import Path
-from typing import Optional, Union
+import re
+from pathlib import Path, PurePosixPath
+from typing import Optional, TypedDict, Union
 
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import (
+    BaseModel,
+    ConfigDict,
+    Field,
+    ValidationInfo,
+    field_validator,
+    model_validator,
+)
+
+from arca_storage.cli.lib.validators import normalize_nfs_client_cidr
 
 
 DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
+_PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
+_SYSTEMD_ENV_NAME_RE = re.compile(r"[A-Z_][A-Z0-9_]*")
+_SYSTEMD_ENV_SAFE_VALUE_RE = re.compile(r"[A-Za-z0-9_@%+=:,./-]+")
+_MAX_TIMEOUT_SECONDS = 24 * 60 * 60
+
+
+class ReconcilerConfig(TypedDict):
+    """Settings contract shared with reconcilers."""
+
+    vg_name: str
+    thinpool_name: str
+    parent_if: str
+    export_dir: str
+    drbd_resource: str
+
+
+def _validate_absolute_posix_path(value: str, *, field_name: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError(f"{field_name} must not be empty")
+    if "\x00" in raw:
+        raise ValueError(f"{field_name} must not contain NUL bytes")
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError(f"{field_name} must not contain control characters")
+
+    path = PurePosixPath(raw)
+    if not path.is_absolute():
+        raise ValueError(f"{field_name} must be an absolute POSIX path")
+
+    segments = [part for part in raw.split("/") if part]
+    if not segments:
+        raise ValueError(f"{field_name} must not be the filesystem root")
+    if any(part in {".", ".."} for part in segments):
+        raise ValueError(f"{field_name} must not contain relative path segments")
+
+    return str(path)
+
+
+def validate_path_component(value: str, *, field_name: str) -> str:
+    raw = str(value).strip()
+    if not raw:
+        raise ValueError(f"{field_name} must not be empty")
+    if raw in {".", ".."} or "/" in raw or "\\" in raw:
+        raise ValueError(f"{field_name} must be a single safe path component")
+    if not _PATH_COMPONENT_RE.fullmatch(raw):
+        raise ValueError(
+            f"{field_name} must start with an alphanumeric character and contain only "
+            "alphanumeric characters, dots, underscores, or hyphens"
+        )
+    return raw
+
+
+def _systemd_env_assignment(name: str, value: str) -> str:
+    if not _SYSTEMD_ENV_NAME_RE.fullmatch(name):
+        raise ValueError(f"invalid systemd environment variable name: {name!r}")
+
+    raw = str(value)
+    if any(ord(ch) < 32 or ord(ch) == 127 for ch in raw):
+        raise ValueError(f"{name} must not contain control characters")
+    if _SYSTEMD_ENV_SAFE_VALUE_RE.fullmatch(raw):
+        rendered = raw
+    else:
+        rendered = '"' + raw.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return f"{name}={rendered}"
 
 
 class StorageConfig(BaseModel):
@@ -19,12 +92,22 @@ class StorageConfig(BaseModel):
     vg_name: str = "vg_pool_01"
     thinpool_name: str = "pool"
 
+    @field_validator("vg_name", "thinpool_name")
+    @classmethod
+    def validate_lvm_names(cls, value: str, info: ValidationInfo) -> str:
+        return validate_path_component(value, field_name=f"storage.{info.field_name}")
+
 
 class NetworkConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     parent_interface: str = "bond0"
     default_nfs_versions: list[str] = Field(default_factory=lambda: ["4"])
+
+    @field_validator("parent_interface")
+    @classmethod
+    def validate_parent_interface(cls, value: str) -> str:
+        return validate_path_component(value, field_name="network.parent_interface")
 
 
 class ClusterConfig(BaseModel):
@@ -35,20 +118,52 @@ class ClusterConfig(BaseModel):
     drbd_resource: str = "r0"
     pacemaker_ra_vendor: str = "local"
 
+    @field_validator("drbd_resource")
+    @classmethod
+    def validate_drbd_resource(cls, value: str) -> str:
+        return validate_path_component(value, field_name="cluster.drbd_resource")
+
+    @field_validator("pacemaker_ra_vendor")
+    @classmethod
+    def validate_pacemaker_ra_vendor(cls, value: str) -> str:
+        return validate_path_component(value, field_name="cluster.pacemaker_ra_vendor")
+
 
 class APIConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     bind: str = "127.0.0.1"
     port: int = 8080
+    ssl_certfile: Optional[str] = None
+    ssl_keyfile: Optional[str] = None
+
+    @field_validator("ssl_certfile", "ssl_keyfile", mode="before")
+    @classmethod
+    def validate_tls_paths(
+        cls, value: Optional[str], info: ValidationInfo
+    ) -> Optional[str]:
+        if value is None:
+            return None
+        raw = str(value).strip()
+        if not raw:
+            return None
+        return _validate_absolute_posix_path(raw, field_name=f"api.{info.field_name}")
+
+    @model_validator(mode="after")
+    def validate_tls_pair(self) -> "APIConfig":
+        if bool(self.ssl_certfile) != bool(self.ssl_keyfile):
+            raise ValueError(
+                "api.ssl_certfile and api.ssl_keyfile must be provided together"
+            )
+        return self
 
 
 class TimeoutConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    subprocess_default: int = 30
-    pacemaker_operation: int = 60
-    nfs_mount: int = 15
+    subprocess_default: int = Field(default=30, gt=0, le=_MAX_TIMEOUT_SECONDS)
+    pacemaker_operation: int = Field(default=60, gt=0, le=_MAX_TIMEOUT_SECONDS)
+    nfs_mount: int = Field(default=15, gt=0, le=_MAX_TIMEOUT_SECONDS)
 
 
 class StateConfig(BaseModel):
@@ -56,6 +171,14 @@ class StateConfig(BaseModel):
 
     db_path: str = "/var/lib/arca-storage/state.db"
     runtime_dir: str = "/var/lib/arca-storage"
+    operation_log_retention_days: int = Field(default=90, ge=1, le=3650)
+
+    @field_validator("db_path", "runtime_dir")
+    @classmethod
+    def validate_paths(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_absolute_posix_path(
+            value, field_name=f"state.{info.field_name}"
+        )
 
 
 class GaneshaConfig(BaseModel):
@@ -66,6 +189,13 @@ class GaneshaConfig(BaseModel):
     protocols: list[int] = Field(default_factory=lambda: [4])
     mountd_port: int = 20048
     nlm_port: int = 32768
+
+    @field_validator("config_dir", "export_dir")
+    @classmethod
+    def validate_paths(cls, value: str, info: ValidationInfo) -> str:
+        return _validate_absolute_posix_path(
+            value, field_name=f"ganesha.{info.field_name}"
+        )
 
     @field_validator("protocols")
     @classmethod
@@ -92,14 +222,9 @@ class CSIConfig(BaseModel):
         seen: set[str] = set()
         for raw in value:
             try:
-                network = ipaddress.ip_network(str(raw).strip(), strict=False)
+                normalized = normalize_nfs_client_cidr(str(raw).strip())
             except Exception as e:
                 raise ValueError(f"invalid CSI client CIDR {raw!r}: {e}") from e
-            if network.version != 4:
-                raise ValueError(f"CSI client CIDR must be IPv4: {raw!r}")
-            if network.prefixlen == 0:
-                raise ValueError("CSI client CIDRs must not include the IPv4 default route")
-            normalized = str(network)
             if normalized not in seen:
                 seen.add(normalized)
                 cidrs.append(normalized)
@@ -120,7 +245,7 @@ class ArcaSettings(BaseModel):
     ganesha: GaneshaConfig = Field(default_factory=GaneshaConfig)
     csi: CSIConfig = Field(default_factory=CSIConfig)
 
-    def to_reconciler_config(self) -> dict:
+    def to_reconciler_config(self) -> ReconcilerConfig:
         """Flatten settings into the dict reconcilers expect."""
         return {
             "vg_name": self.storage.vg_name,
@@ -134,7 +259,7 @@ class ArcaSettings(BaseModel):
         """Render derived environment variables consumed by systemd units."""
         lines = [
             "# Managed by arca bootstrap (derived from /etc/arca-storage/config.toml)",
-            f"ARCA_GANESHA_CONFIG_DIR={self.ganesha.config_dir}",
+            _systemd_env_assignment("ARCA_GANESHA_CONFIG_DIR", self.ganesha.config_dir),
         ]
         return "\n".join(lines) + "\n"
 
@@ -142,14 +267,16 @@ class ArcaSettings(BaseModel):
 def _load_toml(path: Path) -> dict:
     """Load TOML using tomllib (Python 3.11+) or tomli."""
     try:
-        import tomllib  # Python 3.11+
+        import tomllib  # type: ignore[import-not-found]  # Python 3.11+
     except ModuleNotFoundError:
         import tomli as tomllib  # type: ignore[no-redef]
     with path.open("rb") as f:
         return tomllib.load(f)
 
 
-def load_settings(path: Optional[Union[Path, str]] = None, *, require_file: bool = True) -> ArcaSettings:
+def load_settings(
+    path: Optional[Union[Path, str]] = None, *, require_file: bool = True
+) -> ArcaSettings:
     """Load and validate configuration.
 
     Resolution order:

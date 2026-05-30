@@ -19,7 +19,7 @@ func (c *Client) GetQuota(ctx context.Context, svmName, path string) (*QuotaInfo
 	params := url.Values{}
 	params.Set("path", path)
 
-	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/quotas/%s", svmName), nil, params)
+	respBody, err := c.doRequest(ctx, http.MethodGet, fmt.Sprintf("/v1/quotas/%s", pathSegment(svmName)), nil, params)
 	if err != nil {
 		return nil, err
 	}

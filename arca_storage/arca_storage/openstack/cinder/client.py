@@ -1,15 +1,20 @@
 """REST API client for ARCA Storage."""
 
+import ipaddress
 from typing import Any, Dict, List, Optional
+from urllib.parse import quote, urlparse
+
+from arca_storage.openstack.http_errors import response_error_message, safe_error_detail
+
 try:
-    import requests
-    from requests.adapters import HTTPAdapter
+    import requests  # type: ignore[import-untyped]
+    from requests.adapters import HTTPAdapter  # type: ignore[import-untyped]
     from urllib3.util.retry import Retry
 except ImportError:
     # requests is an optional dependency for OpenStack integration
     requests = None
     HTTPAdapter = None
-    Retry = None
+    Retry = None  # type: ignore[assignment,misc]
 
 from .exceptions import (
     ArcaAPIConnectionError,
@@ -20,6 +25,38 @@ from .exceptions import (
     ArcaVolumeAlreadyExists,
     ArcaVolumeNotFound,
 )
+
+
+def _quote_path_segment(value: str) -> str:
+    return quote(str(value), safe="")
+
+
+def _is_loopback_hostname(hostname: Optional[str]) -> bool:
+    if not hostname:
+        return False
+    if hostname.lower() == "localhost":
+        return True
+    try:
+        return ipaddress.ip_address(hostname).is_loopback
+    except ValueError:
+        return False
+
+
+def validate_token_transport(
+    api_endpoint: str,
+    auth_type: Optional[str],
+    allow_insecure_token_transport: bool = False,
+) -> None:
+    """Reject bearer tokens over remote plain HTTP unless explicitly allowed."""
+    if auth_type != "token" or allow_insecure_token_transport:
+        return
+
+    parsed = urlparse(api_endpoint)
+    if parsed.scheme.lower() == "http" and not _is_loopback_hostname(parsed.hostname):
+        raise ValueError(
+            "token authentication over remote plain HTTP requires "
+            "allow_insecure_token_transport=True"
+        )
 
 
 class ArcaStorageClient:
@@ -38,6 +75,7 @@ class ArcaStorageClient:
         auth_type: Optional[str] = None,
         api_token: Optional[str] = None,
         ca_bundle: Optional[str] = None,
+        allow_insecure_token_transport: bool = False,
     ):
         """Initialize ARCA Storage API client.
 
@@ -49,6 +87,7 @@ class ArcaStorageClient:
             auth_type: Authentication type ('token', 'none', or None)
             api_token: Bearer token for token authentication
             ca_bundle: Path to CA bundle file for SSL verification
+            allow_insecure_token_transport: Allow bearer tokens over non-loopback HTTP
 
         Raises:
             ImportError: If requests library is not installed
@@ -69,15 +108,23 @@ class ArcaStorageClient:
         self.session = requests.Session()
 
         if auth_type == "token":
-            if not api_token:
+            normalized_token = api_token.strip() if isinstance(api_token, str) else ""
+            if not normalized_token:
                 raise ValueError("api_token is required when auth_type='token'")
-            self.session.headers.update({"Authorization": f"Bearer {api_token}"})
+            validate_token_transport(
+                api_endpoint,
+                auth_type,
+                allow_insecure_token_transport,
+            )
+            self.session.headers.update({"Authorization": f"Bearer {normalized_token}"})
         elif auth_type and auth_type != "none":
-            raise ValueError(f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'")
+            raise ValueError(
+                f"Invalid auth_type: {auth_type}. Must be 'token' or 'none'"
+            )
 
         # Configure retry strategy
         # Note: Only retry safe methods (GET) to avoid duplicate operations
-        if HTTPAdapter and Retry:
+        if HTTPAdapter is not None and Retry is not None:
             retry_strategy = Retry(
                 total=retry_count,
                 backoff_factor=1,  # 1s, 2s, 4s...
@@ -128,16 +175,7 @@ class ArcaStorageClient:
 
             # Check for HTTP errors
             if response.status_code >= 400:
-                try:
-                    error_data = response.json()
-                    # Try FastAPI HTTPException format first ({"detail": "..."})
-                    error_msg = error_data.get("detail")
-                    # Fall back to standard format ({"error": {"message": "..."}})
-                    if not error_msg:
-                        error_msg = error_data.get("error", {}).get("message", response.text)
-                except Exception:
-                    error_msg = response.text
-                    error_data = None
+                error_msg, error_data = response_error_message(response)
 
                 raise ArcaAPIError(
                     f"API request failed: {error_msg}",
@@ -149,14 +187,24 @@ class ArcaStorageClient:
             if response.status_code == 204:  # No Content
                 return {}
 
-            return response.json()
+            try:
+                return response.json()
+            except ValueError as e:
+                raise ArcaAPIError(
+                    f"API response was not valid JSON: {safe_error_detail(e)}",
+                    status_code=response.status_code,
+                ) from e
 
         except requests.exceptions.Timeout as e:
-            raise ArcaAPITimeout(f"API request timed out after {self.timeout}s: {e}")
+            raise ArcaAPITimeout(
+                f"API request timed out after {self.timeout}s: {safe_error_detail(e)}"
+            )
         except requests.exceptions.ConnectionError as e:
-            raise ArcaAPIConnectionError(f"Failed to connect to ARCA Storage API: {e}")
+            raise ArcaAPIConnectionError(
+                f"Failed to connect to ARCA Storage API: {safe_error_detail(e)}"
+            )
         except requests.exceptions.RequestException as e:
-            raise ArcaAPIError(f"API request failed: {e}")
+            raise ArcaAPIError(f"API request failed: {safe_error_detail(e)}")
 
     def _list_paginated(
         self,
@@ -168,6 +216,9 @@ class ArcaStorageClient:
         """Return all list items by following ARCA cursor pagination."""
         items: List[Dict[str, Any]] = []
         next_cursor = cursor
+        seen_cursors: set[str] = set()
+        if next_cursor:
+            seen_cursors.add(next_cursor)
 
         while True:
             page_params = dict(params or {})
@@ -181,6 +232,9 @@ class ArcaStorageClient:
             next_cursor = data.get("next_cursor")
             if not next_cursor:
                 return items
+            if next_cursor in seen_cursors:
+                raise ArcaAPIError("Repeated pagination cursor from ARCA API")
+            seen_cursors.add(next_cursor)
 
     # Volume operations
 
@@ -223,7 +277,9 @@ class ArcaStorageClient:
             return response.get("data", {}).get("volume", {})
         except ArcaAPIError as e:
             if e.status_code == 409 or "already exists" in e.message.lower():
-                raise ArcaVolumeAlreadyExists(f"Volume {name} already exists in SVM {svm}")
+                raise ArcaVolumeAlreadyExists(
+                    f"Volume {name} already exists in SVM {svm}"
+                )
             elif e.status_code == 404 or "not found" in e.message.lower():
                 raise ArcaSVMNotFound(f"SVM {svm} not found")
             raise
@@ -245,7 +301,9 @@ class ArcaStorageClient:
             params["force"] = "true"
 
         try:
-            self._make_request("DELETE", f"/v1/volumes/{name}", params=params)
+            self._make_request(
+                "DELETE", f"/v1/volumes/{_quote_path_segment(name)}", params=params
+            )
         except ArcaAPIError as e:
             if e.status_code == 404:
                 raise ArcaVolumeNotFound(f"Volume {name} not found in SVM {svm}")
@@ -269,7 +327,9 @@ class ArcaStorageClient:
         data = {"svm": svm, "new_size_gib": new_size_gib}
 
         try:
-            response = self._make_request("PATCH", f"/v1/volumes/{name}", json_data=data)
+            response = self._make_request(
+                "PATCH", f"/v1/volumes/{_quote_path_segment(name)}", json_data=data
+            )
             # API returns: {"data": {"volume": {...}}}
             return response.get("data", {}).get("volume", {})
         except ArcaAPIError as e:
@@ -300,7 +360,9 @@ class ArcaStorageClient:
             params["svm"] = svm
         if name:
             params["name"] = name
-        return self._list_paginated("/v1/volumes", params=params, limit=limit, cursor=cursor)
+        return self._list_paginated(
+            "/v1/volumes", params=params, limit=limit, cursor=cursor
+        )
 
     def get_volume(self, name: str, svm: str) -> Dict[str, Any]:
         """Get volume information.
@@ -412,7 +474,9 @@ class ArcaStorageClient:
             params["volume"] = volume
         if client:
             params["client"] = client
-        return self._list_paginated("/v1/exports", params=params, limit=limit, cursor=cursor)
+        return self._list_paginated(
+            "/v1/exports", params=params, limit=limit, cursor=cursor
+        )
 
     # SVM operations (informational)
 
@@ -443,7 +507,9 @@ class ArcaStorageClient:
         params = {}
         if name:
             params["name"] = name
-        return self._list_paginated("/v1/svms", params=params, limit=limit, cursor=cursor)
+        return self._list_paginated(
+            "/v1/svms", params=params, limit=limit, cursor=cursor
+        )
 
     def get_svm(self, name: str) -> Dict[str, Any]:
         """Get SVM information.
@@ -464,7 +530,9 @@ class ArcaStorageClient:
 
     def get_svm_capacity(self, svm: str) -> Dict[str, Any]:
         """Get SVM capacity statistics."""
-        response = self._make_request("GET", f"/v1/svms/{svm}/capacity")
+        response = self._make_request(
+            "GET", f"/v1/svms/{_quote_path_segment(svm)}/capacity"
+        )
         return response.get("data", {}).get("capacity", {})
 
     # QoS operations
@@ -495,7 +563,7 @@ class ArcaStorageClient:
             ArcaVolumeNotFound: Volume not found
             ArcaAPIError: API error
         """
-        data = {"svm": svm}
+        data: Dict[str, Any] = {"svm": svm}
 
         if read_iops is not None:
             data["read_iops"] = read_iops
@@ -507,7 +575,11 @@ class ArcaStorageClient:
             data["write_bps"] = write_bps
 
         try:
-            response = self._make_request("PATCH", f"/v1/volumes/{volume}/qos", json_data=data)
+            response = self._make_request(
+                "PATCH",
+                f"/v1/volumes/{_quote_path_segment(volume)}/qos",
+                json_data=data,
+            )
             # API returns: {"data": {"qos": {...}}}
             return response.get("data", {}).get("qos", {})
         except ArcaAPIError as e:
@@ -529,7 +601,11 @@ class ArcaStorageClient:
         params = {"svm": svm}
 
         try:
-            self._make_request("DELETE", f"/v1/volumes/{volume}/qos", params=params)
+            self._make_request(
+                "DELETE",
+                f"/v1/volumes/{_quote_path_segment(volume)}/qos",
+                params=params,
+            )
         except ArcaAPIError as e:
             if e.status_code != 404:  # Ignore if volume doesn't exist
                 raise
@@ -551,7 +627,9 @@ class ArcaStorageClient:
         params = {"svm": svm}
 
         try:
-            response = self._make_request("GET", f"/v1/volumes/{volume}/qos", params=params)
+            response = self._make_request(
+                "GET", f"/v1/volumes/{_quote_path_segment(volume)}/qos", params=params
+            )
             # API returns: {"data": {"qos": {...}}}
             return response.get("data", {}).get("qos", {})
         except ArcaAPIError as e:

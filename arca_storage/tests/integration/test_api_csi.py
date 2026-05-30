@@ -2,9 +2,12 @@
 Integration tests for CSI compatibility endpoints.
 """
 
+import pytest
+
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app
+from arca_storage.api.services import directory_service
 
 GIB = 1024**3
 
@@ -45,7 +48,10 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     assert record["spec"]["size_gib"] == 2
 
     exports = fake_context.adapters.ganesha.exports[svm_name]
-    assert _export_paths(exports) == [f"/exports/{svm_name}", f"/exports/{svm_name}/{volume_path}"]
+    assert _export_paths(exports) == [
+        f"/exports/{svm_name}",
+        f"/exports/{svm_name}/{volume_path}",
+    ]
     assert all(export["owner"] == "csi" for export in exports)
     assert {(export["client"], export["squash"]) for export in exports} == {
         ("10.0.0.0/24", "Root_Squash")
@@ -60,7 +66,9 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
         },
     )
     assert response.status_code == 201
-    assert _export_paths(fake_context.adapters.ganesha.exports[svm_name]) == _export_paths(exports)
+    assert _export_paths(
+        fake_context.adapters.ganesha.exports[svm_name]
+    ) == _export_paths(exports)
 
     response = client.post(
         "/v1/quotas",
@@ -78,7 +86,9 @@ def test_csi_directory_quota_flow_uses_svm_root_export(fake_context):
     assert response.status_code == 200
     assert response.json()["data"]["quota_bytes"] == 3 * GIB
 
-    response = client.delete(f"/v1/directories/{svm_name}", params={"path": volume_path})
+    response = client.delete(
+        f"/v1/directories/{svm_name}", params={"path": volume_path}
+    )
     assert response.status_code == 200
     assert fake_context.db.get_volume(svm_name, volume_path) is None
     assert fake_context.adapters.ganesha.exports[svm_name] == []
@@ -114,6 +124,70 @@ def test_csi_directory_create_reports_effective_gib_quota(fake_context):
     assert fake_context.db.get_volume(svm_name, volume_path)["spec"]["size_gib"] == 2
 
 
+def test_csi_directory_rejects_nested_path(fake_context):
+    client = TestClient(app)
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": "k8s-default",
+            "path": "nested/path",
+            "quota_bytes": GIB,
+        },
+    )
+
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert fake_context.db.get_volume("k8s-default", "nested/path") is None
+
+
+def test_csi_quota_reports_filesystem_used_bytes(fake_context, monkeypatch):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 201
+
+    class FakeStatVfs:
+        f_bsize = 4096
+        f_frsize = 4096
+        f_blocks = 100
+        f_bfree = 25
+
+    stat_paths = []
+
+    def fake_statvfs(path):
+        stat_paths.append(path)
+        return FakeStatVfs()
+
+    monkeypatch.setattr(directory_service.os, "statvfs", fake_statvfs)
+
+    response = client.get(f"/v1/quotas/{svm_name}", params={"path": volume_path})
+
+    assert response.status_code == 200
+    assert stat_paths == [f"/exports/{svm_name}/{volume_path}"]
+    assert response.json()["data"]["used_bytes"] == 75 * 4096
+
+
 def test_csi_directory_delete_rejects_existing_snapshots(fake_context):
     client = TestClient(app)
     svm_name = "k8s-default"
@@ -141,15 +215,21 @@ def test_csi_directory_delete_rejects_existing_snapshots(fake_context):
     assert response.status_code == 201
     exports = list(fake_context.adapters.ganesha.exports[svm_name])
 
-    response = client.post("/v1/snapshots", json={"name": "snap1", "svm": svm_name, "volume": volume_path})
+    response = client.post(
+        "/v1/snapshots", json={"name": "snap1", "svm": svm_name, "volume": volume_path}
+    )
     assert response.status_code == 201
 
-    response = client.delete(f"/v1/directories/{svm_name}", params={"path": volume_path})
+    response = client.delete(
+        f"/v1/directories/{svm_name}", params={"path": volume_path}
+    )
 
     assert response.status_code == 412
     assert response.json()["error"]["code"] == "PRECONDITION_FAILED"
     assert fake_context.db.get_volume(svm_name, volume_path) is not None
-    assert fake_context.db.list_snapshots(svm=svm_name, volume=volume_path, name="snap1")
+    assert fake_context.db.list_snapshots(
+        svm=svm_name, volume=volume_path, name="snap1"
+    )
     assert fake_context.adapters.ganesha.exports[svm_name] == exports
 
 
@@ -160,7 +240,14 @@ def test_csi_directory_rejects_unready_svm(fake_context):
     svm_name = "k8s-default"
     volume_path = "pvc-1234567890abcdef"
     fake_context.db.insert_svm(
-        SVM(spec=SVMSpec(name=svm_name, vlan_id=100, ip_cidr="192.168.10.5/24", gateway="192.168.10.1"))
+        SVM(
+            spec=SVMSpec(
+                name=svm_name,
+                vlan_id=100,
+                ip_cidr="192.168.10.5/24",
+                gateway="192.168.10.1",
+            )
+        )
     )
 
     response = client.post(
@@ -200,7 +287,9 @@ def test_csi_directory_rejects_existing_unready_volume(fake_context):
         },
     )
     assert response.status_code == 201
-    fake_context.db.insert_volume(Volume(spec=VolumeSpec(name=volume_path, svm=svm_name, size_gib=2)))
+    fake_context.db.insert_volume(
+        Volume(spec=VolumeSpec(name=volume_path, svm=svm_name, size_gib=2))
+    )
 
     response = client.post(
         "/v1/directories",
@@ -321,6 +410,49 @@ def test_csi_directory_normalizes_configured_client_cidrs(fake_context):
     )
     assert response.status_code == 201
     assert len(fake_context.adapters.ganesha.exports[svm_name]) == 2
+
+
+@pytest.mark.parametrize(
+    "cidr, message",
+    [
+        ("127.0.0.0/8", "loopback"),
+        ("169.254.0.0/16", "link-local"),
+        ("224.0.0.0/4", "multicast"),
+        ("240.0.0.0/4", "reserved"),
+    ],
+)
+def test_csi_directory_rejects_unsafe_configured_client_cidrs(
+    fake_context, cidr, message
+):
+    client = TestClient(app)
+    svm_name = "k8s-default"
+    volume_path = "pvc-1234567890abcdef"
+    fake_context.settings.csi.client_cidrs = [cidr]
+
+    response = client.post(
+        "/v1/svms",
+        json={
+            "name": svm_name,
+            "vlan_id": 100,
+            "ip_cidr": "192.168.10.5/24",
+            "gateway": "192.168.10.1",
+        },
+    )
+    assert response.status_code == 201
+
+    response = client.post(
+        "/v1/directories",
+        json={
+            "svm_name": svm_name,
+            "path": volume_path,
+            "quota_bytes": 2 * GIB,
+        },
+    )
+    assert response.status_code == 400
+    assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
+    assert message in response.json()["error"]["message"]
+    assert fake_context.db.get_volume(svm_name, volume_path) is None
+    assert fake_context.adapters.ganesha.exports.get(svm_name, []) == []
 
 
 def test_csi_directory_requires_configured_client_cidrs(fake_context):

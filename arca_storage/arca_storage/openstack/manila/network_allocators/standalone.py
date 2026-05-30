@@ -10,7 +10,9 @@ import random
 import time
 from typing import Any, Dict, List, Set
 
-from oslo_log import log as logging
+from oslo_log import log as logging  # type: ignore[import-untyped]
+
+from arca_storage.openstack.http_errors import safe_error_detail
 
 from ..exceptions import (
     ArcaNetworkConflict,
@@ -132,15 +134,9 @@ class StandaloneAllocator(NetworkAllocator):
             raise
         except Exception as e:
             # Unknown error - treat as retryable conflict
-            LOG.error(
-                "Failed to allocate network for project %s (attempt %d): %s",
-                project_id,
-                retry_attempt,
-                e,
-            )
-            raise ArcaNetworkConflict(
-                details=f"Network allocation failed: {str(e)}"
-            )
+            details = safe_error_detail(e)
+            LOG.error("Failed to allocate standalone network")
+            raise ArcaNetworkConflict(details=f"Network allocation failed: {details}")
 
     def deallocate(self, allocation_id: str) -> None:
         """Deallocate network resources.
@@ -192,9 +188,7 @@ class StandaloneAllocator(NetworkAllocator):
                     )
 
                 if vlan_id < 1 or vlan_id > 4094:
-                    raise ValueError(
-                        f"VLAN ID {vlan_id} out of range (must be 1-4094)"
-                    )
+                    raise ValueError(f"VLAN ID {vlan_id} out of range (must be 1-4094)")
 
                 # IP range is mandatory (must contain "|")
                 if "|" not in ip_part:
@@ -215,7 +209,7 @@ class StandaloneAllocator(NetworkAllocator):
                     raise ValueError(f"Invalid IP CIDR '{cidr_str}': {e}")
 
                 # Validate IPv4 only
-                if ip_network.version != 4:
+                if not isinstance(ip_network, ipaddress.IPv4Network):
                     raise ValueError(
                         f"Only IPv4 pools are supported, got IPv{ip_network.version} "
                         f"in '{pool_config}'"
@@ -238,20 +232,16 @@ class StandaloneAllocator(NetworkAllocator):
                     raise ValueError(f"Invalid IP address in range: {e}")
 
                 # Validate IPs are IPv4
-                if start_ip.version != 4 or end_ip.version != 4:
-                    raise ValueError(
-                        "Only IPv4 addresses are supported in range"
-                    )
+                if not isinstance(start_ip, ipaddress.IPv4Address):
+                    raise ValueError("Only IPv4 addresses are supported in range")
+                if not isinstance(end_ip, ipaddress.IPv4Address):
+                    raise ValueError("Only IPv4 addresses are supported in range")
 
                 # Validate IPs are within CIDR
                 if start_ip not in ip_network:
-                    raise ValueError(
-                        f"Start IP {start_ip} is not in CIDR {ip_network}"
-                    )
+                    raise ValueError(f"Start IP {start_ip} is not in CIDR {ip_network}")
                 if end_ip not in ip_network:
-                    raise ValueError(
-                        f"End IP {end_ip} is not in CIDR {ip_network}"
-                    )
+                    raise ValueError(f"End IP {end_ip} is not in CIDR {ip_network}")
 
                 # Validate range order (allow single-IP pools where start == end)
                 if start_ip > end_ip:
@@ -264,9 +254,7 @@ class StandaloneAllocator(NetworkAllocator):
                 num_hosts = int(end_ip) - int(start_ip) + 1
 
                 if num_hosts <= 0:
-                    raise ValueError(
-                        "IP pool has no usable host addresses"
-                    )
+                    raise ValueError("IP pool has no usable host addresses")
 
                 # Infer gateway from CIDR (typically first IP in subnet)
                 # For most networks: x.x.x.1 is the gateway
@@ -281,7 +269,7 @@ class StandaloneAllocator(NetworkAllocator):
                     gateway = str(ip_network.network_address + 1)
 
                 # Validate gateway is not in allocatable range
-                gateway_ip = ipaddress.ip_address(gateway)
+                gateway_ip = ipaddress.IPv4Address(gateway)
                 if gateway_ip >= start_ip and gateway_ip <= end_ip:
                     raise ValueError(
                         f"Gateway IP {gateway} is within allocatable range "
@@ -304,19 +292,18 @@ class StandaloneAllocator(NetworkAllocator):
                             f"End IP must be at most {ip_network.broadcast_address - 1}"
                         )
 
-                pools.append({
-                    "ip_network": ip_network,
-                    "vlan_id": vlan_id,
-                    "gateway": gateway,
-                    "num_hosts": num_hosts,
-                    "first_host": first_host,
-                    "last_host": last_host,
-                })
-
-                LOG.debug(
-                    "Parsed pool %d: %s (VLAN %d, %s-%s, %d IPs)",
-                    i, str(ip_network), vlan_id, first_host, last_host, num_hosts
+                pools.append(
+                    {
+                        "ip_network": ip_network,
+                        "vlan_id": vlan_id,
+                        "gateway": gateway,
+                        "num_hosts": num_hosts,
+                        "first_host": first_host,
+                        "last_host": last_host,
+                    }
                 )
+
+                LOG.debug("Parsed standalone IP pool %d with %d IPs", i, num_hosts)
 
             except ValueError as e:
                 raise ValueError(
@@ -330,7 +317,9 @@ class StandaloneAllocator(NetworkAllocator):
 
         return pools
 
-    def _allocate_from_multi_pool(self, project_id: str, retry_attempt: int = 0) -> tuple:
+    def _allocate_from_multi_pool(
+        self, project_id: str, retry_attempt: int = 0
+    ) -> tuple:
         """Allocate network from pools using round-robin with collision detection.
 
         IMPORTANT: This method assumes it's called within the allocation lock
@@ -359,29 +348,29 @@ class StandaloneAllocator(NetworkAllocator):
 
             try:
                 # Try to allocate from this pool, passing retry attempt for randomization
-                vlan_id, ip_cidr = self._find_free_slot_in_pool(pool, attempt=retry_attempt)
+                vlan_id, ip_cidr = self._find_free_slot_in_pool(
+                    pool, attempt=retry_attempt
+                )
 
                 # Success! Increment counter for next allocation
                 self._pool_allocation_counter += 1
 
                 gateway = pool["gateway"]
 
-                LOG.debug(
-                    "Allocated network for project %s from pool %d: "
-                    "VLAN=%d, IP=%s, gateway=%s",
-                    project_id, pool_idx, vlan_id, ip_cidr, gateway
-                )
+                LOG.debug("Allocated standalone network from pool %d", pool_idx)
 
                 return vlan_id, ip_cidr, gateway
 
             except PoolExhaustedException as e:
                 # This pool is exhausted - track the error and try next pool
                 pool_exhaustion_errors.append(str(e))
-                LOG.debug("Pool %d exhausted: %s", pool_idx, e)
+                LOG.debug("Standalone network pool %d exhausted", pool_idx)
                 continue
-            except Exception as e:
+            except Exception:
                 # Unknown error in this pool - log and try next pool
-                LOG.warning("Pool %d allocation failed with unexpected error: %s", pool_idx, e)
+                LOG.warning(
+                    "Standalone network pool allocation failed with unexpected error"
+                )
                 continue
 
         # All pools exhausted or failed - raise non-retryable error
@@ -405,7 +394,7 @@ class StandaloneAllocator(NetworkAllocator):
         Returns:
             Set of used IP addresses (as ipaddress.IPv4Address objects)
         """
-        used_ips = set()
+        used_ips: Set[ipaddress.IPv4Address] = set()
 
         try:
             svms = self.arca_client.list_svms()
@@ -418,7 +407,7 @@ class StandaloneAllocator(NetworkAllocator):
                 try:
                     svm_vlan = int(svm_vlan) if svm_vlan is not None else None
                 except (ValueError, TypeError):
-                    LOG.warning("Invalid vlan_id type in SVM %s: %s", svm["name"], svm_vlan)
+                    LOG.warning("Skipping SVM with invalid VLAN metadata")
                     continue
 
                 if svm_vlan == vlan_id:
@@ -434,28 +423,32 @@ class StandaloneAllocator(NetworkAllocator):
                                 ip_addr = ipaddress.ip_interface(vip).ip
                             else:
                                 ip_addr = ipaddress.ip_address(vip)
-                            used_ips.add(ip_addr)
+                            if isinstance(ip_addr, ipaddress.IPv4Address):
+                                used_ips.add(ip_addr)
+                            else:
+                                LOG.warning("Ignoring IPv6 VIP in SVM metadata")
                         except ValueError:
-                            LOG.warning("Invalid VIP format in SVM %s: %s", svm["name"], vip)
+                            LOG.warning("Invalid VIP format in SVM metadata")
 
                     # Fallback to ip_cidr if vip is not available
                     elif ip_cidr:
                         try:
                             ip_addr = ipaddress.ip_interface(ip_cidr).ip
-                            used_ips.add(ip_addr)
+                            if isinstance(ip_addr, ipaddress.IPv4Address):
+                                used_ips.add(ip_addr)
+                            else:
+                                LOG.warning("Ignoring IPv6 ip_cidr in SVM metadata")
                         except ValueError:
-                            LOG.warning("Invalid ip_cidr format in SVM %s: %s", svm["name"], ip_cidr)
+                            LOG.warning("Invalid ip_cidr format in SVM metadata")
 
-        except Exception as e:
-            LOG.warning("Failed to get used IPs in VLAN %d: %s", vlan_id, e)
+        except Exception:
+            LOG.warning("Failed to get used IPs for standalone allocation")
             # Return empty set and let allocation proceed
             # (will rely on backend to detect conflicts)
 
         return used_ips
 
-    def _find_free_slot_in_pool(
-        self, pool: Dict[str, Any], attempt: int = 0
-    ) -> tuple:
+    def _find_free_slot_in_pool(self, pool: Dict[str, Any], attempt: int = 0) -> tuple:
         """Find first free IP slot in a pool.
 
         Args:
@@ -485,7 +478,7 @@ class StandaloneAllocator(NetworkAllocator):
             seed = (os.getpid() * 1000000 + int(time.time() * 1000)) ^ attempt
             local_rng = random.Random(seed)
             start_offset = local_rng.randint(0, num_hosts - 1)
-            LOG.debug("Retry %d: using random offset (seed based on PID %d)", attempt, os.getpid())
+            LOG.debug("Retry %d: using randomized standalone pool offset", attempt)
         else:
             start_offset = 0
 
@@ -497,16 +490,11 @@ class StandaloneAllocator(NetworkAllocator):
             if ip_addr not in used_ips:
                 # Found free slot
                 ip_cidr = f"{ip_addr}/{ip_network.prefixlen}"
-                LOG.debug(
-                    "Found free IP in pool VLAN %d at offset %d (attempt %d)",
-                    vlan_id, offset, attempt
-                )
+                LOG.debug("Found free IP in standalone pool (attempt %d)", attempt)
                 return vlan_id, ip_cidr
 
         # Pool exhausted - raise internal exception for classification
-        raise PoolExhaustedException(
-            f"Pool exhausted: VLAN {vlan_id}, all {num_hosts} IP slots used"
-        )
+        raise PoolExhaustedException(f"Pool exhausted: all {num_hosts} IP slots used")
 
 
 class PoolExhaustedException(Exception):
@@ -515,4 +503,5 @@ class PoolExhaustedException(Exception):
     This exception is used internally to distinguish pool exhaustion from
     other failures, allowing proper error classification at the allocator level.
     """
+
     pass

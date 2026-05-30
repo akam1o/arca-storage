@@ -76,6 +76,7 @@ class ArcaError(Exception):
 
 # Convenience subclasses
 
+
 class AlreadyExistsError(ArcaError):
     def __init__(self, resource: str, name: str) -> None:
         super().__init__(
@@ -127,6 +128,15 @@ class InternalError(ArcaError):
         super().__init__(ErrorCode.INTERNAL, message, details)
 
 
+class ReconcileFailedError(InternalError):
+    def __init__(self, resource: str, name: str, reason: Optional[str]) -> None:
+        message = f"{resource} '{name}' reconcile failed"
+        details: dict[str, Any] = {"resource": resource, "name": name}
+        if reason:
+            details["reason"] = reason
+        super().__init__(message, details)
+
+
 class TimeoutError(ArcaError):
     def __init__(self, operation: str, timeout_seconds: int) -> None:
         super().__init__(
@@ -140,8 +150,11 @@ class SubprocessError(ArcaError):
     """Wraps a failed subprocess call with structured context."""
 
     def __init__(self, cmd: list[str], returncode: int, stderr: str) -> None:
+        self.cmd = cmd
+        self.returncode = returncode
+        self.stderr = stderr
         super().__init__(
             ErrorCode.INTERNAL,
-            f"Command failed (rc={returncode}): {' '.join(cmd)}",
-            {"cmd": cmd, "returncode": returncode, "stderr": stderr},
+            f"Command failed (rc={returncode})",
+            {"returncode": returncode},
         )

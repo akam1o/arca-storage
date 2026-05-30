@@ -27,22 +27,46 @@ class TestSVMWorkflow:
         # 1. Create SVM
         result = runner.invoke(
             cli_app,
-            ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24", "--gateway", "192.168.10.1"],
+            [
+                "svm",
+                "create",
+                "tenant_a",
+                "--vlan",
+                "100",
+                "--ip",
+                "192.168.10.5/24",
+                "--gateway",
+                "192.168.10.1",
+            ],
         )
         assert result.exit_code == 0
 
         # 2. Create Volume
-        result = runner.invoke(cli_app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"])
+        result = runner.invoke(
+            cli_app, ["volume", "create", "vol1", "--svm", "tenant_a", "--size", "100"]
+        )
         assert result.exit_code == 0
 
         # 3. Add Export
         result = runner.invoke(
-            cli_app, ["export", "add", "--volume", "vol1", "--svm", "tenant_a", "--client", "10.0.0.0/24"]
+            cli_app,
+            [
+                "export",
+                "add",
+                "--volume",
+                "vol1",
+                "--svm",
+                "tenant_a",
+                "--client",
+                "10.0.0.0/24",
+            ],
         )
         assert result.exit_code == 0
 
         # 4. Delete Volume
-        result = runner.invoke(cli_app, ["volume", "delete", "vol1", "--svm", "tenant_a"])
+        result = runner.invoke(
+            cli_app, ["volume", "delete", "vol1", "--svm", "tenant_a"]
+        )
         assert result.exit_code == 0
 
         # 5. Delete SVM
@@ -51,7 +75,9 @@ class TestSVMWorkflow:
 
         # Verify cleanup
         assert not fake_context.adapters.netns.namespace_exists("tenant_a")
-        assert not fake_context.adapters.lvm.lv_exists("vg_pool_01", volume_lv_name("tenant_a", "vol1"))
+        assert not fake_context.adapters.lvm.lv_exists(
+            "vg_pool_01", volume_lv_name("tenant_a", "vol1")
+        )
 
 
 class TestAPIWorkflow:
@@ -66,7 +92,12 @@ class TestAPIWorkflow:
     @patch("arca_storage.api.services.svm_service.delete_svm")
     @pytest.mark.asyncio
     async def test_api_full_workflow(
-        self, mock_delete_svm, mock_delete_vol, mock_add_export, mock_create_vol, mock_create_svm
+        self,
+        mock_delete_svm,
+        mock_delete_vol,
+        mock_add_export,
+        mock_create_vol,
+        mock_create_svm,
     ):
         """Test complete API workflow."""
         mock_create_svm.return_value = {
@@ -111,16 +142,26 @@ class TestAPIWorkflow:
         # 1. Create SVM
         response = client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
         assert response.status_code == 201
 
         # 2. Create Volume
-        response = client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 100})
+        response = client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 100}
+        )
         assert response.status_code == 201
 
         # 3. Add Export
-        response = client.post("/v1/exports", json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24"})
+        response = client.post(
+            "/v1/exports",
+            json={"svm": "tenant_a", "volume": "vol1", "client": "10.0.0.0/24"},
+        )
         assert response.status_code == 201
 
         # 4. Delete Volume
@@ -142,7 +183,10 @@ class TestErrorHandling:
         fake_context.adapters.pacemaker.groups = None
 
         runner = CliRunner()
-        result = runner.invoke(cli_app, ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24"])
+        result = runner.invoke(
+            cli_app,
+            ["svm", "create", "tenant_a", "--vlan", "100", "--ip", "192.168.10.5/24"],
+        )
 
         assert result.exit_code == 1
         assert "Error" in cli_output(result)
@@ -176,6 +220,9 @@ class TestErrorHandling:
         mock_create_svm.side_effect = NotFoundError("SVM", "tenant_a")
 
         client = TestClient(api_app)
-        response = client.post("/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"})
+        response = client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"},
+        )
 
         assert response.status_code == 404

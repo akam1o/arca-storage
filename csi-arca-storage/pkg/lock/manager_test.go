@@ -2,6 +2,7 @@ package lock
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 	"testing"
@@ -91,6 +92,45 @@ func TestAcquireLockRenewalSurvivesAcquireContextCancellation(t *testing.T) {
 	}
 
 	t.Fatalf("lease was not renewed after acquisition context cancellation")
+}
+
+func TestLockContextCancelsWhenRenewalFails(t *testing.T) {
+	ctx := context.Background()
+	clientset := fake.NewClientset()
+	manager := NewManager(clientset, "kube-system", "controller-a")
+	leaseName := leaseNameForResource("tenant-a")
+
+	clientset.PrependReactor("update", "leases", func(action k8stesting.Action) (bool, runtime.Object, error) {
+		return true, nil, fmt.Errorf("api unavailable")
+	})
+
+	lock, err := manager.AcquireLock(ctx, "tenant-a", 1200*time.Millisecond)
+	if err != nil {
+		t.Fatalf("AcquireLock() error = %v", err)
+	}
+	defer func() {
+		if err := lock.Release(ctx); err != nil {
+			t.Fatalf("Release() error = %v", err)
+		}
+	}()
+
+	lockedCtx, cancel := lock.Context(ctx)
+	defer cancel()
+
+	select {
+	case <-lockedCtx.Done():
+	case <-time.After(2 * time.Second):
+		t.Fatalf("lock context was not canceled after renew failure for %s", leaseName)
+	}
+
+	if !errors.Is(lock.Err(), ErrLockLost) {
+		t.Fatalf("lock Err() = %v, want ErrLockLost", lock.Err())
+	}
+	select {
+	case <-lock.Done():
+	default:
+		t.Fatalf("lock Done() was not closed after renew failure")
+	}
 }
 
 func TestAcquireLockRetriesExpiredLeaseUpdateConflict(t *testing.T) {

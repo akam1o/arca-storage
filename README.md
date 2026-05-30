@@ -174,6 +174,16 @@ export ARCA_API_TOKEN="$(openssl rand -hex 32)"
 arca-storage-api --host 127.0.0.1 --port 8080
 ```
 
+When binding outside loopback, provide TLS certificates so bearer tokens are not
+sent over plain HTTP:
+
+```bash
+export ARCA_API_TOKEN="$(openssl rand -hex 32)"
+arca-storage-api --host 0.0.0.0 --port 8443 \
+  --ssl-certfile /etc/arca-storage/tls/api.crt \
+  --ssl-keyfile /etc/arca-storage/tls/api.key
+```
+
 Use the same token for client requests:
 
 ```bash

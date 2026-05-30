@@ -1,7 +1,9 @@
 package mount
 
 import (
+	"bytes"
 	"context"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -9,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"k8s.io/klog/v2"
 	mountutils "k8s.io/mount-utils"
 )
 
@@ -41,6 +44,136 @@ func (v *fakeMountSourceValidator) ValidateMountSource(targetPath, expectedSourc
 	return v.err
 }
 
+func captureKlogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	state := klog.CaptureState()
+	defer state.Restore()
+
+	var out bytes.Buffer
+	fs := flag.NewFlagSet(t.Name(), flag.ContinueOnError)
+	klog.InitFlags(fs)
+	for name, value := range map[string]string{
+		"logtostderr":     "false",
+		"alsologtostderr": "false",
+		"one_output":      "true",
+		"skip_headers":    "true",
+		"v":               "4",
+	} {
+		if err := fs.Set(name, value); err != nil {
+			t.Fatalf("failed to set klog flag %s: %v", name, err)
+		}
+	}
+	klog.SetOutput(&out)
+
+	fn()
+	klog.Flush()
+
+	return out.String()
+}
+
+func TestMountLogHelpersIncludeRedactedErrorDetails(t *testing.T) {
+	err := fmt.Errorf(
+		"mount failed for 10.0.0.1:/exports/team at /var/lib/kubelet/plugins/csi.arca-storage.io/mounts/team: token=secret-token",
+	)
+
+	logOutput := captureKlogOutput(t, func() {
+		mountLogWarning("Failed to ensure SVM mount", err)
+		mountLogError("Failed to unmount SVM", err)
+	})
+
+	for _, want := range []string{"mount failed", "<redacted>", "<nfs-source>", "<path>"} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("mount logs %q do not contain %q", logOutput, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"10.0.0.1",
+		"/exports/team",
+		"/var/lib/kubelet/plugins/csi.arca-storage.io/mounts/team",
+		"secret-token",
+	} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Fatalf("mount logs %q contain %q", logOutput, forbidden)
+		}
+	}
+}
+
+func TestNewMountManagerRejectsUnsafeBaseMountPath(t *testing.T) {
+	uncleanPath := t.TempDir() + "/../mounts"
+	tests := []struct {
+		name          string
+		baseMountPath string
+		wantErr       string
+	}{
+		{
+			name:          "relative",
+			baseMountPath: "relative/mounts",
+			wantErr:       "base mount path must be absolute",
+		},
+		{
+			name:          "unclean",
+			baseMountPath: uncleanPath,
+			wantErr:       "base mount path must be canonical",
+		},
+		{
+			name:          "root",
+			baseMountPath: string(filepath.Separator),
+			wantErr:       "base mount path must not be the filesystem root",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			nodeState := &NodeState{data: &NodeStateData{Volumes: make(map[string]*VolumeStaging)}}
+
+			_, err := NewMountManager(nodeState, tt.baseMountPath)
+			if err == nil {
+				t.Fatal("NewMountManager error = nil, want base mount path validation error")
+			}
+			if !strings.Contains(err.Error(), tt.wantErr) {
+				t.Fatalf("NewMountManager error = %v, want %q", err, tt.wantErr)
+			}
+		})
+	}
+}
+
+func TestNewMountManagerRejectsInvalidSVMNameFromNodeState(t *testing.T) {
+	nodeState := &NodeState{data: &NodeStateData{Volumes: map[string]*VolumeStaging{
+		"volume-a": {
+			SVMName:     "../tenant-a",
+			VIP:         "192.0.2.10",
+			StagingPath: "/stage/volume-a",
+		},
+	}}}
+
+	_, err := NewMountManager(nodeState, filepath.Join(t.TempDir(), "mounts"))
+	if err == nil {
+		t.Fatal("NewMountManager error = nil, want invalid SVM name error")
+	}
+	if !strings.Contains(err.Error(), "invalid SVM name in node state") {
+		t.Fatalf("NewMountManager error = %v, want invalid SVM name in node state", err)
+	}
+}
+
+func TestMountManagerRejectsInvalidSVMNames(t *testing.T) {
+	manager := newTestMountManager(t)
+	ctx := context.Background()
+
+	if _, err := manager.EnsureSVMMount(ctx, "../tenant-a", "192.0.2.10", "", nil); err == nil {
+		t.Fatal("EnsureSVMMount should reject invalid SVM name")
+	}
+	if _, err := manager.ShouldUnmountSVM(ctx, "../tenant-a"); err == nil {
+		t.Fatal("ShouldUnmountSVM should reject invalid SVM name")
+	}
+	if err := manager.UnmountSVM(ctx, "../tenant-a"); err == nil {
+		t.Fatal("UnmountSVM should reject invalid SVM name")
+	}
+	if _, err := manager.GetMountPath("../tenant-a"); err == nil {
+		t.Fatal("GetMountPath should reject invalid SVM name")
+	}
+}
+
 func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
 	manager := newTestMountManager(t)
 	ctx := context.Background()
@@ -59,6 +192,9 @@ func TestEnsureSVMMountRejectsConflictingOptions(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "different NFS options") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	if strings.Contains(err.Error(), "nconnect=16") {
+		t.Fatalf("conflicting options error leaked requested option: %v", err)
 	}
 }
 
@@ -109,8 +245,44 @@ func TestEnsureSVMMountRejectsWrongExistingSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "not safe to reuse") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	for _, forbidden := range []string{mountPath, "192.0.2.99", "192.0.2.10", "/exports/tenant-a"} {
+		if strings.Contains(err.Error(), forbidden) {
+			t.Fatalf("wrong source error leaked %q: %v", forbidden, err)
+		}
+	}
 	if len(validator.calls) != 1 || validator.calls[0].expectedSource != "192.0.2.10:/exports/tenant-a" {
 		t.Fatalf("unexpected validator calls: %#v", validator.calls)
+	}
+}
+
+func TestMountManagerLogsDoNotEchoMountDetails(t *testing.T) {
+	baseMountPath := filepath.Join(t.TempDir(), "secret-base-mount")
+	manager := &MountManager{
+		mounts:        make(map[string]*SVMMount),
+		nodeState:     &NodeState{data: &NodeStateData{Volumes: make(map[string]*VolumeStaging)}},
+		baseMountPath: baseMountPath,
+		mounter:       mountutils.NewFakeMounter(nil),
+		validator:     &fakeMountSourceValidator{},
+	}
+	ctx := context.Background()
+	vip := "192.0.2.10"
+	exportRoot := "/secret-export-root"
+	mountPath := filepath.Join(baseMountPath, "tenant-a")
+	nfsSource := vip + ":" + exportRoot
+
+	logOutput := captureKlogOutput(t, func() {
+		if _, err := manager.EnsureSVMMount(ctx, "tenant-a", vip, exportRoot, []string{"nconnect=8"}); err != nil {
+			t.Fatalf("EnsureSVMMount failed: %v", err)
+		}
+		if err := manager.UnmountSVM(ctx, "tenant-a"); err != nil {
+			t.Fatalf("UnmountSVM failed: %v", err)
+		}
+	})
+
+	for _, forbidden := range []string{baseMountPath, mountPath, vip, exportRoot, nfsSource} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Fatalf("mount manager logs leaked %q in:\n%s", forbidden, logOutput)
+		}
 	}
 }
 

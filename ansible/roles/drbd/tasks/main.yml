@@ -1,4 +1,15 @@
 ---
+- name: Validate DRBD resource name
+  ansible.builtin.assert:
+    that:
+      - drbd_resource_name is string
+      - (drbd_resource_name | string | length) > 0
+      - (drbd_resource_name | string) is match('^[A-Za-z0-9][A-Za-z0-9._-]{0,63}$')
+    fail_msg: >-
+      drbd_resource_name must be a single safe path component that starts with an
+      alphanumeric character and contains only alphanumeric characters, dots,
+      underscores, or hyphens.
+
 - name: Install DRBD packages
   ansible.builtin.package:
     name: "{{ drbd_packages }}"
@@ -48,18 +59,30 @@
 
     # Validate resource configuration before (re)creating metadata.
     - name: Dump DRBD resource configuration
-      ansible.builtin.command: "drbdadm dump {{ drbd_resource_name }}"
+      ansible.builtin.command:
+        argv:
+          - drbdadm
+          - dump
+          - "{{ drbd_resource_name }}"
       register: drbd_dump
       changed_when: false
 
     - name: Check existing DRBD metadata
-      ansible.builtin.command: "drbdadm dump-md {{ drbd_resource_name }}"
+      ansible.builtin.command:
+        argv:
+          - drbdadm
+          - dump-md
+          - "{{ drbd_resource_name }}"
       register: drbd_dump_md
       changed_when: false
       failed_when: false
 
     - name: Create DRBD metadata
-      ansible.builtin.command: "drbdadm create-md {{ drbd_resource_name }}"
+      ansible.builtin.command:
+        argv:
+          - drbdadm
+          - create-md
+          - "{{ drbd_resource_name }}"
       when:
         - not drbd_md_marker.stat.exists
         - drbd_dump.rc == 0
@@ -79,19 +102,32 @@
         - drbd_dump_md.rc == 0 or drbd_create_md is succeeded
 
     - name: Check DRBD resource status
-      ansible.builtin.command: "drbdadm status {{ drbd_resource_name }}"
+      ansible.builtin.command:
+        argv:
+          - drbdadm
+          - status
+          - "{{ drbd_resource_name }}"
       register: drbd_status
       changed_when: false
       failed_when: false
 
     - name: Bring up DRBD resource if needed
-      ansible.builtin.command: "drbdadm up {{ drbd_resource_name }}"
+      ansible.builtin.command:
+        argv:
+          - drbdadm
+          - up
+          - "{{ drbd_resource_name }}"
       when: drbd_status.rc != 0
       register: drbd_up
       changed_when: drbd_up.rc == 0
 
     - name: Promote DRBD primary on designated node
-      ansible.builtin.command: "drbdadm primary --force {{ drbd_resource_name }}"
+      ansible.builtin.command:
+        argv:
+          - drbdadm
+          - primary
+          - --force
+          - "{{ drbd_resource_name }}"
       when:
         - drbd_primary | bool
         - drbd_status.stdout is not search("Primary")

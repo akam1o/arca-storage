@@ -8,7 +8,7 @@ import pytest
 @pytest.fixture
 def _configure_oslo_lock_path(tmp_path):
     try:
-        from oslo_concurrency import lockutils
+        from oslo_concurrency import lockutils  # type: ignore[import-untyped]
     except ImportError:
         return
     lockutils.set_defaults(str(tmp_path))
@@ -37,6 +37,7 @@ def mock_manila_driver_config():
     # API auth (required by the default secured API server)
     config.arca_storage_api_auth_type = "token"
     config.arca_storage_api_token = "test-token"
+    config.arca_storage_allow_insecure_api_token_transport = True
     config.arca_storage_api_ca_bundle = None
     config.arca_storage_api_client_cert = None
     config.arca_storage_api_client_key = None
@@ -73,7 +74,9 @@ def mock_arca_client():
     client = Mock()
 
     # SVM operations
-    client.list_svms.return_value = [{"name": "test-svm", "vip": "192.168.100.5", "vlan_id": 100}]
+    client.list_svms.return_value = [
+        {"name": "test-svm", "vip": "192.168.100.5", "vlan_id": 100}
+    ]
     client.get_svm.return_value = {
         "name": "test-svm",
         "vip": "192.168.100.5",
@@ -93,8 +96,14 @@ def mock_arca_client():
     }
 
     # Volume (share) operations
-    client.create_volume.return_value = {"name": "share-share-123", "export_path": "192.168.100.5:/exports/test-svm/share-share-123"}
-    client.get_volume.return_value = {"name": "share-share-123", "export_path": "192.168.100.5:/exports/test-svm/share-share-123"}
+    client.create_volume.return_value = {
+        "name": "share-share-123",
+        "export_path": "192.168.100.5:/exports/test-svm/share-share-123",
+    }
+    client.get_volume.return_value = {
+        "name": "share-share-123",
+        "export_path": "192.168.100.5:/exports/test-svm/share-share-123",
+    }
     client.list_volumes.return_value = []
     client.delete_volume.return_value = None
     client.resize_volume.return_value = {"name": "share-share-123"}

@@ -1,7 +1,7 @@
 """Configuration options for ARCA Storage Cinder Driver."""
 
 try:
-    from oslo_config import cfg
+    from oslo_config import cfg  # type: ignore[import-untyped]
 
     _HAS_OSLO = True
 except ImportError:
@@ -78,6 +78,14 @@ def _get_arca_storage_opts():
             default=None,
             secret=True,
             help="API authentication token (for auth_type=token)",
+        ),
+        cfg.BoolOpt(
+            "arca_storage_allow_insecure_api_token_transport",
+            default=False,
+            help=(
+                "Allow Bearer token authentication over non-loopback plain HTTP. "
+                "Only use for explicitly trusted development networks."
+            ),
         ),
         # Multi-tenancy Configuration
         cfg.StrOpt(

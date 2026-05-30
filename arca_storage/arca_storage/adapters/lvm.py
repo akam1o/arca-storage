@@ -8,11 +8,22 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
-from arca_storage.errors import AlreadyExistsError, NotFoundError, PreconditionFailedError
+from arca_storage.errors import (
+    AlreadyExistsError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 
 
-def _parse_lvm_float(value: str) -> float:
-    return float(value.strip().lstrip("<>"))
+_LOGICAL_VOLUME_REF = "<logical-volume>"
+_SNAPSHOT_REF = "<snapshot>"
+
+
+def _parse_lvm_float(value: str, *, output_name: str) -> float:
+    try:
+        return float(value.strip().lstrip("<>"))
+    except ValueError:
+        raise RuntimeError(f"Unexpected {output_name} output") from None
 
 
 @dataclass(frozen=True)
@@ -28,7 +39,9 @@ class LVInfo:
 
     @property
     def is_snapshot(self) -> bool:
-        return bool(self.origin) or self.attr.startswith("s") or self.segtype == "snapshot"
+        return (
+            bool(self.origin) or self.attr.startswith("s") or self.segtype == "snapshot"
+        )
 
 
 @runtime_checkable
@@ -77,12 +90,12 @@ class SubprocessLVMAdapter:
         )
         output = result.stdout.strip()
         if not output:
-            raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
+            raise RuntimeError("Unexpected lvs output")
         fields = [field.strip() for field in output.split(",", 3)]
         if len(fields) < 1:
-            raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
+            raise RuntimeError("Unexpected lvs output")
         return LVInfo(
-            size_gib=_parse_lvm_float(fields[0]),
+            size_gib=_parse_lvm_float(fields[0], output_name="lvs"),
             attr=fields[1] if len(fields) > 1 else "",
             segtype=fields[2] if len(fields) > 2 else "",
             origin=fields[3] if len(fields) > 3 else "",
@@ -91,7 +104,7 @@ class SubprocessLVMAdapter:
     def create_thin_lv(self, vg: str, pool: str, lv: str, size_gib: int) -> str:
         lv_path = f"/dev/{vg}/{lv}"
         if self.lv_exists(vg, lv):
-            raise AlreadyExistsError("LogicalVolume", lv_path)
+            raise AlreadyExistsError("LogicalVolume", _LOGICAL_VOLUME_REF)
         run_cmd(
             ["lvcreate", "-V", f"{size_gib}G", "-T", f"{vg}/{pool}", "-n", lv],
             timeout=self._timeout,
@@ -101,7 +114,7 @@ class SubprocessLVMAdapter:
     def create_regular_lv(self, vg: str, lv: str, size_gib: int) -> str:
         lv_path = f"/dev/{vg}/{lv}"
         if self.lv_exists(vg, lv):
-            raise AlreadyExistsError("LogicalVolume", lv_path)
+            raise AlreadyExistsError("LogicalVolume", _LOGICAL_VOLUME_REF)
         run_cmd(
             ["lvcreate", "-L", f"{size_gib}G", "-n", lv, vg],
             timeout=self._timeout,
@@ -111,17 +124,16 @@ class SubprocessLVMAdapter:
     def resize_lv(self, vg: str, lv: str, new_size_gib: int) -> None:
         lv_path = f"/dev/{vg}/{lv}"
         if not self.lv_exists(vg, lv):
-            raise NotFoundError("LogicalVolume", lv_path)
+            raise NotFoundError("LogicalVolume", _LOGICAL_VOLUME_REF)
         current_size_gib = self.get_lv_size_gib(vg, lv)
         requested_size_gib = float(new_size_gib)
         if current_size_gib == requested_size_gib:
             return
         if current_size_gib > requested_size_gib:
             raise PreconditionFailedError(
-                f"Logical volume '{lv_path}' is already larger than requested size",
+                "Logical volume is already larger than requested size",
                 {
                     "resource": "LogicalVolume",
-                    "name": lv_path,
                     "current_size_gib": current_size_gib,
                     "requested_size_gib": new_size_gib,
                 },
@@ -138,14 +150,13 @@ class SubprocessLVMAdapter:
         run_cmd(["lvremove", "-f", lv_path], timeout=self._timeout)
 
     def create_snapshot(self, vg: str, source_lv: str, snap_lv: str) -> str:
-        source_path = f"/dev/{vg}/{source_lv}"
         snap_path = f"/dev/{vg}/{snap_lv}"
         if not self.lv_exists(vg, source_lv):
-            raise NotFoundError("LogicalVolume", source_path)
+            raise NotFoundError("LogicalVolume", _LOGICAL_VOLUME_REF)
         if self.lv_exists(vg, snap_lv):
-            raise AlreadyExistsError("Snapshot", snap_path)
+            raise AlreadyExistsError("Snapshot", _SNAPSHOT_REF)
         run_cmd(
-            ["lvcreate", "--snapshot", "--name", snap_lv, source_path],
+            ["lvcreate", "--snapshot", "--name", snap_lv, f"/dev/{vg}/{source_lv}"],
             timeout=self._timeout,
         )
         return snap_path
@@ -168,8 +179,11 @@ class SubprocessLVMAdapter:
         )
         fields = [field.strip() for field in result.stdout.strip().split(",")]
         if len(fields) != 2:
-            raise RuntimeError(f"Unexpected vgs output for {vg}: {result.stdout.strip()}")
-        total_gb, free_gb = (_parse_lvm_float(fields[0]), _parse_lvm_float(fields[1]))
+            raise RuntimeError("Unexpected vgs output")
+        total_gb, free_gb = (
+            _parse_lvm_float(fields[0], output_name="vgs"),
+            _parse_lvm_float(fields[1], output_name="vgs"),
+        )
         return {"total_gb": total_gb, "free_gb": free_gb}
 
 
@@ -190,7 +204,7 @@ class FakeLVMAdapter:
     def get_lv_info(self, vg: str, lv: str) -> LVInfo:
         key = f"{vg}/{lv}"
         if key not in self.volumes:
-            raise NotFoundError("LogicalVolume", f"/dev/{key}")
+            raise NotFoundError("LogicalVolume", _LOGICAL_VOLUME_REF)
         kind = self.kinds.get(key, "thin")
         attr = "Vwi-a-tz--" if kind in {"thin", "snapshot"} else "-wi-a-----"
         return LVInfo(
@@ -203,7 +217,7 @@ class FakeLVMAdapter:
     def create_thin_lv(self, vg: str, pool: str, lv: str, size_gib: int) -> str:
         key = f"{vg}/{lv}"
         if key in self.volumes:
-            raise AlreadyExistsError("LogicalVolume", f"/dev/{key}")
+            raise AlreadyExistsError("LogicalVolume", _LOGICAL_VOLUME_REF)
         self.volumes[key] = size_gib
         self.kinds[key] = "thin"
         return f"/dev/{key}"
@@ -211,7 +225,7 @@ class FakeLVMAdapter:
     def create_regular_lv(self, vg: str, lv: str, size_gib: int) -> str:
         key = f"{vg}/{lv}"
         if key in self.volumes:
-            raise AlreadyExistsError("LogicalVolume", f"/dev/{key}")
+            raise AlreadyExistsError("LogicalVolume", _LOGICAL_VOLUME_REF)
         self.volumes[key] = size_gib
         self.kinds[key] = "linear"
         return f"/dev/{key}"
@@ -219,16 +233,15 @@ class FakeLVMAdapter:
     def resize_lv(self, vg: str, lv: str, new_size_gib: int) -> None:
         key = f"{vg}/{lv}"
         if key not in self.volumes:
-            raise NotFoundError("LogicalVolume", f"/dev/{key}")
+            raise NotFoundError("LogicalVolume", _LOGICAL_VOLUME_REF)
         current_size_gib = self.volumes[key]
         if current_size_gib == new_size_gib:
             return
         if current_size_gib > new_size_gib:
             raise PreconditionFailedError(
-                f"Logical volume '/dev/{key}' is already larger than requested size",
+                "Logical volume is already larger than requested size",
                 {
                     "resource": "LogicalVolume",
-                    "name": f"/dev/{key}",
                     "current_size_gib": current_size_gib,
                     "requested_size_gib": new_size_gib,
                 },
@@ -245,15 +258,17 @@ class FakeLVMAdapter:
         src_key = f"{vg}/{source_lv}"
         snap_key = f"{vg}/{snap_lv}"
         if src_key not in self.volumes:
-            raise NotFoundError("LogicalVolume", f"/dev/{src_key}")
+            raise NotFoundError("LogicalVolume", _LOGICAL_VOLUME_REF)
         if snap_key in self.volumes:
-            raise AlreadyExistsError("Snapshot", f"/dev/{snap_key}")
+            raise AlreadyExistsError("Snapshot", _SNAPSHOT_REF)
         self.volumes[snap_key] = self.volumes[src_key]
         self.kinds[snap_key] = "snapshot"
         self.origins[snap_key] = source_lv
         return f"/dev/{snap_key}"
 
     def get_vg_capacity(self, vg: str) -> dict[str, float]:
-        provisioned = float(sum(size for key, size in self.volumes.items() if key.startswith(f"{vg}/")))
+        provisioned = float(
+            sum(size for key, size in self.volumes.items() if key.startswith(f"{vg}/"))
+        )
         total = max(1000.0, provisioned)
         return {"total_gb": total, "free_gb": max(total - provisioned, 0.0)}

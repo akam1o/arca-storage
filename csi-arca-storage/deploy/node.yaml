@@ -11,13 +11,21 @@ spec:
       app: csi-arca-storage-node
   template:
     metadata:
+      annotations:
+        arca.storage.io/pod-security-exception: "privileged CSI node mount operations"
       labels:
         app: csi-arca-storage-node
     spec:
       serviceAccountName: csi-arca-storage-node
+      automountServiceAccountToken: false
       priorityClassName: system-node-critical
       hostNetwork: true
       dnsPolicy: ClusterFirstWithHostNet
+      nodeSelector:
+        kubernetes.io/os: linux
+      securityContext:
+        seccompProfile:
+          type: RuntimeDefault
       tolerations:
         - operator: Exists
       containers:
@@ -50,9 +58,6 @@ spec:
           volumeMounts:
             - name: socket-dir
               mountPath: /csi
-            - name: plugin-dir
-              mountPath: /var/lib/kubelet/plugins/csi.arca-storage.io
-              mountPropagation: Bidirectional
             - name: pods-mount-dir
               mountPath: /var/lib/kubelet/pods
               mountPropagation: Bidirectional
@@ -79,13 +84,20 @@ spec:
             limits:
               cpu: 200m
               memory: 256Mi
-        
+
         # CSI Node Driver Registrar
         - name: node-driver-registrar
           image: registry.k8s.io/sig-storage/csi-node-driver-registrar:v2.12.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           args:
             - --csi-address=/csi/csi.sock
-            - --kubelet-registration-path=/var/lib/kubelet/plugins/csi.arca-storage.io/csi.sock
+            - >-
+              --kubelet-registration-path=/var/lib/kubelet/plugins/csi.arca-storage.io/csi.sock
             - --v=5
           volumeMounts:
             - name: socket-dir
@@ -99,10 +111,16 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
-        
+
         # Liveness Probe
         - name: liveness-probe
           image: registry.k8s.io/sig-storage/livenessprobe:v2.14.0
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop:
+                - ALL
           args:
             - --csi-address=/csi/csi.sock
             - --health-port=9809
@@ -116,13 +134,9 @@ spec:
             limits:
               cpu: 100m
               memory: 64Mi
-      
+
       volumes:
         - name: socket-dir
-          hostPath:
-            path: /var/lib/kubelet/plugins/csi.arca-storage.io
-            type: DirectoryOrCreate
-        - name: plugin-dir
           hostPath:
             path: /var/lib/kubelet/plugins/csi.arca-storage.io
             type: DirectoryOrCreate

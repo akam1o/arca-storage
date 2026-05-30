@@ -3,6 +3,8 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
+	"strings"
 	"time"
 
 	"gopkg.in/yaml.v3"
@@ -29,11 +31,12 @@ type Config struct {
 
 // ArcaConfig holds ARCA API configuration
 type ArcaConfig struct {
-	BaseURL   string    `yaml:"base_url"`
-	Timeout   Duration  `yaml:"timeout"`
-	AuthType  string    `yaml:"auth_type"`
-	AuthToken string    `yaml:"auth_token"`
-	TLS       TLSConfig `yaml:"tls"`
+	BaseURL                     string    `yaml:"base_url"`
+	Timeout                     Duration  `yaml:"timeout"`
+	AuthType                    string    `yaml:"auth_type"`
+	AuthToken                   string    `yaml:"auth_token"`
+	AllowInsecureTokenTransport bool      `yaml:"allow_insecure_token_transport"`
+	TLS                         TLSConfig `yaml:"tls"`
 }
 
 // TLSConfig holds TLS configuration
@@ -90,7 +93,7 @@ func (d Duration) MarshalYAML() (interface{}, error) {
 
 // LoadConfig loads configuration from a file
 func LoadConfig(path string) (*Config, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- path is an operator-provided config file.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read config file: %w", err)
 	}
@@ -110,9 +113,10 @@ func LoadConfig(path string) (*Config, error) {
 	if config.ARCA.AuthType == "" {
 		config.ARCA.AuthType = AuthTypeToken
 	}
+	config.ARCA.AuthToken = strings.TrimSpace(config.ARCA.AuthToken)
 
 	// Override auth token from environment if set
-	if envToken := os.Getenv("ARCA_AUTH_TOKEN"); envToken != "" {
+	if envToken := strings.TrimSpace(os.Getenv("ARCA_AUTH_TOKEN")); envToken != "" {
 		config.ARCA.AuthToken = envToken
 	}
 
@@ -130,14 +134,25 @@ func (c *Config) ValidateForMode(mode string) error {
 		return fmt.Errorf("arca.base_url is required")
 	}
 	authType := normalizedAuthType(c.ARCA.AuthType)
+	authToken := strings.TrimSpace(c.ARCA.AuthToken)
 	switch authType {
 	case AuthTypeToken:
-		if c.ARCA.AuthToken == "" {
+		if authToken == "" {
 			return fmt.Errorf("arca.auth_token is required when arca.auth_type is %q", AuthTypeToken)
+		}
+		if err := arca.ValidateTokenTransport(
+			c.ARCA.BaseURL,
+			authToken,
+			c.ARCA.AllowInsecureTokenTransport,
+		); err != nil {
+			return fmt.Errorf("arca.base_url: %w", err)
 		}
 	case AuthTypeNone:
 	default:
 		return fmt.Errorf("arca.auth_type must be %q or %q", AuthTypeToken, AuthTypeNone)
+	}
+	if err := c.validateTLSConfig(); err != nil {
+		return err
 	}
 
 	switch mode {
@@ -146,6 +161,9 @@ func (c *Config) ValidateForMode(mode string) error {
 			return err
 		}
 	case "node":
+		if err := c.validateNodeFilesystemPaths(); err != nil {
+			return err
+		}
 	default:
 		return fmt.Errorf("invalid driver mode %q", mode)
 	}
@@ -157,11 +175,47 @@ func (c *Config) ValidateForMode(mode string) error {
 	return nil
 }
 
+func (c *Config) validateTLSConfig() error {
+	hasClientCert := c.ARCA.TLS.ClientCertPath != ""
+	hasClientKey := c.ARCA.TLS.ClientKeyPath != ""
+	if hasClientCert != hasClientKey {
+		return fmt.Errorf("arca.tls.client_cert_path and arca.tls.client_key_path must be set together")
+	}
+	return nil
+}
+
 func normalizedAuthType(authType string) string {
 	if authType == "" {
 		return AuthTypeToken
 	}
 	return authType
+}
+
+func validateOptionalAbsolutePath(value, field string) error {
+	if value == "" {
+		return nil
+	}
+	if !filepath.IsAbs(value) {
+		return fmt.Errorf("%s must be an absolute path", field)
+	}
+	cleaned := filepath.Clean(value)
+	if cleaned != value {
+		return fmt.Errorf("%s must be canonical", field)
+	}
+	if cleaned == string(filepath.Separator) {
+		return fmt.Errorf("%s must not be the filesystem root", field)
+	}
+	return nil
+}
+
+func (c *Config) validateNodeFilesystemPaths() error {
+	if err := validateOptionalAbsolutePath(c.Driver.StateFilePath, "driver.state_file_path"); err != nil {
+		return err
+	}
+	if err := validateOptionalAbsolutePath(c.Driver.BaseMountPath, "driver.base_mount_path"); err != nil {
+		return err
+	}
+	return nil
 }
 
 func (c *Config) validateNetworkPools() error {
@@ -180,15 +234,16 @@ func (c *Config) validateNetworkPools() error {
 
 // ToArcaClientConfig converts to ARCA client configuration
 func (c *Config) ToArcaClientConfig() *arca.ClientConfig {
-	authToken := c.ARCA.AuthToken
+	authToken := strings.TrimSpace(c.ARCA.AuthToken)
 	if normalizedAuthType(c.ARCA.AuthType) == AuthTypeNone {
 		authToken = ""
 	}
 	return &arca.ClientConfig{
-		BaseURL:    c.ARCA.BaseURL,
-		Timeout:    c.ARCA.Timeout.Duration,
-		RetryCount: 3,
-		AuthToken:  authToken,
+		BaseURL:                     c.ARCA.BaseURL,
+		Timeout:                     c.ARCA.Timeout.Duration,
+		RetryCount:                  3,
+		AuthToken:                   authToken,
+		AllowInsecureTokenTransport: c.ARCA.AllowInsecureTokenTransport,
 		TLSConfig: &arca.TLSConfig{
 			CACertPath:     c.ARCA.TLS.CACertPath,
 			ClientCertPath: c.ARCA.TLS.ClientCertPath,

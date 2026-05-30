@@ -2,7 +2,12 @@
 
 from datetime import datetime, timedelta, timezone
 
-from arca_storage.api.services import export_service, snapshot_service, svm_service, volume_service
+from arca_storage.api.services import (
+    export_service,
+    snapshot_service,
+    svm_service,
+    volume_service,
+)
 from arca_storage.create_resume import assign_create_lease, extend_create_lease
 from arca_storage.models.base import Phase
 from arca_storage.models.export import ExportSpec
@@ -159,17 +164,23 @@ def test_acquired_active_create_reservations_can_resume():
         owner=owner,
     )
     assert volume_service._can_resume_create(
-        _record(volume_spec, {"phase": "Creating", "message": "", "create_owner": owner}),
+        _record(
+            volume_spec, {"phase": "Creating", "message": "", "create_owner": owner}
+        ),
         volume_spec,
         owner=owner,
     )
     assert snapshot_service._can_resume_create(
-        _record(snapshot_spec, {"phase": "Creating", "message": "", "create_owner": owner}),
+        _record(
+            snapshot_spec, {"phase": "Creating", "message": "", "create_owner": owner}
+        ),
         snapshot_spec,
         owner=owner,
     )
     assert export_service._can_resume_create(
-        _record(export_spec, {"phase": "Creating", "message": "", "create_owner": owner}),
+        _record(
+            export_spec, {"phase": "Creating", "message": "", "create_owner": owner}
+        ),
         export_spec,
         owner=owner,
     )
@@ -186,6 +197,8 @@ def test_extend_create_lease_keeps_active_status_fresh_only_while_active():
     assert status.create_lease_expires_at == now + timedelta(minutes=16)
 
     status.phase = Phase.READY
-    assert extend_create_lease(status, "owner-1", now=now + timedelta(minutes=2)) is False
+    assert (
+        extend_create_lease(status, "owner-1", now=now + timedelta(minutes=2)) is False
+    )
     assert status.phase == Phase.READY
     assert status.create_lease_expires_at == now + timedelta(minutes=16)

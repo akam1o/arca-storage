@@ -1,6 +1,7 @@
 """Unit tests for ARCA Storage Cinder utilities."""
 
 import os
+import subprocess
 import tempfile
 import unittest
 from unittest.mock import Mock, patch, mock_open
@@ -13,6 +14,10 @@ from arca_storage.openstack.cinder import exceptions as arca_exceptions
 
 class TestUtilityFunctions(unittest.TestCase):
     """Test utility functions."""
+
+    def _assert_redacted(self, rendered: str, *forbidden_values: str) -> None:
+        for forbidden in forbidden_values:
+            assert forbidden not in rendered
 
     def _fake_sparse_cp(self, command, **kwargs):
         """Stand in for GNU cp --sparse=always in platform-neutral unit tests."""
@@ -51,7 +56,9 @@ class TestUtilityFunctions(unittest.TestCase):
         """Test mount point creation failure."""
         mock_makedirs.side_effect = OSError("Permission denied")
 
-        with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to create mount point"):
+        with pytest.raises(
+            arca_exceptions.ArcaStorageException, match="Failed to create mount point"
+        ):
             arca_utils.ensure_mount_point_exists("/test")
 
     @patch("arca_storage.openstack.cinder.utils.subprocess.run")
@@ -112,6 +119,59 @@ class TestUtilityFunctions(unittest.TestCase):
             )
 
     @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    @patch("arca_storage.openstack.cinder.utils.get_nfs_share_info")
+    @patch("arca_storage.openstack.cinder.utils.ensure_mount_point_exists")
+    def test_mount_nfs_failure_redacts_export_details(
+        self, mock_ensure, mock_share_info, mock_run
+    ):
+        """Mount failures must not surface export paths, mount paths, or command stderr."""
+        mock_share_info.return_value = None
+        mock_run.side_effect = subprocess.CalledProcessError(
+            32,
+            "mount",
+            stderr="mount failed for 192.168.100.5:/exports/secret: token=secret-token",
+        )
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.mount_nfs(
+                export_path="192.168.100.5:/exports/secret",
+                mount_point="/mnt/secret",
+                mount_options="rw,noatime,vers=4.1",
+            )
+
+        rendered = str(exc_info.value)
+        assert "Failed to mount NFS export" in rendered
+        for forbidden in (
+            "192.168.100.5",
+            "/exports/secret",
+            "/mnt/secret",
+            "secret-token",
+        ):
+            assert forbidden not in rendered
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    @patch("arca_storage.openstack.cinder.utils.get_nfs_share_info")
+    @patch("arca_storage.openstack.cinder.utils.ensure_mount_point_exists")
+    def test_mount_nfs_timeout_redacts_export_details(
+        self, mock_ensure, mock_share_info, mock_run
+    ):
+        """Mount timeout errors must not include the requested export path."""
+        mock_share_info.return_value = None
+        mock_run.side_effect = subprocess.TimeoutExpired("mount", timeout=30)
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.mount_nfs(
+                export_path="192.168.100.5:/exports/secret",
+                mount_point="/mnt/secret",
+                mount_options="rw,noatime,vers=4.1",
+            )
+
+        rendered = str(exc_info.value)
+        assert "Mount operation timed out" in rendered
+        for forbidden in ("192.168.100.5", "/exports/secret", "/mnt/secret"):
+            assert forbidden not in rendered
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
     @patch("arca_storage.openstack.cinder.utils.is_mounted")
     def test_unmount_nfs_success(self, mock_is_mounted, mock_run):
         """Test successful NFS unmount."""
@@ -137,8 +197,6 @@ class TestUtilityFunctions(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.utils.is_mounted")
     def test_unmount_nfs_force_on_failure(self, mock_is_mounted, mock_run, mock_lazy):
         """Test force unmount on failure."""
-        import subprocess
-
         mock_is_mounted.return_value = True
         # Use CalledProcessError which is what subprocess.run raises
         mock_run.side_effect = subprocess.CalledProcessError(1, "umount", stderr="busy")
@@ -146,6 +204,42 @@ class TestUtilityFunctions(unittest.TestCase):
         arca_utils.unmount_nfs("/mnt/test", force=True)
 
         mock_lazy.assert_called_once_with("/mnt/test")
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    @patch("arca_storage.openstack.cinder.utils.is_mounted")
+    def test_unmount_nfs_failure_redacts_mount_details(self, mock_is_mounted, mock_run):
+        """Unmount failures must not surface local mount paths or command stderr."""
+        mock_is_mounted.return_value = True
+        mock_run.side_effect = subprocess.CalledProcessError(
+            32,
+            "umount",
+            stderr="umount failed for /mnt/secret: token=secret-token",
+        )
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.unmount_nfs("/mnt/secret")
+
+        rendered = str(exc_info.value)
+        assert "Failed to unmount NFS export" in rendered
+        for forbidden in ("/mnt/secret", "secret-token"):
+            assert forbidden not in rendered
+
+    @patch("arca_storage.openstack.cinder.utils.subprocess.run")
+    def test_lazy_unmount_failure_redacts_mount_details(self, mock_run):
+        """Lazy unmount failures must not surface local mount paths or command stderr."""
+        mock_run.side_effect = subprocess.CalledProcessError(
+            32,
+            "umount -l",
+            stderr="lazy unmount failed for /mnt/secret: token=secret-token",
+        )
+
+        with pytest.raises(arca_exceptions.ArcaStorageException) as exc_info:
+            arca_utils.lazy_unmount("/mnt/secret")
+
+        rendered = str(exc_info.value)
+        assert "Failed to lazy unmount NFS export" in rendered
+        for forbidden in ("/mnt/secret", "secret-token"):
+            assert forbidden not in rendered
 
     @patch("arca_storage.openstack.cinder.utils.subprocess.run")
     def test_is_mounted_via_proc(self, mock_run):
@@ -209,8 +303,10 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="already exists"
-            ):
+            ) as exc_info:
                 arca_utils.create_volume_file(mount_point, "test-volume", 10)
+
+            self._assert_redacted(str(exc_info.value), mount_point, volume_file)
 
     def test_create_volume_file_adopts_matching_existing_file(self):
         """Retry adoption accepts an existing file only when its size matches."""
@@ -228,6 +324,32 @@ class TestUtilityFunctions(unittest.TestCase):
 
             assert result == volume_file
 
+    def test_create_volume_file_adoption_rejects_symlink_after_path_prechecks(self):
+        """Retry adoption must not trust path checks that can race before stat."""
+        with tempfile.TemporaryDirectory() as mount_point:
+            target_path = os.path.join(mount_point, "target")
+            volume_file = os.path.join(mount_point, "test-volume")
+            with open(target_path, "wb") as handle:
+                handle.truncate(1024**3)
+            os.symlink(target_path, volume_file)
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.os.path.islink", return_value=False
+            ):
+                with patch(
+                    "arca_storage.openstack.cinder.utils.os.path.isfile",
+                    return_value=True,
+                ):
+                    with pytest.raises(
+                        arca_exceptions.ArcaStorageException, match="not a regular file"
+                    ):
+                        arca_utils.create_volume_file(
+                            mount_point,
+                            "test-volume",
+                            1,
+                            adopt_existing=True,
+                        )
+
     def test_create_volume_file_rejects_mismatched_existing_file(self):
         """Retry adoption rejects stale files with the wrong size."""
         with tempfile.TemporaryDirectory() as mount_point:
@@ -237,13 +359,15 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="expected"
-            ):
+            ) as exc_info:
                 arca_utils.create_volume_file(
                     mount_point,
                     "test-volume",
                     1,
                     adopt_existing=True,
                 )
+
+            self._assert_redacted(str(exc_info.value), mount_point, volume_file)
 
     def test_ensure_volume_file_reports_adopted_existing_file(self):
         """ensure_volume_file tells callers whether cleanup owns the file."""
@@ -267,19 +391,56 @@ class TestUtilityFunctions(unittest.TestCase):
         with tempfile.TemporaryDirectory() as mount_point:
             volume_file = os.path.join(mount_point, "test-volume")
 
-            with patch("arca_storage.openstack.cinder.utils.os.ftruncate", side_effect=OSError("truncate failed")):
+            with patch(
+                "arca_storage.openstack.cinder.utils.os.ftruncate",
+                side_effect=OSError("truncate failed"),
+            ):
                 with pytest.raises(
                     arca_exceptions.ArcaStorageException,
                     match="Failed to create volume file",
-                ):
+                ) as exc_info:
                     arca_utils.ensure_volume_file(mount_point, "test-volume", 1)
 
+            self._assert_redacted(
+                str(exc_info.value), mount_point, volume_file, "truncate failed"
+            )
             assert not os.path.exists(volume_file)
+
+    def test_volume_file_helpers_reject_unsafe_names(self):
+        """Volume file helpers must not allow path traversal outside the mount."""
+        unsafe_names = [
+            "../escape",
+            "nested/escape",
+            "nested\\escape",
+            "",
+            ".hidden",
+            "volume\nBAD",
+        ]
+
+        for volume_name in unsafe_names:
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException,
+                match="Invalid volume file name",
+            ):
+                arca_utils.get_volume_file_path("/mnt/test", volume_name)
+
+    def test_create_volume_file_rejects_unsafe_name_before_open(self):
+        """Unsafe names are rejected before any filesystem mutation."""
+        with patch("arca_storage.openstack.cinder.utils.os.open") as mock_open_file:
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException,
+                match="Invalid volume file name",
+            ):
+                arca_utils.create_volume_file("/mnt/test", "../escape", 1)
+
+        mock_open_file.assert_not_called()
 
     @patch("arca_storage.openstack.cinder.utils.os.remove")
     def test_delete_volume_file_success(self, mock_remove):
         """Test volume file deletion."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
+        with patch(
+            "arca_storage.openstack.cinder.utils.os.path.exists", return_value=True
+        ):
             arca_utils.delete_volume_file("/mnt/test", "test-volume")
 
         mock_remove.assert_called_once()
@@ -287,7 +448,9 @@ class TestUtilityFunctions(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.utils.os.remove")
     def test_delete_volume_file_not_exists(self, mock_remove):
         """Test volume file deletion when file doesn't exist."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=False):
+        with patch(
+            "arca_storage.openstack.cinder.utils.os.path.exists", return_value=False
+        ):
             arca_utils.delete_volume_file("/mnt/test", "test-volume")
 
         mock_remove.assert_not_called()
@@ -297,7 +460,9 @@ class TestUtilityFunctions(unittest.TestCase):
         """Test file deletion remains idempotent if another process removed it."""
         mock_remove.side_effect = FileNotFoundError("gone")
 
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
+        with patch(
+            "arca_storage.openstack.cinder.utils.os.path.exists", return_value=True
+        ):
             arca_utils.delete_volume_file("/mnt/test", "test-volume")
 
         mock_remove.assert_called_once()
@@ -307,9 +472,16 @@ class TestUtilityFunctions(unittest.TestCase):
         """Test delete failures are reported to the driver."""
         mock_remove.side_effect = PermissionError("denied")
 
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
-            with pytest.raises(arca_exceptions.ArcaStorageException, match="Failed to delete volume file"):
+        with patch(
+            "arca_storage.openstack.cinder.utils.os.path.exists", return_value=True
+        ):
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException,
+                match="Failed to delete volume file",
+            ) as exc_info:
                 arca_utils.delete_volume_file("/mnt/test", "test-volume")
+
+        self._assert_redacted(str(exc_info.value), "/mnt/test", "denied")
 
     def test_extend_volume_file_success(self):
         """Test volume file extension."""
@@ -322,13 +494,32 @@ class TestUtilityFunctions(unittest.TestCase):
 
             assert os.path.getsize(volume_path) == 1024**3
 
+    def test_extend_volume_file_rejects_shrink(self):
+        """Volume extension must not truncate an unexpectedly larger file."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            volume_path = os.path.join(temp_dir, "test-volume")
+            original_size = 2 * 1024**3
+            with open(volume_path, "wb") as handle:
+                handle.truncate(original_size)
+
+            with pytest.raises(
+                arca_exceptions.ArcaStorageException,
+                match="Refusing to shrink volume file",
+            ) as exc_info:
+                arca_utils.extend_volume_file(temp_dir, "test-volume", 1)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, volume_path)
+            assert os.path.getsize(volume_path) == original_size
+
     def test_extend_volume_file_not_exists(self):
         """Test volume file extension when file doesn't exist."""
         with tempfile.TemporaryDirectory() as temp_dir:
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="does not exist"
-            ):
+            ) as exc_info:
                 arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
+
+            self._assert_redacted(str(exc_info.value), temp_dir)
 
     def test_extend_volume_file_rejects_symlink(self):
         """Volume extension must not follow symlinked volume paths."""
@@ -341,8 +532,10 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="not a regular file"
-            ):
+            ) as exc_info:
                 arca_utils.extend_volume_file(temp_dir, "test-volume", 20)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, link_path, target_path)
 
     def test_copy_sparse_file_rejects_symlink_source(self):
         """Sparse copy must not follow a symlinked source path."""
@@ -356,8 +549,12 @@ class TestUtilityFunctions(unittest.TestCase):
 
             with pytest.raises(
                 arca_exceptions.ArcaStorageException, match="not a symlink"
-            ):
+            ) as exc_info:
                 arca_utils.copy_sparse_file(source_path, dest_path)
+
+            self._assert_redacted(
+                str(exc_info.value), temp_dir, source_path, target_path
+            )
 
     def test_copy_sparse_file_reads_open_source_after_path_replacement(self):
         """Sparse copy reads the validated fd even if the path is replaced later."""
@@ -461,9 +658,10 @@ class TestUtilityFunctions(unittest.TestCase):
                         with pytest.raises(
                             arca_exceptions.ArcaStorageException,
                             match="created by another worker",
-                        ):
+                        ) as exc_info:
                             arca_utils.copy_sparse_file(source_path, dest_path)
 
+            self._assert_redacted(str(exc_info.value), temp_dir, dest_path)
             with open(dest_path, "rb") as dest:
                 assert dest.read() == b"concurrent-data"
 
@@ -485,21 +683,74 @@ class TestUtilityFunctions(unittest.TestCase):
                 ):
                     with pytest.raises(
                         arca_exceptions.ArcaStorageException,
-                        match="dir sync failed",
-                    ):
+                        match="Failed during file copy operation",
+                    ) as exc_info:
                         arca_utils.copy_sparse_file(source_path, dest_path)
 
+            self._assert_redacted(
+                str(exc_info.value), temp_dir, source_path, dest_path, "dir sync failed"
+            )
             assert not os.path.exists(dest_path)
             assert not [
                 name for name in os.listdir(temp_dir) if name.startswith(".dest.tmp.")
             ]
 
+    def test_copy_sparse_file_timeout_redacts_source_and_dest(self):
+        """Sparse copy timeouts must not surface source or destination paths."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=subprocess.TimeoutExpired("cp", timeout=5),
+            ):
+                with pytest.raises(
+                    arca_exceptions.ArcaStorageException, match="File copy timed out"
+                ) as exc_info:
+                    arca_utils.copy_sparse_file(source_path, dest_path, timeout=5)
+
+            self._assert_redacted(str(exc_info.value), temp_dir, source_path, dest_path)
+
+    def test_copy_sparse_file_failure_redacts_command_stderr(self):
+        """Sparse copy command failures must not surface paths or subprocess stderr."""
+        with tempfile.TemporaryDirectory() as temp_dir:
+            source_path = os.path.join(temp_dir, "source")
+            dest_path = os.path.join(temp_dir, "dest")
+            with open(source_path, "wb") as source:
+                source.write(b"source-data")
+
+            with patch(
+                "arca_storage.openstack.cinder.utils.subprocess.run",
+                side_effect=subprocess.CalledProcessError(
+                    1,
+                    "cp",
+                    stderr=f"copy failed for {source_path} -> {dest_path}: token=secret-token",
+                ),
+            ):
+                with pytest.raises(
+                    arca_exceptions.ArcaStorageException, match="Failed to copy file"
+                ) as exc_info:
+                    arca_utils.copy_sparse_file(source_path, dest_path)
+
+            self._assert_redacted(
+                str(exc_info.value), temp_dir, source_path, dest_path, "secret-token"
+            )
+
     @patch("arca_storage.openstack.cinder.utils.os.rmdir")
     def test_cleanup_mount_point_success(self, mock_rmdir):
         """Test mount point cleanup."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
-            with patch("arca_storage.openstack.cinder.utils.os.path.isdir", return_value=True):
-                with patch("arca_storage.openstack.cinder.utils.os.listdir", return_value=[]):
+        with patch(
+            "arca_storage.openstack.cinder.utils.os.path.exists", return_value=True
+        ):
+            with patch(
+                "arca_storage.openstack.cinder.utils.os.path.isdir", return_value=True
+            ):
+                with patch(
+                    "arca_storage.openstack.cinder.utils.os.listdir", return_value=[]
+                ):
                     arca_utils.cleanup_mount_point("/mnt/test")
 
         mock_rmdir.assert_called_once()
@@ -507,9 +758,16 @@ class TestUtilityFunctions(unittest.TestCase):
     @patch("arca_storage.openstack.cinder.utils.os.rmdir")
     def test_cleanup_mount_point_not_empty(self, mock_rmdir):
         """Test mount point cleanup when directory not empty."""
-        with patch("arca_storage.openstack.cinder.utils.os.path.exists", return_value=True):
-            with patch("arca_storage.openstack.cinder.utils.os.path.isdir", return_value=True):
-                with patch("arca_storage.openstack.cinder.utils.os.listdir", return_value=["file"]):
+        with patch(
+            "arca_storage.openstack.cinder.utils.os.path.exists", return_value=True
+        ):
+            with patch(
+                "arca_storage.openstack.cinder.utils.os.path.isdir", return_value=True
+            ):
+                with patch(
+                    "arca_storage.openstack.cinder.utils.os.listdir",
+                    return_value=["file"],
+                ):
                     arca_utils.cleanup_mount_point("/mnt/test")
 
         mock_rmdir.assert_not_called()

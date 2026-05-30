@@ -6,6 +6,7 @@ import pytest
 
 from arca_storage.cli.lib.validators import (
     legacy_svm_root_lv_name,
+    normalize_nfs_client_cidr,
     snapshot_lv_name,
     svm_root_lv_name,
     validate_gateway_for_ip_cidr,
@@ -159,6 +160,30 @@ class TestValidateSvmIpCidr:
         """Test SVM VIP rejects addresses that cannot be bound as service hosts."""
         with pytest.raises(ValueError):
             validate_svm_ip_cidr(cidr)
+
+
+class TestNormalizeNfsClientCidr:
+    """Tests for NFS export client CIDR validation."""
+
+    @pytest.mark.unit
+    def test_normalizes_host_bits(self):
+        assert normalize_nfs_client_cidr("10.0.0.99/24") == "10.0.0.0/24"
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "cidr, match",
+        [
+            ("0.0.0.0/0", "default route"),
+            ("10.0.0.1/0", "default route"),
+            ("224.0.0.0/4", "multicast"),
+            ("127.0.0.0/8", "loopback"),
+            ("169.254.0.0/16", "link-local"),
+            ("240.0.0.0/4", "reserved"),
+        ],
+    )
+    def test_rejects_unsafe_networks(self, cidr, match):
+        with pytest.raises(ValueError, match=match):
+            normalize_nfs_client_cidr(cidr)
 
 
 class TestValidateGatewayForIpCidr:

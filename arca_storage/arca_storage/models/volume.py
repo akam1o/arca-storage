@@ -5,9 +5,9 @@ Volume resource model.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Optional
+from typing import Optional
 
-from pydantic import BaseModel, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from arca_storage.models.base import Phase, ResourceMeta
 
@@ -30,6 +30,22 @@ class VolumeSpec(BaseModel):
         return normalized
 
 
+class QoSStatus(BaseModel):
+    """Persisted QoS settings for a volume."""
+
+    model_config = ConfigDict(extra="forbid")
+
+    svm: Optional[str] = None
+    volume: Optional[str] = None
+    qos_enabled: bool
+    device_id: Optional[str] = None
+    cgroup_path: Optional[str] = None
+    read_iops: Optional[int] = Field(None, gt=0)
+    write_iops: Optional[int] = Field(None, gt=0)
+    read_bps: Optional[int] = Field(None, gt=0)
+    write_bps: Optional[int] = Field(None, gt=0)
+
+
 class VolumeStatus(BaseModel):
     """System-managed actual state for a volume."""
 
@@ -47,7 +63,7 @@ class VolumeStatus(BaseModel):
     resize_owner: Optional[str] = None
     resize_lease_expires_at: Optional[datetime] = None
     resize_target_size_gib: Optional[int] = None
-    qos: Optional[dict[str, Any]] = None
+    qos: Optional[QoSStatus] = None
 
 
 class Volume(BaseModel):

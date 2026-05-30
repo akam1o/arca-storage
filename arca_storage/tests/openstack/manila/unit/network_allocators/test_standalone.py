@@ -1,15 +1,25 @@
 """Unit tests for StandaloneAllocator."""
 
 import threading
-from unittest.mock import Mock
+from unittest.mock import Mock, patch
 
 import pytest
 
 from arca_storage.openstack.manila import exceptions as arca_exceptions
+from arca_storage.openstack.manila.network_allocators import (
+    standalone as standalone_allocator,
+)
 from arca_storage.openstack.manila.network_allocators.standalone import (
     StandaloneAllocator,
 )
 from arca_storage.openstack.manila.network_allocators.base import NetworkAllocation
+
+
+def render_log_calls(*mock_logs):
+    rendered = []
+    for mock_log in mock_logs:
+        rendered.extend(str(call.args) for call in mock_log.call_args_list)
+    return " ".join(rendered)
 
 
 class TestStandaloneAllocator:
@@ -46,31 +56,40 @@ class TestStandaloneAllocator:
 
     def test_validate_config_success(self, allocator):
         """Test successful configuration validation."""
-        allocator.validate_config()
+        with patch.object(standalone_allocator.LOG, "debug") as mock_debug:
+            allocator.validate_config()
         assert len(allocator._ip_vlan_pools) == 2
         assert allocator._ip_vlan_pools[0]["vlan_id"] == 100
         assert allocator._ip_vlan_pools[1]["vlan_id"] == 101
+        rendered_calls = render_log_calls(mock_debug)
+        assert "192.168.100.0" not in rendered_calls
+        assert "192.168.101.0" not in rendered_calls
+        assert "192.168.100.10" not in rendered_calls
+        assert "192.168.101.20" not in rendered_calls
+        assert "Parsed standalone IP pool %d with %d IPs" in rendered_calls
 
     def test_validate_config_no_pools(self, mock_arca_client):
         """Test validation fails with no pools configured."""
         config = Mock()
         config.arca_storage_per_project_ip_pools = []
-        allocator = StandaloneAllocator(
-            config, mock_arca_client, threading.Lock(), 0
-        )
+        allocator = StandaloneAllocator(config, mock_arca_client, threading.Lock(), 0)
 
-        with pytest.raises(arca_exceptions.ArcaNetworkConfigurationError, match="arca_storage_per_project_ip_pools is required"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConfigurationError,
+            match="arca_storage_per_project_ip_pools is required",
+        ):
             allocator.validate_config()
 
     def test_validate_config_invalid_format(self, mock_arca_client):
         """Test validation fails with invalid pool format."""
         config = Mock()
         config.arca_storage_per_project_ip_pools = ["invalid-format"]
-        allocator = StandaloneAllocator(
-            config, mock_arca_client, threading.Lock(), 0
-        )
+        allocator = StandaloneAllocator(config, mock_arca_client, threading.Lock(), 0)
 
-        with pytest.raises(arca_exceptions.ArcaNetworkConfigurationError, match="Invalid pool configuration"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConfigurationError,
+            match="Invalid pool configuration",
+        ):
             allocator.validate_config()
 
     def test_validate_config_invalid_vlan_range(self, mock_arca_client):
@@ -79,11 +98,12 @@ class TestStandaloneAllocator:
         config.arca_storage_per_project_ip_pools = [
             "192.168.100.0/24|192.168.100.10-192.168.100.20:5000"  # VLAN > 4094
         ]
-        allocator = StandaloneAllocator(
-            config, mock_arca_client, threading.Lock(), 0
-        )
+        allocator = StandaloneAllocator(config, mock_arca_client, threading.Lock(), 0)
 
-        with pytest.raises(arca_exceptions.ArcaNetworkConfigurationError, match="VLAN ID .* out of range"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConfigurationError,
+            match="VLAN ID .* out of range",
+        ):
             allocator.validate_config()
 
     def test_validate_config_gateway_in_range(self, mock_arca_client):
@@ -93,11 +113,12 @@ class TestStandaloneAllocator:
         config.arca_storage_per_project_ip_pools = [
             "192.168.100.0/24|192.168.100.1-192.168.100.20:100"
         ]
-        allocator = StandaloneAllocator(
-            config, mock_arca_client, threading.Lock(), 0
-        )
+        allocator = StandaloneAllocator(config, mock_arca_client, threading.Lock(), 0)
 
-        with pytest.raises(arca_exceptions.ArcaNetworkConfigurationError, match="Gateway IP .* is within allocatable range"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConfigurationError,
+            match="Gateway IP .* is within allocatable range",
+        ):
             allocator.validate_config()
 
     def test_allocate_success(self, allocator, mock_arca_client):
@@ -105,13 +126,20 @@ class TestStandaloneAllocator:
         allocator.validate_config()
         mock_arca_client.list_svms.return_value = []
 
-        allocation = allocator.allocate("project-123", "manila_project-123")
+        with patch.object(standalone_allocator.LOG, "debug") as mock_debug:
+            allocation = allocator.allocate("project-123", "manila_project-123")
 
         assert isinstance(allocation, NetworkAllocation)
         assert allocation.vlan_id == 100
         assert allocation.ip_cidr.startswith("192.168.100.")
         assert allocation.gateway == "192.168.100.1"
         assert allocation.allocation_id is None
+        rendered_calls = render_log_calls(mock_debug)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "192.168.100." not in rendered_calls
+        assert "Allocated standalone network from pool %d" in rendered_calls
+        assert "Found free IP in standalone pool" in rendered_calls
 
     def test_allocate_round_robin(self, allocator, mock_arca_client):
         """Test round-robin pool selection."""
@@ -156,15 +184,20 @@ class TestStandaloneAllocator:
         used_svms = []
         for vlan, start, end in [(100, 10, 20), (101, 10, 20)]:
             for i in range(start, end + 1):
-                used_svms.append({
-                    "name": f"svm-{vlan}-{i}",
-                    "vlan_id": vlan,
-                    "vip": f"192.168.{vlan}.{i}",
-                })
+                used_svms.append(
+                    {
+                        "name": f"svm-{vlan}-{i}",
+                        "vlan_id": vlan,
+                        "vip": f"192.168.{vlan}.{i}",
+                    }
+                )
 
         mock_arca_client.list_svms.return_value = used_svms
 
-        with pytest.raises(arca_exceptions.ArcaNetworkPoolExhausted, match="All .* IP/VLAN pools exhausted"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkPoolExhausted,
+            match="All .* IP/VLAN pools exhausted",
+        ):
             allocator.allocate("project-123", "manila_project-123")
 
     def test_allocate_with_retry(self, allocator, mock_arca_client):
@@ -173,10 +206,109 @@ class TestStandaloneAllocator:
         mock_arca_client.list_svms.return_value = []
 
         # Retry attempt should use randomized offset
-        allocation = allocator.allocate("project-123", "manila_project-123", retry_attempt=1)
+        allocation = allocator.allocate(
+            "project-123", "manila_project-123", retry_attempt=1
+        )
 
         assert isinstance(allocation, NetworkAllocation)
         assert allocation.vlan_id in [100, 101]
+
+    def test_allocate_redacts_sensitive_unexpected_errors(self, allocator):
+        """Unexpected allocation errors should not leak credentials."""
+        allocator.validate_config()
+        allocator._allocate_from_multi_pool = Mock(
+            side_effect=Exception("Authorization: Bearer secret-token password=hunter2")
+        )
+
+        with patch.object(standalone_allocator.LOG, "error") as mock_error:
+            with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
+                allocator.allocate("project-123", "manila_project-123")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+        rendered_calls = render_log_calls(mock_error)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Failed to allocate standalone network" in rendered_calls
+
+    def test_allocate_redacts_sensitive_pool_error_logs(self, allocator):
+        """Unexpected pool errors should not leak details into logs."""
+        allocator.validate_config()
+        allocator._find_free_slot_in_pool = Mock(
+            side_effect=RuntimeError(
+                "Authorization: Bearer secret-token password=hunter2"
+            )
+        )
+
+        with patch.object(standalone_allocator.LOG, "warning") as mock_warning:
+            with pytest.raises(arca_exceptions.ArcaNetworkPoolExhausted):
+                allocator.allocate("project-123", "manila_project-123")
+
+        rendered_calls = render_log_calls(mock_warning)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert (
+            "Standalone network pool allocation failed with unexpected error"
+            in rendered_calls
+        )
+
+    def test_get_used_ips_logs_redact_malformed_svm_metadata(
+        self, allocator, mock_arca_client
+    ):
+        """Malformed SVM metadata logs should not expose SVM names or IP values."""
+        allocator.validate_config()
+        mock_arca_client.list_svms.return_value = [
+            {
+                "name": "svm-secret-token",
+                "vlan_id": "bad-secret-token",
+                "vip": "192.168.100.10",
+            },
+            {
+                "name": "svm-secret-token",
+                "vlan_id": 100,
+                "vip": "not-an-ip-secret-token",
+            },
+            {
+                "name": "svm-secret-token",
+                "vlan_id": 100,
+                "ip_cidr": "not-a-cidr-secret-token",
+            },
+        ]
+
+        with patch.object(standalone_allocator.LOG, "warning") as mock_warning:
+            allocator._get_used_ips_in_vlan(100)
+
+        rendered_calls = render_log_calls(mock_warning)
+        assert "svm-secret-token" not in rendered_calls
+        assert "bad-secret-token" not in rendered_calls
+        assert "not-an-ip-secret-token" not in rendered_calls
+        assert "not-a-cidr-secret-token" not in rendered_calls
+        assert "192.168.100.10" not in rendered_calls
+        assert "Skipping SVM with invalid VLAN metadata" in rendered_calls
+        assert "Invalid VIP format in SVM metadata" in rendered_calls
+        assert "Invalid ip_cidr format in SVM metadata" in rendered_calls
+
+    def test_get_used_ips_logs_redact_list_errors(self, allocator, mock_arca_client):
+        """SVM list failures should not leak backend details into logs."""
+        allocator.validate_config()
+        mock_arca_client.list_svms.side_effect = RuntimeError(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with patch.object(standalone_allocator.LOG, "warning") as mock_warning:
+            used_ips = allocator._get_used_ips_in_vlan(100)
+
+        assert used_ips == set()
+        rendered_calls = render_log_calls(mock_warning)
+        assert "100" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Failed to get used IPs for standalone allocation" in rendered_calls
 
     def test_deallocate_is_noop(self, allocator):
         """Test deallocate is a no-op for standalone mode."""
@@ -190,9 +322,7 @@ class TestStandaloneAllocator:
         config.arca_storage_per_project_ip_pools = [
             "192.168.100.0/24|192.168.100.10-192.168.100.10:100"
         ]
-        allocator = StandaloneAllocator(
-            config, mock_arca_client, threading.Lock(), 0
-        )
+        allocator = StandaloneAllocator(config, mock_arca_client, threading.Lock(), 0)
 
         allocator.validate_config()
         assert allocator._ip_vlan_pools[0]["num_hosts"] == 1
@@ -203,13 +333,13 @@ class TestStandaloneAllocator:
         config.arca_storage_per_project_ip_pools = [
             "2001:db8::/64|2001:db8::10-2001:db8::20:100"
         ]
-        allocator = StandaloneAllocator(
-            config, mock_arca_client, threading.Lock(), 0
-        )
+        allocator = StandaloneAllocator(config, mock_arca_client, threading.Lock(), 0)
 
         # IPv6 parsing currently fails due to colons in the format
         # This test verifies the error is raised, though the message differs
-        with pytest.raises(arca_exceptions.ArcaNetworkConfigurationError, match="Invalid"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConfigurationError, match="Invalid"
+        ):
             allocator.validate_config()
 
     def test_allocate_handles_vlan_string(self, allocator, mock_arca_client):

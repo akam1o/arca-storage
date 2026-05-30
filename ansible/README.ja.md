@@ -32,12 +32,13 @@ ansible-playbook -i inventory.ini site.yml
 - LVM: `lvm_vg_name`, `lvm_pv_devices`, `lvm_thinpool_name`
 - Pacemaker: `pacemaker_cluster_name`, `pacemaker_nodes`
 - NFS-Ganesha: `nfs_ganesha_export_dir`, `nfs_ganesha_export_clients`
-- arca CLI: `arca_cli_install_method`, `arca_cli_download_url`
+- arca CLI: `arca_cli_install_method`, `arca_cli_download_url`, `arca_cli_download_checksum`
 
 ## 注意事項
 - DRBD/LVMは既存ディスクを破壊する可能性があるため慎重に設定してください。
 - `pacemaker_hacluster_password` は適切な値に変更してください。
 - `drbd_shared_secret` は全ノードで同じ値を設定し、本番環境では必ず変更してください（ansible-vault推奨）。
+- URL 経由で arca CLI をインストールする場合、デフォルトで `arca_cli_download_checksum` が必須です。検証なしのダウンロードは、信頼済みのローカル開発用アーティファクトに限定してください。
 - NFS-Ganeshaのエクスポートは要件に合わせて調整してください。
 - このプレイブックは初期ブートストラップ用途を想定しています。SVM/Volume/Export の作成や Pacemaker リソース作成などのランタイム操作は、デフォルトでは `arca` 側で実施してください。
 
@@ -66,7 +67,7 @@ ansible-playbook -i inventory.ini site.yml --tags arca_cli,arca_runtime \
 ```
 
 ## STONITH設定
-デフォルトでは `pacemaker_enable_stonith: false` に設定されています。本番環境では以下の手順でSTONITHを有効化することを強く推奨します：
+デフォルトでは `pacemaker_enable_stonith: false` に設定されていますが、`site.yml` は STONITH が有効か、隔離された検証環境向けに `pacemaker_allow_stonith_disabled_for_lab: true` が明示されていない限り fail-fast します。本番環境では以下の手順でSTONITHを有効化してください：
 
 1. `group_vars/all.yml` で `pacemaker_enable_stonith: true` に変更
 2. 環境に応じたSTONITHデバイスを手動で作成

@@ -1,3 +1,4 @@
 ---
 # Use the packaged resource agent as the single source of truth.
 pacemaker_netnsvlan_ra_src: "{{ role_path }}/../../../arca_storage/arca_storage/resources/pacemaker/NetnsVlan"
+pacemaker_ra_vendor: local

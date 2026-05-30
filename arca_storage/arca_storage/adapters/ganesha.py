@@ -27,7 +27,9 @@ class GaneshaAdapter(Protocol):
 class SubprocessGaneshaAdapter:
     """Production adapter — renders config and reloads via systemctl."""
 
-    def __init__(self, timeout: int = 30, settings: Optional[ArcaSettings] = None) -> None:
+    def __init__(
+        self, timeout: int = 30, settings: Optional[ArcaSettings] = None
+    ) -> None:
         self._timeout = timeout
         self._settings = settings
 
@@ -39,7 +41,9 @@ class SubprocessGaneshaAdapter:
         bind_addr: Optional[str] = None,
         host_network: bool = False,
     ) -> str:
-        return _legacy_render_config(svm_name, exports, bind_addr=bind_addr, settings=self._settings)
+        return _legacy_render_config(
+            svm_name, exports, bind_addr=bind_addr, settings=self._settings
+        )
 
     def reload(self, svm_name: str, *, host_network: bool = False) -> None:
         unit = "nfs-ganesha-host" if host_network else "nfs-ganesha"
@@ -85,4 +89,6 @@ class FakeGaneshaAdapter:
     def _maybe_fail(self) -> None:
         self._call_count += 1
         if self._call_count <= self._fail_count:
-            raise RuntimeError(f"FakeGaneshaAdapter: injected failure #{self._call_count}")
+            raise RuntimeError(
+                f"FakeGaneshaAdapter: injected failure #{self._call_count}"
+            )

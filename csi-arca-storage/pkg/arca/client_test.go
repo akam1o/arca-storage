@@ -2,14 +2,93 @@ package arca
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
 	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
+	"strings"
 	"testing"
 	"time"
 )
+
+func TestBuildTLSConfigEnforcesModernTLSMinimum(t *testing.T) {
+	tlsConfig, err := buildTLSConfig(&TLSConfig{})
+	if err != nil {
+		t.Fatalf("buildTLSConfig() error = %v", err)
+	}
+	if tlsConfig.MinVersion != tls.VersionTLS12 {
+		t.Fatalf("MinVersion = %v, want TLS 1.2", tlsConfig.MinVersion)
+	}
+}
+
+func TestBuildTLSConfigRejectsPartialClientCertificatePair(t *testing.T) {
+	tests := []struct {
+		name   string
+		config TLSConfig
+	}{
+		{
+			name: "cert without key",
+			config: TLSConfig{
+				ClientCertPath: "/etc/csi-arca-storage/tls/client.crt",
+			},
+		},
+		{
+			name: "key without cert",
+			config: TLSConfig{
+				ClientKeyPath: "/etc/csi-arca-storage/tls/client.key",
+			},
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			_, err := buildTLSConfig(&tt.config)
+			if err == nil {
+				t.Fatal("buildTLSConfig() error = nil, want client certificate pair error")
+			}
+			if !strings.Contains(err.Error(), "client cert and key paths must be set together") {
+				t.Fatalf("buildTLSConfig() error = %v, want client certificate pair error", err)
+			}
+		})
+	}
+}
+
+func TestNewClientRejectsRemoteHTTPTokenWithoutOptIn(t *testing.T) {
+	_, err := NewClient(&ClientConfig{
+		BaseURL:   "http://192.0.2.10:8080",
+		AuthToken: "secret-token",
+	})
+	if err == nil {
+		t.Fatal("NewClient() error = nil, want remote HTTP token transport error")
+	}
+	if !strings.Contains(err.Error(), "remote plain HTTP") {
+		t.Fatalf("NewClient() error = %v, want remote plain HTTP error", err)
+	}
+}
+
+func TestNewClientAllowsRemoteHTTPTokenWithExplicitOptIn(t *testing.T) {
+	_, err := NewClient(&ClientConfig{
+		BaseURL:                     "http://192.0.2.10:8080",
+		AuthToken:                   "secret-token",
+		AllowInsecureTokenTransport: true,
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+}
+
+func TestNewClientAllowsLoopbackHTTPToken(t *testing.T) {
+	_, err := NewClient(&ClientConfig{
+		BaseURL:   "http://127.0.0.1:8080",
+		AuthToken: "secret-token",
+	})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+}
 
 func TestClientDecodesFastAPIEnvelopes(t *testing.T) {
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -86,6 +165,59 @@ func TestClientNormalizesTrailingSlashBaseURL(t *testing.T) {
 	}
 }
 
+func TestClientEscapesPathSegments(t *testing.T) {
+	dangerousName := "tenant/../other%2Fencoded"
+	escapedName := url.PathEscape(dangerousName)
+
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		requests = append(requests, r.Method+" "+r.URL.EscapedPath())
+
+		switch {
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/svms/"+escapedName:
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"name":"tenant","vip":"192.168.10.5"}}`))
+		case r.Method == http.MethodDelete && r.URL.EscapedPath() == "/v1/svms/"+escapedName:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/svms/"+escapedName+"/capacity":
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"total_bytes":1073741824,"available_bytes":536870912,"used_bytes":536870912}}`))
+		case r.Method == http.MethodDelete && r.URL.EscapedPath() == "/v1/directories/"+escapedName:
+			w.WriteHeader(http.StatusNoContent)
+		case r.Method == http.MethodGet && r.URL.EscapedPath() == "/v1/quotas/"+escapedName:
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"path":"pvc/data","quota_bytes":1073741824,"used_bytes":0,"project_id":10}}`))
+		default:
+			t.Fatalf("unexpected request: method=%s path=%s raw_path=%s query=%s", r.Method, r.URL.Path, r.URL.RawPath, r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	ctx := context.Background()
+	if _, err := client.GetSVM(ctx, dangerousName); err != nil {
+		t.Fatalf("GetSVM() error = %v", err)
+	}
+	if err := client.DeleteSVM(ctx, dangerousName); err != nil {
+		t.Fatalf("DeleteSVM() error = %v", err)
+	}
+	if _, err := client.GetSVMCapacity(ctx, dangerousName); err != nil {
+		t.Fatalf("GetSVMCapacity() error = %v", err)
+	}
+	if err := client.DeleteDirectory(ctx, dangerousName, "pvc/data"); err != nil {
+		t.Fatalf("DeleteDirectory() error = %v", err)
+	}
+	if _, err := client.GetQuota(ctx, dangerousName, "pvc/data"); err != nil {
+		t.Fatalf("GetQuota() error = %v", err)
+	}
+
+	if len(requests) != 5 {
+		t.Fatalf("request count = %d, want 5: %v", len(requests), requests)
+	}
+}
+
 func TestListSVMsFollowsPagination(t *testing.T) {
 	var requests []string
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -130,6 +262,36 @@ func TestListSVMsFollowsPagination(t *testing.T) {
 	}
 }
 
+func TestListSVMsRejectsRepeatedPaginationCursor(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/svms" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[],"next_cursor":"cursor-1"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSVMs(context.Background())
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("ListSVMs() error = %v, want ErrInvalidResponse", err)
+	}
+	if strings.Contains(err.Error(), "cursor-1") {
+		t.Fatalf("ListSVMs() error exposed cursor value: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("GET calls = %d, want 2", calls)
+	}
+}
+
 func TestClientRetriesReadRequests(t *testing.T) {
 	var calls int
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -157,6 +319,27 @@ func TestClientRetriesReadRequests(t *testing.T) {
 	}
 	if calls != 2 {
 		t.Fatalf("GET calls = %d, want 2", calls)
+	}
+}
+
+func TestClientRejectsOversizedResponseBody(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(strings.Repeat("x", maxResponseBodyBytes+1)))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.GetSVM(context.Background(), "k8s-default")
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("GetSVM() error = %v, want ErrInvalidResponse", err)
+	}
+	if !strings.Contains(err.Error(), "response body exceeds") {
+		t.Fatalf("GetSVM() error = %v, want response body limit detail", err)
 	}
 }
 
@@ -216,6 +399,56 @@ func TestClientMapsFastAPIResourceErrorDetails(t *testing.T) {
 
 	if err := client.DeleteDirectory(context.Background(), "k8s-default", "pvc-1234"); err != nil {
 		t.Fatalf("DeleteDirectory() error = %v", err)
+	}
+}
+
+func TestClientRedactsStructuredAPIErrorMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"error","error":{"code":"VALIDATION_ERROR","message":"backend rejected token=structured-token password=structured-password Authorization: Bearer structured-bearer","details":{"resource":"SVM"}}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSVMs(context.Background())
+	assertErrorRedactsSecrets(t, err, "structured-token", "structured-password", "structured-bearer")
+}
+
+func TestClientRedactsLegacyAPIErrorMessages(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		w.WriteHeader(http.StatusBadRequest)
+		_, _ = w.Write([]byte(`{"error":"proxy rejected auth_token=legacy-token client_secret=legacy-secret Authorization: Bearer legacy-bearer"}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 1})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSVMs(context.Background())
+	assertErrorRedactsSecrets(t, err, "legacy-token", "legacy-secret", "legacy-bearer")
+}
+
+func assertErrorRedactsSecrets(t *testing.T, err error, secrets ...string) {
+	t.Helper()
+	if err == nil {
+		t.Fatal("error = nil, want failure")
+	}
+	rendered := err.Error()
+	for _, secret := range secrets {
+		if strings.Contains(rendered, secret) {
+			t.Fatalf("error = %q, leaked secret %q", rendered, secret)
+		}
+	}
+	if !strings.Contains(rendered, redactedSecret) {
+		t.Fatalf("error = %q, want redacted marker", rendered)
 	}
 }
 
@@ -369,6 +602,80 @@ func TestSnapshotRequestsUseFastAPIContract(t *testing.T) {
 	}
 	if deleteQuery != "svm=k8s-default&volume=pvc-1234" {
 		t.Fatalf("DeleteSnapshot query = %s", deleteQuery)
+	}
+}
+
+func TestListSnapshotsFollowsPagination(t *testing.T) {
+	var requests []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/snapshots" {
+			http.NotFound(w, r)
+			return
+		}
+		requests = append(requests, r.URL.RawQuery)
+
+		switch len(requests) {
+		case 1:
+			if r.URL.Query().Get("cursor") != "" {
+				t.Fatalf("first request query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"snap-a","svm":"k8s-default","volume":"pvc-1234","status":"Ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":"cursor-1"}}`))
+		case 2:
+			if r.URL.Query().Get("cursor") != "cursor-1" {
+				t.Fatalf("second request query = %s", r.URL.RawQuery)
+			}
+			_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[{"name":"snap-b","svm":"k8s-default","volume":"pvc-1234","status":"Ready","created_at":"2026-01-01T00:00:00Z"}],"next_cursor":null}}`))
+		default:
+			t.Fatalf("unexpected request %d query=%s", len(requests), r.URL.RawQuery)
+		}
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	snapshots, err := client.ListSnapshots(context.Background(), "k8s-default", "pvc-1234", "")
+	if err != nil {
+		t.Fatalf("ListSnapshots() error = %v", err)
+	}
+	if len(snapshots) != 2 || snapshots[0].Name != "snap-a" || snapshots[1].Name != "snap-b" {
+		t.Fatalf("ListSnapshots() = %#v", snapshots)
+	}
+	if len(requests) != 2 {
+		t.Fatalf("request count = %d", len(requests))
+	}
+}
+
+func TestListSnapshotsRejectsRepeatedPaginationCursor(t *testing.T) {
+	var calls int
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		if r.Method != http.MethodGet || r.URL.Path != "/v1/snapshots" {
+			http.NotFound(w, r)
+			return
+		}
+		calls++
+		_, _ = w.Write([]byte(`{"request_id":"req","status":"ok","data":{"items":[],"next_cursor":"cursor-1"}}`))
+	}))
+	defer server.Close()
+
+	client, err := NewClient(&ClientConfig{BaseURL: server.URL, Timeout: time.Second, RetryCount: 0})
+	if err != nil {
+		t.Fatalf("NewClient() error = %v", err)
+	}
+
+	_, err = client.ListSnapshots(context.Background(), "k8s-default", "pvc-1234", "")
+	if !errors.Is(err, ErrInvalidResponse) {
+		t.Fatalf("ListSnapshots() error = %v, want ErrInvalidResponse", err)
+	}
+	if strings.Contains(err.Error(), "cursor-1") {
+		t.Fatalf("ListSnapshots() error exposed cursor value: %v", err)
+	}
+	if calls != 2 {
+		t.Fatalf("GET calls = %d, want 2", calls)
 	}
 }
 

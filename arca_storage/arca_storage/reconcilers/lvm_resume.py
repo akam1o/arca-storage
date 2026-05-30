@@ -44,7 +44,9 @@ def create_snapshot_lv_or_accept_existing(
     source_lv: str,
     snap_lv: str,
 ) -> str:
-    return create_snapshot_lv_or_accept_existing_with_result(lvm, vg, source_lv, snap_lv).path
+    return create_snapshot_lv_or_accept_existing_with_result(
+        lvm, vg, source_lv, snap_lv
+    ).path
 
 
 def create_snapshot_lv_or_accept_existing_with_result(
@@ -55,55 +57,53 @@ def create_snapshot_lv_or_accept_existing_with_result(
 ) -> CreateSnapshotLVResult:
     """Create a snapshot LV, or accept an existing snapshot of the same origin."""
     try:
-        return CreateSnapshotLVResult(path=lvm.create_snapshot(vg, source_lv, snap_lv), created=True)
+        return CreateSnapshotLVResult(
+            path=lvm.create_snapshot(vg, source_lv, snap_lv), created=True
+        )
     except AlreadyExistsError:
         info = lvm.get_lv_info(vg, snap_lv)
         if not info.is_snapshot:
             raise PreconditionFailedError(
-                f"Existing logical volume '/dev/{vg}/{snap_lv}' is not a snapshot",
+                "Existing logical volume is not a snapshot",
                 {
                     "resource": "Snapshot",
-                    "name": f"/dev/{vg}/{snap_lv}",
                     "segtype": info.segtype,
-                    "origin": info.origin,
                 },
             )
         if info.origin and info.origin != source_lv:
             raise PreconditionFailedError(
-                f"Existing snapshot '/dev/{vg}/{snap_lv}' has a different origin",
-                {
-                    "resource": "Snapshot",
-                    "name": f"/dev/{vg}/{snap_lv}",
-                    "expected_origin": source_lv,
-                    "actual_origin": info.origin,
-                },
+                "Existing snapshot has a different origin",
+                {"resource": "Snapshot"},
             )
         return CreateSnapshotLVResult(path=f"/dev/{vg}/{snap_lv}", created=False)
 
 
-def _ensure_volume_lv_matches(info: LVInfo, lv_path: str, size_gib: int, *, thin: bool) -> None:
-    if not math.isclose(info.size_gib, float(size_gib), rel_tol=0.0, abs_tol=_SIZE_ABS_TOLERANCE_GIB):
+def _ensure_volume_lv_matches(
+    info: LVInfo, lv_path: str, size_gib: int, *, thin: bool
+) -> None:
+    if not math.isclose(
+        info.size_gib, float(size_gib), rel_tol=0.0, abs_tol=_SIZE_ABS_TOLERANCE_GIB
+    ):
         raise PreconditionFailedError(
-            f"Existing logical volume '{lv_path}' has a different size",
+            "Existing logical volume has a different size",
             {
                 "resource": "LogicalVolume",
-                "name": lv_path,
                 "expected_size_gib": size_gib,
                 "actual_size_gib": info.size_gib,
             },
         )
     if info.origin:
         raise PreconditionFailedError(
-            f"Existing logical volume '{lv_path}' is a snapshot",
-            {"resource": "LogicalVolume", "name": lv_path, "origin": info.origin},
+            "Existing logical volume is a snapshot",
+            {"resource": "LogicalVolume"},
         )
     if thin and not info.is_thin_volume:
         raise PreconditionFailedError(
-            f"Existing logical volume '{lv_path}' is not thin-provisioned",
-            {"resource": "LogicalVolume", "name": lv_path, "segtype": info.segtype, "attr": info.attr},
+            "Existing logical volume is not thin-provisioned",
+            {"resource": "LogicalVolume", "segtype": info.segtype, "attr": info.attr},
         )
     if not thin and info.is_thin_volume:
         raise PreconditionFailedError(
-            f"Existing logical volume '{lv_path}' is thin-provisioned",
-            {"resource": "LogicalVolume", "name": lv_path, "segtype": info.segtype, "attr": info.attr},
+            "Existing logical volume is thin-provisioned",
+            {"resource": "LogicalVolume", "segtype": info.segtype, "attr": info.attr},
         )

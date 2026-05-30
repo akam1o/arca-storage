@@ -22,8 +22,12 @@ class TestArcaStorageManilaDriverManualStrategy:
             drv.do_setup(Mock())
             return drv
 
-    def test_create_share_uses_share_type_extra_specs(self, driver, mock_arca_client, mock_manila_share):
-        mock_manila_share["share_type"]["extra_specs"] = {"arca_manila:svm_name": "target-svm"}
+    def test_create_share_uses_share_type_extra_specs(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["share_type"]["extra_specs"] = {
+            "arca_manila:svm_name": "target-svm"
+        }
         mock_arca_client.create_volume.return_value = {
             "name": "share-share-123",
             "export_path": "192.168.100.5:/exports/target-svm/share-share-123",
@@ -44,7 +48,9 @@ class TestArcaStorageManilaDriverManualStrategy:
         self, driver, mock_arca_client, mock_manila_share
     ):
         mock_manila_share["metadata"]["arca_svm_name"] = "other-svm"
-        mock_manila_share["share_type"]["extra_specs"] = {"arca_manila:svm_name": "target-svm"}
+        mock_manila_share["share_type"]["extra_specs"] = {
+            "arca_manila:svm_name": "target-svm"
+        }
         mock_arca_client.create_volume.return_value = {
             "name": "share-share-123",
             "export_path": "192.168.100.5:/exports/target-svm/share-share-123",
@@ -71,9 +77,15 @@ class TestArcaStorageManilaDriverManualStrategy:
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
             driver.create_share(Mock(), mock_manila_share, None)
 
-    def test_create_share_svm_not_found_maps_to_backend_exception(self, driver, mock_arca_client, mock_manila_share):
-        mock_manila_share["share_type"]["extra_specs"] = {"arca_manila:svm_name": "nonexistent-svm"}
-        mock_arca_client.create_volume.side_effect = arca_exceptions.ArcaSVMNotFound(svm_name="nonexistent-svm")
+    def test_create_share_svm_not_found_maps_to_backend_exception(
+        self, driver, mock_arca_client, mock_manila_share
+    ):
+        mock_manila_share["share_type"]["extra_specs"] = {
+            "arca_manila:svm_name": "nonexistent-svm"
+        }
+        mock_arca_client.create_volume.side_effect = arca_exceptions.ArcaSVMNotFound(
+            svm_name="nonexistent-svm"
+        )
         with pytest.raises(manila_driver.manila_exception.ShareBackendException):
             driver.create_share(Mock(), mock_manila_share, None)
 
@@ -95,7 +107,9 @@ class TestArcaStorageManilaDriverManualStrategy:
             manila_driver.manila_exception.ShareBackendException,
             match="cannot change SVM",
         ):
-            driver.create_share_from_snapshot(Mock(), new_share, mock_manila_snapshot, None)
+            driver.create_share_from_snapshot(
+                Mock(), new_share, mock_manila_snapshot, None
+            )
 
         mock_arca_client.clone_volume_from_snapshot.assert_not_called()
 
@@ -125,7 +139,9 @@ class TestArcaStorageManilaDriverManualStrategy:
         )
         assert new_share["metadata"]["arca_svm_name"] == "source-svm"
 
-    def test_delete_share_uses_backend_svm_without_share_type(self, driver, mock_arca_client):
+    def test_delete_share_uses_backend_svm_without_share_type(
+        self, driver, mock_arca_client
+    ):
         share = {
             "id": "share-123",
             "size": 10,

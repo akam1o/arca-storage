@@ -46,6 +46,47 @@ jobs:
       - name: Build CSI driver
         run: go build -o /tmp/csi-driver ./cmd/csi-driver
 
+  security:
+    name: CSI Security Gates
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: ./csi-arca-storage
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: csi-arca-storage/go.mod
+          cache-dependency-path: csi-arca-storage/go.sum
+
+      - name: Run govulncheck
+        run: |
+          go install golang.org/x/vuln/cmd/govulncheck@latest
+          # In JSON mode, findings are reported with exit code 0; nonzero means the scan failed.
+          "$(go env GOPATH)/bin/govulncheck" -format json ./... > /tmp/govulncheck.json
+          python3 ../.github/scripts/filter-govulncheck.py ../.github/govulncheck-ignore.txt < /tmp/govulncheck.json
+
+      - name: Run gosec
+        run: |
+          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          "$(go env GOPATH)/bin/gosec" -exclude-dir=.gomodcache ./...
+
+      - name: Build CSI image
+        run: docker build -t csi-arca-storage:ci .
+
+      - name: Run Trivy image scan
+        uses: aquasecurity/trivy-action@v0.36.0
+        with:
+          image-ref: csi-arca-storage:ci
+          format: table
+          exit-code: '1'
+          ignore-unfixed: true
+          vuln-type: os,library
+          severity: CRITICAL,HIGH
+
   manifests:
     name: Manifest Validation
     runs-on: ubuntu-latest
@@ -58,13 +99,18 @@ jobs:
 
       - name: Install kubeconform
         run: |
+          KUBECONFORM_SHA256="95f14e87aa28c09d5941f11bd024c1d02fdc0303ccaa23f61cef67bc92619d73"
           curl -sSLo /tmp/kubeconform.tar.gz \
             https://github.com/yannh/kubeconform/releases/download/v0.6.7/kubeconform-linux-amd64.tar.gz
+          echo "${KUBECONFORM_SHA256}  /tmp/kubeconform.tar.gz" | sha256sum -c -
           tar -xzf /tmp/kubeconform.tar.gz -C /tmp kubeconform
           sudo install -m 0755 /tmp/kubeconform /usr/local/bin/kubeconform
 
-      - name: Prepare production overlay fixture
+      - name: Prepare kustomize overlay fixtures
         run: |
+          cp \
+            csi-arca-storage/deploy/kustomize/overlays/development/secrets.env.example \
+            csi-arca-storage/deploy/kustomize/overlays/development/secrets.env
           cp \
             csi-arca-storage/deploy/kustomize/overlays/production/secrets.env.example \
             csi-arca-storage/deploy/kustomize/overlays/production/secrets.env

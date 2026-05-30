@@ -3,39 +3,126 @@ package driver
 import (
 	"context"
 	"fmt"
+	"sort"
 	"time"
 
 	"k8s.io/klog/v2"
 )
 
-const volumeCreateLockTTL = 30 * time.Second
+const (
+	volumeLifecycleLockTTL            = 30 * time.Second
+	volumeLifecycleLockResourcePrefix = "volume-create-"
+)
 
 type volumeCreateLock struct {
 	token    chan struct{}
 	refCount int
 }
 
-func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (func(), error) {
+type lifecycleLockContextKey struct{}
+
+type lifecycleLockState interface {
+	Done() <-chan struct{}
+	Err() error
+}
+
+func withLifecycleLock(ctx context.Context, lockState lifecycleLockState) context.Context {
+	if lockState == nil {
+		return ctx
+	}
+	existingLockStates := lifecycleLocksFromContext(ctx)
+	lockStates := make([]lifecycleLockState, 0, len(existingLockStates)+1)
+	lockStates = append(lockStates, existingLockStates...)
+	lockStates = append(lockStates, lockState)
+	return context.WithValue(ctx, lifecycleLockContextKey{}, lockStates)
+}
+
+func lifecycleLocksFromContext(ctx context.Context) []lifecycleLockState {
+	var lockStates []lifecycleLockState
+	switch state := ctx.Value(lifecycleLockContextKey{}).(type) {
+	case []lifecycleLockState:
+		lockStates = state
+	case lifecycleLockState:
+		lockStates = []lifecycleLockState{state}
+	}
+
+	filteredLockStates := make([]lifecycleLockState, 0, len(lockStates))
+	for _, lockState := range lockStates {
+		if lockState != nil {
+			filteredLockStates = append(filteredLockStates, lockState)
+		}
+	}
+	return filteredLockStates
+}
+
+func (d *Driver) acquireVolumeCreateLock(ctx context.Context, volumeID string) (context.Context, func(), error) {
+	return d.acquireVolumeLifecycleLock(ctx, volumeID, "create")
+}
+
+func (d *Driver) acquireVolumeLifecycleLocks(ctx context.Context, volumeIDs []string, operation string) (context.Context, func(), error) {
+	unique := make(map[string]struct{}, len(volumeIDs))
+	ordered := make([]string, 0, len(volumeIDs))
+	for _, volumeID := range volumeIDs {
+		if volumeID == "" {
+			continue
+		}
+		if _, ok := unique[volumeID]; ok {
+			continue
+		}
+		unique[volumeID] = struct{}{}
+		ordered = append(ordered, volumeID)
+	}
+	sort.Strings(ordered)
+
+	releases := make([]func(), 0, len(ordered))
+	lockedCtx := ctx
+	for _, volumeID := range ordered {
+		nextCtx, release, err := d.acquireVolumeLifecycleLock(lockedCtx, volumeID, operation)
+		if err != nil {
+			for i := len(releases) - 1; i >= 0; i-- {
+				releases[i]()
+			}
+			return ctx, nil, err
+		}
+		lockedCtx = nextCtx
+		releases = append(releases, release)
+	}
+
+	return lockedCtx, func() {
+		for i := len(releases) - 1; i >= 0; i-- {
+			releases[i]()
+		}
+	}, nil
+}
+
+func (d *Driver) acquireVolumeLifecycleLock(ctx context.Context, volumeID, operation string) (context.Context, func(), error) {
 	releaseLocalLock, err := d.acquireLocalVolumeCreateLock(ctx, volumeID)
 	if err != nil {
-		return nil, err
+		return ctx, nil, err
 	}
 
 	if d.lockManager == nil {
-		return releaseLocalLock, nil
+		return ctx, releaseLocalLock, nil
 	}
 
-	distributedLock, err := d.lockManager.AcquireLock(ctx, "volume-create-"+volumeID, volumeCreateLockTTL)
+	distributedLock, err := d.lockManager.AcquireLock(
+		ctx,
+		volumeLifecycleLockResourcePrefix+volumeID,
+		volumeLifecycleLockTTL,
+	)
 	if err != nil {
 		releaseLocalLock()
-		return nil, fmt.Errorf("failed to acquire distributed volume create lock: %w", err)
+		return ctx, nil, fmt.Errorf("failed to acquire distributed volume %s lock: %w", operation, err)
 	}
 
-	return func() {
+	lockedCtx, cancelLockedCtx := distributedLock.Context(ctx)
+	lockedCtx = withLifecycleLock(lockedCtx, distributedLock)
+	return lockedCtx, func() {
+		cancelLockedCtx()
 		releaseCtx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
 		defer cancel()
 		if err := distributedLock.Release(releaseCtx); err != nil {
-			klog.Warningf("Failed to release distributed volume create lock for %s: %v", volumeID, err)
+			klog.Warningf("Failed to release distributed volume %s lock for %s: %v", operation, volumeID, err)
 		}
 		releaseLocalLock()
 	}, nil

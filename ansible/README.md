@@ -32,12 +32,13 @@ ansible-playbook -i inventory.ini site.yml
 - LVM: `lvm_vg_name`, `lvm_pv_devices`, `lvm_thinpool_name`
 - Pacemaker: `pacemaker_cluster_name`, `pacemaker_nodes`
 - NFS-Ganesha: `nfs_ganesha_export_dir`, `nfs_ganesha_export_clients`
-- arca CLI: `arca_cli_install_method`, `arca_cli_download_url`
+- arca CLI: `arca_cli_install_method`, `arca_cli_download_url`, `arca_cli_download_checksum`
 
 ## Important Notes
 - DRBD/LVM may destroy existing disk data - configure carefully.
 - Change `pacemaker_hacluster_password` to an appropriate value.
 - Set the same `drbd_shared_secret` value on all nodes and change it for production use (ansible-vault recommended).
+- URL-based arca CLI installs require `arca_cli_download_checksum` by default; use unverified downloads only for trusted local development artifacts.
 - Adjust NFS-Ganesha exports according to your requirements.
 - This playbook is intended for initial bootstrap; runtime operations (creating SVMs/volumes/exports and Pacemaker resources) should be handled by `arca` by default.
 
@@ -66,7 +67,7 @@ ansible-playbook -i inventory.ini site.yml --tags arca_cli,arca_runtime \
 ```
 
 ## STONITH Configuration
-By default, `pacemaker_enable_stonith: false` is set. For production environments, it is strongly recommended to enable STONITH:
+By default, `pacemaker_enable_stonith: false` is set, but `site.yml` fails fast unless STONITH is enabled or `pacemaker_allow_stonith_disabled_for_lab: true` is explicitly set for an isolated lab. For production environments, enable STONITH:
 
 1. Change `pacemaker_enable_stonith: true` in `group_vars/all.yml`
 2. Manually create STONITH devices appropriate for your environment

@@ -4,7 +4,8 @@ Volume management commands.
 Delegates mutating operations to API services.
 """
 
-from typing import Optional
+import json
+from typing import Literal, Optional
 
 import typer
 
@@ -13,6 +14,7 @@ from arca_storage.api.services import volume_service
 from arca_storage.cli.commands._pagination import list_all_volumes
 from arca_storage.cli.lib.validators import validate_name
 from arca_storage.context import get_context
+from arca_storage.db import encode_cursor
 
 app = typer.Typer(help="Volume management commands")
 
@@ -22,7 +24,9 @@ def create(
     name: str = typer.Argument(..., help="Volume name"),
     svm: str = typer.Option(..., "--svm", help="SVM name"),
     size: int = typer.Option(..., "--size", help="Size in GiB"),
-    thin: bool = typer.Option(True, "--thin/--no-thin", help="Use thin provisioning (default: True)"),
+    thin: bool = typer.Option(
+        True, "--thin/--no-thin", help="Use thin provisioning (default: True)"
+    ),
 ):
     """Create a new volume."""
     try:
@@ -72,7 +76,9 @@ def resize(
 def delete(
     name: str = typer.Argument(..., help="Volume name"),
     svm: str = typer.Option(..., "--svm", help="SVM name"),
-    force: bool = typer.Option(False, "--force", help="Delete dependent snapshots before deleting"),
+    force: bool = typer.Option(
+        False, "--force", help="Delete dependent snapshots before deleting"
+    ),
 ):
     """Delete a volume after dependent exports/snapshots are handled."""
     try:
@@ -95,11 +101,47 @@ def delete(
 def list(
     svm: Optional[str] = typer.Option(None, "--svm", help="Filter by SVM name"),
     name: Optional[str] = typer.Option(None, "--name", help="Filter by volume name"),
+    limit: Optional[int] = typer.Option(
+        None, "--limit", help="Maximum number of results"
+    ),
+    cursor: Optional[str] = typer.Option(None, "--cursor", help="Pagination cursor"),
+    output_format: Literal["text", "json"] = typer.Option(
+        "text",
+        "--format",
+        help="Output format",
+    ),
 ):
     """List volumes."""
     try:
+        if svm:
+            validate_name(svm)
+        if name:
+            validate_name(name)
+        if limit is not None and limit < 1:
+            raise ValueError("--limit must be positive")
+
         ctx = get_context()
-        volumes = list_all_volumes(ctx.db, svm=svm, name=name)
+        next_cursor = None
+        if limit is None and cursor is None:
+            volumes = list_all_volumes(ctx.db, svm=svm, name=name)
+        else:
+            page_limit = limit or 100
+            volumes = ctx.db.list_volumes(
+                svm=svm, name=name, limit=page_limit + 1, cursor=cursor
+            )
+            if len(volumes) > page_limit:
+                spec = volumes[page_limit - 1]["spec"]
+                next_cursor = encode_cursor([str(spec["svm"]), str(spec["name"])])
+                volumes = volumes[:page_limit]
+
+        if output_format == "json":
+            typer.echo(
+                json.dumps(
+                    {"items": volumes, "next_cursor": next_cursor}, sort_keys=True
+                )
+            )
+            return
+
         if not volumes:
             typer.echo("No volumes found")
             return
@@ -112,6 +154,8 @@ def list(
                 f"phase={status.get('phase', 'unknown')} "
                 f"mount={status.get('mount_path', 'N/A')}"
             )
+        if next_cursor:
+            typer.echo(f"next_cursor={next_cursor}")
     except Exception as e:
         typer.echo(f"Error listing volumes: {e}", err=True)
         raise typer.Exit(1)

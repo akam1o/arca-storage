@@ -10,5 +10,21 @@ ExecStart=/usr/bin/arca-storage-api
 Restart=on-failure
 RestartSec=3
 
+# The API orchestrates LVM, network namespaces, cgroups, and Pacemaker.
+# Keep root execution for those operations, but reduce filesystem and process exposure.
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ReadWritePaths=/etc/arca-storage /etc/ganesha /var/lib/arca-storage /run /var/run /exports
+CapabilityBoundingSet=CAP_SYS_ADMIN CAP_NET_ADMIN CAP_NET_RAW CAP_DAC_OVERRIDE CAP_DAC_READ_SEARCH CAP_FOWNER CAP_CHOWN CAP_MKNOD CAP_SYS_RESOURCE CAP_SETUID CAP_SETGID
+LockPersonality=true
+RestrictRealtime=true
+RestrictSUIDSGID=true
+ProtectClock=true
+ProtectHostname=true
+ProtectKernelLogs=true
+SystemCallArchitectures=native
+
 [Install]
 WantedBy=multi-user.target

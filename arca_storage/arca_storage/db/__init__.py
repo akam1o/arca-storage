@@ -13,7 +13,6 @@ import sqlite3
 import threading
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
-from ipaddress import IPv4Interface
 from pathlib import Path
 from typing import Any, Callable, Generator, Optional, Union
 
@@ -23,16 +22,28 @@ from arca_storage.cli.lib.validators import (
     legacy_volume_lv_name,
     snapshot_lv_name,
     svm_root_lv_name,
+    validate_svm_ip_cidr,
     volume_lv_name,
 )
-from arca_storage.create_resume import ACTIVE_CREATE_PHASES, create_lease_expired, lease_expiration
-from arca_storage.errors import AlreadyExistsError, ConflictError, NotFoundError, PreconditionFailedError
+from arca_storage.create_resume import (
+    ACTIVE_CREATE_PHASES,
+    create_lease_expired,
+    lease_expiration,
+)
+from arca_storage.errors import (
+    AlreadyExistsError,
+    ConflictError,
+    NotFoundError,
+    PreconditionFailedError,
+)
 from arca_storage.models.base import Phase
+from arca_storage.models.volume import QoSStatus
 
 
-_SCHEMA_VERSION = 3
+_SCHEMA_VERSION = 4
 _SNAPSHOT_CLEANUP_RESERVATION_DURATION = timedelta(minutes=5)
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
+_LIST_ALL_PAGE_SIZE = 500
 
 _SCHEMA_SQL = """
 CREATE TABLE IF NOT EXISTS schema_version (
@@ -40,13 +51,16 @@ CREATE TABLE IF NOT EXISTS schema_version (
 );
 
 CREATE TABLE IF NOT EXISTS svms (
-    id          TEXT PRIMARY KEY,
-    name        TEXT NOT NULL UNIQUE,
-    spec        TEXT NOT NULL,
-    status      TEXT NOT NULL,
-    generation  INTEGER NOT NULL DEFAULT 1,
-    created_at  TEXT NOT NULL,
-    updated_at  TEXT NOT NULL
+    id              TEXT PRIMARY KEY,
+    name            TEXT NOT NULL UNIQUE,
+    spec            TEXT NOT NULL,
+    status          TEXT NOT NULL,
+    generation      INTEGER NOT NULL DEFAULT 1,
+    created_at      TEXT NOT NULL,
+    updated_at      TEXT NOT NULL,
+    network_vlan_id INTEGER,
+    network_vip     TEXT,
+    network_key     TEXT
 );
 
 CREATE TABLE IF NOT EXISTS volumes (
@@ -119,14 +133,133 @@ CREATE TABLE IF NOT EXISTS backend_lvs (
 
 _REQUIRED_COLUMNS = {
     "schema_version": {"version"},
-    "svms": {"id", "name", "spec", "status", "generation", "created_at", "updated_at"},
-    "volumes": {"id", "name", "svm", "spec", "status", "generation", "created_at", "updated_at"},
-    "snapshots": {"id", "name", "svm", "volume", "spec", "status", "generation", "created_at", "updated_at"},
-    "snapshot_cleanup_reservations": {"svm", "volume", "name", "owner", "expires_at", "created_at"},
-    "exports": {"id", "svm", "volume", "client", "spec", "status", "generation", "created_at", "updated_at"},
-    "operation_log": {"id", "resource_type", "resource_id", "operation", "phase", "detail", "created_at"},
+    "svms": {
+        "id",
+        "name",
+        "spec",
+        "status",
+        "generation",
+        "created_at",
+        "updated_at",
+        "network_vlan_id",
+        "network_vip",
+        "network_key",
+    },
+    "volumes": {
+        "id",
+        "name",
+        "svm",
+        "spec",
+        "status",
+        "generation",
+        "created_at",
+        "updated_at",
+    },
+    "snapshots": {
+        "id",
+        "name",
+        "svm",
+        "volume",
+        "spec",
+        "status",
+        "generation",
+        "created_at",
+        "updated_at",
+    },
+    "snapshot_cleanup_reservations": {
+        "svm",
+        "volume",
+        "name",
+        "owner",
+        "expires_at",
+        "created_at",
+    },
+    "exports": {
+        "id",
+        "svm",
+        "volume",
+        "client",
+        "spec",
+        "status",
+        "generation",
+        "created_at",
+        "updated_at",
+    },
+    "operation_log": {
+        "id",
+        "resource_type",
+        "resource_id",
+        "operation",
+        "phase",
+        "detail",
+        "created_at",
+    },
     "backend_lvs": {"lv_name", "resource_kind", "resource_key", "created_at"},
 }
+
+
+def _table_columns(conn: sqlite3.Connection, table: str) -> set[str]:
+    return {
+        str(row["name"])
+        for row in conn.execute(f"PRAGMA table_info({table})").fetchall()
+    }
+
+
+def _add_column_if_missing(
+    conn: sqlite3.Connection, table: str, column: str, definition: str
+) -> None:
+    if column not in _table_columns(conn, table):
+        conn.execute(f"ALTER TABLE {table} ADD COLUMN {definition}")
+
+
+def _raise_duplicate_svm_network_keys(conn: sqlite3.Connection) -> None:
+    duplicates = conn.execute(
+        """SELECT network_key, COUNT(*) AS count, GROUP_CONCAT(name, ', ') AS names
+           FROM (
+               SELECT network_key, name
+               FROM svms
+               WHERE network_key IS NOT NULL
+               ORDER BY network_key, name
+           )
+           GROUP BY network_key
+           HAVING count > 1
+           ORDER BY network_key"""
+    ).fetchall()
+    if not duplicates:
+        return
+
+    summaries = [
+        f"{row['network_key']} used by {row['names']}" for row in duplicates[:5]
+    ]
+    remaining = len(duplicates) - len(summaries)
+    if remaining:
+        summaries.append(f"{remaining} more duplicate network keys")
+    raise RuntimeError(
+        "State DB migration cannot create the unique SVM network index because "
+        "existing SVMs share a VIP on the same network. Resolve duplicate SVM "
+        f"network assignments before upgrading: {'; '.join(summaries)}"
+    )
+
+
+def _ensure_indexes(conn: sqlite3.Connection) -> None:
+    _raise_duplicate_svm_network_keys(conn)
+    conn.execute(
+        """CREATE UNIQUE INDEX IF NOT EXISTS idx_svms_network_key
+           ON svms(network_key)
+           WHERE network_key IS NOT NULL"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_operation_log_resource_created
+           ON operation_log(resource_type, resource_id, id DESC)"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_operation_log_created_at
+           ON operation_log(created_at)"""
+    )
+    conn.execute(
+        """CREATE INDEX IF NOT EXISTS idx_exports_svm_owner
+           ON exports(svm, json_extract(spec, '$.owner'))"""
+    )
 
 
 def _register_backend_lv_conn(
@@ -144,7 +277,10 @@ def _register_backend_lv_conn(
         (lv_name,),
     ).fetchone()
     if existing_lv is not None:
-        if existing_lv["resource_kind"] == resource_kind and existing_lv["resource_key"] == resource_key:
+        if (
+            existing_lv["resource_kind"] == resource_kind
+            and existing_lv["resource_key"] == resource_key
+        ):
             return
         raise sqlite3.IntegrityError(f"backend LV name '{lv_name}' is already reserved")
     conn.execute(
@@ -153,7 +289,12 @@ def _register_backend_lv_conn(
            ON CONFLICT(resource_kind, resource_key) DO UPDATE SET
                lv_name=excluded.lv_name
         """,
-        (lv_name, resource_kind, resource_key, now or datetime.now(timezone.utc).isoformat()),
+        (
+            lv_name,
+            resource_kind,
+            resource_key,
+            now or datetime.now(timezone.utc).isoformat(),
+        ),
     )
 
 
@@ -207,13 +348,20 @@ def _migrate_to_v3(conn: sqlite3.Connection) -> None:
         lv_name = status.get("lv_name")
         if spec.get("root_volume_size_gib") or status.get("lv_created") or lv_name:
             lv_name = str(lv_name or legacy_svm_root_lv_name(str(spec["name"])))
-            _backfill_status_lv_name_conn(conn, "svms", "name = ?", (row["name"],), status, lv_name)
-            _register_backend_lv_conn(conn, lv_name, "svm_root", str(spec["name"]), now=now)
+            _backfill_status_lv_name_conn(
+                conn, "svms", "name = ?", (row["name"],), status, lv_name
+            )
+            _register_backend_lv_conn(
+                conn, lv_name, "svm_root", str(spec["name"]), now=now
+            )
 
     for row in conn.execute("SELECT svm, name, spec, status FROM volumes").fetchall():
         spec = json.loads(row["spec"])
         status = json.loads(row["status"])
-        lv_name = str(status.get("lv_name") or legacy_volume_lv_name(str(spec["svm"]), str(spec["name"])))
+        lv_name = str(
+            status.get("lv_name")
+            or legacy_volume_lv_name(str(spec["svm"]), str(spec["name"]))
+        )
         _backfill_status_lv_name_conn(
             conn,
             "volumes",
@@ -222,14 +370,20 @@ def _migrate_to_v3(conn: sqlite3.Connection) -> None:
             status,
             lv_name,
         )
-        _register_backend_lv_conn(conn, lv_name, "volume", f"{spec['svm']}/{spec['name']}", now=now)
+        _register_backend_lv_conn(
+            conn, lv_name, "volume", f"{spec['svm']}/{spec['name']}", now=now
+        )
 
-    for row in conn.execute("SELECT svm, volume, name, spec, status FROM snapshots").fetchall():
+    for row in conn.execute(
+        "SELECT svm, volume, name, spec, status FROM snapshots"
+    ).fetchall():
         spec = json.loads(row["spec"])
         status = json.loads(row["status"])
         lv_name = str(
             status.get("lv_name")
-            or legacy_snapshot_lv_name(str(spec["svm"]), str(spec["volume"]), str(spec["name"]))
+            or legacy_snapshot_lv_name(
+                str(spec["svm"]), str(spec["volume"]), str(spec["name"])
+            )
         )
         _backfill_status_lv_name_conn(
             conn,
@@ -248,9 +402,29 @@ def _migrate_to_v3(conn: sqlite3.Connection) -> None:
         )
 
 
+def _migrate_to_v4(conn: sqlite3.Connection) -> None:
+    _add_column_if_missing(conn, "svms", "network_vlan_id", "network_vlan_id INTEGER")
+    _add_column_if_missing(conn, "svms", "network_vip", "network_vip TEXT")
+    _add_column_if_missing(conn, "svms", "network_key", "network_key TEXT")
+
+    for row in conn.execute("SELECT name, spec FROM svms").fetchall():
+        try:
+            spec = json.loads(row["spec"])
+        except (TypeError, ValueError):
+            continue
+        vlan_id, vip, network_key = _svm_network_columns(spec)
+        conn.execute(
+            """UPDATE svms
+               SET network_vlan_id = ?, network_vip = ?, network_key = ?
+               WHERE name = ?""",
+            (vlan_id, vip, network_key, row["name"]),
+        )
+
+
 _MIGRATIONS: dict[int, Callable[[sqlite3.Connection], None]] = {
     2: _migrate_to_v2,
     3: _migrate_to_v3,
+    4: _migrate_to_v4,
 }
 
 
@@ -260,26 +434,44 @@ def _validate_schema(conn: sqlite3.Connection) -> None:
         actual_columns = {str(row["name"]) for row in rows}
         missing = sorted(required_columns - actual_columns)
         if missing:
-            raise RuntimeError(f"State DB schema for table '{table}' is missing columns: {', '.join(missing)}")
+            raise RuntimeError(
+                f"State DB schema for table '{table}' is missing columns: {', '.join(missing)}"
+            )
 
 
 def _now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
-def _svm_network_key(spec: dict[str, Any]) -> Optional[tuple[Optional[int], str]]:
+def _svm_network_key(
+    spec: dict[str, Any], *, strict: bool = False
+) -> Optional[tuple[Optional[int], str]]:
     ip_cidr = str(spec.get("ip_cidr") or "")
     if not ip_cidr:
         return None
     try:
-        vip = str(IPv4Interface(ip_cidr).ip)
-    except Exception:
-        vip = ip_cidr.split("/", 1)[0]
+        vip, _prefix = validate_svm_ip_cidr(ip_cidr)
+    except ValueError:
+        if strict:
+            raise
+        return None
     if not vip:
         return None
     raw_vlan = spec.get("vlan_id")
     vlan_id = int(raw_vlan) if raw_vlan is not None else None
     return vlan_id, vip
+
+
+def _svm_network_columns(
+    spec: dict[str, Any], *, strict: bool = False
+) -> tuple[Optional[int], Optional[str], Optional[str]]:
+    key = _svm_network_key(spec, strict=strict)
+    if key is None:
+        return None, None, None
+
+    vlan_id, vip = key
+    network_key = f"host:{vip}" if vlan_id is None else f"vlan:{vlan_id}:{vip}"
+    return vlan_id, vip, network_key
 
 
 def encode_cursor(values: list[str]) -> str:
@@ -323,7 +515,10 @@ class StateDB:
                 cur = conn.execute("SELECT version FROM schema_version")
                 row = cur.fetchone()
                 if row is None:
-                    conn.execute("INSERT INTO schema_version (version) VALUES (?)", (_SCHEMA_VERSION,))
+                    conn.execute(
+                        "INSERT INTO schema_version (version) VALUES (?)",
+                        (_SCHEMA_VERSION,),
+                    )
                 else:
                     current_version = int(row["version"])
                     if current_version > _SCHEMA_VERSION:
@@ -333,9 +528,14 @@ class StateDB:
                     for version in range(current_version + 1, _SCHEMA_VERSION + 1):
                         migration = _MIGRATIONS.get(version)
                         if migration is None:
-                            raise RuntimeError(f"No State DB migration registered for version {version}")
+                            raise RuntimeError(
+                                f"No State DB migration registered for version {version}"
+                            )
                         migration(conn)
-                        conn.execute("UPDATE schema_version SET version = ?", (version,))
+                        conn.execute(
+                            "UPDATE schema_version SET version = ?", (version,)
+                        )
+                _ensure_indexes(conn)
                 _validate_schema(conn)
         except Exception:
             self.close()
@@ -359,11 +559,28 @@ class StateDB:
         return conn
 
     @contextmanager
-    def transaction(self, *, immediate: bool = False) -> Generator[sqlite3.Connection, None, None]:
+    def transaction(
+        self, *, immediate: bool = False
+    ) -> Generator[sqlite3.Connection, None, None]:
         conn = self._conn()
         try:
             if immediate:
                 conn.execute("BEGIN IMMEDIATE")
+            yield conn
+            conn.commit()
+        except Exception:
+            conn.rollback()
+            raise
+
+    @contextmanager
+    def _read_transaction(self) -> Generator[sqlite3.Connection, None, None]:
+        conn = self._conn()
+        if conn.in_transaction:
+            yield conn
+            return
+
+        try:
+            conn.execute("BEGIN")
             yield conn
             conn.commit()
         except Exception:
@@ -378,16 +595,25 @@ class StateDB:
         try:
             with self.transaction(immediate=True) as conn:
                 lv_name = self._ensure_svm_backend_lv_name(svm)
+                spec = svm.spec.model_dump(mode="json")
                 self._raise_svm_network_conflict_conn(
                     conn,
-                    svm.spec.model_dump(mode="json"),
+                    spec,
                     exclude_name=svm.spec.name,
                 )
+                network_vlan_id, network_vip, network_key = _svm_network_columns(
+                    spec, strict=True
+                )
                 if lv_name:
-                    _register_backend_lv_conn(conn, lv_name, "svm_root", svm.spec.name, now=now)
+                    _register_backend_lv_conn(
+                        conn, lv_name, "svm_root", svm.spec.name, now=now
+                    )
                 conn.execute(
-                    """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
-                       VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """INSERT INTO svms (
+                           id, name, spec, status, generation, created_at, updated_at,
+                           network_vlan_id, network_vip, network_key
+                       )
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         svm.metadata.id,
@@ -397,38 +623,57 @@ class StateDB:
                         svm.metadata.generation,
                         svm.metadata.created_at.isoformat(),
                         now,
+                        network_vlan_id,
+                        network_vip,
+                        network_key,
                     ),
                 )
         except sqlite3.IntegrityError as e:
             raise AlreadyExistsError("SVM", svm.spec.name) from e
 
-    def upsert_svm(self, svm: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+    def upsert_svm(
+        self, svm: Any, *, expected_create_owner: Optional[str] = None
+    ) -> bool:
         """Insert or update an SVM record."""
         now = _now_iso()
         with self.transaction(immediate=True) as conn:
-            if not self._create_owner_matches_conn(conn, "svms", {"name": svm.spec.name}, expected_create_owner):
+            if not self._create_owner_matches_conn(
+                conn, "svms", {"name": svm.spec.name}, expected_create_owner
+            ):
                 return False
             self._upsert_svm_conn(conn, svm, now=now)
             return True
 
-    def _upsert_svm_conn(self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None) -> None:
+    def _upsert_svm_conn(
+        self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None
+    ) -> None:
         now = now or _now_iso()
         lv_name = self._ensure_svm_backend_lv_name(svm)
+        spec = svm.spec.model_dump(mode="json")
         self._raise_svm_network_conflict_conn(
             conn,
-            svm.spec.model_dump(mode="json"),
+            spec,
             exclude_name=svm.spec.name,
+        )
+        network_vlan_id, network_vip, network_key = _svm_network_columns(
+            spec, strict=True
         )
         if lv_name:
             _register_backend_lv_conn(conn, lv_name, "svm_root", svm.spec.name, now=now)
         conn.execute(
-            """INSERT INTO svms (id, name, spec, status, generation, created_at, updated_at)
-               VALUES (?, ?, ?, ?, ?, ?, ?)
+            """INSERT INTO svms (
+                   id, name, spec, status, generation, created_at, updated_at,
+                   network_vlan_id, network_vip, network_key
+               )
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                ON CONFLICT(name) DO UPDATE SET
                    spec=excluded.spec,
                    status=excluded.status,
                    generation=excluded.generation,
-                   updated_at=excluded.updated_at
+                   updated_at=excluded.updated_at,
+                   network_vlan_id=excluded.network_vlan_id,
+                   network_vip=excluded.network_vip,
+                   network_key=excluded.network_key
             """,
             (
                 svm.metadata.id,
@@ -438,6 +683,9 @@ class StateDB:
                 svm.metadata.generation,
                 svm.metadata.created_at.isoformat(),
                 now,
+                network_vlan_id,
+                network_vip,
+                network_key,
             ),
         )
 
@@ -479,7 +727,10 @@ class StateDB:
                     (name, cursor_values[0], limit),
                 )
             else:
-                cur = conn.execute("SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?", (name, limit))
+                cur = conn.execute(
+                    "SELECT * FROM svms WHERE name = ? ORDER BY name LIMIT ?",
+                    (name, limit),
+                )
         elif cursor_values:
             cur = conn.execute(
                 "SELECT * FROM svms WHERE name > ? ORDER BY name LIMIT ?",
@@ -493,7 +744,10 @@ class StateDB:
         with self.transaction() as conn:
             cur = conn.execute("DELETE FROM svms WHERE name = ?", (name,))
             if cur.rowcount > 0:
-                conn.execute("DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?", ("svm_root", name))
+                conn.execute(
+                    "DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?",
+                    ("svm_root", name),
+                )
             return cur.rowcount > 0
 
     def reserve_svm_delete(
@@ -512,8 +766,10 @@ class StateDB:
             if self._create_lease_active(record):
                 self._raise_active_create_conflict(record, "SVM", name)
 
-            volumes = self._list_volumes_conn(conn, svm=name, limit=1_000_000)
-            creating_volumes = [volume for volume in volumes if self._create_lease_active(volume)]
+            volumes = self._list_all_volumes_conn(conn, svm=name)
+            creating_volumes = [
+                volume for volume in volumes if self._create_lease_active(volume)
+            ]
             if creating_volumes:
                 raise ConflictError(
                     f"SVM '{name}' has volumes being created; retry after create completes",
@@ -521,10 +777,14 @@ class StateDB:
                         "resource": "SVM",
                         "name": name,
                         "volume_count": len(creating_volumes),
-                        "volumes": [self._volume_ref(volume) for volume in creating_volumes],
+                        "volumes": [
+                            self._volume_ref(volume) for volume in creating_volumes
+                        ],
                     },
                 )
-            resizing_volumes = [volume for volume in volumes if self._resize_lease_active(volume)]
+            resizing_volumes = [
+                volume for volume in volumes if self._resize_lease_active(volume)
+            ]
             if resizing_volumes:
                 raise ConflictError(
                     f"SVM '{name}' has volumes being resized; retry after resize completes",
@@ -532,7 +792,9 @@ class StateDB:
                         "resource": "SVM",
                         "name": name,
                         "volume_count": len(resizing_volumes),
-                        "volumes": [self._volume_ref(volume) for volume in resizing_volumes],
+                        "volumes": [
+                            self._volume_ref(volume) for volume in resizing_volumes
+                        ],
                     },
                 )
             if volumes and not cascade_volumes:
@@ -546,8 +808,12 @@ class StateDB:
                     },
                 )
 
-            snapshots = self._list_snapshots_conn(conn, svm=name, limit=1_000_000)
-            creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
+            snapshots = self._list_all_snapshots_conn(conn, svm=name)
+            creating_snapshots = [
+                snapshot
+                for snapshot in snapshots
+                if self._create_lease_active(snapshot)
+            ]
             if creating_snapshots:
                 raise ConflictError(
                     f"SVM '{name}' has snapshots being created; retry after create completes",
@@ -555,7 +821,10 @@ class StateDB:
                         "resource": "SVM",
                         "name": name,
                         "snapshot_count": len(creating_snapshots),
-                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in creating_snapshots],
+                        "snapshots": [
+                            self._snapshot_ref(snapshot)
+                            for snapshot in creating_snapshots
+                        ],
                     },
                 )
             if snapshots and not force:
@@ -565,11 +834,15 @@ class StateDB:
                         "resource": "SVM",
                         "name": name,
                         "snapshot_count": len(snapshots),
-                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in snapshots],
+                        "snapshots": [
+                            self._snapshot_ref(snapshot) for snapshot in snapshots
+                        ],
                     },
                 )
             active_clone_snapshots = [
-                self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
+                self._snapshot_ref(snapshot)
+                for snapshot in snapshots
+                if self._active_snapshot_clone_leases(snapshot)
             ]
             if active_clone_snapshots:
                 raise ConflictError(
@@ -581,8 +854,10 @@ class StateDB:
                     },
                 )
 
-            all_exports = self._list_exports_conn(conn, svm=name, limit=1_000_000)
-            creating_exports = [export for export in all_exports if self._create_lease_active(export)]
+            all_exports = self.list_all_exports_conn(conn, svm=name)
+            creating_exports = [
+                export for export in all_exports if self._create_lease_active(export)
+            ]
             if creating_exports:
                 raise ConflictError(
                     f"SVM '{name}' has exports being created; retry after create completes",
@@ -590,10 +865,14 @@ class StateDB:
                         "resource": "SVM",
                         "name": name,
                         "export_count": len(creating_exports),
-                        "exports": [self._export_ref(export) for export in creating_exports],
+                        "exports": [
+                            self._export_ref(export) for export in creating_exports
+                        ],
                     },
                 )
-            exports = self._blocking_exports_for_svm_delete(conn, name, volumes, force=force)
+            exports = self._blocking_exports_for_svm_delete(
+                conn, name, volumes, force=force
+            )
             if exports:
                 raise PreconditionFailedError(
                     f"SVM '{name}' has exports; delete exports first or retry with force",
@@ -624,7 +903,13 @@ class StateDB:
                 if require_ready_svm:
                     self._require_ready_svm_conn(conn, volume.spec.svm)
                 lv_name = self._ensure_volume_backend_lv_name(volume)
-                _register_backend_lv_conn(conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now)
+                _register_backend_lv_conn(
+                    conn,
+                    lv_name,
+                    "volume",
+                    f"{volume.spec.svm}/{volume.spec.name}",
+                    now=now,
+                )
                 conn.execute(
                     """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
                        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -641,21 +926,31 @@ class StateDB:
                     ),
                 )
         except sqlite3.IntegrityError as e:
-            raise AlreadyExistsError("Volume", f"{volume.spec.svm}/{volume.spec.name}") from e
+            raise AlreadyExistsError(
+                "Volume", f"{volume.spec.svm}/{volume.spec.name}"
+            ) from e
 
-    def upsert_volume(self, volume: Any, *, expected_create_owner: Optional[str] = None) -> bool:
+    def upsert_volume(
+        self, volume: Any, *, expected_create_owner: Optional[str] = None
+    ) -> bool:
         now = _now_iso()
         key = {"svm": volume.spec.svm, "name": volume.spec.name}
         with self.transaction(immediate=expected_create_owner is not None) as conn:
-            if not self._create_owner_matches_conn(conn, "volumes", key, expected_create_owner):
+            if not self._create_owner_matches_conn(
+                conn, "volumes", key, expected_create_owner
+            ):
                 return False
             self._upsert_volume_conn(conn, volume, now=now)
             return True
 
-    def _upsert_volume_conn(self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None) -> None:
+    def _upsert_volume_conn(
+        self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None
+    ) -> None:
         now = now or _now_iso()
         lv_name = self._ensure_volume_backend_lv_name(volume)
-        _register_backend_lv_conn(conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now)
+        _register_backend_lv_conn(
+            conn, lv_name, "volume", f"{volume.spec.svm}/{volume.spec.name}", now=now
+        )
         conn.execute(
             """INSERT INTO volumes (id, name, svm, spec, status, generation, created_at, updated_at)
                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
@@ -746,7 +1041,9 @@ class StateDB:
             status["resize_owner"] = owner
             status["resize_lease_expires_at"] = lease_expiration().isoformat()
             status["resize_target_size_gib"] = target_size_gib
-            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            self._update_status_by_key_conn(
+                conn, "volumes", {"svm": svm, "name": name}, status
+            )
             record["status"] = status
             return record
 
@@ -762,7 +1059,9 @@ class StateDB:
             if status.get("resize_owner") != owner:
                 return False
             status["resize_lease_expires_at"] = lease_expiration().isoformat()
-            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            self._update_status_by_key_conn(
+                conn, "volumes", {"svm": svm, "name": name}, status
+            )
             return True
 
     def complete_volume_resize(self, volume: Any, owner: str) -> bool:
@@ -798,6 +1097,61 @@ class StateDB:
             )
             return cur.rowcount > 0
 
+    def recover_volume_size_from_backend(
+        self,
+        svm: str,
+        name: str,
+        owner: str,
+        recovered_size_gib: int,
+    ) -> Optional[dict[str, Any]]:
+        """Recover DB volume size after the backend LV was already extended."""
+        now = _now_iso()
+        with self.transaction(immediate=True) as conn:
+            self._require_ready_svm_conn(conn, svm)
+            record = self._get_volume_conn(conn, svm, name)
+            if record is None:
+                return None
+            current_status = record["status"]
+            if str(current_status.get("phase") or "") != Phase.READY.value:
+                return None
+            if current_status.get("resize_owner") != owner:
+                return None
+
+            spec = dict(record["spec"])
+            current_size = int(spec.get("size_gib") or 0)
+            status = dict(current_status)
+            self._clear_resize_lease(status)
+            if recovered_size_gib > current_size:
+                spec["size_gib"] = recovered_size_gib
+                generation = int(record.get("generation") or 0) + 1
+                conn.execute(
+                    """UPDATE volumes
+                       SET spec = ?, status = ?, generation = ?, updated_at = ?
+                       WHERE svm = ? AND name = ?
+                    """,
+                    (
+                        json.dumps(spec),
+                        json.dumps(status),
+                        generation,
+                        now,
+                        svm,
+                        name,
+                    ),
+                )
+                self.log_operation_conn(
+                    conn,
+                    "Volume",
+                    record["id"],
+                    "resize",
+                    "recovered",
+                    f"Recovered DB size to {recovered_size_gib} GiB from backend LV",
+                )
+            else:
+                self._update_status_by_key_conn(
+                    conn, "volumes", {"svm": svm, "name": name}, status
+                )
+            return self._get_volume_conn(conn, svm, name)
+
     def release_volume_resize(self, svm: str, name: str, owner: str) -> None:
         with self.transaction(immediate=True) as conn:
             record = self._get_volume_conn(conn, svm, name)
@@ -807,9 +1161,13 @@ class StateDB:
             if status.get("resize_owner") != owner:
                 return
             self._clear_resize_lease(status)
-            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            self._update_status_by_key_conn(
+                conn, "volumes", {"svm": svm, "name": name}, status
+            )
 
-    def set_volume_qos(self, svm: str, name: str, qos: Optional[dict[str, Any]]) -> bool:
+    def set_volume_qos(
+        self, svm: str, name: str, qos: Optional[dict[str, Any]]
+    ) -> bool:
         """Persist or clear QoS settings in the volume status."""
         with self.transaction(immediate=True) as conn:
             record = self._get_volume_conn(conn, svm, name)
@@ -817,10 +1175,14 @@ class StateDB:
                 return False
             status = dict(record["status"])
             if qos:
-                status["qos"] = dict(qos)
+                status["qos"] = QoSStatus.model_validate(qos).model_dump(
+                    mode="json", exclude_none=True
+                )
             else:
                 status.pop("qos", None)
-            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            self._update_status_by_key_conn(
+                conn, "volumes", {"svm": svm, "name": name}, status
+            )
             return True
 
     def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
@@ -843,7 +1205,9 @@ class StateDB:
             owner,
             expected_spec=expected_spec,
             allow_failed=allow_failed,
-            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm))
+            if require_ready_svm
+            else None,
         )
 
     def refresh_volume_create_lease(
@@ -858,7 +1222,9 @@ class StateDB:
             "volumes",
             {"svm": svm, "name": name},
             owner,
-            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm))
+            if require_ready_svm
+            else None,
         )
 
     def list_volumes(
@@ -869,7 +1235,28 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
-        return self._list_volumes_conn(conn, svm=svm, name=name, limit=limit, cursor=cursor)
+        return self._list_volumes_conn(
+            conn, svm=svm, name=name, limit=limit, cursor=cursor
+        )
+
+    def list_all_volumes(
+        self, svm: Optional[str] = None, name: Optional[str] = None
+    ) -> list[dict[str, Any]]:
+        with self._read_transaction() as conn:
+            return self._list_all_volumes_conn(conn, svm=svm, name=name)
+
+    def _list_all_volumes_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_all_pages_conn(
+            lambda cursor: self._list_volumes_conn(
+                conn, svm=svm, name=name, limit=_LIST_ALL_PAGE_SIZE, cursor=cursor
+            ),
+            lambda record: [str(record["spec"]["svm"]), str(record["spec"]["name"])],
+        )
 
     def _list_volumes_conn(
         self,
@@ -899,7 +1286,9 @@ class StateDB:
 
     def delete_volume(self, svm: str, name: str) -> bool:
         with self.transaction() as conn:
-            cur = conn.execute("DELETE FROM volumes WHERE svm = ? AND name = ?", (svm, name))
+            cur = conn.execute(
+                "DELETE FROM volumes WHERE svm = ? AND name = ?", (svm, name)
+            )
             if cur.rowcount > 0:
                 conn.execute(
                     "DELETE FROM backend_lvs WHERE resource_kind = ? AND resource_key = ?",
@@ -907,7 +1296,9 @@ class StateDB:
                 )
             return cur.rowcount > 0
 
-    def reserve_volume_delete(self, svm: str, name: str, *, force: bool = False) -> Optional[dict[str, Any]]:
+    def reserve_volume_delete(
+        self, svm: str, name: str, *, force: bool = False
+    ) -> Optional[dict[str, Any]]:
         """Atomically mark a volume deleting after validating snapshot preconditions."""
         with self.transaction(immediate=True) as conn:
             record = self._get_volume_conn(conn, svm, name)
@@ -925,8 +1316,12 @@ class StateDB:
                         "resize_target_size_gib": status.get("resize_target_size_gib"),
                     },
                 )
-            snapshots = self._list_snapshots_conn(conn, svm=svm, volume=name, limit=1_000_000)
-            creating_snapshots = [snapshot for snapshot in snapshots if self._create_lease_active(snapshot)]
+            snapshots = self._list_all_snapshots_conn(conn, svm=svm, volume=name)
+            creating_snapshots = [
+                snapshot
+                for snapshot in snapshots
+                if self._create_lease_active(snapshot)
+            ]
             if creating_snapshots:
                 raise ConflictError(
                     f"Volume '{svm}/{name}' has snapshots being created; retry after create completes",
@@ -934,11 +1329,16 @@ class StateDB:
                         "resource": "Volume",
                         "name": f"{svm}/{name}",
                         "snapshot_count": len(creating_snapshots),
-                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in creating_snapshots],
+                        "snapshots": [
+                            self._snapshot_ref(snapshot)
+                            for snapshot in creating_snapshots
+                        ],
                     },
                 )
             active_clone_snapshots = [
-                self._snapshot_ref(snapshot) for snapshot in snapshots if self._active_snapshot_clone_leases(snapshot)
+                self._snapshot_ref(snapshot)
+                for snapshot in snapshots
+                if self._active_snapshot_clone_leases(snapshot)
             ]
             if active_clone_snapshots:
                 raise ConflictError(
@@ -950,7 +1350,9 @@ class StateDB:
                     },
                 )
             exports = self._exports_removed_by_volume_delete_conn(conn, svm, name)
-            creating_exports = [export for export in exports if self._create_lease_active(export)]
+            creating_exports = [
+                export for export in exports if self._create_lease_active(export)
+            ]
             if creating_exports:
                 raise ConflictError(
                     f"Volume '{svm}/{name}' has exports being created; retry after create completes",
@@ -958,7 +1360,9 @@ class StateDB:
                         "resource": "Volume",
                         "name": f"{svm}/{name}",
                         "export_count": len(creating_exports),
-                        "exports": [self._export_ref(export) for export in creating_exports],
+                        "exports": [
+                            self._export_ref(export) for export in creating_exports
+                        ],
                     },
                 )
             if snapshots and not force:
@@ -968,7 +1372,9 @@ class StateDB:
                         "resource": "Volume",
                         "name": f"{svm}/{name}",
                         "snapshot_count": len(snapshots),
-                        "snapshots": [self._snapshot_ref(snapshot) for snapshot in snapshots],
+                        "snapshots": [
+                            self._snapshot_ref(snapshot) for snapshot in snapshots
+                        ],
                     },
                 )
 
@@ -977,7 +1383,9 @@ class StateDB:
             status["message"] = ""
             status["create_owner"] = None
             status["create_lease_expires_at"] = None
-            self._update_status_by_key_conn(conn, "volumes", {"svm": svm, "name": name}, status)
+            self._update_status_by_key_conn(
+                conn, "volumes", {"svm": svm, "name": name}, status
+            )
             record["status"] = status
             return record
 
@@ -1003,7 +1411,9 @@ class StateDB:
                     )
                 elif require_ready_svm:
                     self._require_ready_svm_conn(conn, snapshot.spec.svm)
-                if self._snapshot_cleanup_reserved_conn(conn, snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name):
+                if self._snapshot_cleanup_reserved_conn(
+                    conn, snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name
+                ):
                     raise AlreadyExistsError(
                         "Snapshot",
                         f"{snapshot.spec.svm}/{snapshot.spec.volume}/{snapshot.spec.name}",
@@ -1047,9 +1457,15 @@ class StateDB:
         require_ready_svm: bool = False,
     ) -> bool:
         now = _now_iso()
-        key = {"svm": snapshot.spec.svm, "volume": snapshot.spec.volume, "name": snapshot.spec.name}
+        key = {
+            "svm": snapshot.spec.svm,
+            "volume": snapshot.spec.volume,
+            "name": snapshot.spec.name,
+        }
         with self.transaction(immediate=True) as conn:
-            if not self._create_owner_matches_conn(conn, "snapshots", key, expected_create_owner):
+            if not self._create_owner_matches_conn(
+                conn, "snapshots", key, expected_create_owner
+            ):
                 return False
             if require_ready_volume:
                 self._require_ready_volume_conn(
@@ -1060,7 +1476,9 @@ class StateDB:
                 )
             elif require_ready_svm:
                 self._require_ready_svm_conn(conn, snapshot.spec.svm)
-            if self._get_resource_by_key_conn(conn, "snapshots", key) is None and self._snapshot_cleanup_reserved_conn(
+            if self._get_resource_by_key_conn(
+                conn, "snapshots", key
+            ) is None and self._snapshot_cleanup_reserved_conn(
                 conn,
                 snapshot.spec.svm,
                 snapshot.spec.volume,
@@ -1073,7 +1491,9 @@ class StateDB:
             self._upsert_snapshot_conn(conn, snapshot, now=now)
             return True
 
-    def _upsert_snapshot_conn(self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None) -> None:
+    def _upsert_snapshot_conn(
+        self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None
+    ) -> None:
         now = now or _now_iso()
         lv_name = self._ensure_snapshot_backend_lv_name(snapshot)
         _register_backend_lv_conn(
@@ -1124,7 +1544,11 @@ class StateDB:
             expected_spec=expected_spec,
             allow_failed=allow_failed,
             precondition=(
-                (lambda conn: self._require_ready_volume_conn(conn, svm, volume, require_ready_svm=require_ready_svm))
+                (
+                    lambda conn: self._require_ready_volume_conn(
+                        conn, svm, volume, require_ready_svm=require_ready_svm
+                    )
+                )
                 if require_ready_volume
                 else (lambda conn: self._require_ready_svm_conn(conn, svm))
                 if require_ready_svm
@@ -1147,7 +1571,11 @@ class StateDB:
             {"svm": svm, "volume": volume, "name": name},
             owner,
             precondition=(
-                (lambda conn: self._require_ready_volume_conn(conn, svm, volume, require_ready_svm=require_ready_svm))
+                (
+                    lambda conn: self._require_ready_volume_conn(
+                        conn, svm, volume, require_ready_svm=require_ready_svm
+                    )
+                )
                 if require_ready_volume
                 else (lambda conn: self._require_ready_svm_conn(conn, svm))
                 if require_ready_svm
@@ -1164,7 +1592,43 @@ class StateDB:
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
-        return self._list_snapshots_conn(conn, svm=svm, volume=volume, name=name, limit=limit, cursor=cursor)
+        return self._list_snapshots_conn(
+            conn, svm=svm, volume=volume, name=name, limit=limit, cursor=cursor
+        )
+
+    def list_all_snapshots(
+        self,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        with self._read_transaction() as conn:
+            return self._list_all_snapshots_conn(
+                conn, svm=svm, volume=volume, name=name
+            )
+
+    def _list_all_snapshots_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        name: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_all_pages_conn(
+            lambda cursor: self._list_snapshots_conn(
+                conn,
+                svm=svm,
+                volume=volume,
+                name=name,
+                limit=_LIST_ALL_PAGE_SIZE,
+                cursor=cursor,
+            ),
+            lambda record: [
+                str(record["spec"]["svm"]),
+                str(record["spec"]["volume"]),
+                str(record["spec"]["name"]),
+            ],
+        )
 
     def _list_snapshots_conn(
         self,
@@ -1193,7 +1657,16 @@ class StateDB:
                 " AND (svm > ? OR (svm = ? AND volume > ?) "
                 "OR (svm = ? AND volume = ? AND name > ?))"
             )
-            params.extend([cursor_svm, cursor_svm, cursor_volume, cursor_svm, cursor_volume, cursor_name])
+            params.extend(
+                [
+                    cursor_svm,
+                    cursor_svm,
+                    cursor_volume,
+                    cursor_svm,
+                    cursor_volume,
+                    cursor_name,
+                ]
+            )
         sql += " ORDER BY svm, volume, name LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
@@ -1243,7 +1716,9 @@ class StateDB:
             record["status"] = status
             return record
 
-    def refresh_snapshot_clone_lease(self, svm: str, volume: str, name: str, owner: str) -> bool:
+    def refresh_snapshot_clone_lease(
+        self, svm: str, volume: str, name: str, owner: str
+    ) -> bool:
         key = {"svm": svm, "volume": volume, "name": name}
         with self.transaction(immediate=True) as conn:
             record = self._get_resource_by_key_conn(conn, "snapshots", key)
@@ -1260,7 +1735,9 @@ class StateDB:
             self._update_status_by_key_conn(conn, "snapshots", key, status)
             return True
 
-    def release_snapshot_clone(self, svm: str, volume: str, name: str, owner: str) -> None:
+    def release_snapshot_clone(
+        self, svm: str, volume: str, name: str, owner: str
+    ) -> None:
         key = {"svm": svm, "volume": volume, "name": name}
         with self.transaction(immediate=True) as conn:
             record = self._get_resource_by_key_conn(conn, "snapshots", key)
@@ -1290,7 +1767,9 @@ class StateDB:
             if record is None:
                 return None
             if self._create_lease_active(record):
-                self._raise_active_create_conflict(record, "Snapshot", f"{svm}/{volume}/{name}")
+                self._raise_active_create_conflict(
+                    record, "Snapshot", f"{svm}/{volume}/{name}"
+                )
             active_leases = self._active_snapshot_clone_leases(record)
             if active_leases:
                 raise ConflictError(
@@ -1311,7 +1790,9 @@ class StateDB:
             record["status"] = status
             return record
 
-    def reserve_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> bool:
+    def reserve_snapshot_cleanup(
+        self, svm: str, volume: str, name: str, owner: str
+    ) -> bool:
         now = datetime.now(timezone.utc)
         now_iso = now.isoformat()
         expires_at = (now + _SNAPSHOT_CLEANUP_RESERVATION_DURATION).isoformat()
@@ -1348,7 +1829,9 @@ class StateDB:
                 return False
             return True
 
-    def release_snapshot_cleanup(self, svm: str, volume: str, name: str, owner: str) -> None:
+    def release_snapshot_cleanup(
+        self, svm: str, volume: str, name: str, owner: str
+    ) -> None:
         with self.transaction(immediate=True) as conn:
             conn.execute(
                 """DELETE FROM snapshot_cleanup_reservations
@@ -1357,7 +1840,9 @@ class StateDB:
                 (svm, volume, name, owner),
             )
 
-    def _snapshot_cleanup_reserved_conn(self, conn: sqlite3.Connection, svm: str, volume: str, name: str) -> bool:
+    def _snapshot_cleanup_reserved_conn(
+        self, conn: sqlite3.Connection, svm: str, volume: str, name: str
+    ) -> bool:
         cur = conn.execute(
             """SELECT 1 FROM snapshot_cleanup_reservations
                WHERE svm = ? AND volume = ? AND name = ?
@@ -1380,7 +1865,7 @@ class StateDB:
     ) -> bool:
         now = _now_iso()
         with self.transaction(immediate=expected_create_owner is not None) as conn:
-            return self._upsert_export_conn(
+            return self.upsert_export_conn(
                 conn,
                 export,
                 now=now,
@@ -1390,7 +1875,7 @@ class StateDB:
                 allow_missing_create_owner=allow_missing_create_owner,
             )
 
-    def _upsert_export_conn(
+    def upsert_export_conn(
         self,
         conn: sqlite3.Connection,
         export: Any,
@@ -1402,7 +1887,11 @@ class StateDB:
         allow_missing_create_owner: bool = True,
     ) -> bool:
         now = now or _now_iso()
-        key = {"svm": export.spec.svm, "volume": export.spec.volume, "client": export.spec.client}
+        key = {
+            "svm": export.spec.svm,
+            "volume": export.spec.volume,
+            "client": export.spec.client,
+        }
         if not self._create_owner_matches_conn(
             conn,
             "exports",
@@ -1448,17 +1937,42 @@ class StateDB:
         svm: Optional[str] = None,
         volume: Optional[str] = None,
         client: Optional[str] = None,
+        owner: Optional[str] = None,
         limit: int = 100,
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
-        return self._list_exports_conn(conn, svm=svm, volume=volume, client=client, limit=limit, cursor=cursor)
+        return self.list_exports_conn(
+            conn,
+            svm=svm,
+            volume=volume,
+            client=client,
+            owner=owner,
+            limit=limit,
+            cursor=cursor,
+        )
 
-    def get_export(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
+    def list_all_exports(
+        self,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        client: Optional[str] = None,
+        owner: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        with self._read_transaction() as conn:
+            return self.list_all_exports_conn(
+                conn, svm=svm, volume=volume, client=client, owner=owner
+            )
+
+    def get_export(
+        self, svm: str, volume: str, client: str
+    ) -> Optional[dict[str, Any]]:
         conn = self._conn()
-        return self._get_export_conn(conn, svm, volume, client)
+        return self.get_export_conn(conn, svm, volume, client)
 
-    def reserve_export_delete(self, svm: str, volume: str, client: str) -> Optional[dict[str, Any]]:
+    def reserve_export_delete(
+        self, svm: str, volume: str, client: str
+    ) -> Optional[dict[str, Any]]:
         """Atomically mark an export deleting after validating create state."""
         key = {"svm": svm, "volume": volume, "client": client}
         with self.transaction(immediate=True) as conn:
@@ -1466,7 +1980,9 @@ class StateDB:
             if record is None:
                 return None
             if self._create_lease_active(record):
-                self._raise_active_create_conflict(record, "Export", f"{svm}/{volume}/{client}")
+                self._raise_active_create_conflict(
+                    record, "Export", f"{svm}/{volume}/{client}"
+                )
 
             status = dict(record["status"])
             status["phase"] = Phase.DELETING.value
@@ -1494,7 +2010,9 @@ class StateDB:
             owner,
             expected_spec=expected_spec,
             allow_failed=allow_failed,
-            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm))
+            if require_ready_svm
+            else None,
         )
 
     def refresh_export_create_lease(
@@ -1510,10 +2028,12 @@ class StateDB:
             "exports",
             {"svm": svm, "volume": volume, "client": client},
             owner,
-            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm)) if require_ready_svm else None,
+            precondition=(lambda conn: self._require_ready_svm_conn(conn, svm))
+            if require_ready_svm
+            else None,
         )
 
-    def _get_export_conn(
+    def get_export_conn(
         self,
         conn: sqlite3.Connection,
         svm: str,
@@ -1529,12 +2049,13 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
-    def _list_exports_conn(
+    def list_exports_conn(
         self,
         conn: sqlite3.Connection,
         svm: Optional[str] = None,
         volume: Optional[str] = None,
         client: Optional[str] = None,
+        owner: Optional[str] = None,
         limit: int = 100,
         cursor: Optional[str] = None,
     ) -> list[dict[str, Any]]:
@@ -1549,6 +2070,9 @@ class StateDB:
         if client:
             sql += " AND client = ?"
             params.append(client)
+        if owner:
+            sql += " AND json_extract(spec, '$.owner') = ?"
+            params.append(owner)
         cursor_values = _decode_cursor(cursor, 3)
         if cursor_values:
             cursor_svm, cursor_volume, cursor_client = cursor_values
@@ -1556,17 +2080,53 @@ class StateDB:
                 " AND (svm > ? OR (svm = ? AND volume > ?) "
                 "OR (svm = ? AND volume = ? AND client > ?))"
             )
-            params.extend([cursor_svm, cursor_svm, cursor_volume, cursor_svm, cursor_volume, cursor_client])
+            params.extend(
+                [
+                    cursor_svm,
+                    cursor_svm,
+                    cursor_volume,
+                    cursor_svm,
+                    cursor_volume,
+                    cursor_client,
+                ]
+            )
         sql += " ORDER BY svm, volume, client LIMIT ?"
         params.append(limit)
         cur = conn.execute(sql, params)
         return [self._row_to_resource(row) for row in cur.fetchall()]
 
+    def list_all_exports_conn(
+        self,
+        conn: sqlite3.Connection,
+        svm: Optional[str] = None,
+        volume: Optional[str] = None,
+        client: Optional[str] = None,
+        owner: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        return self._list_all_pages_conn(
+            lambda cursor: self.list_exports_conn(
+                conn,
+                svm=svm,
+                volume=volume,
+                client=client,
+                owner=owner,
+                limit=_LIST_ALL_PAGE_SIZE,
+                cursor=cursor,
+            ),
+            lambda record: [
+                str(record["spec"]["svm"]),
+                str(record["spec"]["volume"]),
+                str(record["spec"]["client"]),
+            ],
+        )
+
     def delete_export(self, svm: str, volume: str, client: str) -> bool:
         with self.transaction() as conn:
-            return self._delete_export_conn(conn, svm, volume, client)
+            return self.delete_export_conn(conn, svm, volume, client)
 
-    def _delete_export_conn(self, conn: sqlite3.Connection, svm: str, volume: str, client: str) -> bool:
+    def delete_export_conn(
+        self, conn: sqlite3.Connection, svm: str, volume: str, client: str
+    ) -> bool:
         cur = conn.execute(
             "DELETE FROM exports WHERE svm = ? AND volume = ? AND client = ?",
             (svm, volume, client),
@@ -1584,9 +2144,74 @@ class StateDB:
         detail: str = "",
     ) -> None:
         with self.transaction() as conn:
-            self._log_operation_conn(conn, resource_type, resource_id, operation, phase, detail)
+            self.log_operation_conn(
+                conn, resource_type, resource_id, operation, phase, detail
+            )
 
-    def _log_operation_conn(
+    def list_operation_log(
+        self,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        conn = self._conn()
+        return self._list_operation_log_conn(
+            conn,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            operation=operation,
+            limit=limit,
+            cursor=cursor,
+        )
+
+    def _list_operation_log_conn(
+        self,
+        conn: sqlite3.Connection,
+        resource_type: Optional[str] = None,
+        resource_id: Optional[str] = None,
+        operation: Optional[str] = None,
+        limit: int = 100,
+        cursor: Optional[str] = None,
+    ) -> list[dict[str, Any]]:
+        if limit < 1:
+            raise ValueError("Operation log limit must be positive")
+
+        sql = "SELECT * FROM operation_log WHERE 1=1"
+        params: list[Any] = []
+        if resource_type:
+            sql += " AND resource_type = ?"
+            params.append(resource_type)
+        if resource_id:
+            sql += " AND resource_id = ?"
+            params.append(resource_id)
+        if operation:
+            sql += " AND operation = ?"
+            params.append(operation)
+        cursor_values = _decode_cursor(cursor, 1)
+        if cursor_values:
+            try:
+                cursor_id = int(cursor_values[0])
+            except ValueError as e:
+                raise ValueError("Invalid pagination cursor") from e
+            sql += " AND id < ?"
+            params.append(cursor_id)
+        sql += " ORDER BY id DESC LIMIT ?"
+        params.append(limit)
+        cur = conn.execute(sql, params)
+        return [dict(row) for row in cur.fetchall()]
+
+    def prune_operation_log(self, before: Union[datetime, str]) -> int:
+        cutoff = before.isoformat() if isinstance(before, datetime) else str(before)
+        with self.transaction(immediate=True) as conn:
+            cur = conn.execute(
+                "DELETE FROM operation_log WHERE created_at < ?",
+                (cutoff,),
+            )
+            return int(cur.rowcount)
+
+    def log_operation_conn(
         self,
         conn: sqlite3.Connection,
         resource_type: str,
@@ -1624,7 +2249,9 @@ class StateDB:
     @staticmethod
     def _ensure_snapshot_backend_lv_name(snapshot: Any) -> str:
         if not getattr(snapshot.status, "lv_name", None):
-            snapshot.status.lv_name = snapshot_lv_name(snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name)
+            snapshot.status.lv_name = snapshot_lv_name(
+                snapshot.spec.svm, snapshot.spec.volume, snapshot.spec.name
+            )
         return snapshot.status.lv_name
 
     def _acquire_create_lease(
@@ -1635,7 +2262,7 @@ class StateDB:
         *,
         expected_spec: Optional[dict[str, Any]] = None,
         allow_failed: bool = False,
-        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
+        precondition: Optional[Callable[[sqlite3.Connection], Any]] = None,
     ) -> Optional[dict[str, Any]]:
         with self.transaction(immediate=True) as conn:
             if precondition is not None:
@@ -1681,7 +2308,7 @@ class StateDB:
         key: dict[str, str],
         owner: str,
         *,
-        precondition: Optional[Callable[[sqlite3.Connection], None]] = None,
+        precondition: Optional[Callable[[sqlite3.Connection], Any]] = None,
     ) -> bool:
         with self.transaction(immediate=True) as conn:
             if precondition is not None:
@@ -1690,7 +2317,10 @@ class StateDB:
             if record is None:
                 return False
             status = record["status"]
-            if status.get("phase") not in ACTIVE_CREATE_PHASES or status.get("create_owner") != owner:
+            if (
+                status.get("phase") not in ACTIVE_CREATE_PHASES
+                or status.get("create_owner") != owner
+            ):
                 return False
             status["create_lease_expires_at"] = lease_expiration().isoformat()
             self._update_status_by_key_conn(conn, table, key, status)
@@ -1706,7 +2336,9 @@ class StateDB:
         return not create_lease_expired(record)
 
     @staticmethod
-    def _raise_active_create_conflict(record: dict[str, Any], resource: str, name: str) -> None:
+    def _raise_active_create_conflict(
+        record: dict[str, Any], resource: str, name: str
+    ) -> None:
         status = record.get("status", {})
         raise ConflictError(
             f"{resource} '{name}' is being created; retry after create completes",
@@ -1731,21 +2363,29 @@ class StateDB:
             return None
         return self._row_to_resource(row)
 
-    def _get_svm_conn(self, conn: sqlite3.Connection, name: str) -> Optional[dict[str, Any]]:
+    def _get_svm_conn(
+        self, conn: sqlite3.Connection, name: str
+    ) -> Optional[dict[str, Any]]:
         cur = conn.execute("SELECT * FROM svms WHERE name = ?", (name,))
         row = cur.fetchone()
         if row is None:
             return None
         return self._row_to_resource(row)
 
-    def _get_volume_conn(self, conn: sqlite3.Connection, svm: str, name: str) -> Optional[dict[str, Any]]:
-        cur = conn.execute("SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name))
+    def _get_volume_conn(
+        self, conn: sqlite3.Connection, svm: str, name: str
+    ) -> Optional[dict[str, Any]]:
+        cur = conn.execute(
+            "SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name)
+        )
         row = cur.fetchone()
         if row is None:
             return None
         return self._row_to_resource(row)
 
-    def _require_ready_svm_conn(self, conn: sqlite3.Connection, name: str) -> dict[str, Any]:
+    def _require_ready_svm_conn(
+        self, conn: sqlite3.Connection, name: str
+    ) -> dict[str, Any]:
         record = self._get_svm_conn(conn, name)
         if record is None:
             raise NotFoundError("SVM", name)
@@ -1816,28 +2456,30 @@ class StateDB:
         *,
         exclude_name: str,
     ) -> None:
-        key = _svm_network_key(spec)
-        if key is None:
+        vlan_id, vip, network_key = _svm_network_columns(spec, strict=True)
+        if network_key is None or vip is None:
             return
-        vlan_id, vip = key
-        cur = conn.execute("SELECT name, spec FROM svms")
-        for row in cur.fetchall():
-            existing_name = row["name"]
-            if existing_name == exclude_name:
-                continue
-            existing_spec = json.loads(row["spec"])
-            if _svm_network_key(existing_spec) == key:
-                vlan_label = "host network" if vlan_id is None else f"VLAN {vlan_id}"
-                raise ConflictError(
-                    f"IP address {vip} is already in use on {vlan_label} by SVM '{existing_name}'",
-                    {
-                        "resource": "SVM",
-                        "name": exclude_name,
-                        "ip": vip,
-                        "vlan_id": vlan_id,
-                        "conflicting_svm": existing_name,
-                    },
-                )
+        cur = conn.execute(
+            """SELECT name FROM svms
+               WHERE network_key = ? AND name <> ?
+               LIMIT 1""",
+            (network_key, exclude_name),
+        )
+        row = cur.fetchone()
+        if row is None:
+            return
+        existing_name = row["name"]
+        vlan_label = "host network" if vlan_id is None else f"VLAN {vlan_id}"
+        raise ConflictError(
+            f"IP address {vip} is already in use on {vlan_label} by SVM '{existing_name}'",
+            {
+                "resource": "SVM",
+                "name": exclude_name,
+                "ip": vip,
+                "vlan_id": vlan_id,
+                "conflicting_svm": existing_name,
+            },
+        )
 
     def _exports_removed_by_volume_delete_conn(
         self,
@@ -1845,15 +2487,18 @@ class StateDB:
         svm: str,
         volume: str,
     ) -> list[dict[str, Any]]:
-        exports = self._list_exports_conn(conn, svm=svm, volume=volume, limit=1_000_000)
+        exports = self.list_all_exports_conn(conn, svm=svm, volume=volume)
         has_other_csi_volume = any(
             export.get("spec", {}).get("owner") == "csi"
-            and export.get("spec", {}).get("volume") not in (volume, _CSI_ROOT_EXPORT_VOLUME)
-            for export in self._list_exports_conn(conn, svm=svm, limit=1_000_000)
+            and export.get("spec", {}).get("volume")
+            not in (volume, _CSI_ROOT_EXPORT_VOLUME)
+            for export in self.list_all_exports_conn(conn, svm=svm)
         )
         if not has_other_csi_volume:
             exports.extend(
-                self._list_exports_conn(conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME, limit=1_000_000)
+                self.list_all_exports_conn(
+                    conn, svm=svm, volume=_CSI_ROOT_EXPORT_VOLUME
+                )
             )
         return exports
 
@@ -1868,8 +2513,10 @@ class StateDB:
         if force:
             return []
 
-        exports = self._list_exports_conn(conn, svm=svm, limit=1_000_000)
-        volume_names = {str(volume.get("spec", {}).get("name") or "") for volume in volumes}
+        exports = self.list_all_exports_conn(conn, svm=svm)
+        volume_names = {
+            str(volume.get("spec", {}).get("name") or "") for volume in volumes
+        }
         if not volume_names:
             return exports
 
@@ -1879,10 +2526,36 @@ class StateDB:
             volume_name = spec.get("volume")
             if volume_name in volume_names:
                 continue
-            if spec.get("owner", "api") == "csi" and volume_name == _CSI_ROOT_EXPORT_VOLUME:
+            if (
+                spec.get("owner", "api") == "csi"
+                and volume_name == _CSI_ROOT_EXPORT_VOLUME
+            ):
                 continue
             blocking.append(export)
         return blocking
+
+    def _list_all_pages_conn(
+        self,
+        fetch_page: Callable[[Optional[str]], list[dict[str, Any]]],
+        cursor_values: Callable[[dict[str, Any]], list[str]],
+    ) -> list[dict[str, Any]]:
+        records: list[dict[str, Any]] = []
+        cursor: Optional[str] = None
+        seen_cursors: set[str] = set()
+
+        while True:
+            page = fetch_page(cursor)
+            if not page:
+                return records
+
+            records.extend(page)
+            if len(page) < _LIST_ALL_PAGE_SIZE:
+                return records
+
+            cursor = encode_cursor(cursor_values(page[-1]))
+            if cursor in seen_cursors:
+                raise RuntimeError("repeated pagination cursor while listing resources")
+            seen_cursors.add(cursor)
 
     @staticmethod
     def _resize_lease_active(record: dict[str, Any]) -> bool:
@@ -1893,7 +2566,9 @@ class StateDB:
         if not raw_expires_at:
             return True
         try:
-            expires_at = datetime.fromisoformat(str(raw_expires_at).replace("Z", "+00:00"))
+            expires_at = datetime.fromisoformat(
+                str(raw_expires_at).replace("Z", "+00:00")
+            )
         except ValueError:
             return True
         if expires_at.tzinfo is None:
@@ -1919,7 +2594,9 @@ class StateDB:
                 active[str(owner)] = ""
                 continue
             try:
-                expires_at = datetime.fromisoformat(str(raw_expires_at).replace("Z", "+00:00"))
+                expires_at = datetime.fromisoformat(
+                    str(raw_expires_at).replace("Z", "+00:00")
+                )
             except ValueError:
                 active[str(owner)] = str(raw_expires_at)
                 continue
@@ -1955,6 +2632,9 @@ class StateDB:
         d = dict(row)
         d["spec"] = json.loads(d["spec"])
         d["status"] = json.loads(d["status"])
+        d.pop("network_vlan_id", None)
+        d.pop("network_vip", None)
+        d.pop("network_key", None)
         return d
 
     def close(self) -> None:

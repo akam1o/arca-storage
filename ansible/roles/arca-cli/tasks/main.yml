@@ -11,15 +11,25 @@
     - name: Validate download URL
       ansible.builtin.assert:
         that:
-          - arca_cli_download_url | length > 0
+          - arca_cli_download_url | default('') | trim | length > 0
         fail_msg: "arca_cli_download_url must be set when using url method."
+
+    - name: Validate download checksum
+      ansible.builtin.assert:
+        that:
+          - >-
+            (arca_cli_download_checksum | default('') | trim | length > 0) or
+            (arca_cli_allow_unverified_download | default(false) | bool)
+        fail_msg: >-
+          arca_cli_download_checksum is required when using url method.
+          Set arca_cli_allow_unverified_download=true only for trusted local development artifacts.
 
     - name: Download arca CLI archive
       ansible.builtin.get_url:
         url: "{{ arca_cli_download_url }}"
         dest: "{{ arca_cli_archive_dest }}"
         mode: "0644"
-        checksum: "{{ arca_cli_download_checksum | default(omit) }}"
+        checksum: "{{ (arca_cli_download_checksum | default('') | trim | length > 0) | ternary(arca_cli_download_checksum | trim, omit) }}"
 
     - name: Ensure arca CLI install directory
       ansible.builtin.file:

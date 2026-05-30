@@ -1,0 +1,41 @@
+name: Python Slow Tests
+
+on:
+  schedule:
+    # Run at 03:00 JST.
+    - cron: '0 18 * * *'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slow-tests:
+    name: Python Slow Tests
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives versions from Git tags (e.g. v0.2.7).
+          fetch-depth: 0
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+          cache-dependency-path: |
+            arca_storage/pyproject.toml
+            arca_storage/requirements.txt
+            arca_storage/test-requirements.txt
+
+      - name: Install package and test deps
+        working-directory: ./arca_storage
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run slow Python tests
+        working-directory: ./arca_storage
+        run: python -m pytest tests/unit tests/integration -v -m slow

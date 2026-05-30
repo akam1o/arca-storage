@@ -59,7 +59,12 @@ class TestCreateSVM:
     def test_create_svm_invalid_name(self, client):
         """Test creating SVM with invalid name."""
         response = client.post(
-            "/v1/svms", json={"name": "tenant a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"}  # space in name
+            "/v1/svms",
+            json={
+                "name": "tenant a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+            },  # space in name
         )
 
         assert response.status_code == 400
@@ -69,7 +74,12 @@ class TestCreateSVM:
     def test_create_svm_invalid_vlan(self, client):
         """Test creating SVM with invalid VLAN ID."""
         response = client.post(
-            "/v1/svms", json={"name": "tenant_a", "vlan_id": 5000, "ip_cidr": "192.168.10.5/24"}  # invalid VLAN ID
+            "/v1/svms",
+            json={
+                "name": "tenant_a",
+                "vlan_id": 5000,
+                "ip_cidr": "192.168.10.5/24",
+            },  # invalid VLAN ID
         )
 
         assert response.status_code == 400
@@ -79,7 +89,12 @@ class TestCreateSVM:
     def test_create_svm_invalid_ip(self, client):
         """Test creating SVM with invalid IP."""
         response = client.post(
-            "/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "invalid-ip"}  # invalid IP
+            "/v1/svms",
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "invalid-ip",
+            },  # invalid IP
         )
 
         assert response.status_code == 400
@@ -87,17 +102,28 @@ class TestCreateSVM:
 
     @pytest.mark.integration
     @pytest.mark.parametrize(
-        "ip_cidr", ["0.0.0.0/0", "10.0.0.1/0", "192.168.10.0/24", "192.168.10.255/24", "224.0.0.1/24"]
+        "ip_cidr",
+        [
+            "0.0.0.0/0",
+            "10.0.0.1/0",
+            "192.168.10.0/24",
+            "192.168.10.255/24",
+            "224.0.0.1/24",
+        ],
     )
     def test_create_svm_rejects_non_host_vip(self, client, ip_cidr):
         """Test creating SVM rejects non-host VIP addresses."""
-        response = client.post("/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": ip_cidr})
+        response = client.post(
+            "/v1/svms", json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": ip_cidr}
+        )
 
         assert response.status_code == 400
         assert response.json()["error"]["code"] == "INVALID_ARGUMENT"
 
     @pytest.mark.integration
-    @pytest.mark.parametrize("gateway", ["10.0.0.1", "192.168.10.5", "192.168.10.0", "192.168.10.255"])
+    @pytest.mark.parametrize(
+        "gateway", ["10.0.0.1", "192.168.10.5", "192.168.10.0", "192.168.10.255"]
+    )
     def test_create_svm_rejects_unusable_gateway(self, client, fake_context, gateway):
         """Test creating SVM rejects gateways that cannot route from the SVM VIP."""
         response = client.post(
@@ -130,6 +156,31 @@ class TestCreateSVM:
         assert data["export_root"] == "/exports/tenant_a"
         assert fake_context.adapters.netns.namespace_exists("tenant_a") is False
         assert fake_context.adapters.ganesha.host_network["tenant_a"] is True
+
+    @pytest.mark.integration
+    def test_create_svm_returns_structured_reconcile_failure(self, fake_context):
+        client = TestClient(app)
+
+        def fail_create_group(*args, **kwargs):
+            raise RuntimeError("pcs failed")
+
+        fake_context.adapters.pacemaker.create_group = fail_create_group
+
+        response = client.post(
+            "/v1/svms",
+            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24"},
+        )
+
+        assert response.status_code == 500
+        assert response.json()["error"] == {
+            "code": "INTERNAL",
+            "message": "SVM 'tenant_a' reconcile failed",
+            "details": {
+                "resource": "SVM",
+                "name": "tenant_a",
+                "reason": "Step 'pacemaker_group_created' failed: pcs failed",
+            },
+        }
 
 
 class TestListSVMs:
@@ -180,9 +231,16 @@ class TestSVMCapacity:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         response = client.get("/v1/svms/tenant_a/capacity")
 
@@ -227,9 +285,16 @@ class TestDeleteSVM:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         response = client.delete("/v1/svms/tenant_a")
 
@@ -245,9 +310,16 @@ class TestDeleteSVM:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
 
         response = client.delete("/v1/svms/tenant_a?delete_volumes=true")
 
@@ -283,7 +355,12 @@ class TestDeleteSVM:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
 
         def fail_delete(_name):
@@ -307,10 +384,19 @@ class TestDeleteSVM:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
-        client.post("/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10})
-        client.post("/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"})
+        client.post(
+            "/v1/volumes", json={"name": "vol1", "svm": "tenant_a", "size_gib": 10}
+        )
+        client.post(
+            "/v1/snapshots", json={"name": "snap1", "svm": "tenant_a", "volume": "vol1"}
+        )
 
         response = client.delete("/v1/svms/tenant_a?delete_volumes=true")
 
@@ -330,7 +416,12 @@ class TestDeleteSVM:
         client = TestClient(app)
         client.post(
             "/v1/svms",
-            json={"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.10.5/24", "gateway": "192.168.10.1"},
+            json={
+                "name": "tenant_a",
+                "vlan_id": 100,
+                "ip_cidr": "192.168.10.5/24",
+                "gateway": "192.168.10.1",
+            },
         )
         export_service.ensure_internal_export(
             "tenant_a",
@@ -340,7 +431,10 @@ class TestDeleteSVM:
             pseudo="/exports/tenant_a",
             owner="csi",
         )
-        assert fake_context.db.get_export("tenant_a", "__csi_root__", "10.0.0.0/24") is not None
+        assert (
+            fake_context.db.get_export("tenant_a", "__csi_root__", "10.0.0.0/24")
+            is not None
+        )
 
         response = client.delete("/v1/svms/tenant_a?force=true")
 

@@ -1,8 +1,10 @@
+---
 arca:
   base_url: "https://arca-api.prod.example.com"
   timeout: "60s"
   auth_type: "token"
   auth_token: ""  # Set via Secret
+  allow_insecure_token_transport: false
   tls:
     ca_cert_path: ""  # Optional: mount CA cert if using custom CA
     insecure_skip_verify: false
@@ -22,3 +24,5 @@ network:
 
 driver:
   endpoint: "unix:///csi/csi.sock"
+  state_file_path: "/var/lib/csi-arca-storage/node-volumes.json"
+  base_mount_path: "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"

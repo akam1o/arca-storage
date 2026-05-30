@@ -7,16 +7,20 @@ from __future__ import annotations
 
 import os
 import subprocess
+import warnings
 
-from setuptools import setup, find_packages
+from setuptools import setup, find_packages  # type: ignore[import-untyped]
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
 
 with open("requirements.txt", "r", encoding="utf-8") as fh:
-    requirements = [line.strip() for line in fh if line.strip() and not line.startswith("#")]
+    requirements = [
+        line.strip() for line in fh if line.strip() and not line.startswith("#")
+    ]
 
 packages = find_packages(where=".")
+
 
 def _resolve_version() -> str:
     """
@@ -45,19 +49,28 @@ def _resolve_version() -> str:
         ).strip()
         if tag:
             return tag.lstrip("v")
-    except Exception:
-        pass
+    except (OSError, subprocess.CalledProcessError) as e:
+        warnings.warn(
+            f"Falling back to version 0.0.0 because Git tag lookup failed: {e}",
+            RuntimeWarning,
+            stacklevel=2,
+        )
 
     return "0.0.0"
 
 
 _setup_kwargs: dict[str, object] = {}
 try:
-    import setuptools_scm  # noqa: F401
+    import setuptools_scm  # type: ignore[import-not-found]  # noqa: F401
 
     # Keep versioning consistent with pyproject.toml (setuptools-scm).
     _setup_kwargs["use_scm_version"] = True
-except Exception:
+except ImportError:
+    warnings.warn(
+        "setuptools-scm is unavailable; falling back to legacy setup.py version resolution",
+        RuntimeWarning,
+        stacklevel=2,
+    )
     _setup_kwargs["version"] = _resolve_version()
 
 setup(

@@ -2,20 +2,22 @@
 
 package store
 
+import "context"
+
 // Store defines the interface for volume/snapshot metadata storage.
 // Implementations include MemoryStore (in-memory) and CRDStore (persistent via Kubernetes CRDs).
 type Store interface {
 	// Volume operations
-	CreateVolume(info *VolumeInfo) error
-	UpdateVolume(info *VolumeInfo) error
-	GetVolume(volumeID string) (*VolumeInfo, error)
-	DeleteVolume(volumeID string) error
-	ListVolumes(startingToken string, maxEntries int) ([]*VolumeInfo, string, error)
+	CreateVolume(ctx context.Context, info *VolumeInfo) error
+	UpdateVolume(ctx context.Context, info *VolumeInfo) error
+	GetVolume(ctx context.Context, volumeID string) (*VolumeInfo, error)
+	DeleteVolume(ctx context.Context, volumeID string) error
+	ListVolumes(ctx context.Context, startingToken string, maxEntries int) ([]*VolumeInfo, string, error)
 
 	// Snapshot operations
-	CreateSnapshot(info *SnapshotInfo) error
-	UpdateSnapshotStatus(snapshotID string, readyToUse bool) error
-	GetSnapshot(snapshotID string) (*SnapshotInfo, error)
-	DeleteSnapshot(snapshotID string) error
-	ListSnapshots(sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error)
+	CreateSnapshot(ctx context.Context, info *SnapshotInfo) error
+	UpdateSnapshotStatus(ctx context.Context, snapshotID string, readyToUse bool) error
+	GetSnapshot(ctx context.Context, snapshotID string) (*SnapshotInfo, error)
+	DeleteSnapshot(ctx context.Context, snapshotID string) error
+	ListSnapshots(ctx context.Context, sourceVolumeID, startingToken string, maxEntries int) ([]*SnapshotInfo, string, error)
 }

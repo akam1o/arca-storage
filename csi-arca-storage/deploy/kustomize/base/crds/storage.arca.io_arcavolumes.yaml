@@ -99,6 +99,7 @@ spec:
               path:
                 maxLength: 4096
                 minLength: 1
+                pattern: ^[A-Za-z0-9][A-Za-z0-9._-]*(/[A-Za-z0-9][A-Za-z0-9._-]*)*$
                 type: string
               svmName:
                 maxLength: 63

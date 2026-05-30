@@ -1,7 +1,7 @@
 """Configuration options for ARCA Storage Manila Driver."""
 
 try:
-    from oslo_config import cfg
+    from oslo_config import cfg  # type: ignore[import-untyped]
 
     _HAS_OSLO = True
 except ImportError:
@@ -81,6 +81,14 @@ def _get_arca_manila_opts():
             secret=True,
             help="API authentication token (for auth_type=token)",
         ),
+        cfg.BoolOpt(
+            "arca_storage_allow_insecure_api_token_transport",
+            default=False,
+            help=(
+                "Allow Bearer token authentication over non-loopback plain HTTP. "
+                "Only use for explicitly trusted development networks."
+            ),
+        ),
         cfg.StrOpt(
             "arca_storage_api_ca_bundle",
             default=None,
@@ -89,13 +97,19 @@ def _get_arca_manila_opts():
         cfg.StrOpt(
             "arca_storage_api_client_cert",
             default=None,
-            help="Path to client certificate file for mTLS (optional)",
+            help=(
+                "Path to client certificate file for mTLS. May point to a combined "
+                "certificate/key PEM when arca_storage_api_client_key is unset."
+            ),
         ),
         cfg.StrOpt(
             "arca_storage_api_client_key",
             default=None,
             secret=True,
-            help="Path to client private key file for mTLS (optional)",
+            help=(
+                "Path to client private key file for mTLS. Requires "
+                "arca_storage_api_client_cert."
+            ),
         ),
         # Multi-tenancy Configuration
         cfg.StrOpt(

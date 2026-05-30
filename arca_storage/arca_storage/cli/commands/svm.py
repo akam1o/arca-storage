@@ -4,12 +4,14 @@ SVM management commands.
 Delegates mutating operations to API services.
 """
 
-from typing import Optional
+import json
+from typing import Literal, Optional
 
 import typer
 
 from arca_storage.api.models import SVMCreate
 from arca_storage.api.services import svm_service
+from arca_storage.db import encode_cursor
 from arca_storage.cli.lib.validators import (
     infer_gateway_from_ip_cidr,
     validate_ipv4,
@@ -26,11 +28,19 @@ app = typer.Typer(help="SVM management commands")
 @app.command()
 def create(
     name: str = typer.Argument(..., help="SVM name"),
-    vlan_id: Optional[int] = typer.Option(None, "--vlan", help="Optional VLAN ID (1-4094)"),
-    ip: str = typer.Option(..., "--ip", help="IP address with CIDR (e.g., 192.168.10.5/24)"),
-    gateway: Optional[str] = typer.Option(None, "--gateway", help="Gateway IP (optional; inferred if omitted)"),
+    vlan_id: Optional[int] = typer.Option(
+        None, "--vlan", help="Optional VLAN ID (1-4094)"
+    ),
+    ip: str = typer.Option(
+        ..., "--ip", help="IP address with CIDR (e.g., 192.168.10.5/24)"
+    ),
+    gateway: Optional[str] = typer.Option(
+        None, "--gateway", help="Gateway IP (optional; inferred if omitted)"
+    ),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
-    root_size: Optional[int] = typer.Option(None, "--root-size", help="Create root LV size in GiB (optional)"),
+    root_size: Optional[int] = typer.Option(
+        None, "--root-size", help="Create root LV size in GiB (optional)"
+    ),
 ):
     """Create a new SVM via the reconciler."""
     try:
@@ -41,7 +51,9 @@ def create(
         if gateway is not None:
             validate_ipv4(gateway)
 
-        gateway_ip = gateway or (infer_gateway_from_ip_cidr(ip) if vlan_id is not None else None)
+        gateway_ip = gateway or (
+            infer_gateway_from_ip_cidr(ip) if vlan_id is not None else None
+        )
 
         typer.echo(f"Creating SVM: {name}")
 
@@ -68,8 +80,12 @@ def create(
 @app.command()
 def delete(
     name: str = typer.Argument(..., help="SVM name"),
-    force: bool = typer.Option(False, "--force", help="Force cascading deletion of dependent resources"),
-    delete_volumes: bool = typer.Option(False, "--delete-volumes", help="Delete dependent volumes before deleting"),
+    force: bool = typer.Option(
+        False, "--force", help="Force cascading deletion of dependent resources"
+    ),
+    delete_volumes: bool = typer.Option(
+        False, "--delete-volumes", help="Delete dependent volumes before deleting"
+    ),
 ):
     """Delete an SVM after dependent resources are gone or safely cascaded."""
     try:
@@ -88,11 +104,44 @@ def delete(
 
 
 @app.command()
-def list():
+def list(
+    name: Optional[str] = typer.Option(None, "--name", help="Filter by SVM name"),
+    limit: Optional[int] = typer.Option(
+        None, "--limit", help="Maximum number of results"
+    ),
+    cursor: Optional[str] = typer.Option(None, "--cursor", help="Pagination cursor"),
+    output_format: Literal["text", "json"] = typer.Option(
+        "text",
+        "--format",
+        help="Output format",
+    ),
+):
     """List all SVMs."""
     try:
+        if name:
+            validate_name(name)
+        if limit is not None and limit < 1:
+            raise ValueError("--limit must be positive")
+
         ctx = get_context()
-        svms = list_all_svms(ctx.db)
+        next_cursor = None
+        if limit is None and cursor is None:
+            svms = list_all_svms(ctx.db)
+            if name:
+                svms = [svm for svm in svms if svm.get("spec", {}).get("name") == name]
+        else:
+            page_limit = limit or 100
+            svms = ctx.db.list_svms(name=name, limit=page_limit + 1, cursor=cursor)
+            if len(svms) > page_limit:
+                next_cursor = encode_cursor([str(svms[page_limit - 1]["name"])])
+                svms = svms[:page_limit]
+
+        if output_format == "json":
+            typer.echo(
+                json.dumps({"items": svms, "next_cursor": next_cursor}, sort_keys=True)
+            )
+            return
+
         if not svms:
             typer.echo("No SVMs found")
             return
@@ -104,6 +153,8 @@ def list():
                 f"{spec.get('name')} vlan={vlan if vlan is not None else 'none'} "
                 f"ip={spec.get('ip_cidr')} phase={status.get('phase', 'unknown')}"
             )
+        if next_cursor:
+            typer.echo(f"next_cursor={next_cursor}")
     except Exception as e:
         typer.echo(f"Error listing SVMs: {e}", err=True)
         raise typer.Exit(1)

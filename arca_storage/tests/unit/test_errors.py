@@ -1,6 +1,5 @@
 """Tests for the structured error model."""
 
-
 from arca_storage.errors import (
     AlreadyExistsError,
     ArcaError,
@@ -8,6 +7,7 @@ from arca_storage.errors import (
     ErrorCode,
     InvalidArgumentError,
     NotFoundError,
+    ReconcileFailedError,
     SubprocessError,
     TimeoutError as ArcaTimeoutError,
     UnauthorizedError,
@@ -45,7 +45,23 @@ class TestErrorCodes:
     def test_subprocess_error(self):
         err = SubprocessError(["lvcreate"], 1, "error msg")
         assert err.http_status == 500
-        assert "lvcreate" in err.message
+        assert err.message == "Command failed (rc=1)"
+        assert err.to_dict()["details"] == {"returncode": 1}
+        assert err.cmd == ["lvcreate"]
+        assert err.stderr == "error msg"
+
+    def test_reconcile_failed_error(self):
+        err = ReconcileFailedError(
+            "Volume", "svm1/vol1", "Step 'mounted' failed: mount failed"
+        )
+        assert err.http_status == 500
+        assert err.code == ErrorCode.INTERNAL
+        assert err.message == "Volume 'svm1/vol1' reconcile failed"
+        assert err.details == {
+            "resource": "Volume",
+            "name": "svm1/vol1",
+            "reason": "Step 'mounted' failed: mount failed",
+        }
 
     def test_to_dict(self):
         err = NotFoundError("SVM", "test")

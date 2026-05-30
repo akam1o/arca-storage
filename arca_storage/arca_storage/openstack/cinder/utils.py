@@ -55,6 +55,17 @@ def get_mount_point_for_svm(base_path: str, svm_name: str) -> str:
     return os.path.join(base_path, f"svm_{svm_name}")
 
 
+def _volume_file_path(mount_point: str, volume_name: str) -> str:
+    try:
+        validate_name(volume_name)
+    except ValueError as e:
+        raise ArcaStorageException(
+            "Invalid volume file name: must start with alphanumeric and contain "
+            "only alphanumeric, dots, underscores, or hyphens"
+        ) from e
+    return os.path.join(mount_point, volume_name)
+
+
 def ensure_mount_point_exists(mount_point: str) -> None:
     """Ensure mount point directory exists.
 
@@ -67,7 +78,7 @@ def ensure_mount_point_exists(mount_point: str) -> None:
     try:
         os.makedirs(mount_point, mode=0o750, exist_ok=True)
     except OSError as e:
-        raise ArcaStorageException(f"Failed to create mount point {mount_point}: {e}")
+        raise ArcaStorageException("Failed to create mount point") from e
 
 
 def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
@@ -91,9 +102,7 @@ def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
             # Already mounted correctly - this is the normal case for per-SVM exports
             return
         else:
-            raise ArcaStorageException(
-                f"Mount point {mount_point} already has different export: {current_mount['device']}"
-            )
+            raise ArcaStorageException("Mount point already has different export")
 
     # Determine NFS type from mount options
     # Default to nfs4, but allow override via mount options
@@ -112,8 +121,8 @@ def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
             check=True,
             timeout=30,
         )
-    except subprocess.TimeoutExpired:
-        raise ArcaStorageException(f"Mount operation timed out for {export_path}")
+    except subprocess.TimeoutExpired as e:
+        raise ArcaStorageException("Mount operation timed out") from e
     except subprocess.CalledProcessError as e:
         error_msg = e.stderr or e.stdout or str(e)
         # Check if "already mounted" error (race condition with another worker)
@@ -123,7 +132,7 @@ def mount_nfs(export_path: str, mount_point: str, mount_options: str) -> None:
             if current_mount and current_mount["device"] == export_path:
                 # Another worker mounted it - this is OK
                 return
-        raise ArcaStorageException(f"Failed to mount {export_path}: {error_msg}")
+        raise ArcaStorageException("Failed to mount NFS export") from e
 
 
 def unmount_nfs(mount_point: str, force: bool = False) -> None:
@@ -150,12 +159,12 @@ def unmount_nfs(mount_point: str, force: bool = False) -> None:
             check=True,
             timeout=10,
         )
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         if force:
             # Try lazy unmount
             lazy_unmount(mount_point)
         else:
-            raise ArcaStorageException(f"Unmount operation timed out for {mount_point}")
+            raise ArcaStorageException("Unmount operation timed out") from e
     except subprocess.CalledProcessError as e:
         error_msg = (e.stderr or e.stdout or str(e)).lower()
         # Ignore "not mounted" errors
@@ -166,11 +175,13 @@ def unmount_nfs(mount_point: str, force: bool = False) -> None:
             # Try lazy unmount on failure
             try:
                 lazy_unmount(mount_point)
-            except ArcaStorageException:
+            except ArcaStorageException as lazy_error:
                 # If lazy unmount also fails, raise the original error
-                raise ArcaStorageException(f"Failed to unmount {mount_point}: {error_msg}")
+                raise ArcaStorageException(
+                    "Failed to unmount NFS export"
+                ) from lazy_error
         else:
-            raise ArcaStorageException(f"Failed to unmount {mount_point}: {error_msg}")
+            raise ArcaStorageException("Failed to unmount NFS export") from e
 
 
 def lazy_unmount(mount_point: str) -> None:
@@ -192,13 +203,13 @@ def lazy_unmount(mount_point: str) -> None:
             check=True,
             timeout=5,
         )
-    except subprocess.TimeoutExpired:
-        raise ArcaStorageException(f"Lazy unmount operation timed out for {mount_point}")
+    except subprocess.TimeoutExpired as e:
+        raise ArcaStorageException("Lazy unmount operation timed out") from e
     except subprocess.CalledProcessError as e:
         error_msg = (e.stderr or e.stdout or str(e)).lower()
         # Ignore "not mounted" errors
         if "not mounted" not in error_msg:
-            raise ArcaStorageException(f"Failed to lazy unmount {mount_point}: {error_msg}")
+            raise ArcaStorageException("Failed to lazy unmount NFS export") from e
 
 
 def is_mounted(mount_point: str) -> bool:
@@ -374,7 +385,7 @@ def ensure_volume_file(
 ) -> tuple[str, bool]:
     """Create a raw volume file and report whether this process created it."""
     # Volume file path (use volume_name for compatibility with RemoteFSDriver)
-    volume_file = os.path.join(mount_point, volume_name)
+    volume_file = _volume_file_path(mount_point, volume_name)
     created = False
 
     try:
@@ -395,36 +406,68 @@ def ensure_volume_file(
     except FileExistsError:
         if adopt_existing:
             return _adopt_existing_volume_file(volume_file, size_gb), False
-        raise ArcaStorageException(f"Volume file already exists: {volume_file}")
+        raise ArcaStorageException("Volume file already exists")
     except OSError as e:
         if created:
             try:
                 os.remove(volume_file)
             except OSError as cleanup_error:
                 raise ArcaStorageException(
-                    f"Failed to create volume file {volume_file}: {e}; "
-                    f"failed to remove partial file: {cleanup_error}"
-                ) from e
-        raise ArcaStorageException(f"Failed to create volume file {volume_file}: {e}")
+                    "Failed to create volume file and remove partial file"
+                ) from cleanup_error
+        raise ArcaStorageException("Failed to create volume file") from e
 
 
 def _adopt_existing_volume_file(volume_file: str, size_gb: int) -> str:
     """Return an existing volume file only when it matches the requested shape."""
     expected_size = size_gb * 1024 * 1024 * 1024
     try:
-        if os.path.islink(volume_file) or not os.path.isfile(volume_file):
-            raise ArcaStorageException(f"Existing volume path is not a regular file: {volume_file}")
-        actual_size = os.path.getsize(volume_file)
+        file_stat = _stat_regular_file_no_follow(volume_file, "existing volume path")
+        actual_size = file_stat.st_size
     except ArcaStorageException:
         raise
     except OSError as e:
-        raise ArcaStorageException(f"Failed to inspect existing volume file {volume_file}: {e}") from e
+        raise ArcaStorageException("Failed to inspect existing volume file") from e
 
     if actual_size != expected_size:
         raise ArcaStorageException(
-            f"Existing volume file has size {actual_size} bytes, expected {expected_size}: {volume_file}"
+            f"Existing volume file has size {actual_size} bytes, expected {expected_size}"
         )
     return volume_file
+
+
+def _stat_regular_file_no_follow(path: str, description: str) -> os.stat_result:
+    """Stat a regular file through an fd opened without following symlinks."""
+    nofollow = getattr(os, "O_NOFOLLOW", None)
+    if nofollow is None:
+        raise ArcaStorageException(
+            "Secure existing file opening is not supported on this platform"
+        )
+
+    try:
+        fd = os.open(path, os.O_RDONLY | nofollow)
+    except FileNotFoundError as e:
+        raise ArcaStorageException(f"{description.capitalize()} does not exist") from e
+    except OSError as e:
+        if e.errno == errno.ELOOP:
+            raise ArcaStorageException(
+                f"{description.capitalize()} is not a regular file"
+            ) from e
+        raise ArcaStorageException(f"Failed to open {description}") from e
+
+    try:
+        file_stat = os.fstat(fd)
+        if not stat.S_ISREG(file_stat.st_mode):
+            raise ArcaStorageException(
+                f"{description.capitalize()} is not a regular file"
+            )
+        return file_stat
+    except ArcaStorageException:
+        raise
+    except OSError as e:
+        raise ArcaStorageException(f"Failed to inspect {description}") from e
+    finally:
+        os.close(fd)
 
 
 def delete_volume_file(mount_point: str, volume_name: str) -> None:
@@ -434,7 +477,7 @@ def delete_volume_file(mount_point: str, volume_name: str) -> None:
         mount_point: NFS mount point
         volume_name: Volume name (filename)
     """
-    volume_file = os.path.join(mount_point, volume_name)
+    volume_file = _volume_file_path(mount_point, volume_name)
 
     try:
         if os.path.exists(volume_file):
@@ -442,7 +485,7 @@ def delete_volume_file(mount_point: str, volume_name: str) -> None:
     except FileNotFoundError:
         return
     except OSError as e:
-        raise ArcaStorageException(f"Failed to delete volume file {volume_file}: {e}")
+        raise ArcaStorageException("Failed to delete volume file") from e
 
 
 def get_volume_file_path(mount_point: str, volume_name: str) -> str:
@@ -455,7 +498,7 @@ def get_volume_file_path(mount_point: str, volume_name: str) -> str:
     Returns:
         Path to volume file
     """
-    return os.path.join(mount_point, volume_name)
+    return _volume_file_path(mount_point, volume_name)
 
 
 def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> None:
@@ -469,14 +512,14 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
     Raises:
         ArcaStorageException: If extension fails
     """
-    volume_file = os.path.join(mount_point, volume_name)
+    volume_file = _volume_file_path(mount_point, volume_name)
 
     try:
         if not os.path.exists(volume_file):
-            raise ArcaStorageException(f"Volume file does not exist: {volume_file}")
+            raise ArcaStorageException("Volume file does not exist")
 
         if os.path.islink(volume_file) or not os.path.isfile(volume_file):
-            raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+            raise ArcaStorageException("Volume path is not a regular file")
 
         size_bytes = new_size_gb * 1024 * 1024 * 1024
         flags = os.O_WRONLY
@@ -485,8 +528,13 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
 
         fd = os.open(volume_file, flags)
         try:
-            if not stat.S_ISREG(os.fstat(fd).st_mode):
-                raise ArcaStorageException(f"Volume path is not a regular file: {volume_file}")
+            file_stat = os.fstat(fd)
+            if not stat.S_ISREG(file_stat.st_mode):
+                raise ArcaStorageException("Volume path is not a regular file")
+            if file_stat.st_size > size_bytes:
+                raise ArcaStorageException(
+                    f"Refusing to shrink volume file from {file_stat.st_size} bytes to {size_bytes} bytes"
+                )
             os.ftruncate(fd, size_bytes)
         finally:
             os.close(fd)
@@ -494,7 +542,7 @@ def extend_volume_file(mount_point: str, volume_name: str, new_size_gb: int) -> 
     except ArcaStorageException:
         raise
     except OSError as e:
-        raise ArcaStorageException(f"Failed to extend volume file {volume_file}: {e}") from e
+        raise ArcaStorageException("Failed to extend volume file") from e
 
 
 def _rename_noreplace(source_path: str, dest_path: str) -> None:
@@ -574,19 +622,17 @@ def _open_regular_file_no_follow(path: str) -> int:
     try:
         fd = os.open(path, os.O_RDONLY | nofollow)
     except FileNotFoundError as e:
-        raise ArcaStorageException(f"Source file does not exist: {path}") from e
+        raise ArcaStorageException("Source file does not exist") from e
     except OSError as e:
         if e.errno == errno.ELOOP:
             raise ArcaStorageException(
-                f"Source must be a regular file, not a symlink: {path}"
+                "Source must be a regular file, not a symlink"
             ) from e
         raise
 
     try:
         if not stat.S_ISREG(os.fstat(fd).st_mode):
-            raise ArcaStorageException(
-                f"Source must be a regular file, not a symlink: {path}"
-            )
+            raise ArcaStorageException("Source must be a regular file, not a symlink")
     except Exception:
         os.close(fd)
         raise
@@ -624,7 +670,7 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
     import secrets
 
     if os.path.exists(dest_path):
-        raise ArcaStorageException(f"Destination file already exists: {dest_path}")
+        raise ArcaStorageException("Destination file already exists")
 
     source_fd = _open_regular_file_no_follow(source_path)
     # Create temporary file with random suffix to prevent prediction
@@ -680,10 +726,8 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
             os.unlink(temp_path)
         except FileExistsError:
             # Another worker created the destination file concurrently
-            raise ArcaStorageException(
-                f"Destination file was created by another worker: {dest_path}"
-            )
-        except OSError as link_error:
+            raise ArcaStorageException("Destination file was created by another worker")
+        except OSError:
             # If link() failed for reasons other than file exists (e.g., cross-device)
             # install the completed temp file with a no-overwrite atomic rename.
             try:
@@ -691,13 +735,12 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
                 dest_installed = True
             except FileExistsError:
                 raise ArcaStorageException(
-                    f"Destination file was created by another worker: {dest_path}"
+                    "Destination file was created by another worker"
                 )
             except OSError as rename_error:
                 raise ArcaStorageException(
-                    "Failed to atomically install copied file without overwriting "
-                    f"destination after hard link failed ({link_error}): {rename_error}"
-                )
+                    "Failed to atomically install copied file without overwriting destination"
+                ) from rename_error
 
         # Sync parent directory to ensure rename/link is durable
         dir_fd = os.open(dest_dir, os.O_RDONLY)
@@ -710,23 +753,20 @@ def copy_sparse_file(source_path: str, dest_path: str, timeout: int = 600) -> No
         cleanup_installed_dest()
         cleanup_temp_file()
         raise
-    except subprocess.TimeoutExpired:
+    except subprocess.TimeoutExpired as e:
         # Clean up temp file on timeout
         cleanup_installed_dest()
         cleanup_temp_file()
-        raise ArcaStorageException(
-            f"File copy timed out after {timeout}s: {source_path} -> {dest_path}"
-        )
+        raise ArcaStorageException(f"File copy timed out after {timeout}s") from e
     except subprocess.CalledProcessError as e:
         # Clean up temp file on copy failure
         cleanup_installed_dest()
         cleanup_temp_file()
-        error_msg = e.stderr or e.stdout or str(e)
-        raise ArcaStorageException(f"Failed to copy file: {error_msg}")
+        raise ArcaStorageException("Failed to copy file") from e
     except OSError as e:
         # Clean up temp file on any OS error
         cleanup_installed_dest()
         cleanup_temp_file()
-        raise ArcaStorageException(f"Failed during file copy operation: {e}")
+        raise ArcaStorageException("Failed during file copy operation") from e
     finally:
         os.close(source_fd)

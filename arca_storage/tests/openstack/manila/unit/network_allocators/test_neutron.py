@@ -5,8 +5,18 @@ from unittest.mock import Mock, patch
 import pytest
 
 from arca_storage.openstack.manila import exceptions as arca_exceptions
+from arca_storage.openstack.manila.network_allocators import (
+    neutron as neutron_allocator,
+)
 from arca_storage.openstack.manila.network_allocators.neutron import NeutronAllocator
 from arca_storage.openstack.manila.network_allocators.base import NetworkAllocation
+
+
+def render_log_calls(*mock_logs):
+    rendered = []
+    for mock_log in mock_logs:
+        rendered.extend(str(call.args) for call in mock_log.call_args_list)
+    return " ".join(rendered)
 
 
 class TestNeutronAllocator:
@@ -90,13 +100,20 @@ class TestNeutronAllocator:
         mock_ks_loading.load_session_from_conf_options.return_value = Mock()
         mock_neutron_module.Client.return_value = mock_neutron_client
 
-        allocator.validate_config()
+        with patch.object(neutron_allocator.LOG, "info") as mock_info:
+            allocator.validate_config()
 
         # With new multi-network support, check _networks list instead of _vlan_id
         assert len(allocator._networks) == 1
         assert allocator._networks[0]["vlan_id"] == 100
         assert allocator._neutron_client is not None
         assert allocator._supports_tags is True
+        rendered_calls = render_log_calls(mock_info)
+        assert "net-uuid-123" not in rendered_calls
+        assert "subnet-uuid-456" not in rendered_calls
+        assert "192.168.100.0" not in rendered_calls
+        assert "192.168.100.1" not in rendered_calls
+        assert "Validated Neutron provider network metadata" in rendered_calls
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     def test_validate_config_missing_net_id(self, mock_ks_loading, mock_config):
@@ -210,6 +227,32 @@ class TestNeutronAllocator:
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
+    def test_validate_config_redacts_sensitive_neutron_errors(
+        self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
+    ):
+        """Network validation errors should not leak credentials."""
+        mock_ks_loading.load_auth_from_conf_options.return_value = Mock()
+        mock_ks_loading.load_session_from_conf_options.return_value = Mock()
+        mock_neutron_module.Client.return_value = mock_neutron_client
+        mock_neutron_client.show_network.side_effect = Exception(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        with patch.object(neutron_allocator.LOG, "error") as mock_error:
+            with pytest.raises(ValueError) as exc_info:
+                allocator.validate_config()
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+        rendered_calls = render_log_calls(mock_error)
+        assert "net-uuid-123" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Network validation failed" in rendered_calls
+
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_allocate_creates_port(
         self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
     ):
@@ -221,7 +264,8 @@ class TestNeutronAllocator:
         allocator.validate_config()
 
         # Execute
-        allocation = allocator.allocate("project-123", "manila_project-123")
+        with patch.object(neutron_allocator.LOG, "info") as mock_info:
+            allocation = allocator.allocate("project-123", "manila_project-123")
 
         # Verify
         assert isinstance(allocation, NetworkAllocation)
@@ -235,6 +279,13 @@ class TestNeutronAllocator:
         port_body = mock_neutron_client.create_port.call_args[0][0]
         assert port_body["port"]["device_owner"] == "compute:arca-storage-svm"
         assert port_body["port"]["device_id"] == "arca-svm-manila_project-123"
+        rendered_calls = render_log_calls(mock_info)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "port-uuid-789" not in rendered_calls
+        assert "net-uuid-123" not in rendered_calls
+        assert "192.168.100.10" not in rendered_calls
+        assert "Created Neutron port for SVM allocation" in rendered_calls
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
@@ -263,7 +314,8 @@ class TestNeutronAllocator:
         allocator.validate_config()
 
         # Execute
-        allocation = allocator.allocate("project-123", "manila_project-123")
+        with patch.object(neutron_allocator.LOG, "info") as mock_info:
+            allocation = allocator.allocate("project-123", "manila_project-123")
 
         # Verify reused existing port
         assert allocation.allocation_id == "existing-port-uuid"
@@ -271,6 +323,12 @@ class TestNeutronAllocator:
 
         # Should not create new port
         mock_neutron_client.create_port.assert_not_called()
+        rendered_calls = render_log_calls(mock_info)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "existing-port-uuid" not in rendered_calls
+        assert "192.168.100.15" not in rendered_calls
+        assert "Reusing existing Neutron port for SVM allocation" in rendered_calls
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
@@ -289,13 +347,17 @@ class TestNeutronAllocator:
                 "id": "port-old",
                 "network_id": "net-uuid-123",
                 "created_at": "2025-01-01T00:00:00Z",
-                "fixed_ips": [{"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.10"}],
+                "fixed_ips": [
+                    {"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.10"}
+                ],
             },
             {
                 "id": "port-new",
                 "network_id": "net-uuid-123",
                 "created_at": "2025-01-01T00:01:00Z",
-                "fixed_ips": [{"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.11"}],
+                "fixed_ips": [
+                    {"subnet_id": "subnet-uuid-456", "ip_address": "192.168.100.11"}
+                ],
             },
         ]
 
@@ -308,11 +370,25 @@ class TestNeutronAllocator:
         allocator.validate_config()
 
         # Execute
-        allocation = allocator.allocate("project-123", "manila_project-123")
+        with patch.object(neutron_allocator.LOG, "warning") as mock_warning:
+            with patch.object(neutron_allocator.LOG, "info") as mock_info:
+                allocation = allocator.allocate("project-123", "manila_project-123")
 
         # Verify kept oldest port and deleted newer one
         assert allocation.allocation_id == "port-old"
         mock_neutron_client.delete_port.assert_called_once_with("port-new")
+        rendered_calls = render_log_calls(mock_warning, mock_info)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "arca-svm-manila_project-123" not in rendered_calls
+        assert "port-old" not in rendered_calls
+        assert "port-new" not in rendered_calls
+        assert "net-uuid-123" not in rendered_calls
+        assert "192.168.100.10" not in rendered_calls
+        assert "192.168.100.11" not in rendered_calls
+        assert (
+            "Detected %d duplicate Neutron ports for SVM allocation" in rendered_calls
+        )
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
@@ -332,8 +408,41 @@ class TestNeutronAllocator:
 
         # Execute and verify exception
         # Note: Generic Exception is wrapped as ArcaNetworkConflict with updated message
-        with pytest.raises(arca_exceptions.ArcaNetworkConflict, match="Failed to create port"):
+        with pytest.raises(
+            arca_exceptions.ArcaNetworkConflict, match="Failed to create port"
+        ):
             allocator.allocate("project-123", "manila_project-123")
+
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
+    def test_allocate_port_creation_failure_redacts_sensitive_details(
+        self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
+    ):
+        """Neutron errors should not leak credentials into Manila exceptions."""
+        mock_ks_loading.load_auth_from_conf_options.return_value = Mock()
+        mock_ks_loading.load_session_from_conf_options.return_value = Mock()
+        mock_neutron_module.Client.return_value = mock_neutron_client
+        mock_neutron_client.create_port.side_effect = Exception(
+            "Neutron API error token=secret-token password=hunter2"
+        )
+
+        allocator.validate_config()
+
+        with patch.object(neutron_allocator.LOG, "error") as mock_error:
+            with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
+                allocator.allocate("project-123", "manila_project-123")
+
+        assert "secret-token" not in str(exc_info.value)
+        assert "hunter2" not in str(exc_info.value)
+        assert "<redacted>" in str(exc_info.value)
+        rendered_calls = render_log_calls(mock_error)
+        assert "project-123" not in rendered_calls
+        assert "manila_project-123" not in rendered_calls
+        assert "net-uuid-123" not in rendered_calls
+        assert "subnet-uuid-456" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Unexpected error creating Neutron port" in rendered_calls
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
@@ -370,7 +479,60 @@ class TestNeutronAllocator:
         allocator.validate_config()
 
         # Execute - should not raise exception
-        allocator.deallocate("non-existent-port")
+        with patch.object(neutron_allocator.LOG, "warning") as mock_warning:
+            allocator.deallocate("non-existent-port")
+
+        rendered_calls = render_log_calls(mock_warning)
+        assert "non-existent-port" not in rendered_calls
+        assert "Port not found" not in rendered_calls
+        assert "Failed to delete Neutron port" in rendered_calls
+
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
+    def test_deallocate_logs_redact_backend_errors(
+        self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
+    ):
+        """Deallocation logs should not expose port IDs or backend details."""
+        mock_ks_loading.load_auth_from_conf_options.return_value = Mock()
+        mock_ks_loading.load_session_from_conf_options.return_value = Mock()
+        mock_neutron_module.Client.return_value = mock_neutron_client
+        mock_neutron_client.delete_port.side_effect = Exception(
+            "Authorization: Bearer secret-token password=hunter2"
+        )
+
+        allocator.validate_config()
+
+        with patch.object(neutron_allocator.LOG, "warning") as mock_warning:
+            allocator.deallocate("port-secret-token")
+
+        rendered_calls = render_log_calls(mock_warning)
+        assert "port-secret-token" not in rendered_calls
+        assert "secret-token" not in rendered_calls
+        assert "hunter2" not in rendered_calls
+        assert "Failed to delete Neutron port" in rendered_calls
+
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
+    @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
+    def test_extract_allocation_logs_redact_port_without_fixed_ips(
+        self, mock_neutron_module, mock_ks_loading, allocator, mock_neutron_client
+    ):
+        """Malformed port logs and errors should not expose port IDs."""
+        mock_ks_loading.load_auth_from_conf_options.return_value = Mock()
+        mock_ks_loading.load_session_from_conf_options.return_value = Mock()
+        mock_neutron_module.Client.return_value = mock_neutron_client
+
+        allocator.validate_config()
+
+        with patch.object(neutron_allocator.LOG, "warning") as mock_warning:
+            with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
+                allocator._extract_allocation_from_port(
+                    {"id": "port-secret-token", "network_id": "net-uuid-123"}
+                )
+
+        assert "port-secret-token" not in str(exc_info.value)
+        rendered_calls = render_log_calls(mock_warning)
+        assert "port-secret-token" not in rendered_calls
+        assert "Neutron port has no fixed IPs" in rendered_calls
 
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
@@ -559,7 +721,11 @@ class TestNeutronAllocatorMultipleNetworks:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_validate_config_multiple_networks(
-        self, mock_neutron_module, mock_ks_loading, allocator_multi, mock_neutron_client_multi
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        allocator_multi,
+        mock_neutron_client_multi,
     ):
         """Test configuration validation with multiple networks."""
         # Mock auth and session loading
@@ -583,7 +749,11 @@ class TestNeutronAllocatorMultipleNetworks:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_allocate_round_robin_selection(
-        self, mock_neutron_module, mock_ks_loading, allocator_multi, mock_neutron_client_multi
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        allocator_multi,
+        mock_neutron_client_multi,
     ):
         """Test round-robin network selection across multiple allocations."""
         # Setup
@@ -662,7 +832,11 @@ class TestNeutronAllocatorMultipleNetworks:
     @patch("arca_storage.openstack.manila.network_allocators.neutron.ks_loading")
     @patch("arca_storage.openstack.manila.network_allocators.neutron.neutron_client")
     def test_extract_allocation_from_existing_port_multi_network(
-        self, mock_neutron_module, mock_ks_loading, allocator_multi, mock_neutron_client_multi
+        self,
+        mock_neutron_module,
+        mock_ks_loading,
+        allocator_multi,
+        mock_neutron_client_multi,
     ):
         """Test extracting allocation from existing port in multi-network setup."""
         # Setup

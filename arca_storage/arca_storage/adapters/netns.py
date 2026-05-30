@@ -60,15 +60,21 @@ class SubprocessNetNSAdapter:
         vlan_if = ifname or allocate_vlan_ifname(namespace, vlan_id)
 
         # Check if interface already exists
-        exists_in_root = run_cmd(
-            ["ip", "link", "show", vlan_if], timeout=self._timeout, check=False
-        ).returncode == 0
+        exists_in_root = (
+            run_cmd(
+                ["ip", "link", "show", vlan_if], timeout=self._timeout, check=False
+            ).returncode
+            == 0
+        )
 
-        exists_in_ns = run_cmd(
-            ["ip", "netns", "exec", namespace, "ip", "link", "show", vlan_if],
-            timeout=self._timeout,
-            check=False,
-        ).returncode == 0
+        exists_in_ns = (
+            run_cmd(
+                ["ip", "netns", "exec", namespace, "ip", "link", "show", vlan_if],
+                timeout=self._timeout,
+                check=False,
+            ).returncode
+            == 0
+        )
 
         if exists_in_ns:
             self._configure_ip(namespace, vlan_if, ip_cidr, gateway, mtu)
@@ -82,8 +88,17 @@ class SubprocessNetNSAdapter:
         else:
             run_cmd(
                 [
-                    "ip", "link", "add", "link", parent_if,
-                    "name", vlan_if, "type", "vlan", "id", str(vlan_id),
+                    "ip",
+                    "link",
+                    "add",
+                    "link",
+                    parent_if,
+                    "name",
+                    vlan_if,
+                    "type",
+                    "vlan",
+                    "id",
+                    str(vlan_id),
                 ],
                 timeout=self._timeout,
             )
@@ -105,7 +120,18 @@ class SubprocessNetNSAdapter:
     ) -> None:
         if mtu != 1500:
             run_cmd(
-                ["ip", "netns", "exec", namespace, "ip", "link", "set", interface, "mtu", str(mtu)],
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    namespace,
+                    "ip",
+                    "link",
+                    "set",
+                    interface,
+                    "mtu",
+                    str(mtu),
+                ],
                 timeout=self._timeout,
             )
         result = run_cmd(
@@ -115,7 +141,18 @@ class SubprocessNetNSAdapter:
         )
         if ip_cidr not in (result.stdout or ""):
             run_cmd(
-                ["ip", "netns", "exec", namespace, "ip", "addr", "add", ip_cidr, "dev", interface],
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    namespace,
+                    "ip",
+                    "addr",
+                    "add",
+                    ip_cidr,
+                    "dev",
+                    interface,
+                ],
                 timeout=self._timeout,
             )
         run_cmd(
@@ -129,7 +166,18 @@ class SubprocessNetNSAdapter:
                 check=False,
             )
             run_cmd(
-                ["ip", "netns", "exec", namespace, "ip", "route", "add", "default", "via", gateway],
+                [
+                    "ip",
+                    "netns",
+                    "exec",
+                    namespace,
+                    "ip",
+                    "route",
+                    "add",
+                    "default",
+                    "via",
+                    gateway,
+                ],
                 timeout=self._timeout,
             )
 
@@ -162,9 +210,14 @@ class FakeNetNSAdapter:
     ) -> str:
         resolved = ifname or f"v{vlan_id}-fake"
         if namespace not in self.namespaces:
-            raise RuntimeError(f"Namespace {namespace} does not exist")
+            raise RuntimeError("Namespace does not exist")
         self.namespaces[namespace]["vlans"].append(
-            {"ifname": resolved, "vlan_id": vlan_id, "ip_cidr": ip_cidr, "gateway": gateway}
+            {
+                "ifname": resolved,
+                "vlan_id": vlan_id,
+                "ip_cidr": ip_cidr,
+                "gateway": gateway,
+            }
         )
         return resolved
 

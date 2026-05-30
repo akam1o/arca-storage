@@ -2,10 +2,11 @@ package arca
 
 import (
 	"context"
+	cryptorand "crypto/rand"
+	"encoding/binary"
 	"fmt"
-	"math/rand"
+	"math/big"
 	"net"
-	"sync"
 	"sync/atomic"
 
 	"k8s.io/klog/v2"
@@ -27,7 +28,6 @@ type StandaloneAllocator struct {
 	pools       []IPPool
 	poolCounter int32
 	arcaClient  *Client
-	mu          sync.Mutex
 }
 
 // PoolConfig represents configuration for a single IP pool
@@ -172,9 +172,6 @@ func parseIPRange(rangeStr string) (net.IP, net.IP, error) {
 
 // Allocate allocates an IP address from pools (round-robin with collision detection)
 func (a *StandaloneAllocator) Allocate(ctx context.Context, namespace string, attempt int) (*NetworkAllocation, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-
 	// Round-robin pool selection
 	startIdx := int(atomic.LoadInt32(&a.poolCounter)) % len(a.pools)
 	atomic.AddInt32(&a.poolCounter, 1)
@@ -195,7 +192,10 @@ func (a *StandaloneAllocator) Allocate(ctx context.Context, namespace string, at
 		// Find first free IP (with random offset on retry for collision avoidance)
 		offset := 0
 		if attempt > 0 {
-			offset = rand.Intn(pool.NumHosts)
+			offset, err = randomHostOffset(pool.NumHosts)
+			if err != nil {
+				return nil, fmt.Errorf("failed to choose allocation offset: %w", err)
+			}
 		}
 
 		for j := 0; j < pool.NumHosts; j++ {
@@ -239,25 +239,33 @@ func (a *StandaloneAllocator) getUsedIPsInVLAN(ctx context.Context, vlanID int) 
 	return usedIPs, nil
 }
 
+func randomHostOffset(hosts int) (int, error) {
+	if hosts <= 0 {
+		return 0, fmt.Errorf("host count must be positive")
+	}
+	offset, err := cryptorand.Int(cryptorand.Reader, big.NewInt(int64(hosts)))
+	if err != nil {
+		return 0, err
+	}
+	return int(offset.Int64()), nil
+}
+
 // incrementIP increments an IP address by n
 func incrementIP(ip net.IP, n int) net.IP {
-	result := make(net.IP, len(ip))
-	copy(result, ip)
-
-	// Convert to uint32 for easier manipulation
-	ipUint := uint32(result[0])<<24 | uint32(result[1])<<16 | uint32(result[2])<<8 | uint32(result[3])
-	ipUint += uint32(n)
-
-	result[0] = byte(ipUint >> 24)
-	result[1] = byte(ipUint >> 16)
-	result[2] = byte(ipUint >> 8)
-	result[3] = byte(ipUint)
-
+	next := int64(ipToUint32(ip)) + int64(n)
+	if next < 0 {
+		next = 0
+	}
+	if next > int64(^uint32(0)) {
+		next = int64(^uint32(0))
+	}
+	result := make(net.IP, net.IPv4len)
+	binary.BigEndian.PutUint32(result, uint32(next))
 	return result
 }
 
 func ipToUint32(ip net.IP) uint32 {
-	return uint32(ip[0])<<24 | uint32(ip[1])<<16 | uint32(ip[2])<<8 | uint32(ip[3])
+	return binary.BigEndian.Uint32(ip.To4())
 }
 
 func compareIP(ip1, ip2 net.IP) int {

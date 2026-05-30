@@ -8,6 +8,73 @@ permissions:
   contents: read
 
 jobs:
+  quality:
+    name: Python Type, Lint, Format, And Security Gates
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          # setuptools-scm derives versions from Git tags (e.g. v0.2.7).
+          fetch-depth: 0
+
+      - name: Set up Python 3.9
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.9'
+          cache: 'pip'
+          cache-dependency-path: |
+            arca_storage/pyproject.toml
+            arca_storage/requirements.txt
+            arca_storage/test-requirements.txt
+
+      - name: Install quality gate dependencies
+        working-directory: ./arca_storage
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev,openstack]"
+
+      - name: Run type check
+        working-directory: ./arca_storage
+        run: python -m mypy arca_storage
+
+      - name: Run Python lint
+        working-directory: ./arca_storage
+        run: python -m ruff check .
+
+      - name: Check Python formatting
+        run: |
+          base_branch="${{ github.base_ref || 'main' }}"
+          base_ref="origin/$base_branch"
+          if ! git rev-parse --verify --quiet "$base_ref" >/dev/null; then
+            git fetch origin "+refs/heads/${base_branch}:refs/remotes/origin/${base_branch}"
+          fi
+          base_commit="$(git merge-base HEAD "$base_ref")"
+          mapfile -t python_files < <(
+            git diff --name-only --diff-filter=ACMRT "$base_commit" HEAD -- 'arca_storage/*.py' 'arca_storage/arca_storage/**/*.py' 'arca_storage/tests/**/*.py' |
+              sed 's#^arca_storage/##'
+          )
+          if ((${#python_files[@]})); then
+            cd arca_storage
+            python -m ruff format --check "${python_files[@]}"
+          fi
+
+      - name: Run Python security lint
+        working-directory: ./arca_storage
+        run: python -m bandit -c pyproject.toml -r arca_storage --severity-level medium --confidence-level high
+
+      - name: Audit Python dependencies
+        working-directory: ./arca_storage
+        run: |
+          audit_args=()
+          while IFS= read -r vuln_id; do
+            case "$vuln_id" in
+              ""|\#*) continue ;;
+            esac
+            audit_args+=(--ignore-vuln "$vuln_id")
+          done < ../.github/pip-audit-ignore.txt
+          python -m pip_audit --progress-spinner off -r requirements.txt -r test-requirements.txt "${audit_args[@]}"
+
   test:
     runs-on: ubuntu-latest
     strategy:
@@ -76,18 +143,14 @@ jobs:
               print('lib content:', p)
           PY
 
-      - name: Run ruff
-        if: matrix.python-version == '3.9'
-        working-directory: ./arca_storage
-        run: python -m ruff check .
-
       - name: Run tests with pytest
         run: |
           # Copy tests and config to a temp directory to avoid importing from source
           cp -r arca_storage/tests /tmp/tests
           cp arca_storage/pytest.ini /tmp/pytest.ini
+          cp arca_storage/.coveragerc-core /tmp/.coveragerc-core
           cd /tmp
-          python -m pytest tests/unit tests/integration -v -m "not slow" --cov=arca_storage --cov-report=xml --cov-report=term
+          python -m pytest tests/unit tests/integration -v -m "not slow" --cov=arca_storage --cov-config=.coveragerc-core --cov-report=xml --cov-report=term --cov-fail-under=70
           # Copy coverage results back
           cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 

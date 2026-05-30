@@ -7,8 +7,19 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from arca_storage.cli.lib import netns as legacy_netns
-from arca_storage.cli.lib.netns import attach_vlan, create_namespace, delete_namespace, make_vlan_ifname
-from arca_storage.adapters.netns import SubprocessNetNSAdapter
+from arca_storage.cli.lib.netns import (
+    attach_vlan,
+    create_namespace,
+    delete_namespace,
+    make_vlan_ifname,
+)
+from arca_storage.adapters.netns import FakeNetNSAdapter, SubprocessNetNSAdapter
+
+
+def _assert_redacted(error: BaseException, *values: str) -> None:
+    rendered = str(error)
+    for value in values:
+        assert value not in rendered
 
 
 class TestCreateNamespace:
@@ -73,11 +84,17 @@ class TestCreateNamespace:
         """Test creating namespace fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0, stdout=""),  # ip netns list (empty)
-            MagicMock(returncode=1, stderr="Error"),  # ip netns add fails
+            MagicMock(
+                returncode=1, stderr="secret-token test_ns"
+            ),  # ip netns add fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to create namespace"):
+        with pytest.raises(
+            RuntimeError, match="Failed to create namespace"
+        ) as exc_info:
             create_namespace("test_ns")
+
+        _assert_redacted(exc_info.value, "secret-token", "test_ns")
 
 
 class TestAttachVlan:
@@ -142,7 +159,18 @@ class TestAttachVlan:
 
         # Check gateway route was added
         mock_subprocess.assert_any_call(
-            ["ip", "netns", "exec", "test_ns", "ip", "route", "add", "default", "via", "192.168.10.1"],
+            [
+                "ip",
+                "netns",
+                "exec",
+                "test_ns",
+                "ip",
+                "route",
+                "add",
+                "default",
+                "via",
+                "192.168.10.1",
+            ],
             check=True,
             timeout=legacy_netns._DEFAULT_COMMAND_TIMEOUT_SECONDS,
         )
@@ -172,14 +200,18 @@ class TestDeleteNamespace:
     @pytest.mark.unit
     def test_delete_nonexistent_namespace(self, mock_subprocess):
         """Test deleting a namespace that doesn't exist."""
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="")  # namespace not in list
+        mock_subprocess.return_value = MagicMock(
+            returncode=0, stdout=""
+        )  # namespace not in list
 
         # Should not raise error, just skip
         delete_namespace("test_ns")
 
     @pytest.mark.unit
     def test_delete_namespace_uses_exact_match(self, mock_subprocess):
-        mock_subprocess.return_value = MagicMock(returncode=0, stdout="test_ns_prod (id: 0)\n")
+        mock_subprocess.return_value = MagicMock(
+            returncode=0, stdout="test_ns_prod (id: 0)\n"
+        )
 
         delete_namespace("test_ns")
 
@@ -190,19 +222,38 @@ class TestDeleteNamespace:
         """Test deleting namespace fails."""
         mock_subprocess.side_effect = [
             MagicMock(returncode=0, stdout="test_ns\n"),  # ip netns list
-            MagicMock(returncode=1, stderr="Error"),  # ip netns del fails
+            MagicMock(
+                returncode=1, stderr="secret-token test_ns"
+            ),  # ip netns del fails
         ]
 
-        with pytest.raises(RuntimeError, match="Failed to delete namespace"):
+        with pytest.raises(
+            RuntimeError, match="Failed to delete namespace"
+        ) as exc_info:
             delete_namespace("test_ns")
+
+        _assert_redacted(exc_info.value, "secret-token", "test_ns")
 
 
 class TestSubprocessNetNSAdapter:
     @pytest.mark.unit
     @patch("arca_storage.adapters.netns.run_cmd")
     def test_namespace_exists_uses_exact_match(self, mock_run_cmd):
-        mock_run_cmd.return_value = MagicMock(returncode=0, stdout="tenant-prod (id: 0)\n")
+        mock_run_cmd.return_value = MagicMock(
+            returncode=0, stdout="tenant-prod (id: 0)\n"
+        )
 
         adapter = SubprocessNetNSAdapter()
 
         assert adapter.namespace_exists("tenant") is False
+
+
+class TestFakeNetNSAdapter:
+    @pytest.mark.unit
+    def test_attach_vlan_missing_namespace_redacts_namespace_name(self):
+        adapter = FakeNetNSAdapter()
+
+        with pytest.raises(RuntimeError, match="Namespace does not exist") as exc_info:
+            adapter.attach_vlan("tenant_secret", "bond0", 100, "192.168.10.5/24")
+
+        _assert_redacted(exc_info.value, "tenant_secret")

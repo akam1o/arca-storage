@@ -12,10 +12,18 @@ import typer
 
 from arca_storage.api.models import ExportCreate
 from arca_storage.api.services import export_service
-from arca_storage.cli.commands._pagination import list_all_exports
-from arca_storage.cli.lib.ganesha import list_config_snapshots, read_config_snapshot_meta, rollback_config
+from arca_storage.cli.commands._pagination import list_all_exports, list_all_svms
+from arca_storage.cli.lib.ganesha import (
+    list_config_snapshots,
+    read_config_snapshot_meta,
+    rollback_config,
+)
 from arca_storage.cli.lib.state import get_state_dir
-from arca_storage.cli.lib.validators import validate_ip_cidr, validate_name
+from arca_storage.cli.lib.validators import (
+    normalize_nfs_client_cidr,
+    validate_ip_cidr,
+    validate_name,
+)
 from arca_storage.context import get_context
 
 app = typer.Typer(help="Export management commands")
@@ -26,14 +34,20 @@ def add(
     volume: str = typer.Option(..., "--volume", help="Volume name"),
     svm: str = typer.Option(..., "--svm", help="SVM name"),
     client: str = typer.Option(..., "--client", help="Client CIDR (e.g., 10.0.0.0/24)"),
-    access: str = typer.Option("rw", "--access", help="Access type: rw or ro (default: rw)"),
-    root_squash: bool = typer.Option(True, "--root-squash/--no-root-squash", help="Enable root squash (default: True)"),
+    access: str = typer.Option(
+        "rw", "--access", help="Access type: rw or ro (default: rw)"
+    ),
+    root_squash: bool = typer.Option(
+        True,
+        "--root-squash/--no-root-squash",
+        help="Enable root squash (default: True)",
+    ),
 ):
     """Add an NFS export via the reconciler."""
     try:
         validate_name(volume)
         validate_name(svm)
-        validate_ip_cidr(client)
+        client = normalize_nfs_client_cidr(client)
 
         if access not in ("rw", "ro"):
             raise ValueError("Access must be 'rw' or 'ro'")
@@ -86,7 +100,9 @@ def remove(
 @app.command()
 def list(
     svm: Optional[str] = typer.Option(None, "--svm", help="Filter by SVM name"),
-    volume: Optional[str] = typer.Option(None, "--volume", help="Filter by volume name"),
+    volume: Optional[str] = typer.Option(
+        None, "--volume", help="Filter by volume name"
+    ),
 ):
     """List NFS exports from the database."""
     try:
@@ -126,12 +142,12 @@ def sync(
             targets = sorted(
                 {
                     str(record.get("spec", {}).get("svm"))
-                    for record in ctx.db.list_exports(limit=1_000_000)
+                    for record in list_all_exports(ctx.db)
                     if record.get("spec", {}).get("svm")
                 }
                 | {
                     str(record.get("spec", {}).get("name"))
-                    for record in ctx.db.list_svms(limit=1_000_000)
+                    for record in list_all_svms(ctx.db)
                     if record.get("spec", {}).get("name")
                 }
             )
@@ -178,7 +194,9 @@ def snapshots(
 @app.command()
 def rollback(
     svm: str = typer.Option(..., "--svm", help="SVM name"),
-    config_version: str = typer.Option("latest", "--config-version", help="Snapshot version (default: latest)"),
+    config_version: str = typer.Option(
+        "latest", "--config-version", help="Snapshot version (default: latest)"
+    ),
 ):
     """
     Roll back ganesha.<svm>.conf to a saved snapshot and reload.
@@ -186,7 +204,9 @@ def rollback(
     try:
         validate_name(svm)
         ctx = get_context()
-        path = rollback_config(svm, config_version, host_network=_host_network_for_svm(ctx, svm))
+        path = rollback_config(
+            svm, config_version, host_network=_host_network_for_svm(ctx, svm)
+        )
         typer.echo(f"Rolled back: {svm} -> {path} (version={config_version})")
     except Exception as e:
         typer.echo(f"Error rolling back: {e}", err=True)
@@ -196,8 +216,12 @@ def rollback(
 @app.command("snapshot-show")
 def snapshot_show(
     svm: str = typer.Option(..., "--svm", help="SVM name"),
-    config_version: str = typer.Option("latest", "--config-version", help="Snapshot version (default: latest)"),
-    as_json: bool = typer.Option(False, "--json", help="Print raw snapshot metadata as JSON"),
+    config_version: str = typer.Option(
+        "latest", "--config-version", help="Snapshot version (default: latest)"
+    ),
+    as_json: bool = typer.Option(
+        False, "--json", help="Print raw snapshot metadata as JSON"
+    ),
 ):
     """
     Show what a snapshot contains (protocols/ports/exports).
@@ -206,10 +230,17 @@ def snapshot_show(
         validate_name(svm)
         meta = read_config_snapshot_meta(svm, config_version)
         if as_json:
-            typer.echo(typer.style(json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True), dim=False))
+            typer.echo(
+                typer.style(
+                    json.dumps(meta, indent=2, ensure_ascii=False, sort_keys=True),
+                    dim=False,
+                )
+            )
             return
 
-        typer.echo(f"svm={svm} config_version={meta.get('config_version')} template_version={meta.get('template_version')}")
+        typer.echo(
+            f"svm={svm} config_version={meta.get('config_version')} template_version={meta.get('template_version')}"
+        )
         typer.echo(
             f"protocols={meta.get('protocols')} bind_addr={meta.get('bind_addr')} "
             f"mountd_port={meta.get('mountd_port')} nlm_port={meta.get('nlm_port')}"

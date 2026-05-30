@@ -3,6 +3,7 @@ package arca
 import (
 	"errors"
 	"fmt"
+	"regexp"
 )
 
 var (
@@ -55,6 +56,14 @@ var (
 	ErrTimeout = errors.New("request timeout")
 )
 
+const redactedSecret = "<redacted>"
+
+var (
+	authorizationSecretPattern = regexp.MustCompile(`(?i)\b(authorization)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\r\n,;&}\]]+)`)
+	bearerSecretPattern        = regexp.MustCompile(`(?i)\b(Bearer)\s+[A-Za-z0-9._~+/=-]+`)
+	keyValueSecretPattern      = regexp.MustCompile(`(?i)\b(api[_-]?token|auth[_-]?token|access[_-]?token|refresh[_-]?token|client[_-]?secret|client[_-]?key|private[_-]?key|password|passwd|secret|credential|credentials|token)(\s*[:=]\s*)("[^"]*"|'[^']*'|[^\s,;&}\]]+)`)
+)
+
 // APIError represents an error from the ARCA API
 type APIError struct {
 	StatusCode int
@@ -64,10 +73,11 @@ type APIError struct {
 }
 
 func (e *APIError) Error() string {
+	message := redactSensitive(e.Message)
 	if e.Err != nil {
-		return fmt.Sprintf("arca api error (status %d, code=%s): %s: %v", e.StatusCode, e.Code, e.Message, e.Err)
+		return fmt.Sprintf("arca api error (status %d, code=%s): %s: %s", e.StatusCode, e.Code, message, redactSensitive(e.Err.Error()))
 	}
-	return fmt.Sprintf("arca api error (status %d, code=%s): %s", e.StatusCode, e.Code, e.Message)
+	return fmt.Sprintf("arca api error (status %d, code=%s): %s", e.StatusCode, e.Code, message)
 }
 
 func (e *APIError) Unwrap() error {
@@ -78,7 +88,7 @@ func (e *APIError) Unwrap() error {
 func NewAPIError(statusCode int, message string, err error) *APIError {
 	return &APIError{
 		StatusCode: statusCode,
-		Message:    message,
+		Message:    redactSensitive(message),
 		Err:        err,
 	}
 }
@@ -103,6 +113,7 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 		return NewAPIError(statusCode, "unknown error", nil)
 	}
 
+	redactedMessage := redactSensitive(errResp.Message)
 	resourceType := resourceTypeFromDetails(errResp.Details)
 
 	switch errResp.Code {
@@ -142,7 +153,7 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 		if containsAny(errResp.Message, "ip", "vlan", "network") {
 			return ErrNetworkConflict
 		}
-		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: errResp.Message}
+		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: redactedMessage}
 	case "RESOURCE_EXHAUSTED":
 		return ErrAllPoolsExhausted
 	case "UNAVAILABLE":
@@ -150,8 +161,19 @@ func MapErrorCodeToError(statusCode int, errResp *ArcaAPIError) error {
 	case "TIMEOUT":
 		return ErrTimeout
 	default:
-		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: errResp.Message}
+		return &APIError{StatusCode: statusCode, Code: errResp.Code, Message: redactedMessage}
 	}
+}
+
+func redactSensitive(message string) string {
+	if message == "" {
+		return message
+	}
+
+	redacted := authorizationSecretPattern.ReplaceAllString(message, "${1}${2}"+redactedSecret)
+	redacted = bearerSecretPattern.ReplaceAllString(redacted, "${1} "+redactedSecret)
+	redacted = keyValueSecretPattern.ReplaceAllString(redacted, "${1}${2}"+redactedSecret)
+	return redacted
 }
 
 func resourceTypeFromDetails(details map[string]interface{}) string {

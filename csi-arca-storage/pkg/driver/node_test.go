@@ -1,8 +1,10 @@
 package driver
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
+	"flag"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -15,6 +17,7 @@ import (
 	"github.com/container-storage-interface/spec/lib/go/csi"
 	"google.golang.org/grpc/codes"
 	"google.golang.org/grpc/status"
+	"k8s.io/klog/v2"
 	mountutils "k8s.io/mount-utils"
 
 	arcamount "github.com/akam1o/csi-arca-storage/pkg/mount"
@@ -54,6 +57,7 @@ type fakeNodeMountManager struct {
 	mu            sync.Mutex
 	mountPath     string
 	mountPathErr  error
+	ensureErr     error
 	ensureStarted chan struct{}
 	ensureRelease chan struct{}
 	shouldUnmount bool
@@ -72,6 +76,7 @@ func (m *fakeNodeMountManager) EnsureSVMMount(ctx context.Context, svmName, vip,
 	}
 	ensureRelease := m.ensureRelease
 	mountPath := m.mountPath
+	ensureErr := m.ensureErr
 	m.mu.Unlock()
 
 	if ensureStarted != nil {
@@ -81,6 +86,9 @@ func (m *fakeNodeMountManager) EnsureSVMMount(ctx context.Context, svmName, vip,
 		<-ensureRelease
 	}
 
+	if ensureErr != nil {
+		return "", ensureErr
+	}
 	if mountPath == "" {
 		return filepath.Join(os.TempDir(), svmName), nil
 	}
@@ -117,6 +125,37 @@ func (m *fakeNodeMountManager) UnmountSVM(ctx context.Context, svmName string) e
 	return nil
 }
 
+type errorMounter struct {
+	mountutils.Interface
+	isLikelyNotMountPointErr error
+	mountErr                 error
+	mountErrOnCall           int
+	mountCalls               int
+	unmountErr               error
+}
+
+func (m *errorMounter) IsLikelyNotMountPoint(file string) (bool, error) {
+	if m.isLikelyNotMountPointErr != nil {
+		return false, m.isLikelyNotMountPointErr
+	}
+	return m.Interface.IsLikelyNotMountPoint(file)
+}
+
+func (m *errorMounter) Mount(source, target, fstype string, options []string) error {
+	m.mountCalls++
+	if m.mountErr != nil && (m.mountErrOnCall == 0 || m.mountCalls == m.mountErrOnCall) {
+		return m.mountErr
+	}
+	return m.Interface.Mount(source, target, fstype, options)
+}
+
+func (m *errorMounter) Unmount(target string) error {
+	if m.unmountErr != nil {
+		return m.unmountErr
+	}
+	return m.Interface.Unmount(target)
+}
+
 func testMountCapability() *csi.VolumeCapability {
 	return &csi.VolumeCapability{
 		AccessType: &csi.VolumeCapability_Mount{Mount: &csi.VolumeCapability_MountVolume{}},
@@ -128,6 +167,88 @@ func testBlockCapability() *csi.VolumeCapability {
 	return &csi.VolumeCapability{
 		AccessType: &csi.VolumeCapability_Block{Block: &csi.VolumeCapability_BlockVolume{}},
 		AccessMode: &csi.VolumeCapability_AccessMode{Mode: csi.VolumeCapability_AccessMode_SINGLE_NODE_WRITER},
+	}
+}
+
+func assertErrorOmits(t *testing.T, err error, values ...string) {
+	t.Helper()
+
+	rendered := err.Error()
+	for _, value := range values {
+		if value == "" {
+			continue
+		}
+		if strings.Contains(rendered, value) {
+			t.Fatalf("error %q contains %q", rendered, value)
+		}
+	}
+}
+
+func assertInternalErrorOmits(t *testing.T, err error, wantMessage string, values ...string) {
+	t.Helper()
+
+	if status.Code(err) != codes.Internal {
+		t.Fatalf("expected Internal, got %v", err)
+	}
+	if !strings.Contains(err.Error(), wantMessage) {
+		t.Fatalf("error = %v, want %q", err, wantMessage)
+	}
+	assertErrorOmits(t, err, values...)
+}
+
+func captureKlogOutput(t *testing.T, fn func()) string {
+	t.Helper()
+
+	state := klog.CaptureState()
+	defer state.Restore()
+
+	var fs flag.FlagSet
+	klog.InitFlags(&fs)
+	for name, value := range map[string]string{
+		"alsologtostderr": "false",
+		"logtostderr":     "false",
+		"one_output":      "true",
+		"skip_headers":    "true",
+		"v":               "4",
+	} {
+		if err := fs.Set(name, value); err != nil {
+			t.Fatalf("failed to set klog flag %s: %v", name, err)
+		}
+	}
+
+	var out bytes.Buffer
+	klog.SetOutput(&out)
+	fn()
+	klog.Flush()
+	return out.String()
+}
+
+func TestNodeLogHelpersIncludeRedactedErrorDetails(t *testing.T) {
+	err := fmt.Errorf(
+		"mount failed for 10.0.0.1:/exports/team at /var/lib/kubelet/pods/x: Authorization: Bearer secret-token token=another-secret",
+	)
+
+	logOutput := captureKlogOutput(t, func() {
+		_ = nodeInternalError("failed to bind mount", err)
+		nodeLogWarning("Failed to rollback node mount", err)
+		nodeLogError("Failed to clean node mount", err)
+	})
+
+	for _, want := range []string{"mount failed", "failed to bind mount", "<redacted>", "<nfs-source>", "<path>"} {
+		if !strings.Contains(logOutput, want) {
+			t.Fatalf("node logs %q do not contain %q", logOutput, want)
+		}
+	}
+	for _, forbidden := range []string{
+		"10.0.0.1",
+		"/exports/team",
+		"/var/lib/kubelet/pods/x",
+		"secret-token",
+		"another-secret",
+	} {
+		if strings.Contains(logOutput, forbidden) {
+			t.Fatalf("node logs %q contain %q", logOutput, forbidden)
+		}
 	}
 }
 
@@ -268,6 +389,26 @@ func TestNodeGetVolumeStatsReturnsFilesystemUsage(t *testing.T) {
 	}
 }
 
+func TestStatfsBlocksToBytesRejectsOverflow(t *testing.T) {
+	_, err := statfsBlocksToBytes(uint64(1<<63), 2, "total bytes")
+	if err == nil {
+		t.Fatal("statfsBlocksToBytes() error = nil, want overflow error")
+	}
+	if !strings.Contains(err.Error(), "total bytes exceeds int64 range") {
+		t.Fatalf("statfsBlocksToBytes() error = %v, want overflow message", err)
+	}
+}
+
+func TestStatfsValueToInt64RejectsOverflow(t *testing.T) {
+	_, err := statfsValueToInt64(uint64(1<<63), "total inodes")
+	if err == nil {
+		t.Fatal("statfsValueToInt64() error = nil, want overflow error")
+	}
+	if !strings.Contains(err.Error(), "total inodes exceeds int64 range") {
+		t.Fatalf("statfsValueToInt64() error = %v, want overflow message", err)
+	}
+}
+
 func TestNodeStageSerializesSVMMountLifecycle(t *testing.T) {
 	tmp := t.TempDir()
 	ensureStarted := make(chan struct{})
@@ -360,6 +501,83 @@ func TestNodeStageSerializesSVMMountLifecycle(t *testing.T) {
 	}
 }
 
+func TestNodeOperationLogsDoNotEchoHostPaths(t *testing.T) {
+	tmp := t.TempDir()
+	stagingPath := filepath.Join(tmp, "secret-staging-path")
+	targetPath := filepath.Join(tmp, "secret-target-path")
+	svmMountPath := filepath.Join(tmp, "secret-svm-mount")
+	volumePath := "volumes/secret-volume-path"
+	vip := "10.0.0.1"
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	driver := &Driver{
+		mode:                 "node",
+		nodeID:               "node-a",
+		nodeState:            nodeState,
+		mountManager:         &fakeNodeMountManager{mountPath: svmMountPath, shouldUnmount: true},
+		nodeMounter:          mountutils.NewFakeMounter(nil),
+		mountSourceValidator: fakeMountSourceValidator{},
+	}
+
+	logOutput := captureKlogOutput(t, func() {
+		_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+			VolumeId:          "vol-a",
+			StagingTargetPath: stagingPath,
+			VolumeCapability:  testMountCapability(),
+			VolumeContext: map[string]string{
+				volumeContextSVM:        "svm-a",
+				volumeContextVIP:        vip,
+				volumeContextVolumePath: volumePath,
+			},
+		})
+		if err != nil {
+			t.Fatalf("NodeStageVolume() error = %v", err)
+		}
+
+		_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+			VolumeId:          "vol-a",
+			StagingTargetPath: stagingPath,
+			TargetPath:        targetPath,
+			VolumeCapability:  testMountCapability(),
+		})
+		if err != nil {
+			t.Fatalf("NodePublishVolume() error = %v", err)
+		}
+
+		_, err = driver.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+			VolumeId:   "vol-a",
+			TargetPath: targetPath,
+		})
+		if err != nil {
+			t.Fatalf("NodeUnpublishVolume() error = %v", err)
+		}
+
+		_, err = driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+			VolumeId:          "vol-a",
+			StagingTargetPath: stagingPath,
+		})
+		if err != nil {
+			t.Fatalf("NodeUnstageVolume() error = %v", err)
+		}
+	})
+
+	for _, value := range []string{
+		stagingPath,
+		targetPath,
+		svmMountPath,
+		filepath.Join(svmMountPath, volumePath),
+		volumePath,
+		vip,
+	} {
+		if strings.Contains(logOutput, value) {
+			t.Fatalf("node operation logs %q contain %q", logOutput, value)
+		}
+	}
+}
+
 func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T) {
 	tmp := t.TempDir()
 	blockingFile := filepath.Join(tmp, "not-a-directory")
@@ -396,6 +614,7 @@ func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T
 	if status.Code(err) != codes.Internal {
 		t.Fatalf("expected Internal, got %v", err)
 	}
+	assertErrorOmits(t, err, blockingFile)
 	if mountManager.ensureCalls != 1 {
 		t.Fatalf("EnsureSVMMount calls = %d, want 1", mountManager.ensureCalls)
 	}
@@ -404,6 +623,197 @@ func TestNodeStageCleansUpSVMMountWhenStagingDirectoryCreationFails(t *testing.T
 	}
 	if !reflect.DeepEqual(mountManager.unmountCalls, []string{"svm-a"}) {
 		t.Fatalf("UnmountSVM calls = %#v", mountManager.unmountCalls)
+	}
+}
+
+func TestNodeStageInternalErrorsDoNotEchoDetails(t *testing.T) {
+	const secret = "secret-node-stage-detail"
+
+	tests := []struct {
+		name        string
+		mountMgr    *fakeNodeMountManager
+		nodeMounter mountutils.Interface
+		wantMessage string
+	}{
+		{
+			name:        "ensure svm mount",
+			mountMgr:    &fakeNodeMountManager{ensureErr: fmt.Errorf("ensure failed: %s", secret)},
+			nodeMounter: mountutils.NewFakeMounter(nil),
+			wantMessage: "failed to ensure SVM mount",
+		},
+		{
+			name:        "check mount point",
+			mountMgr:    &fakeNodeMountManager{},
+			nodeMounter: &errorMounter{Interface: mountutils.NewFakeMounter(nil), isLikelyNotMountPointErr: fmt.Errorf("check failed: %s", secret)},
+			wantMessage: "failed to check mount point",
+		},
+		{
+			name:        "bind mount",
+			mountMgr:    &fakeNodeMountManager{},
+			nodeMounter: &errorMounter{Interface: mountutils.NewFakeMounter(nil), mountErr: fmt.Errorf("mount failed: %s", secret)},
+			wantMessage: "failed to bind mount",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+			if err != nil {
+				t.Fatalf("failed to create node state: %v", err)
+			}
+			driver := &Driver{
+				mode:         "node",
+				nodeID:       "node-a",
+				nodeState:    nodeState,
+				mountManager: tt.mountMgr,
+				nodeMounter:  tt.nodeMounter,
+			}
+
+			_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "vol-a",
+				StagingTargetPath: filepath.Join(tmp, "stage"),
+				VolumeCapability:  testMountCapability(),
+				VolumeContext: map[string]string{
+					volumeContextSVM:        "svm-a",
+					volumeContextVIP:        "10.0.0.1",
+					volumeContextVolumePath: "volumes/vol-a",
+				},
+			})
+			assertInternalErrorOmits(t, err, tt.wantMessage, secret)
+		})
+	}
+}
+
+func TestNodeStageExistingMountSourceMismatchDoesNotEchoPaths(t *testing.T) {
+	tmp := t.TempDir()
+	stagingPath := filepath.Join(tmp, "staging")
+	svmMountPath := filepath.Join(tmp, "svm")
+	volumePath := "volumes/vol-a"
+	sourcePath := filepath.Join(svmMountPath, volumePath)
+	staleSource := filepath.Join(tmp, "stale-volume")
+	if err := os.MkdirAll(stagingPath, 0750); err != nil {
+		t.Fatalf("failed to create staging path: %v", err)
+	}
+	mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+	if err != nil {
+		t.Fatalf("failed to resolve staging path: %v", err)
+	}
+
+	nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+	if err != nil {
+		t.Fatalf("failed to create node state: %v", err)
+	}
+	validator := fakeMountSourceValidator{
+		err: fmt.Errorf("mount source mismatch: active=%s requested=%s", staleSource, sourcePath),
+	}
+	driver := &Driver{
+		mode:         "node",
+		nodeID:       "node-a",
+		nodeState:    nodeState,
+		mountManager: &fakeNodeMountManager{mountPath: svmMountPath},
+		nodeMounter: mountutils.NewFakeMounter([]mountutils.MountPoint{
+			{Device: staleSource, Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+		}),
+		mountSourceValidator: validator,
+	}
+
+	_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+		VolumeId:          "vol-a",
+		StagingTargetPath: stagingPath,
+		VolumeCapability:  testMountCapability(),
+		VolumeContext: map[string]string{
+			volumeContextSVM:        "svm-a",
+			volumeContextVIP:        "10.0.0.1",
+			volumeContextVolumePath: volumePath,
+		},
+	})
+	if status.Code(err) != codes.FailedPrecondition {
+		t.Fatalf("expected FailedPrecondition, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "mount source mismatch") {
+		t.Fatalf("unexpected error: %v", err)
+	}
+	assertErrorOmits(t, err, stagingPath, staleSource, sourcePath)
+	if nodeState.CountStagedVolumesForSVM("svm-a") != 0 {
+		t.Fatal("staging should not be recorded after source mismatch")
+	}
+}
+
+func TestNodeStageInvalidVolumeContextDoesNotEchoInput(t *testing.T) {
+	tests := []struct {
+		name      string
+		key       string
+		value     string
+		wantCause string
+	}{
+		{
+			name:      "svm",
+			key:       volumeContextSVM,
+			value:     "secret-svm/../tenant",
+			wantCause: "invalid SVM name",
+		},
+		{
+			name:      "vip",
+			key:       volumeContextVIP,
+			value:     "secret-vip-value",
+			wantCause: "invalid VIP",
+		},
+		{
+			name:      "export root",
+			key:       volumeContextExportRoot,
+			value:     "secret-export-root",
+			wantCause: "invalid export root",
+		},
+		{
+			name:      "volume path",
+			key:       volumeContextVolumePath,
+			value:     "secret-volume-path/..",
+			wantCause: "invalid volume path",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+			if err != nil {
+				t.Fatalf("failed to create node state: %v", err)
+			}
+			mountManager := &fakeNodeMountManager{mountPath: filepath.Join(tmp, "svm-mount")}
+			driver := &Driver{
+				mode:         "node",
+				nodeID:       "node-a",
+				nodeState:    nodeState,
+				mountManager: mountManager,
+				nodeMounter:  mountutils.NewFakeMounter(nil),
+			}
+			volumeContext := map[string]string{
+				volumeContextSVM:        "svm-a",
+				volumeContextVIP:        "10.0.0.1",
+				volumeContextVolumePath: "volumes/vol-a",
+			}
+			volumeContext[tt.key] = tt.value
+
+			_, err = driver.NodeStageVolume(context.Background(), &csi.NodeStageVolumeRequest{
+				VolumeId:          "vol-a",
+				StagingTargetPath: filepath.Join(tmp, "stage"),
+				VolumeCapability:  testMountCapability(),
+				VolumeContext:     volumeContext,
+			})
+			if status.Code(err) != codes.InvalidArgument {
+				t.Fatalf("expected InvalidArgument, got %v", err)
+			}
+			if !strings.Contains(err.Error(), tt.wantCause) {
+				t.Fatalf("NodeStageVolume() error = %v, want %q", err, tt.wantCause)
+			}
+			if strings.Contains(err.Error(), tt.value) {
+				t.Fatalf("NodeStageVolume() error %q contains invalid input", err)
+			}
+			if mountManager.ensureCalls != 0 {
+				t.Fatalf("EnsureSVMMount calls = %d, want 0", mountManager.ensureCalls)
+			}
+		})
 	}
 }
 
@@ -509,6 +919,74 @@ func TestNodeUnstageUsesFreshNodeStateForSVMCleanup(t *testing.T) {
 	}
 }
 
+func TestNodeUnstageInternalErrorsDoNotEchoDetails(t *testing.T) {
+	const secret = "secret-node-unstage-detail"
+
+	tests := []struct {
+		name        string
+		nodeMounter mountutils.Interface
+		wantMessage string
+	}{
+		{
+			name: "check mount point",
+			nodeMounter: &errorMounter{
+				Interface:                mountutils.NewFakeMounter(nil),
+				isLikelyNotMountPointErr: fmt.Errorf("check failed: %s", secret),
+			},
+			wantMessage: "failed to check mount point",
+		},
+		{
+			name: "unmount",
+			nodeMounter: &errorMounter{
+				Interface: mountutils.NewFakeMounter([]mountutils.MountPoint{
+					{Device: "/svm/volumes/vol-a", Path: "/stage", Type: "", Opts: []string{"bind"}},
+				}),
+				unmountErr: fmt.Errorf("unmount failed: %s", secret),
+			},
+			wantMessage: "failed to unmount",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			stagingPath := filepath.Join(tmp, "stage")
+			if err := os.MkdirAll(stagingPath, 0750); err != nil {
+				t.Fatalf("failed to create staging path: %v", err)
+			}
+			if tt.name == "unmount" {
+				mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+				if err != nil {
+					t.Fatalf("failed to resolve staging path: %v", err)
+				}
+				tt.nodeMounter = &errorMounter{
+					Interface: mountutils.NewFakeMounter([]mountutils.MountPoint{
+						{Device: "/svm/volumes/vol-a", Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+					}),
+					unmountErr: fmt.Errorf("unmount failed: %s", secret),
+				}
+			}
+			nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+			if err != nil {
+				t.Fatalf("failed to create node state: %v", err)
+			}
+			driver := &Driver{
+				mode:         "node",
+				nodeID:       "node-a",
+				nodeState:    nodeState,
+				mountManager: new(arcamount.MountManager),
+				nodeMounter:  tt.nodeMounter,
+			}
+
+			_, err = driver.NodeUnstageVolume(context.Background(), &csi.NodeUnstageVolumeRequest{
+				VolumeId:          "vol-a",
+				StagingTargetPath: stagingPath,
+			})
+			assertInternalErrorOmits(t, err, tt.wantMessage, secret, stagingPath)
+		})
+	}
+}
+
 func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	tmp := t.TempDir()
 	targetPath := filepath.Join(tmp, "target")
@@ -559,6 +1037,7 @@ func TestNodePublishRejectsUnrecordedExistingMount(t *testing.T) {
 	if !strings.Contains(err.Error(), "not recorded for volume") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath, mountedTargetPath, mountedStagingPath)
 }
 
 func TestNodePublishRejectsBlockCapability(t *testing.T) {
@@ -589,6 +1068,94 @@ func TestNodePublishRejectsBlockCapability(t *testing.T) {
 	}
 	if nodeState.HasVolumePublish("vol-a", filepath.Join(tmp, "target")) {
 		t.Fatal("target should not be recorded after rejected publish")
+	}
+}
+
+func TestNodePublishInternalErrorsDoNotEchoDetails(t *testing.T) {
+	const secret = "secret-node-publish-detail"
+
+	tests := []struct {
+		name        string
+		readOnly    bool
+		nodeMounter func(mountedStagingPath string) mountutils.Interface
+		wantMessage string
+	}{
+		{
+			name: "check target mount point",
+			nodeMounter: func(mountedStagingPath string) mountutils.Interface {
+				return &errorMounter{
+					Interface:                mountutils.NewFakeMounter(nil),
+					isLikelyNotMountPointErr: fmt.Errorf("check failed: %s", secret),
+				}
+			},
+			wantMessage: "failed to check mount point",
+		},
+		{
+			name: "bind mount",
+			nodeMounter: func(mountedStagingPath string) mountutils.Interface {
+				return &errorMounter{
+					Interface: mountutils.NewFakeMounter([]mountutils.MountPoint{
+						{Device: "/svm/volumes/vol-a", Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+					}),
+					mountErr: fmt.Errorf("mount failed: %s", secret),
+				}
+			},
+			wantMessage: "failed to bind mount",
+		},
+		{
+			name:     "readonly remount",
+			readOnly: true,
+			nodeMounter: func(mountedStagingPath string) mountutils.Interface {
+				return &errorMounter{
+					Interface: mountutils.NewFakeMounter([]mountutils.MountPoint{
+						{Device: "/svm/volumes/vol-a", Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+					}),
+					mountErr:       fmt.Errorf("remount failed: %s", secret),
+					mountErrOnCall: 2,
+				}
+			},
+			wantMessage: "failed to remount as read-only",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			stagingPath := filepath.Join(tmp, "staging")
+			targetPath := filepath.Join(tmp, "target")
+			if err := os.MkdirAll(stagingPath, 0750); err != nil {
+				t.Fatalf("failed to create staging path: %v", err)
+			}
+			mountedStagingPath, err := filepath.EvalSymlinks(stagingPath)
+			if err != nil {
+				t.Fatalf("failed to resolve staging path: %v", err)
+			}
+
+			nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+			if err != nil {
+				t.Fatalf("failed to create node state: %v", err)
+			}
+			if err := nodeState.RecordVolumeStaging("vol-a", "svm-a", "10.0.0.1", "", "volumes/vol-a", stagingPath, nil); err != nil {
+				t.Fatalf("failed to record staging: %v", err)
+			}
+			driver := &Driver{
+				mode:                 "node",
+				nodeID:               "node-a",
+				nodeState:            nodeState,
+				mountManager:         &fakeNodeMountManager{mountPath: filepath.Join(tmp, "svm")},
+				nodeMounter:          tt.nodeMounter(mountedStagingPath),
+				mountSourceValidator: fakeMountSourceValidator{},
+			}
+
+			_, err = driver.NodePublishVolume(context.Background(), &csi.NodePublishVolumeRequest{
+				VolumeId:          "vol-a",
+				StagingTargetPath: stagingPath,
+				TargetPath:        targetPath,
+				Readonly:          tt.readOnly,
+				VolumeCapability:  testMountCapability(),
+			})
+			assertInternalErrorOmits(t, err, tt.wantMessage, secret, stagingPath, targetPath)
+		})
 	}
 }
 
@@ -640,6 +1207,7 @@ func TestNodePublishRejectsFirstPublishWithMismatchedStagingPath(t *testing.T) {
 	if !strings.Contains(err.Error(), "staging path mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, recordedStagingPath, requestedStagingPath)
 	if nodeState.HasVolumePublish("vol-a", targetPath) {
 		t.Fatal("target should not be recorded after rejected publish")
 	}
@@ -682,6 +1250,7 @@ func TestNodePublishRejectsFirstPublishWhenStagingPathIsNotMounted(t *testing.T)
 	if !strings.Contains(err.Error(), "is not mounted") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, stagingPath)
 	if nodeState.HasVolumePublish("vol-a", targetPath) {
 		t.Fatal("target should not be recorded after rejected publish")
 	}
@@ -693,6 +1262,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 	stagingPath := filepath.Join(tmp, "staging")
 	svmMountPath := filepath.Join(tmp, "svm")
 	volumePath := "volumes/vol-a"
+	staleSource := filepath.Join(tmp, "stale-volume")
 	if err := os.MkdirAll(stagingPath, 0750); err != nil {
 		t.Fatalf("failed to create staging path: %v", err)
 	}
@@ -711,7 +1281,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 
 	expectedSource := filepath.Join(svmMountPath, volumePath)
 	validator := &recordingMountSourceValidator{
-		err: fmt.Errorf("mount source mismatch: active=%s requested=%s", filepath.Join(tmp, "stale-volume"), expectedSource),
+		err: fmt.Errorf("mount source mismatch: active=%s requested=%s", staleSource, expectedSource),
 	}
 	driver := &Driver{
 		mode:         "node",
@@ -719,7 +1289,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 		nodeState:    nodeState,
 		mountManager: &fakeNodeMountManager{mountPath: svmMountPath},
 		nodeMounter: mountutils.NewFakeMounter([]mountutils.MountPoint{
-			{Device: filepath.Join(tmp, "stale-volume"), Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
+			{Device: staleSource, Path: mountedStagingPath, Type: "", Opts: []string{"bind"}},
 		}),
 		mountSourceValidator: validator,
 	}
@@ -736,6 +1306,7 @@ func TestNodePublishRejectsFirstPublishWithWrongStagingSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match recorded source") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, stagingPath, staleSource, expectedSource)
 	if !reflect.DeepEqual(validator.calls, []mountSourceValidationCall{{targetPath: stagingPath, expectedSource: expectedSource}}) {
 		t.Fatalf("unexpected source validation calls: %#v", validator.calls)
 	}
@@ -797,6 +1368,7 @@ func TestNodePublishRejectsExistingMountWithDifferentSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "mount source mismatch") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath)
 }
 
 func TestNodePublishRejectsExistingMountWithWrongStagingSource(t *testing.T) {
@@ -863,6 +1435,7 @@ func TestNodePublishRejectsExistingMountWithWrongStagingSource(t *testing.T) {
 	if !strings.Contains(err.Error(), "does not match recorded source") {
 		t.Fatalf("unexpected error: %v", err)
 	}
+	assertErrorOmits(t, err, targetPath, stagingPath, staleSource, expectedSource)
 
 	wantCalls := []mountSourceValidationCall{
 		{targetPath: targetPath, expectedSource: stagingPath},
@@ -947,5 +1520,70 @@ func TestNodePublishRejectsExistingMountWithReadonlyMismatch(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "readonly mismatch") {
 		t.Fatalf("unexpected error: %v", err)
+	}
+	assertErrorOmits(t, err, targetPath, stagingPath, sourcePath)
+}
+
+func TestNodeUnpublishInternalErrorsDoNotEchoDetails(t *testing.T) {
+	const secret = "secret-node-unpublish-detail"
+
+	tests := []struct {
+		name        string
+		nodeMounter func(mountedTargetPath string) mountutils.Interface
+		wantMessage string
+	}{
+		{
+			name: "check mount point",
+			nodeMounter: func(mountedTargetPath string) mountutils.Interface {
+				return &errorMounter{
+					Interface:                mountutils.NewFakeMounter(nil),
+					isLikelyNotMountPointErr: fmt.Errorf("check failed: %s", secret),
+				}
+			},
+			wantMessage: "failed to check mount point",
+		},
+		{
+			name: "unmount",
+			nodeMounter: func(mountedTargetPath string) mountutils.Interface {
+				return &errorMounter{
+					Interface: mountutils.NewFakeMounter([]mountutils.MountPoint{
+						{Device: "/svm/volumes/vol-a", Path: mountedTargetPath, Type: "", Opts: []string{"bind"}},
+					}),
+					unmountErr: fmt.Errorf("unmount failed: %s", secret),
+				}
+			},
+			wantMessage: "failed to unmount",
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			tmp := t.TempDir()
+			targetPath := filepath.Join(tmp, "target")
+			if err := os.MkdirAll(targetPath, 0750); err != nil {
+				t.Fatalf("failed to create target path: %v", err)
+			}
+			mountedTargetPath, err := filepath.EvalSymlinks(targetPath)
+			if err != nil {
+				t.Fatalf("failed to resolve target path: %v", err)
+			}
+			nodeState, err := arcamount.NewNodeState(filepath.Join(tmp, "state.json"))
+			if err != nil {
+				t.Fatalf("failed to create node state: %v", err)
+			}
+			driver := &Driver{
+				mode:         "node",
+				nodeID:       "node-a",
+				nodeState:    nodeState,
+				mountManager: new(arcamount.MountManager),
+				nodeMounter:  tt.nodeMounter(mountedTargetPath),
+			}
+
+			_, err = driver.NodeUnpublishVolume(context.Background(), &csi.NodeUnpublishVolumeRequest{
+				VolumeId:   "vol-a",
+				TargetPath: targetPath,
+			})
+			assertInternalErrorOmits(t, err, tt.wantMessage, secret, targetPath)
+		})
 	}
 }

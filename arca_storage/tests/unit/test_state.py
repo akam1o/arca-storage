@@ -1,30 +1,32 @@
-"""
-Unit tests for state store.
-"""
+"""Unit tests for CLI state path helpers."""
 
 import pytest
 
 
 @pytest.mark.unit
-def test_state_roundtrip(temp_dir, monkeypatch):
+def test_get_state_dir_uses_configured_runtime_dir(temp_dir, monkeypatch):
     config_path = temp_dir / "config.toml"
-    config_path.write_text(f"[state]\nruntime_dir = \"{temp_dir}\"\n", encoding="utf-8")
+    config_path.write_text(f'[state]\nruntime_dir = "{temp_dir}"\n', encoding="utf-8")
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
 
     from arca_storage.cli.lib import state
 
-    state.upsert_svm({"name": "tenant_a", "vlan_id": 100, "ip_cidr": "192.168.0.10/24", "status": "available"})
-    svms = state.list_svms()
-    assert len(svms) == 1
-    assert svms[0]["name"] == "tenant_a"
+    assert state.get_state_dir() == temp_dir
 
-    state.upsert_volume({"svm": "tenant_a", "name": "vol1", "size_gib": 10, "mount_path": "/exports/tenant_a/vol1"})
-    vols = state.list_volumes(svm="tenant_a")
-    assert len(vols) == 1
-    assert vols[0]["name"] == "vol1"
 
-    assert state.delete_volume("tenant_a", "vol1") is True
-    assert state.list_volumes(svm="tenant_a") == []
+@pytest.mark.unit
+def test_legacy_json_state_helpers_are_removed():
+    from arca_storage.cli.lib import state
 
-    assert state.delete_svm("tenant_a") is True
-    assert state.list_svms() == []
+    legacy_helpers = {
+        "list_svms",
+        "upsert_svm",
+        "delete_svm",
+        "list_volumes",
+        "upsert_volume",
+        "delete_volume",
+        "list_snapshots",
+        "upsert_snapshot",
+        "delete_snapshot",
+    }
+    assert legacy_helpers.isdisjoint(dir(state))

@@ -40,7 +40,7 @@ func (v ProcMountInfoSourceValidator) ValidateMountSource(targetPath, expectedSo
 }
 
 func readMountInfoEntries(path string) ([]mountInfoEntry, error) {
-	data, err := os.ReadFile(path)
+	data, err := os.ReadFile(path) // #nosec G304 -- production reads /proc/self/mountinfo; tests inject temp files.
 	if err != nil {
 		return nil, fmt.Errorf("failed to read mountinfo: %w", err)
 	}

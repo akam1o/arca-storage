@@ -58,7 +58,9 @@ class FakeAppContext:
         cfg = self.settings.to_reconciler_config()
         self.svm_reconciler = SVMReconciler(self.db, self.adapters, config=cfg)
         self.volume_reconciler = VolumeReconciler(self.db, self.adapters, config=cfg)
-        self.snapshot_reconciler = SnapshotReconciler(self.db, self.adapters, config=cfg)
+        self.snapshot_reconciler = SnapshotReconciler(
+            self.db, self.adapters, config=cfg
+        )
         self.export_reconciler = ExportReconciler(self.db, self.adapters, config=cfg)
 
     def close(self) -> None:
@@ -84,6 +86,7 @@ def fake_context(tmp_path):
     ctx = FakeAppContext(str(tmp_path / "test.db"))
     # Inject into the module-level variable so get_context() returns it
     import arca_storage.context as context_mod
+
     context_mod.reset_context(ctx)
     yield ctx
     context_mod.reset_context(None)

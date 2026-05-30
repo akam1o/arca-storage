@@ -33,6 +33,8 @@ The CSI driver consists of two main components:
 
 ## Building
 
+Use Go 1.26.3, matching the `go` version declared in `go.mod`.
+
 ```bash
 go mod download
 go build -o bin/csi-driver ./cmd/csi-driver
@@ -265,6 +267,8 @@ csi-arca-storage/
 ```
 
 ### Running Tests
+
+Use Go 1.26.3 for local test runs so the toolchain matches `go.mod`.
 
 ```bash
 go test ./...

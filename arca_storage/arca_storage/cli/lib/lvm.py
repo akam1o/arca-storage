@@ -17,88 +17,78 @@ def _parse_lvm_float(value: str) -> float:
     return float(value.strip().lstrip("<>"))
 
 
-def create_lv(vg_name: str, lv_name: str, size_gib: int, thin: bool = True, *, thinpool_name: str = "pool") -> str:
+def create_lv(
+    vg_name: str,
+    lv_name: str,
+    size_gib: int,
+    thin: bool = True,
+    *,
+    thinpool_name: str = "pool",
+) -> str:
     """
     Create a logical volume.
-    
+
     Args:
         vg_name: Volume group name
         lv_name: Logical volume name
         size_gib: Size in GiB
         thin: Use thin provisioning (default: True)
         thinpool_name: Thin pool LV name (default: pool)
-        
+
     Returns:
         Path to the logical volume (e.g., "/dev/vg_name/lv_name")
-        
+
     Raises:
         RuntimeError: If LV creation fails
     """
     lv_path = f"/dev/{vg_name}/{lv_name}"
-    
+
     # Check if LV already exists
-    result = _run(
-        ["lvdisplay", lv_path],
-        capture_output=True,
-        text=True,
-        check=False
-    )
-    
+    result = _run(["lvdisplay", lv_path], capture_output=True, text=True, check=False)
+
     if result.returncode == 0:
         raise RuntimeError(f"Logical volume {lv_path} already exists")
-    
+
     if thin:
         # Create thin volume
         cmd = [
             "lvcreate",
-            "-V", f"{size_gib}G",
-            "-T", f"{vg_name}/{thinpool_name}",
-            "-n", lv_name
+            "-V",
+            f"{size_gib}G",
+            "-T",
+            f"{vg_name}/{thinpool_name}",
+            "-n",
+            lv_name,
         ]
     else:
         # Create regular volume
-        cmd = [
-            "lvcreate",
-            "-L", f"{size_gib}G",
-            "-n", lv_name,
-            vg_name
-        ]
-    
-    result = _run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False
-    )
-    
+        cmd = ["lvcreate", "-L", f"{size_gib}G", "-n", lv_name, vg_name]
+
+    result = _run(cmd, capture_output=True, text=True, check=False)
+
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create logical volume: {result.stderr}")
-    
+        raise RuntimeError("Failed to create logical volume")
+
     return lv_path
 
 
 def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
     """
     Resize a logical volume.
-    
+
     Args:
         vg_name: Volume group name
         lv_name: Logical volume name
         new_size_gib: New size in GiB
-        
+
     Raises:
         RuntimeError: If LV resize fails
     """
     lv_path = f"/dev/{vg_name}/{lv_name}"
-    
+
     # Check if LV exists
-    result = _run(
-        ["lvdisplay", lv_path],
-        capture_output=True,
-        text=True,
-        check=False
-    )
-    
+    result = _run(["lvdisplay", lv_path], capture_output=True, text=True, check=False)
+
     if result.returncode != 0:
         raise RuntimeError(f"Logical volume {lv_path} does not exist")
 
@@ -115,13 +105,13 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
         ],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to inspect logical volume size: {result.stderr}")
+        raise RuntimeError("Failed to inspect logical volume size")
     if not result.stdout.strip():
-        raise RuntimeError(f"Unexpected lvs output for {lv_path}: {result.stdout.strip()}")
+        raise RuntimeError("Unexpected logical volume size output")
     current_size_gib = _parse_lvm_float(result.stdout.strip().split()[0])
     requested_size_gib = float(new_size_gib)
     if current_size_gib == requested_size_gib:
@@ -131,17 +121,17 @@ def resize_lv(vg_name: str, lv_name: str, new_size_gib: int) -> None:
             f"Logical volume {lv_path} is already larger than requested size "
             f"({current_size_gib:g}GiB > {new_size_gib}GiB)"
         )
-    
+
     # Resize LV
     result = _run(
         ["lvextend", "-L", f"{new_size_gib}G", lv_path],
         capture_output=True,
         text=True,
-        check=False
+        check=False,
     )
-    
+
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to resize logical volume: {result.stderr}")
+        raise RuntimeError("Failed to resize logical volume")
 
 
 def delete_lv(vg_name: str, lv_name: str) -> None:
@@ -158,12 +148,7 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
     lv_path = f"/dev/{vg_name}/{lv_name}"
 
     # Check if LV exists
-    result = _run(
-        ["lvdisplay", lv_path],
-        capture_output=True,
-        text=True,
-        check=False
-    )
+    result = _run(["lvdisplay", lv_path], capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
         # LV doesn't exist, skip
@@ -171,14 +156,11 @@ def delete_lv(vg_name: str, lv_name: str) -> None:
 
     # Delete LV
     result = _run(
-        ["lvremove", "-f", lv_path],
-        capture_output=True,
-        text=True,
-        check=False
+        ["lvremove", "-f", lv_path], capture_output=True, text=True, check=False
     )
 
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to delete logical volume: {result.stderr}")
+        raise RuntimeError("Failed to delete logical volume")
 
 
 def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
@@ -201,43 +183,25 @@ def create_snapshot_lv(vg_name: str, source_lv: str, snap_lv: str) -> str:
 
     # Check if source LV exists
     result = _run(
-        ["lvdisplay", source_path],
-        capture_output=True,
-        text=True,
-        check=False
+        ["lvdisplay", source_path], capture_output=True, text=True, check=False
     )
 
     if result.returncode != 0:
         raise RuntimeError(f"Source logical volume {source_path} does not exist")
 
     # Check if snapshot already exists
-    result = _run(
-        ["lvdisplay", snap_path],
-        capture_output=True,
-        text=True,
-        check=False
-    )
+    result = _run(["lvdisplay", snap_path], capture_output=True, text=True, check=False)
 
     if result.returncode == 0:
         raise RuntimeError(f"Snapshot {snap_path} already exists")
 
     # Create thin snapshot
-    cmd = [
-        "lvcreate",
-        "--snapshot",
-        "--name", snap_lv,
-        source_path
-    ]
+    cmd = ["lvcreate", "--snapshot", "--name", snap_lv, source_path]
 
-    result = _run(
-        cmd,
-        capture_output=True,
-        text=True,
-        check=False
-    )
+    result = _run(cmd, capture_output=True, text=True, check=False)
 
     if result.returncode != 0:
-        raise RuntimeError(f"Failed to create snapshot: {result.stderr}")
+        raise RuntimeError("Failed to create snapshot")
 
     return snap_path
 

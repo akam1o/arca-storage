@@ -5,11 +5,34 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sync"
 
 	"k8s.io/klog/v2"
 	"k8s.io/mount-utils"
+
+	"github.com/akam1o/csi-arca-storage/pkg/logredact"
 )
+
+var svmNamePattern = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9._-]*$`)
+
+func mountLogWarning(message string, err error) {
+	if err == nil {
+		klog.Warning(message)
+		return
+	}
+	klog.Warningf("%s: %T", message, err)
+	klog.V(4).Infof("%s details: %s", message, logredact.Error(err))
+}
+
+func mountLogError(message string, err error) {
+	if err == nil {
+		klog.Error(message)
+		return
+	}
+	klog.Errorf("%s: %T", message, err)
+	klog.V(4).Infof("%s details: %s", message, logredact.Error(err))
+}
 
 // SVMMount represents an SVM mount point
 type SVMMount struct {
@@ -34,6 +57,9 @@ type MountManager struct {
 func NewMountManager(nodeState *NodeState, baseMountPath string) (*MountManager, error) {
 	if baseMountPath == "" {
 		baseMountPath = "/var/lib/kubelet/plugins/csi.arca-storage.io/mounts"
+	}
+	if err := validateBaseMountPath(baseMountPath); err != nil {
+		return nil, err
 	}
 
 	// Ensure base mount directory exists
@@ -71,26 +97,29 @@ func (m *MountManager) reconcile() error {
 	}
 
 	for svmName, info := range svms {
+		if err := validateSVMName(svmName); err != nil {
+			return fmt.Errorf("invalid SVM name in node state: %w", err)
+		}
 		mountPath := m.getMountPath(svmName)
 
 		// Check if already mounted
 		isMounted, err := m.isMountPoint(mountPath)
 		if err != nil {
-			klog.Warningf("Failed to check mount point %s: %v", mountPath, err)
+			mountLogWarning(fmt.Sprintf("Failed to check mount point while reconciling SVM %s", svmName), err)
 			continue
 		}
 
 		if !isMounted {
 			// Mount is missing - restore it
-			klog.Infof("Restoring missing mount for SVM %s (VIP: %s)", svmName, info.VIP)
+			klog.Infof("Restoring missing mount for SVM %s", svmName)
 			if err := m.mountSVMLocked(svmName, info.VIP, info.ExportRoot, info.NFSMountOptions); err != nil {
-				klog.Errorf("Failed to restore mount for SVM %s: %v", svmName, err)
+				mountLogError(fmt.Sprintf("Failed to restore mount for SVM %s", svmName), err)
 				// Continue with other SVMs
 				continue
 			}
 		} else {
 			if err := m.validateSVMMountSource(mountPath, svmName, info.VIP, info.ExportRoot); err != nil {
-				return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
+				return fmt.Errorf("existing SVM mount is not safe to reuse")
 			}
 			// Mount exists - record it
 			m.mounts[svmName] = &SVMMount{
@@ -100,7 +129,7 @@ func (m *MountManager) reconcile() error {
 				MountPath:       mountPath,
 				NFSMountOptions: cloneMountOptions(info.NFSMountOptions),
 			}
-			klog.V(4).Infof("Found existing mount for SVM %s at %s", svmName, mountPath)
+			klog.V(4).Infof("Found existing mount for SVM %s", svmName)
 		}
 	}
 
@@ -116,6 +145,10 @@ func (m *MountManager) EnsureSVMMount(
 	exportRoot string,
 	nfsMountOptions []string,
 ) (string, error) {
+	if err := validateSVMName(svmName); err != nil {
+		return "", err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -130,20 +163,15 @@ func (m *MountManager) EnsureSVMMount(
 		}
 		if isMounted {
 			if err := m.validateSVMMountSource(mount.MountPath, svmName, vip, exportRoot); err != nil {
-				return "", fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mount.MountPath, err)
+				return "", fmt.Errorf("existing SVM mount is not safe to reuse")
 			}
 			if mount.ExportRoot != "" && mount.ExportRoot != exportRoot {
-				return "", fmt.Errorf("SVM %s already mounted with different export root: active=%s requested=%s", svmName, mount.ExportRoot, exportRoot)
+				return "", fmt.Errorf("SVM %s already mounted with different export root", svmName)
 			}
 			if !sameMountOptions(mount.NFSMountOptions, nfsMountOptions) {
-				return "", fmt.Errorf(
-					"SVM %s already mounted with different NFS options: active=%v requested=%v",
-					svmName,
-					normalizeNFSMountOptions(mount.NFSMountOptions),
-					normalizeNFSMountOptions(nfsMountOptions),
-				)
+				return "", fmt.Errorf("SVM %s already mounted with different NFS options", svmName)
 			}
-			klog.V(4).Infof("SVM %s already mounted at %s", svmName, mount.MountPath)
+			klog.V(4).Infof("SVM %s already mounted", svmName)
 			return mount.MountPath, nil
 		}
 
@@ -184,7 +212,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 	}
 	if isMounted {
 		if err := m.validateSVMMountSource(mountPath, svmName, vip, exportRoot); err != nil {
-			return fmt.Errorf("existing SVM mount %s is not safe to reuse: %w", mountPath, err)
+			return fmt.Errorf("existing SVM mount is not safe to reuse")
 		}
 		m.mounts[svmName] = &SVMMount{
 			SVMName:         svmName,
@@ -196,7 +224,7 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 		return nil
 	}
 
-	klog.Infof("Mounting NFS: %s -> %s", nfsSource, mountPath)
+	klog.Infof("Mounting NFS for SVM %s", svmName)
 
 	// Perform NFS mount
 	if err := m.mounter.Mount(nfsSource, mountPath, "nfs4", options); err != nil {
@@ -212,13 +240,17 @@ func (m *MountManager) mountSVMLocked(svmName, vip, exportRoot string, nfsMountO
 		NFSMountOptions: cloneMountOptions(options),
 	}
 
-	klog.Infof("Successfully mounted SVM %s at %s", svmName, mountPath)
+	klog.Infof("Successfully mounted SVM %s", svmName)
 	return nil
 }
 
 // ShouldUnmountSVM checks if an SVM should be unmounted (refcount == 0)
 // Refcount is derived from NodeState, not stored
 func (m *MountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bool, error) {
+	if err := validateSVMName(svmName); err != nil {
+		return false, err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -235,6 +267,10 @@ func (m *MountManager) ShouldUnmountSVM(ctx context.Context, svmName string) (bo
 
 // UnmountSVM unmounts an SVM
 func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
+	if err := validateSVMName(svmName); err != nil {
+		return err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -253,7 +289,7 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 		return fmt.Errorf("cannot unmount SVM %s: refcount is %d (not zero)", svmName, refcount)
 	}
 
-	klog.Infof("Unmounting SVM %s from %s", svmName, mount.MountPath)
+	klog.Infof("Unmounting SVM %s", svmName)
 
 	// Unmount
 	if err := m.mounter.Unmount(mount.MountPath); err != nil {
@@ -262,7 +298,7 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 
 	// Remove mount point directory
 	if err := os.Remove(mount.MountPath); err != nil {
-		klog.Warningf("Failed to remove mount point directory %s: %v", mount.MountPath, err)
+		mountLogWarning(fmt.Sprintf("Failed to remove mount point directory for SVM %s", svmName), err)
 	}
 
 	// Remove from tracked mounts
@@ -274,6 +310,10 @@ func (m *MountManager) UnmountSVM(ctx context.Context, svmName string) error {
 
 // GetMountPath returns the mount path for an SVM
 func (m *MountManager) GetMountPath(svmName string) (string, error) {
+	if err := validateSVMName(svmName); err != nil {
+		return "", err
+	}
+
 	m.mu.Lock()
 	defer m.mu.Unlock()
 
@@ -288,6 +328,30 @@ func (m *MountManager) GetMountPath(svmName string) (string, error) {
 // getMountPath constructs the mount path for an SVM (must hold lock or be in init)
 func (m *MountManager) getMountPath(svmName string) string {
 	return filepath.Join(m.baseMountPath, svmName)
+}
+
+func validateBaseMountPath(baseMountPath string) error {
+	if !filepath.IsAbs(baseMountPath) {
+		return fmt.Errorf("base mount path must be absolute: %s", baseMountPath)
+	}
+	cleaned := filepath.Clean(baseMountPath)
+	if cleaned != baseMountPath {
+		return fmt.Errorf("base mount path must be canonical: %s", baseMountPath)
+	}
+	if cleaned == string(filepath.Separator) {
+		return fmt.Errorf("base mount path must not be the filesystem root")
+	}
+	return nil
+}
+
+func validateSVMName(svmName string) error {
+	if svmName == "" {
+		return fmt.Errorf("SVM name cannot be empty")
+	}
+	if !svmNamePattern.MatchString(svmName) {
+		return fmt.Errorf("invalid SVM name %q: must start with alphanumeric and contain only alphanumeric, dots, underscores, or hyphens", svmName)
+	}
+	return nil
 }
 
 // isMountPoint checks if a path is a mount point
