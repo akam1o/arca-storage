@@ -48,7 +48,15 @@ class TestRenderConfig:
         assert Path(result).exists()
 
     @pytest.mark.unit
-    def test_render_config_with_exports(self):
+    @pytest.mark.parametrize(
+        ("client", "expected"),
+        [
+            ("10.0.0.0/24", "10.0.0.0/24"),
+            ("172.20.26.26/23", "172.20.26.0/23"),
+            ("172.20.26.26/32", "172.20.26.26/32"),
+        ],
+    )
+    def test_render_config_with_exports(self, client, expected):
         """Test rendering config with exports."""
         exports = [
             {
@@ -58,7 +66,7 @@ class TestRenderConfig:
                 "access": "RW",
                 "squash": "Root_Squash",
                 "sec": ["sys"],
-                "client": "10.0.0.0/24",
+                "client": client,
             }
         ]
 
@@ -66,7 +74,40 @@ class TestRenderConfig:
 
         content = Path(result).read_text(encoding="utf-8")
         assert "Export_Id = 101;" in content
-        assert 'Clients = "10.0.0.0/24";' in content
+        assert f"Clients = {expected};" in content
+
+    @pytest.mark.unit
+    @pytest.mark.parametrize(
+        "client",
+        [
+            "10.0.0.0/24; Access_Type = RW",
+            "10.0.0.0/24, 10.1.0.0/24",
+            "10.0.0.0/24 # comment",
+            "*.example.com",
+            "client.example.com",
+            "10.0.0.1",
+            "::1/128",
+            "0.0.0.0/0",
+        ],
+    )
+    def test_render_config_rejects_invalid_clients_without_replacing_config(
+        self, client
+    ):
+        config_path = Path(render_config("tenant_a", []))
+        original = config_path.read_text(encoding="utf-8")
+        exports = [
+            {
+                "export_id": 101,
+                "path": "/exports/tenant_a/vol1",
+                "pseudo": "/exports/tenant_a/vol1",
+                "client": client,
+            }
+        ]
+
+        with pytest.raises(ValueError):
+            render_config("tenant_a", exports)
+
+        assert config_path.read_text(encoding="utf-8") == original
 
     @pytest.mark.unit
     @pytest.mark.parametrize("field", ["path", "pseudo", "client"])
