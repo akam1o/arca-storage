@@ -3,8 +3,12 @@
 This repository contains packaging scaffolding for:
 
 - EL9/EL10 (RHEL / AlmaLinux / Rocky Linux): rpm
-- Debian: deb
-- Ubuntu: deb
+- Debian 12 (bookworm) / 13 (trixie): deb
+- Ubuntu 24.04 / 26.04 LTS: deb
+
+CI and release builds cover all four Debian/Ubuntu targets. Each build installs
+its package in a fresh container and checks both CLI and API entrypoints before
+uploading artifacts.
 
 ## Strategy
 
@@ -40,10 +44,19 @@ on package-managed hosts; the Ansible NFS-Ganesha role includes it by default.
 
 The build uses an offline wheelhouse containing runtime dependencies.
 
-Arca Storage requires Python 3.10 or newer. Packages use Python 3.11 on EL9,
-3.12 on EL10 and Ubuntu 24.04, and 3.11 on Debian bookworm. Generate the
-wheelhouse with the same interpreter that will build the package, typically
-inside the target container/CI job.
+Arca Storage requires Python 3.10 or newer. Package interpreters are:
+
+| Distribution | Python |
+| --- | --- |
+| EL9 | 3.11 |
+| EL10 | 3.12 |
+| Debian 12 (bookworm) | 3.11 |
+| Debian 13 (trixie) | 3.13 |
+| Ubuntu 24.04 | 3.12 |
+| Ubuntu 26.04 | 3.14 |
+
+Generate the wheelhouse with the same interpreter that will build the package,
+typically inside the target container/CI job.
 
 Create wheelhouse:
 
@@ -89,7 +102,7 @@ bash ./packaging/build-rpm.sh
   older code under a new package version. Source changes that retain the same
   version still require explicitly regenerating the wheelhouse.
 - Package versions are derived from the release tag (e.g. `v0.2.2`). Override with `ARCA_VERSION=0.2.2`.
-- deb builds append a distro suffix (e.g. `0.2.2-1.debian12`, `0.2.2-1.ubuntu24.04`) so Debian/Ubuntu artifacts don't overwrite each other.
+- deb builds append a distro suffix (e.g. `0.2.2-1.debian13`, `0.2.2-1.ubuntu26.04`) so Debian/Ubuntu artifacts don't overwrite each other.
 - Packages do not auto-enable services by default. Configure the API token
   before enabling the service:
 

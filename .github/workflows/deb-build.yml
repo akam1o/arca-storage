@@ -25,12 +25,18 @@ jobs:
       fail-fast: false
       matrix:
         include:
-          - name: Debian
+          - name: Debian 12
             image: debian:bookworm
             artifact: debian-debs
-          - name: Ubuntu
+          - name: Debian 13
+            image: debian:trixie
+            artifact: debian13-debs
+          - name: Ubuntu 24.04
             image: ubuntu:24.04
             artifact: ubuntu-debs
+          - name: Ubuntu 26.04
+            image: ubuntu:26.04
+            artifact: ubuntu2604-debs
 
     steps:
       - uses: actions/checkout@v4
@@ -51,6 +57,19 @@ jobs:
               rm -rf packaging/wheelhouse packaging/out/deb &&
               bash ./packaging/vendor-wheels.sh &&
               bash ./packaging/build-deb.sh
+            '
+
+      - name: Install and smoke-test deb (${{ matrix.name }})
+        run: |
+          docker run --rm \
+            -v "$GITHUB_WORKSPACE/packaging/out/deb:/packages:ro" \
+            ${{ matrix.image }} \
+            bash -euc '
+              apt-get update
+              DEBIAN_FRONTEND=noninteractive apt-get install -y --no-install-recommends \
+                ca-certificates /packages/*.deb
+              arca --help
+              arca-storage-api --help
             '
 
       - name: Upload deb artifacts
