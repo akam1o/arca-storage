@@ -5,8 +5,6 @@ Input validation functions.
 import hashlib
 import ipaddress
 import re
-from typing import Tuple
-
 
 LVM_NAME_MAX_LENGTH = 127
 _LVM_HASH_BYTES = 8
@@ -102,7 +100,7 @@ def validate_vlan(vlan_id: int) -> None:
         raise ValueError("VLAN ID must be between 1 and 4094")
 
 
-def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
+def validate_ip_cidr(cidr: str) -> tuple[str, int]:
     """
     Validate an IP address with CIDR notation.
 
@@ -133,12 +131,12 @@ def validate_ip_cidr(cidr: str) -> Tuple[str, int]:
         return ip_addr, prefix
 
     except ValueError as e:
-        raise ValueError(f"Invalid CIDR format: {e}")
-    except Exception as e:
-        raise ValueError(f"Invalid IP address: {e}")
+        raise ValueError(f"Invalid CIDR format: {e}") from e
+    except (AttributeError, TypeError) as e:
+        raise ValueError(f"Invalid IP address: {e}") from e
 
 
-def validate_svm_ip_cidr(cidr: str) -> Tuple[str, int]:
+def validate_svm_ip_cidr(cidr: str) -> tuple[str, int]:
     """
     Validate an SVM VIP with CIDR notation.
 
@@ -147,8 +145,8 @@ def validate_svm_ip_cidr(cidr: str) -> Tuple[str, int]:
     """
     try:
         iface = ipaddress.IPv4Interface(cidr)
-    except Exception as e:
-        raise ValueError(f"Invalid CIDR format: {e}")
+    except ValueError as e:
+        raise ValueError(f"Invalid CIDR format: {e}") from e
 
     ip_addr = iface.ip
     network = iface.network
@@ -184,8 +182,8 @@ def normalize_ip_cidr(cidr: str) -> str:
         if len(parts) != 2:
             raise ValueError("CIDR must be in format IP/PREFIX (e.g., 192.168.10.0/24)")
         return str(ipaddress.IPv4Network(cidr, strict=False))
-    except Exception as e:
-        raise ValueError(f"Invalid CIDR format: {e}")
+    except (AttributeError, TypeError, ValueError) as e:
+        raise ValueError(f"Invalid CIDR format: {e}") from e
 
 
 def normalize_nfs_client_cidr(cidr: str) -> str:
@@ -221,8 +219,8 @@ def validate_ipv4(ip: str) -> None:
     """
     try:
         ipaddress.IPv4Address(ip)
-    except Exception as e:
-        raise ValueError(f"Invalid IPv4 address: {e}")
+    except ValueError as e:
+        raise ValueError(f"Invalid IPv4 address: {e}") from e
 
 
 def validate_gateway_for_ip_cidr(ip_cidr: str, gateway: str) -> None:
@@ -236,8 +234,8 @@ def validate_gateway_for_ip_cidr(ip_cidr: str, gateway: str) -> None:
     try:
         iface = ipaddress.IPv4Interface(ip_cidr)
         gateway_ip = ipaddress.IPv4Address(gateway)
-    except Exception as e:
-        raise ValueError(f"Invalid gateway or CIDR: {e}")
+    except ValueError as e:
+        raise ValueError(f"Invalid gateway or CIDR: {e}") from e
 
     network = iface.network
     if gateway_ip not in network:
@@ -265,8 +263,8 @@ def infer_gateway_from_ip_cidr(cidr: str) -> str:
     """
     try:
         iface = ipaddress.IPv4Interface(cidr)
-    except Exception as e:
-        raise ValueError(f"Invalid CIDR format: {e}")
+    except ValueError as e:
+        raise ValueError(f"Invalid CIDR format: {e}") from e
 
     if iface.network.prefixlen >= 31:
         raise ValueError(

@@ -5,7 +5,6 @@ NFS Export resource model.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field, field_validator
 
@@ -21,8 +20,8 @@ class ExportSpec(BaseModel):
     access: str = "RW"
     root_squash: bool = True
     sec: list[str] = Field(default_factory=lambda: ["sys"])
-    path: Optional[str] = None
-    pseudo: Optional[str] = None
+    path: str | None = None
+    pseudo: str | None = None
     owner: str = "api"
 
     @field_validator("sec")
@@ -42,15 +41,15 @@ class ExportStatus(BaseModel):
     """System-managed actual state for an export."""
 
     phase: Phase = Phase.PENDING
-    export_id: Optional[int] = None
-    path: Optional[str] = None
-    pseudo: Optional[str] = None
+    export_id: int | None = None
+    path: str | None = None
+    pseudo: str | None = None
     ganesha_configured: bool = False
     service_reloaded: bool = False
     message: str = ""
-    last_reconciled: Optional[datetime] = None
-    create_owner: Optional[str] = None
-    create_lease_expires_at: Optional[datetime] = None
+    last_reconciled: datetime | None = None
+    create_owner: str | None = None
+    create_lease_expires_at: datetime | None = None
 
 
 class Export(BaseModel):

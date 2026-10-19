@@ -8,8 +8,8 @@ from arca_storage.openstack.manila import exceptions as arca_exceptions
 from arca_storage.openstack.manila.network_allocators import (
     neutron as neutron_allocator,
 )
-from arca_storage.openstack.manila.network_allocators.neutron import NeutronAllocator
 from arca_storage.openstack.manila.network_allocators.base import NetworkAllocation
+from arca_storage.openstack.manila.network_allocators.neutron import NeutronAllocator
 
 
 def render_log_calls(*mock_logs):
@@ -238,9 +238,11 @@ class TestNeutronAllocator:
             "Authorization: Bearer secret-token password=hunter2"
         )
 
-        with patch.object(neutron_allocator.LOG, "error") as mock_error:
-            with pytest.raises(ValueError) as exc_info:
-                allocator.validate_config()
+        with (
+            patch.object(neutron_allocator.LOG, "error") as mock_error,
+            pytest.raises(ValueError) as exc_info,
+        ):
+            allocator.validate_config()
 
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
@@ -370,9 +372,11 @@ class TestNeutronAllocator:
         allocator.validate_config()
 
         # Execute
-        with patch.object(neutron_allocator.LOG, "warning") as mock_warning:
-            with patch.object(neutron_allocator.LOG, "info") as mock_info:
-                allocation = allocator.allocate("project-123", "manila_project-123")
+        with (
+            patch.object(neutron_allocator.LOG, "warning") as mock_warning,
+            patch.object(neutron_allocator.LOG, "info") as mock_info,
+        ):
+            allocation = allocator.allocate("project-123", "manila_project-123")
 
         # Verify kept oldest port and deleted newer one
         assert allocation.allocation_id == "port-old"
@@ -428,9 +432,11 @@ class TestNeutronAllocator:
 
         allocator.validate_config()
 
-        with patch.object(neutron_allocator.LOG, "error") as mock_error:
-            with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
-                allocator.allocate("project-123", "manila_project-123")
+        with (
+            patch.object(neutron_allocator.LOG, "error") as mock_error,
+            pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info,
+        ):
+            allocator.allocate("project-123", "manila_project-123")
 
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
@@ -523,11 +529,13 @@ class TestNeutronAllocator:
 
         allocator.validate_config()
 
-        with patch.object(neutron_allocator.LOG, "warning") as mock_warning:
-            with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
-                allocator._extract_allocation_from_port(
-                    {"id": "port-secret-token", "network_id": "net-uuid-123"}
-                )
+        with (
+            patch.object(neutron_allocator.LOG, "warning") as mock_warning,
+            pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info,
+        ):
+            allocator._extract_allocation_from_port(
+                {"id": "port-secret-token", "network_id": "net-uuid-123"}
+            )
 
         assert "port-secret-token" not in str(exc_info.value)
         rendered_calls = render_log_calls(mock_warning)

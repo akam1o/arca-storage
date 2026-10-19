@@ -5,7 +5,7 @@ XFS filesystem adapter.
 from __future__ import annotations
 
 import os
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.errors import NotFoundError, PreconditionFailedError
@@ -19,7 +19,7 @@ class XFSAdapter(Protocol):
         device: str,
         mount_point: str,
         *,
-        extra_options: Optional[list[str]] = None,
+        extra_options: list[str] | None = None,
     ) -> None: ...
     def umount(self, mount_point: str) -> None: ...
     def grow(self, mount_point: str) -> None: ...
@@ -66,7 +66,7 @@ class SubprocessXFSAdapter:
         device: str,
         mount_point: str,
         *,
-        extra_options: Optional[list[str]] = None,
+        extra_options: list[str] | None = None,
     ) -> None:
         self._ensure_safe_mount_point(mount_point)
         os.makedirs(mount_point, exist_ok=True)
@@ -106,7 +106,7 @@ class SubprocessXFSAdapter:
         )
         return result.returncode == 0
 
-    def _mounted_source(self, mount_point: str) -> Optional[str]:
+    def _mounted_source(self, mount_point: str) -> str | None:
         result = run_cmd(
             [
                 "findmnt",
@@ -160,7 +160,7 @@ class FakeXFSAdapter:
         device: str,
         mount_point: str,
         *,
-        extra_options: Optional[list[str]] = None,
+        extra_options: list[str] | None = None,
     ) -> None:
         self.mounts[mount_point] = device
         self.mount_options[mount_point] = list(extra_options or [])

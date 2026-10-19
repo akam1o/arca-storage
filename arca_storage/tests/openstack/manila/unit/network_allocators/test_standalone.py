@@ -9,10 +9,10 @@ from arca_storage.openstack.manila import exceptions as arca_exceptions
 from arca_storage.openstack.manila.network_allocators import (
     standalone as standalone_allocator,
 )
+from arca_storage.openstack.manila.network_allocators.base import NetworkAllocation
 from arca_storage.openstack.manila.network_allocators.standalone import (
     StandaloneAllocator,
 )
-from arca_storage.openstack.manila.network_allocators.base import NetworkAllocation
 
 
 def render_log_calls(*mock_logs):
@@ -220,9 +220,11 @@ class TestStandaloneAllocator:
             side_effect=Exception("Authorization: Bearer secret-token password=hunter2")
         )
 
-        with patch.object(standalone_allocator.LOG, "error") as mock_error:
-            with pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info:
-                allocator.allocate("project-123", "manila_project-123")
+        with (
+            patch.object(standalone_allocator.LOG, "error") as mock_error,
+            pytest.raises(arca_exceptions.ArcaNetworkConflict) as exc_info,
+        ):
+            allocator.allocate("project-123", "manila_project-123")
 
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
@@ -243,9 +245,11 @@ class TestStandaloneAllocator:
             )
         )
 
-        with patch.object(standalone_allocator.LOG, "warning") as mock_warning:
-            with pytest.raises(arca_exceptions.ArcaNetworkPoolExhausted):
-                allocator.allocate("project-123", "manila_project-123")
+        with (
+            patch.object(standalone_allocator.LOG, "warning") as mock_warning,
+            pytest.raises(arca_exceptions.ArcaNetworkPoolExhausted),
+        ):
+            allocator.allocate("project-123", "manila_project-123")
 
         rendered_calls = render_log_calls(mock_warning)
         assert "project-123" not in rendered_calls

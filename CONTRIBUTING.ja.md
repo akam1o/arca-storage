@@ -16,6 +16,9 @@ Arca Storage へのコントリビューションに興味を持っていただ�
 
 ### Python（CLI / API）
 
+Python 3.10 以上を使用してください。EL9 では `python3.11` と `python3.11-pip`
+をインストールし、`python3.11 -m venv .venv` で仮想環境を作成します。
+
 ```bash
 cd arca_storage
 python -m venv .venv
@@ -51,6 +54,9 @@ ansible-playbook -i inventory.ini site.yml --syntax-check
 ## パッケージング（rpm/deb）
 
 パッケージング用のスクリプトは `packaging/` 配下にあります。
+
+ビルドに使用する Python と wheelhouse の準備は
+[パッケージングガイド](packaging/README.md)を参照してください。EL9 では Python 3.11 を使用します。
 
 - Debian/Ubuntu: `packaging/vendor-wheels.sh`, `packaging/build-deb.sh`
 - EL9/EL10: `packaging/vendor-wheels.sh`, `packaging/build-rpm.sh`

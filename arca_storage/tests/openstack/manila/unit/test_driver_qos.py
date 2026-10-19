@@ -71,9 +71,11 @@ def test_qos_failure_logs_redact_identifiers_and_backend_errors(
         "Authorization: Bearer secret-token password=hunter2"
     )
 
-    with patch.object(manila_driver.LOG, "error") as mock_error:
-        with pytest.raises(manila_driver.manila_exception.ShareBackendException):
-            driver.create_share(Mock(), mock_manila_share, None)
+    with (
+        patch.object(manila_driver.LOG, "error") as mock_error,
+        pytest.raises(manila_driver.manila_exception.ShareBackendException),
+    ):
+        driver.create_share(Mock(), mock_manila_share, None)
 
     rendered_calls = " ".join(str(call.args) for call in mock_error.call_args_list)
     assert "share-secret-token" not in rendered_calls

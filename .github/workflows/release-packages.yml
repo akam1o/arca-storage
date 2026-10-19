@@ -21,11 +21,12 @@ jobs:
         run: |
           docker run --rm \
             -e "ARCA_VERSION=${{ github.event.release.tag_name }}" \
+            -e ARCA_BUILD_PYTHON=python3.11 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
             rockylinux:9 \
             bash -lc '
-              dnf -y install git tar gzip rsync rpm-build python3 python3-pip &&
+              dnf -y install git tar gzip rsync rpm-build python3.11 python3.11-pip &&
               git config --global --add safe.directory /workspace &&
               rm -rf packaging/wheelhouse &&
               bash ./packaging/vendor-wheels.sh &&

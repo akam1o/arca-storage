@@ -12,7 +12,7 @@ import logging
 import math
 import os
 import zlib
-from typing import Any, Dict, Optional
+from typing import Any
 
 from arca_storage.api.models import DirectoryCreate, QuotaExpand, QuotaSet, VolumeCreate
 from arca_storage.api.services import export_service, svm_service, volume_service
@@ -25,7 +25,7 @@ CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 logger = logging.getLogger(__name__)
 
 
-def create_directory(directory_data: DirectoryCreate) -> Dict[str, Any]:
+def create_directory(directory_data: DirectoryCreate) -> dict[str, Any]:
     """Create an SVM-relative directory for CSI by provisioning a volume."""
     svm = directory_data.svm_name
     path = directory_data.path
@@ -54,7 +54,7 @@ def delete_directory(svm_name: str, path: str) -> None:
     volume_service.delete_volume(path, svm_name, force=False)
 
 
-def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
+def set_quota(quota_data: QuotaSet) -> dict[str, Any]:
     """Set CSI quota/capacity. This maps to backing volume size in GiB."""
     svm = quota_data.svm_name
     path = quota_data.path
@@ -69,7 +69,7 @@ def set_quota(quota_data: QuotaSet) -> Dict[str, Any]:
     return get_quota(svm, path)
 
 
-def expand_quota(quota_data: QuotaExpand) -> Dict[str, Any]:
+def expand_quota(quota_data: QuotaExpand) -> dict[str, Any]:
     """Expand CSI quota/capacity."""
     return set_quota(
         QuotaSet(
@@ -80,7 +80,7 @@ def expand_quota(quota_data: QuotaExpand) -> Dict[str, Any]:
     )
 
 
-def get_quota(svm_name: str, path: str) -> Dict[str, Any]:
+def get_quota(svm_name: str, path: str) -> dict[str, Any]:
     """Return quota/capacity information for a CSI directory."""
     _validate_directory(svm_name, path)
 
@@ -97,11 +97,11 @@ def get_quota(svm_name: str, path: str) -> Dict[str, Any]:
         "path": path,
         "quota_bytes": quota_bytes,
         "used_bytes": used_bytes,
-        "project_id": zlib.crc32(f"{svm_name}/{path}".encode("utf-8")) & 0x7FFFFFFF,
+        "project_id": zlib.crc32(f"{svm_name}/{path}".encode()) & 0x7FFFFFFF,
     }
 
 
-def _ensure_volume(svm: str, path: str, size_gib: int) -> Dict[str, Any]:
+def _ensure_volume(svm: str, path: str, size_gib: int) -> dict[str, Any]:
     ctx = get_context()
     record = ctx.db.get_volume(svm, path)
     if not record:
@@ -180,10 +180,10 @@ def _csi_root_squash(ctx: Any) -> bool:
     return bool(getattr(csi, "root_squash", True))
 
 
-def _quota_bytes_to_gib(quota_bytes: Optional[int]) -> int:
+def _quota_bytes_to_gib(quota_bytes: int | None) -> int:
     if quota_bytes is None:
         return 1
-    return max(1, int(math.ceil(quota_bytes / GIB)))
+    return max(1, math.ceil(quota_bytes / GIB))
 
 
 def _volume_used_bytes(ctx: Any, record: dict[str, Any], svm: str, path: str) -> int:
@@ -218,7 +218,7 @@ def _require_svm(ctx: Any, svm: str, *, ready: bool = False) -> None:
         svm_service.require_svm_ready_record(record, svm)
 
 
-def _volume_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+def _volume_record_to_dict(record: dict[str, Any]) -> dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     return {
@@ -238,8 +238,8 @@ def _volume_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
 def _directory_response(
     svm: str,
     path: str,
-    volume: Dict[str, Any],
-) -> Dict[str, Any]:
+    volume: dict[str, Any],
+) -> dict[str, Any]:
     size_gib = int(volume.get("size_gib") or 0)
     return {
         "svm_name": svm,

@@ -10,7 +10,6 @@ import logging
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
 
 from arca_storage.cli.lib.validators import validate_svm_ip_cidr
 from arca_storage.create_resume import ACTIVE_CREATE_PHASES, clear_create_lease
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class ExportReconciler:
     def __init__(
-        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+        self, db: StateDB, adapters: Adapters, *, config: dict | None = None
     ) -> None:
         self.db = db
         self.adapters = adapters
@@ -59,7 +58,7 @@ class ExportReconciler:
         create_owner = export.status.create_owner
         spec = export.spec
         export_dir = self._cfg.get("export_dir", "/exports")
-        previous_ready_export: Optional[Export] = None
+        previous_ready_export: Export | None = None
         require_ready_volume = _requires_ready_volume(export)
         require_ready_svm = True
 
@@ -126,7 +125,7 @@ class ExportReconciler:
                     spec.svm, export_dir, host_network=host_network
                 )
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Roll back and persist any backend failure.
                 return self._fail_create(
                     export,
                     f"Config failed: {e}",
@@ -153,7 +152,7 @@ class ExportReconciler:
                     spec.svm, export_dir, host_network=host_network
                 )
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Roll back and persist any backend failure.
                 return self._fail_create(
                     export,
                     f"Reload failed: {e}",
@@ -184,8 +183,8 @@ class ExportReconciler:
         export_dir: str,
         *,
         host_network: bool,
-        create_owner: Optional[str],
-        previous_ready_export: Optional[Export] = None,
+        create_owner: str | None,
+        previous_ready_export: Export | None = None,
     ) -> Export:
         export.status.phase = Phase.FAILED
         clear_create_lease(export.status)
@@ -242,7 +241,7 @@ class ExportReconciler:
                     self.db.log_operation_conn(
                         conn, "Export", export.metadata.id, "delete", "completed"
                     )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Restore config and record failed deletion.
                 self._rollback_svm_config(
                     spec.svm,
                     export_dir,
@@ -259,7 +258,7 @@ class ExportReconciler:
         export: Export,
         detail: str,
         *,
-        expected_create_owner: Optional[str] = None,
+        expected_create_owner: str | None = None,
         require_ready_volume: bool = False,
         require_ready_svm: bool = False,
     ) -> None:
@@ -279,7 +278,7 @@ class ExportReconciler:
         export: Export,
         detail: str,
         *,
-        expected_create_owner: Optional[str] = None,
+        expected_create_owner: str | None = None,
         require_ready_volume: bool = False,
         require_ready_svm: bool = False,
         allow_missing_create_owner: bool = False,
@@ -310,7 +309,7 @@ class ExportReconciler:
         svm_name: str,
         export_dir: str,
         *,
-        include_transient_key: Optional[tuple[str, str, str]] = None,
+        include_transient_key: tuple[str, str, str] | None = None,
     ) -> list[dict]:
         records = self.db.list_exports_conn(conn, svm=svm_name, limit=_all_rows_limit())
         return _records_to_config_entries(
@@ -338,8 +337,8 @@ class ExportReconciler:
         svm_name: str,
         export_dir: str,
         *,
-        include_transient_key: Optional[tuple[str, str, str]] = None,
-    ) -> tuple[list[dict], Optional[str], bool]:
+        include_transient_key: tuple[str, str, str] | None = None,
+    ) -> tuple[list[dict], str | None, bool]:
         with self.db.transaction() as conn:
             config_entries = self._config_entries_for_svm(
                 conn,
@@ -356,7 +355,7 @@ class ExportReconciler:
         export_dir: str,
         *,
         host_network: bool,
-        include_transient_key: Optional[tuple[str, str, str]] = None,
+        include_transient_key: tuple[str, str, str] | None = None,
     ) -> None:
         """Best-effort restore of the active config to DB-ready exports."""
         try:
@@ -372,16 +371,14 @@ class ExportReconciler:
                 host_network=host_network,
             )
             self.adapters.ganesha.reload(svm_name, host_network=host_network)
-        except Exception as rollback_error:
+        except Exception as rollback_error:  # noqa: BLE001 - Preserve the original failure.
             logger.warning(
                 "Failed to roll back Ganesha config for SVM %s: %s",
                 svm_name,
                 rollback_error,
             )
 
-    def _ganesha_network_for_svm(
-        self, conn, svm_name: str
-    ) -> tuple[Optional[str], bool]:
+    def _ganesha_network_for_svm(self, conn, svm_name: str) -> tuple[str | None, bool]:
         record = conn.execute(
             "SELECT spec FROM svms WHERE name = ?", (svm_name,)
         ).fetchone()
@@ -427,7 +424,7 @@ def _records_to_config_entries(
     records: list[dict],
     export_dir: str,
     *,
-    include_transient_key: Optional[tuple[str, str, str]] = None,
+    include_transient_key: tuple[str, str, str] | None = None,
 ) -> list[dict]:
     entries = []
     for record in records:

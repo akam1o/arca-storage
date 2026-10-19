@@ -4,7 +4,7 @@ Network namespace / VLAN adapter.
 
 from __future__ import annotations
 
-from typing import Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.cli.lib.netns import allocate_vlan_ifname  # reuse naming logic
@@ -21,9 +21,9 @@ class NetNSAdapter(Protocol):
         parent_if: str,
         vlan_id: int,
         ip_cidr: str,
-        gateway: Optional[str],
+        gateway: str | None,
         mtu: int,
-        ifname: Optional[str],
+        ifname: str | None,
     ) -> str: ...
 
 
@@ -53,9 +53,9 @@ class SubprocessNetNSAdapter:
         parent_if: str,
         vlan_id: int,
         ip_cidr: str,
-        gateway: Optional[str] = None,
+        gateway: str | None = None,
         mtu: int = 1500,
-        ifname: Optional[str] = None,
+        ifname: str | None = None,
     ) -> str:
         vlan_if = ifname or allocate_vlan_ifname(namespace, vlan_id)
 
@@ -115,7 +115,7 @@ class SubprocessNetNSAdapter:
         namespace: str,
         interface: str,
         ip_cidr: str,
-        gateway: Optional[str],
+        gateway: str | None,
         mtu: int,
     ) -> None:
         if mtu != 1500:
@@ -204,9 +204,9 @@ class FakeNetNSAdapter:
         parent_if: str,
         vlan_id: int,
         ip_cidr: str,
-        gateway: Optional[str] = None,
+        gateway: str | None = None,
         mtu: int = 1500,
-        ifname: Optional[str] = None,
+        ifname: str | None = None,
     ) -> str:
         resolved = ifname or f"v{vlan_id}-fake"
         if namespace not in self.namespaces:

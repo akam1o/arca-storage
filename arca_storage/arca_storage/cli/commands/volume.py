@@ -5,7 +5,7 @@ Delegates mutating operations to API services.
 """
 
 import json
-from typing import Literal, Optional
+from typing import Literal
 
 import typer
 
@@ -45,7 +45,7 @@ def create(
         raise
     except Exception as e:
         typer.echo(f"Error creating volume: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -69,7 +69,7 @@ def resize(
         raise
     except Exception as e:
         typer.echo(f"Error resizing volume: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -94,17 +94,15 @@ def delete(
         raise
     except Exception as e:
         typer.echo(f"Error deleting volume: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def list(
-    svm: Optional[str] = typer.Option(None, "--svm", help="Filter by SVM name"),
-    name: Optional[str] = typer.Option(None, "--name", help="Filter by volume name"),
-    limit: Optional[int] = typer.Option(
-        None, "--limit", help="Maximum number of results"
-    ),
-    cursor: Optional[str] = typer.Option(None, "--cursor", help="Pagination cursor"),
+    svm: str | None = typer.Option(None, "--svm", help="Filter by SVM name"),
+    name: str | None = typer.Option(None, "--name", help="Filter by volume name"),
+    limit: int | None = typer.Option(None, "--limit", help="Maximum number of results"),
+    cursor: str | None = typer.Option(None, "--cursor", help="Pagination cursor"),
     output_format: Literal["text", "json"] = typer.Option(
         "text",
         "--format",
@@ -158,4 +156,4 @@ def list(
             typer.echo(f"next_cursor={next_cursor}")
     except Exception as e:
         typer.echo(f"Error listing volumes: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e

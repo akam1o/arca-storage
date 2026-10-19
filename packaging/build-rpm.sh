@@ -14,7 +14,12 @@ VERSION="$(bash "$ROOT/packaging/get-version.sh")"
 
 if [ ! -d "$ROOT/packaging/wheelhouse" ]; then
   echo "Missing packaging/wheelhouse; running ./packaging/vendor-wheels.sh" >&2
-  bash "$ROOT/packaging/vendor-wheels.sh"
+  # Match the interpreter used by the RPM spec; EL9's default is Python 3.9.
+  RPM_PYTHON=python3
+  if [ "$(rpm --eval '%{?rhel}')" = 9 ]; then
+    RPM_PYTHON=python3.11
+  fi
+  ARCA_BUILD_PYTHON="$RPM_PYTHON" bash "$ROOT/packaging/vendor-wheels.sh"
 fi
 
 TOP="$(mktemp -d)"

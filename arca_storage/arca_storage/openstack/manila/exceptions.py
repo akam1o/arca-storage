@@ -11,7 +11,7 @@ class ArcaManilaException(Exception):
         self.kwargs = kwargs
         if message:
             self.message = message
-        super(ArcaManilaException, self).__init__(self.message % kwargs)
+        super().__init__(self.message % kwargs)
 
 
 class ArcaManilaAPIError(ArcaManilaException):

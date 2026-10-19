@@ -9,8 +9,10 @@ from arca_storage.errors import (
     NotFoundError,
     ReconcileFailedError,
     SubprocessError,
-    TimeoutError as ArcaTimeoutError,
     UnauthorizedError,
+)
+from arca_storage.errors import (
+    TimeoutError as ArcaTimeoutError,
 )
 
 

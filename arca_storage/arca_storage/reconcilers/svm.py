@@ -10,8 +10,8 @@ successful step.
 from __future__ import annotations
 
 import logging
+from collections.abc import Callable
 from datetime import datetime, timezone
-from typing import Callable, Optional
 
 from arca_storage.cli.lib.netns import allocate_vlan_ifname
 from arca_storage.cli.lib.validators import (
@@ -33,7 +33,7 @@ logger = logging.getLogger(__name__)
 
 class SVMReconciler:
     def __init__(
-        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+        self, db: StateDB, adapters: Adapters, *, config: dict | None = None
     ) -> None:
         self.db = db
         self.adapters = adapters
@@ -158,7 +158,7 @@ class SVMReconciler:
                 )
             except CreateLeaseLostError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Persist any backend create failure.
                 svm.status.phase = Phase.FAILED
                 expected_owner = create_owner
                 clear_create_lease(svm.status)
@@ -194,7 +194,7 @@ class SVMReconciler:
                 )
             self.db.delete_svm(spec.name)
             self.db.log_operation("SVM", svm.metadata.id, "delete", "completed")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Persist any backend deletion failure.
             svm.status.phase = Phase.FAILED
             svm.status.message = f"Delete failed: {e}"
             self._persist(svm, svm.status.message)
@@ -206,7 +206,7 @@ class SVMReconciler:
         svm: SVM,
         vg_name: str,
         lv_name: str,
-        create_owner: Optional[str],
+        create_owner: str | None,
     ) -> None:
         if not svm.status.lv_created:
             return
@@ -227,7 +227,7 @@ class SVMReconciler:
     # ---- helpers ----
 
     def _persist(
-        self, svm: SVM, detail: str, *, expected_create_owner: Optional[str] = None
+        self, svm: SVM, detail: str, *, expected_create_owner: str | None = None
     ) -> None:
         if not self.db.upsert_svm(svm, expected_create_owner=expected_create_owner):
             raise CreateLeaseLostError("SVM", svm.spec.name)

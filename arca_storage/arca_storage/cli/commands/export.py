@@ -5,8 +5,8 @@ Core add/remove/list operations delegate to API services.
 Snapshot and rollback utilities still call legacy ganesha helpers.
 """
 
+import builtins
 import json
-from typing import List, Optional
 
 import typer
 
@@ -70,7 +70,7 @@ def add(
         raise
     except Exception as e:
         typer.echo(f"Error adding export: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -94,15 +94,13 @@ def remove(
         raise
     except Exception as e:
         typer.echo(f"Error removing export: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def list(
-    svm: Optional[str] = typer.Option(None, "--svm", help="Filter by SVM name"),
-    volume: Optional[str] = typer.Option(
-        None, "--volume", help="Filter by volume name"
-    ),
+    svm: str | None = typer.Option(None, "--svm", help="Filter by SVM name"),
+    volume: str | None = typer.Option(None, "--volume", help="Filter by volume name"),
 ):
     """List NFS exports from the database."""
     try:
@@ -122,12 +120,12 @@ def list(
             )
     except Exception as e:
         typer.echo(f"Error listing exports: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def sync(
-    svm: Optional[str] = typer.Option(None, "--svm", help="SVM name"),
+    svm: str | None = typer.Option(None, "--svm", help="SVM name"),
     all_svms: bool = typer.Option(False, "--all", help="Sync all SVMs found in state"),
 ):
     """
@@ -136,7 +134,7 @@ def sync(
     Useful after changing runtime configuration (e.g., enabling NFSv3).
     """
     try:
-        targets: List[str] = []
+        targets: builtins.list[str] = []
         ctx = get_context()
         if all_svms:
             targets = sorted(
@@ -167,7 +165,7 @@ def sync(
 
     except Exception as e:
         typer.echo(f"Error syncing exports: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -188,7 +186,7 @@ def snapshots(
         typer.echo(f"latest {get_state_dir()}/config/ganesha.{svm}.latest.conf")
     except Exception as e:
         typer.echo(f"Error listing snapshots: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -210,7 +208,7 @@ def rollback(
         typer.echo(f"Rolled back: {svm} -> {path} (version={config_version})")
     except Exception as e:
         typer.echo(f"Error rolling back: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command("snapshot-show")
@@ -257,7 +255,7 @@ def snapshot_show(
             )
     except Exception as e:
         typer.echo(f"Error showing snapshot: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 def _host_network_for_svm(ctx, svm_name: str) -> bool:

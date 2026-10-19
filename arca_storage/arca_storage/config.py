@@ -5,7 +5,7 @@ from __future__ import annotations
 import os
 import re
 from pathlib import Path, PurePosixPath
-from typing import Optional, TypedDict, Union
+from typing import TypedDict
 
 from pydantic import (
     BaseModel,
@@ -17,7 +17,6 @@ from pydantic import (
 )
 
 from arca_storage.cli.lib.validators import normalize_nfs_client_cidr
-
 
 DEFAULT_CONFIG_PATH = Path("/etc/arca-storage/config.toml")
 _PATH_COMPONENT_RE = re.compile(r"[A-Za-z0-9][A-Za-z0-9._-]{0,63}")
@@ -134,14 +133,12 @@ class APIConfig(BaseModel):
 
     bind: str = "127.0.0.1"
     port: int = 8080
-    ssl_certfile: Optional[str] = None
-    ssl_keyfile: Optional[str] = None
+    ssl_certfile: str | None = None
+    ssl_keyfile: str | None = None
 
     @field_validator("ssl_certfile", "ssl_keyfile", mode="before")
     @classmethod
-    def validate_tls_paths(
-        cls, value: Optional[str], info: ValidationInfo
-    ) -> Optional[str]:
+    def validate_tls_paths(cls, value: str | None, info: ValidationInfo) -> str | None:
         if value is None:
             return None
         raw = str(value).strip()
@@ -150,7 +147,7 @@ class APIConfig(BaseModel):
         return _validate_absolute_posix_path(raw, field_name=f"api.{info.field_name}")
 
     @model_validator(mode="after")
-    def validate_tls_pair(self) -> "APIConfig":
+    def validate_tls_pair(self) -> APIConfig:
         if bool(self.ssl_certfile) != bool(self.ssl_keyfile):
             raise ValueError(
                 "api.ssl_certfile and api.ssl_keyfile must be provided together"
@@ -275,7 +272,7 @@ def _load_toml(path: Path) -> dict:
 
 
 def load_settings(
-    path: Optional[Union[Path, str]] = None, *, require_file: bool = True
+    path: Path | str | None = None, *, require_file: bool = True
 ) -> ArcaSettings:
     """Load and validate configuration.
 

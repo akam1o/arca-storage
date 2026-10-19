@@ -1,7 +1,8 @@
 """REST API client for ARCA Storage Manila Driver."""
 
 import ipaddress
-from typing import Any, Dict, List, Optional
+from types import ModuleType
+from typing import Any, cast
 from urllib.parse import quote, unquote, urlparse
 
 from arca_storage.openstack.http_errors import (
@@ -11,35 +12,44 @@ from arca_storage.openstack.http_errors import (
 )
 
 try:
-    import requests  # type: ignore[import-untyped]
-    from requests.adapters import HTTPAdapter  # type: ignore[import-untyped]
-    from urllib3.util.retry import Retry
+    import requests as _requests  # type: ignore[import-untyped]
+    from requests.adapters import HTTPAdapter as _HTTPAdapter  # type: ignore[import-untyped]
+    from urllib3.util.retry import Retry as _Retry
 except ImportError:
     # requests is an optional dependency for OpenStack integration
     requests = None
     HTTPAdapter = None
-    Retry = None  # type: ignore[assignment,misc]
+    Retry = None
+else:
+    requests = _requests
+    HTTPAdapter = _HTTPAdapter
+    Retry = _Retry
+
+logging: ModuleType
 
 try:
-    from oslo_log import log as logging  # type: ignore[import-untyped]
+    from oslo_log import log as _oslo_logging  # type: ignore[import-untyped]
 
     _HAS_OSLO_LOG = True
 except ImportError:
     # oslo_log is optional for standalone usage
-    import logging
+    import logging as _stdlib_logging
 
+    logging = _stdlib_logging
     _HAS_OSLO_LOG = False
+else:
+    logging = _oslo_logging
 
 from .exceptions import (
     ArcaAPIConnectionError,
     ArcaAPITimeout,
     ArcaManilaAPIError,
+    ArcaNetworkConflict,
     ArcaShareAlreadyExists,
     ArcaShareNotFound,
     ArcaSnapshotNotFound,
-    ArcaSVMNotFound,
     ArcaSVMAlreadyExists,
-    ArcaNetworkConflict,
+    ArcaSVMNotFound,
 )
 
 LOG = logging.getLogger(__name__)
@@ -60,7 +70,7 @@ def _safe_log_path(path: str) -> str:
     if not parts:
         return "<request>"
 
-    safe_parts: List[str] = []
+    safe_parts: list[str] = []
     redact_next = False
     for part in parts:
         decoded_part = unquote(part)
@@ -76,7 +86,7 @@ def _safe_log_path(path: str) -> str:
     return "/" + "/".join(safe_parts)
 
 
-def _is_loopback_hostname(hostname: Optional[str]) -> bool:
+def _is_loopback_hostname(hostname: str | None) -> bool:
     if not hostname:
         return False
     if hostname.lower() == "localhost":
@@ -89,7 +99,7 @@ def _is_loopback_hostname(hostname: Optional[str]) -> bool:
 
 def validate_token_transport(
     api_endpoint: str,
-    auth_type: Optional[str],
+    auth_type: str | None,
     allow_insecure_token_transport: bool = False,
 ) -> None:
     """Reject bearer tokens over remote plain HTTP unless explicitly allowed."""
@@ -117,11 +127,11 @@ class ArcaManilaClient:
         timeout: int = 30,
         retry_count: int = 3,
         verify_ssl: bool = True,
-        auth_type: Optional[str] = None,
-        api_token: Optional[str] = None,
-        ca_bundle: Optional[str] = None,
-        client_cert: Optional[str] = None,
-        client_key: Optional[str] = None,
+        auth_type: str | None = None,
+        api_token: str | None = None,
+        ca_bundle: str | None = None,
+        client_cert: str | None = None,
+        client_key: str | None = None,
         allow_insecure_token_transport: bool = False,
     ):
         """Initialize ARCA Storage Manila API client.
@@ -200,7 +210,7 @@ class ArcaManilaClient:
             self.session.mount("https://", adapter)
 
     def _extract_resource_id(
-        self, path: str, method: str, json_data: Optional[Dict[str, Any]] = None
+        self, path: str, method: str, json_data: dict[str, Any] | None = None
     ) -> str:
         """Extract resource ID from path intelligently.
 
@@ -273,9 +283,9 @@ class ArcaManilaClient:
         self,
         method: str,
         path: str,
-        json_data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        json_data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Make HTTP request to ARCA Storage API.
 
         Args:
@@ -311,6 +321,8 @@ class ArcaManilaClient:
             redact_sensitive(json_data),
         )
 
+        # Construction requires requests; retain the optional import for standalone use.
+        requests_module = cast(ModuleType, requests)
         try:
             response = self.session.request(
                 method=method,
@@ -421,24 +433,24 @@ class ArcaManilaClient:
                     details=f"Invalid JSON response from ARCA API: {details}"
                 ) from e
 
-        except requests.exceptions.Timeout:
+        except requests_module.exceptions.Timeout:
             LOG.error("Request timeout after %ss for %s", self.timeout, safe_path)
             raise ArcaAPITimeout(timeout=self.timeout)
-        except requests.exceptions.ConnectionError as e:
+        except requests_module.exceptions.ConnectionError as e:
             details = safe_error_detail(e)
             LOG.error("Connection error for %s", safe_path)
             raise ArcaAPIConnectionError(details=details)
-        except requests.exceptions.RequestException as e:
+        except requests_module.exceptions.RequestException as e:
             details = safe_error_detail(e)
             LOG.error("Request exception for %s", safe_path)
             raise ArcaManilaAPIError(details=details)
 
     def _next_page_cursor(
         self,
-        next_cursor: Optional[str],
+        next_cursor: str | None,
         seen_cursors: set[str],
         resource: str,
-    ) -> Optional[str]:
+    ) -> str | None:
         """Return the next page cursor, rejecting cursor cycles."""
         if not next_cursor:
             return None
@@ -458,7 +470,7 @@ class ArcaManilaClient:
         size_gib: int,
         thin: bool = True,
         fs_type: str = "xfs",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create a volume (share).
 
         Args:
@@ -527,9 +539,8 @@ class ArcaManilaClient:
             except ArcaShareNotFound:
                 # Volume successfully deleted, return normally
                 LOG.info("Volume was deleted despite timeout")
-                pass
 
-    def resize_volume(self, name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
+    def resize_volume(self, name: str, svm: str, new_size_gib: int) -> dict[str, Any]:
         """Resize a volume (extend share).
 
         Args:
@@ -552,9 +563,9 @@ class ArcaManilaClient:
 
     def list_volumes(
         self,
-        svm: Optional[str] = None,
-        name: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        svm: str | None = None,
+        name: str | None = None,
+    ) -> list[dict[str, Any]]:
         """List volumes.
 
         Args:
@@ -564,12 +575,12 @@ class ArcaManilaClient:
         Returns:
             List of volume info dictionaries
         """
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         cursor = None
         seen_cursors: set[str] = set()
 
         while True:
-            params: Dict[str, Any] = {"limit": 200}
+            params: dict[str, Any] = {"limit": 200}
             if svm:
                 params["svm"] = svm
             if name:
@@ -586,7 +597,7 @@ class ArcaManilaClient:
             if not cursor:
                 return items
 
-    def get_volume(self, name: str, svm: str) -> Dict[str, Any]:
+    def get_volume(self, name: str, svm: str) -> dict[str, Any]:
         """Get volume info.
 
         Args:
@@ -607,7 +618,7 @@ class ArcaManilaClient:
 
     # SVM operations
 
-    def get_svm(self, name: str) -> Dict[str, Any]:
+    def get_svm(self, name: str) -> dict[str, Any]:
         """Get SVM information.
 
         Args:
@@ -627,7 +638,7 @@ class ArcaManilaClient:
             raise ArcaSVMNotFound(svm_name=name)
         return items[0]
 
-    def list_svms(self) -> List[Dict[str, Any]]:
+    def list_svms(self) -> list[dict[str, Any]]:
         """List all SVMs.
 
         Returns:
@@ -636,12 +647,12 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         cursor = None
         seen_cursors: set[str] = set()
 
         while True:
-            params: Dict[str, Any] = {"limit": 200}
+            params: dict[str, Any] = {"limit": 200}
             if cursor:
                 params["cursor"] = cursor
 
@@ -657,12 +668,12 @@ class ArcaManilaClient:
     def create_svm(
         self,
         name: str,
-        vlan_id: Optional[int],
+        vlan_id: int | None,
         ip_cidr: str,
-        gateway: Optional[str] = None,
+        gateway: str | None = None,
         mtu: int = 1500,
-        root_volume_size_gib: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        root_volume_size_gib: int | None = None,
+    ) -> dict[str, Any]:
         """Create a new SVM.
 
         Args:
@@ -698,7 +709,7 @@ class ArcaManilaClient:
 
     # Snapshot operations (LVM thin snapshots)
 
-    def create_snapshot(self, name: str, svm: str, volume: str) -> Dict[str, Any]:
+    def create_snapshot(self, name: str, svm: str, volume: str) -> dict[str, Any]:
         """Create LVM thin snapshot.
 
         Args:
@@ -729,7 +740,7 @@ class ArcaManilaClient:
                 # Snapshot doesn't exist, re-raise original timeout
                 LOG.error("Snapshot was not created after timeout")
                 raise timeout_exc
-            except Exception:
+            except Exception:  # noqa: BLE001 - Verification must preserve the original create timeout.
                 # If list fails, re-raise original timeout
                 LOG.error("Failed to check snapshot state after timeout")
                 raise timeout_exc
@@ -759,11 +770,10 @@ class ArcaManilaClient:
                     # Snapshot still exists, re-raise timeout
                     raise
             # Snapshot successfully deleted, return normally
-            pass
 
     def list_snapshots(
-        self, svm: Optional[str] = None, volume: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, svm: str | None = None, volume: str | None = None
+    ) -> list[dict[str, Any]]:
         """List snapshots.
 
         Args:
@@ -776,12 +786,12 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         cursor = None
         seen_cursors: set[str] = set()
 
         while True:
-            params: Dict[str, Any] = {"limit": 200}
+            params: dict[str, Any] = {"limit": 200}
             if svm:
                 params["svm"] = svm
             if volume:
@@ -804,8 +814,8 @@ class ArcaManilaClient:
         svm: str,
         source_volume: str,
         snapshot_name: str,
-        size_gib: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        size_gib: int | None = None,
+    ) -> dict[str, Any]:
         """Clone volume from snapshot (writable clone).
 
         Args:
@@ -821,7 +831,7 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        data: Dict[str, Any] = {"name": name, "svm": svm, "snapshot": snapshot_name}
+        data: dict[str, Any] = {"name": name, "svm": svm, "snapshot": snapshot_name}
         if size_gib is not None:
             data["size_gib"] = size_gib
 
@@ -841,8 +851,8 @@ class ArcaManilaClient:
         client: str,
         access: str = "rw",
         root_squash: bool = False,
-        sec: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        sec: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Create NFS export ACL entry.
 
         Args:
@@ -889,8 +899,8 @@ class ArcaManilaClient:
         self._make_request("DELETE", "/v1/exports", params=params)
 
     def list_exports(
-        self, svm: Optional[str] = None, volume: Optional[str] = None
-    ) -> List[Dict[str, Any]]:
+        self, svm: str | None = None, volume: str | None = None
+    ) -> list[dict[str, Any]]:
         """List NFS export ACL entries.
 
         Args:
@@ -903,12 +913,12 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         cursor = None
         seen_cursors: set[str] = set()
 
         while True:
-            params: Dict[str, Any] = {"limit": 200}
+            params: dict[str, Any] = {"limit": 200}
             if svm:
                 params["svm"] = svm
             if volume:
@@ -931,11 +941,11 @@ class ArcaManilaClient:
         self,
         volume: str,
         svm: str,
-        read_iops: Optional[int] = None,
-        write_iops: Optional[int] = None,
-        read_bps: Optional[int] = None,
-        write_bps: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        read_iops: int | None = None,
+        write_iops: int | None = None,
+        read_bps: int | None = None,
+        write_bps: int | None = None,
+    ) -> dict[str, Any]:
         """Apply QoS limits to volume.
 
         Args:
@@ -952,7 +962,7 @@ class ArcaManilaClient:
         Raises:
             ArcaManilaAPIError: API error
         """
-        data: Dict[str, Any] = {"svm": svm}
+        data: dict[str, Any] = {"svm": svm}
         if read_iops is not None:
             data["read_iops"] = read_iops
         if write_iops is not None:
@@ -984,7 +994,7 @@ class ArcaManilaClient:
 
     # Capacity operations
 
-    def get_svm_capacity(self, svm: str) -> Dict[str, Any]:
+    def get_svm_capacity(self, svm: str) -> dict[str, Any]:
         """Get SVM capacity statistics.
 
         Args:

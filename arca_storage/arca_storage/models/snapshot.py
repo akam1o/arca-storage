@@ -5,7 +5,6 @@ Snapshot resource model.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, Field
 
@@ -24,14 +23,14 @@ class SnapshotStatus(BaseModel):
     """System-managed actual state for a snapshot."""
 
     phase: Phase = Phase.PENDING
-    size_gib: Optional[int] = None
+    size_gib: int | None = None
     lv_created: bool = False
-    lv_path: Optional[str] = None
-    lv_name: Optional[str] = None
+    lv_path: str | None = None
+    lv_name: str | None = None
     message: str = ""
-    last_reconciled: Optional[datetime] = None
-    create_owner: Optional[str] = None
-    create_lease_expires_at: Optional[datetime] = None
+    last_reconciled: datetime | None = None
+    create_owner: str | None = None
+    create_lease_expires_at: datetime | None = None
 
 
 class Snapshot(BaseModel):

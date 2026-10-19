@@ -5,7 +5,6 @@ Volume resource model.
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Optional
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
@@ -35,15 +34,15 @@ class QoSStatus(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
-    svm: Optional[str] = None
-    volume: Optional[str] = None
+    svm: str | None = None
+    volume: str | None = None
     qos_enabled: bool
-    device_id: Optional[str] = None
-    cgroup_path: Optional[str] = None
-    read_iops: Optional[int] = Field(None, gt=0)
-    write_iops: Optional[int] = Field(None, gt=0)
-    read_bps: Optional[int] = Field(None, gt=0)
-    write_bps: Optional[int] = Field(None, gt=0)
+    device_id: str | None = None
+    cgroup_path: str | None = None
+    read_iops: int | None = Field(None, gt=0)
+    write_iops: int | None = Field(None, gt=0)
+    read_bps: int | None = Field(None, gt=0)
+    write_bps: int | None = Field(None, gt=0)
 
 
 class VolumeStatus(BaseModel):
@@ -51,19 +50,19 @@ class VolumeStatus(BaseModel):
 
     phase: Phase = Phase.PENDING
     lv_created: bool = False
-    lv_path: Optional[str] = None
-    lv_name: Optional[str] = None
+    lv_path: str | None = None
+    lv_name: str | None = None
     fs_formatted: bool = False
     mounted: bool = False
-    mount_path: Optional[str] = None
+    mount_path: str | None = None
     message: str = ""
-    last_reconciled: Optional[datetime] = None
-    create_owner: Optional[str] = None
-    create_lease_expires_at: Optional[datetime] = None
-    resize_owner: Optional[str] = None
-    resize_lease_expires_at: Optional[datetime] = None
-    resize_target_size_gib: Optional[int] = None
-    qos: Optional[QoSStatus] = None
+    last_reconciled: datetime | None = None
+    create_owner: str | None = None
+    create_lease_expires_at: datetime | None = None
+    resize_owner: str | None = None
+    resize_lease_expires_at: datetime | None = None
+    resize_target_size_gib: int | None = None
+    qos: QoSStatus | None = None
 
 
 class Volume(BaseModel):

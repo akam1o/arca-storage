@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Setup script for Arca Storage.
 """
@@ -9,7 +8,7 @@ import os
 import subprocess
 import warnings
 
-from setuptools import setup, find_packages  # type: ignore[import-untyped]
+from setuptools import find_packages, setup  # type: ignore[import-untyped]
 
 with open("README.md", "r", encoding="utf-8") as fh:
     long_description = fh.read()
@@ -94,14 +93,13 @@ setup(
         "License :: OSI Approved :: Apache Software License",
         "Operating System :: POSIX :: Linux",
         "Programming Language :: Python :: 3",
-        "Programming Language :: Python :: 3.9",
         "Programming Language :: Python :: 3.10",
         "Programming Language :: Python :: 3.11",
         "Programming Language :: Python :: 3.12",
         "Programming Language :: Python :: 3.13",
         "Programming Language :: Python :: 3.14",
     ],
-    python_requires=">=3.9",
+    python_requires=">=3.10",
     install_requires=requirements,
     entry_points={
         "console_scripts": [

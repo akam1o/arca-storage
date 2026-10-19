@@ -10,7 +10,7 @@ mkdir -p "$WHEELHOUSE"
 # so avoid installing build tooling into the system Python.
 VENV="$(mktemp -d)"
 trap 'rm -rf "$VENV"' EXIT
-python3 -m venv "$VENV"
+"${ARCA_BUILD_PYTHON:-python3}" -m venv "$VENV"
 "$VENV/bin/python" -m ensurepip --upgrade
 "$VENV/bin/python" -m pip install -U pip build wheel
 

@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from collections.abc import Callable
-from typing import Any, Optional
+from typing import Any
 
 from arca_storage.db import encode_cursor
 
@@ -13,11 +13,11 @@ _PAGE_SIZE = 100
 
 
 def _collect_pages(
-    fetch_page: Callable[[Optional[str]], list[Record]],
+    fetch_page: Callable[[str | None], list[Record]],
     cursor_values: Callable[[Record], list[str]],
 ) -> list[Record]:
     records: list[Record] = []
-    cursor: Optional[str] = None
+    cursor: str | None = None
     seen_cursors: set[str] = set()
 
     while True:
@@ -45,8 +45,8 @@ def list_all_svms(db: Any) -> list[Record]:
 def list_all_volumes(
     db: Any,
     *,
-    svm: Optional[str] = None,
-    name: Optional[str] = None,
+    svm: str | None = None,
+    name: str | None = None,
 ) -> list[Record]:
     return _collect_pages(
         lambda cursor: db.list_volumes(
@@ -59,8 +59,8 @@ def list_all_volumes(
 def list_all_exports(
     db: Any,
     *,
-    svm: Optional[str] = None,
-    volume: Optional[str] = None,
+    svm: str | None = None,
+    volume: str | None = None,
 ) -> list[Record]:
     return _collect_pages(
         lambda cursor: db.list_exports(

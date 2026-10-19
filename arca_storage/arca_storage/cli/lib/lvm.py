@@ -4,13 +4,14 @@ LVM Thin Provisioning management functions.
 
 import subprocess
 
-
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 
 
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], *, check: bool = False, **kwargs
+) -> subprocess.CompletedProcess[str]:
     kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
-    return subprocess.run(cmd, **kwargs)
+    return subprocess.run(cmd, check=check, **kwargs)
 
 
 def _parse_lvm_float(value: str) -> float:

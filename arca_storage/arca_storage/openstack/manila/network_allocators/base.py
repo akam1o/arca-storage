@@ -2,7 +2,6 @@
 
 from abc import ABC, abstractmethod
 from dataclasses import dataclass
-from typing import Optional
 
 
 @dataclass
@@ -19,7 +18,7 @@ class NetworkAllocation:
     vlan_id: int
     ip_cidr: str
     gateway: str
-    allocation_id: Optional[str] = None
+    allocation_id: str | None = None
 
 
 class NetworkAllocator(ABC):
@@ -46,7 +45,6 @@ class NetworkAllocator(ABC):
             ArcaNetworkConflict: Network allocation failed (retryable)
             ArcaManilaException: Other allocation errors
         """
-        pass
 
     @abstractmethod
     def deallocate(self, allocation_id: str) -> None:
@@ -59,7 +57,6 @@ class NetworkAllocator(ABC):
             This method should be idempotent and not raise exceptions
             for missing resources (best-effort cleanup).
         """
-        pass
 
     @abstractmethod
     def validate_config(self) -> None:
@@ -72,4 +69,3 @@ class NetworkAllocator(ABC):
             ValueError: Invalid configuration
             Exception: Validation failure (e.g., network not found)
         """
-        pass

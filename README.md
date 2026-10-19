@@ -45,6 +45,7 @@ The Python codebase follows a **declarative reconciliation** architecture:
 ### Prerequisites
 
 - RHEL/Alma/Rocky Linux 8/9, Debian, or Ubuntu
+- Python 3.10 or newer (EL9 RPM packages use Python 3.11)
 - Pacemaker/Corosync/pcs, NFS-Ganesha, LVM2, DRBD installed
 - 2-node cluster configuration
 
@@ -304,6 +305,9 @@ arca-storage/
 ## Development
 
 ### Setup Development Environment
+
+Use Python 3.10 or newer. On EL9, install `python3.11` and `python3.11-pip`
+and replace `python3` below with `python3.11`.
 
 ```bash
 # Clone repository

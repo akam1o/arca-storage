@@ -1,8 +1,13 @@
 """Configuration options for ARCA Storage Manila Driver."""
 
-try:
-    from oslo_config import cfg  # type: ignore[import-untyped]
+from types import ModuleType
 
+cfg: ModuleType | None
+
+try:
+    from oslo_config import cfg as _cfg  # type: ignore[import-untyped]
+
+    cfg = _cfg
     _HAS_OSLO = True
 except ImportError:
     # oslo.config is an optional dependency for OpenStack integration

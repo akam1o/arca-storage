@@ -10,7 +10,6 @@ from pathlib import Path
 from arca_storage.errors import SubprocessError
 from arca_storage.errors import TimeoutError as ArcaTimeoutError
 
-
 DEFAULT_TIMEOUT = 30  # seconds
 
 

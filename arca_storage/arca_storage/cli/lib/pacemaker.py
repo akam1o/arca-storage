@@ -4,7 +4,7 @@ Pacemaker resource management functions.
 
 import re
 import subprocess
-from typing import Optional, Sequence
+from collections.abc import Sequence
 
 from arca_storage.cli.lib.netns import make_vlan_ifname
 
@@ -51,7 +51,7 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
             in_target_group = True
             saw_group_header = True
             continue
-        if lower.startswith("resource group:") or lower.startswith("group:"):
+        if lower.startswith(("resource group:", "group:")):
             header_name = _name_after_colon(line)
             in_target_group = header_name == group_name
             saw_group_header = True
@@ -66,7 +66,7 @@ def _parse_group_members(group_name: str, text: str) -> list[str]:
     return members
 
 
-def _parse_resource_attribute(text: str, name: str) -> Optional[str]:
+def _parse_resource_attribute(text: str, name: str) -> str | None:
     for match in _RESOURCE_ATTR_RE.finditer(text):
         if match.group("name") == name:
             return (
@@ -134,7 +134,7 @@ def _ensure_group_members(group_name: str, resources: list[str]) -> None:
 
 def _previous_desired_member(
     resources: list[str], index: int, members: list[str]
-) -> Optional[str]:
+) -> str | None:
     for resource in reversed(resources[:index]):
         if resource in members:
             return resource
@@ -143,7 +143,7 @@ def _previous_desired_member(
 
 def _next_desired_member(
     resources: list[str], index: int, members: list[str]
-) -> Optional[str]:
+) -> str | None:
     for resource in resources[index + 1 :]:
         if resource in members:
             return resource
@@ -171,7 +171,7 @@ def _group_add_command(
     resources: list[str],
     index: int,
     members: list[str],
-) -> tuple[list[str], Optional[str], Optional[str]]:
+) -> tuple[list[str], str | None, str | None]:
     previous = _previous_desired_member(resources, index, members)
     if resource in members and previous is not None:
         return (
@@ -227,8 +227,8 @@ def _insert_group_member(
     members: list[str],
     resource: str,
     *,
-    before: Optional[str],
-    after: Optional[str],
+    before: str | None,
+    after: str | None,
 ) -> list[str]:
     updated = [member for member in members if member != resource]
     if before is not None and before in updated:
@@ -334,15 +334,15 @@ def create_group(
     svm_name: str,
     mount_path: str,
     *,
-    vlan_id: Optional[int],
-    ifname: Optional[str] = None,
+    vlan_id: int | None,
+    ifname: str | None = None,
     ip: str,
     prefix: int,
-    gw: Optional[str],
+    gw: str | None,
     mtu: int = 1500,
     parent_if: str = "bond0",
     vg_name: str = "vg_pool_01",
-    filesystem_lv_name: Optional[str] = None,
+    filesystem_lv_name: str | None = None,
     create_filesystem: bool = True,
     drbd_resource_name: str = "r0",
     enforce_drbd_constraints: bool = True,
@@ -372,7 +372,7 @@ def create_group(
 
     resources: list[str] = []
 
-    master_name: Optional[str] = None
+    master_name: str | None = None
     if enforce_drbd_constraints:
         master_name = ensure_drbd_master(drbd_resource_name)
 

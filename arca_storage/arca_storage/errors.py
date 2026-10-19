@@ -10,7 +10,7 @@ instead of parsing error text.
 from __future__ import annotations
 
 from enum import Enum
-from typing import Any, Optional
+from typing import Any
 
 
 class ErrorCode(str, Enum):
@@ -55,7 +55,7 @@ class ArcaError(Exception):
         self,
         code: ErrorCode,
         message: str,
-        details: Optional[dict[str, Any]] = None,
+        details: dict[str, Any] | None = None,
     ) -> None:
         self.code = code
         self.message = message
@@ -101,7 +101,7 @@ class NotFoundError(ArcaError):
 
 
 class ConflictError(ArcaError):
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(ErrorCode.CONFLICT, message, details)
 
 
@@ -114,22 +114,22 @@ class CreateLeaseLostError(ConflictError):
 
 
 class PreconditionFailedError(ArcaError):
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(ErrorCode.PRECONDITION_FAILED, message, details)
 
 
 class InvalidArgumentError(ArcaError):
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(ErrorCode.INVALID_ARGUMENT, message, details)
 
 
 class InternalError(ArcaError):
-    def __init__(self, message: str, details: Optional[dict[str, Any]] = None) -> None:
+    def __init__(self, message: str, details: dict[str, Any] | None = None) -> None:
         super().__init__(ErrorCode.INTERNAL, message, details)
 
 
 class ReconcileFailedError(InternalError):
-    def __init__(self, resource: str, name: str, reason: Optional[str]) -> None:
+    def __init__(self, resource: str, name: str, reason: str | None) -> None:
         message = f"{resource} '{name}' reconcile failed"
         details: dict[str, Any] = {"resource": resource, "name": name}
         if reason:

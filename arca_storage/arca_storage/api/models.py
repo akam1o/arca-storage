@@ -4,14 +4,16 @@ Pydantic models for API requests and responses.
 
 from datetime import datetime
 from enum import Enum
-from typing import Annotated, Generic, List, Optional, TypeVar, Union
+from typing import Annotated, Generic, TypeVar
 
 from pydantic import BaseModel, ConfigDict, Field, field_validator
 
 from arca_storage.cli.lib.validators import (
     normalize_nfs_client_cidr,
-    validate_name as validate_resource_name,
     validate_svm_ip_cidr,
+)
+from arca_storage.cli.lib.validators import (
+    validate_name as validate_resource_name,
 )
 
 
@@ -82,15 +84,15 @@ class SVMCreate(StrictRequestModel):
     """Request model for creating an SVM."""
 
     name: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    vlan_id: Optional[int] = Field(None, description="Optional VLAN ID", ge=1, le=4094)
+    vlan_id: int | None = Field(None, description="Optional VLAN ID", ge=1, le=4094)
     ip_cidr: str = Field(
         ..., description="IP address with CIDR (e.g., 192.168.10.5/24)"
     )
-    gateway: Optional[str] = Field(
+    gateway: str | None = Field(
         None, description="Gateway IP (optional; inferred if omitted)"
     )
     mtu: int = Field(1500, description="MTU size", ge=68, le=9000)
-    root_volume_size_gib: Optional[PositiveGiB] = Field(
+    root_volume_size_gib: PositiveGiB | None = Field(
         None, description="Optional root LV size in GiB (creates /dev/<vg>/vol_<svm>)"
     )
 
@@ -104,15 +106,15 @@ class SVMCreate(StrictRequestModel):
         return v
 
     @field_validator("gateway")
-    def validate_gateway(cls, v: Optional[str]) -> Optional[str]:
+    def validate_gateway(cls, v: str | None) -> str | None:
         import ipaddress
 
         if v is None:
             return v
         try:
             ipaddress.IPv4Address(v)
-        except Exception as e:
-            raise ValueError(f"Invalid gateway IP: {e}")
+        except ipaddress.AddressValueError as e:
+            raise ValueError(f"Invalid gateway IP: {e}") from e
         return v
 
 
@@ -120,15 +122,15 @@ class SVM(BaseModel):
     """SVM response model."""
 
     name: str
-    vlan_id: Optional[int] = None
+    vlan_id: int | None = None
     ip_cidr: str
-    gateway: Optional[str] = None
+    gateway: str | None = None
     mtu: int
     namespace: str
     vip: str
-    export_root: Optional[str] = None
+    export_root: str | None = None
     status: SVMStatus
-    state: Optional[SVMStatus] = None
+    state: SVMStatus | None = None
     created_at: datetime
 
 
@@ -143,14 +145,14 @@ class SVMResponse(BaseModel):
 
     request_id: str
     status: str
-    data: Union[SVMData, SVM]
+    data: SVMData | SVM
 
 
 class SVMListData(BaseModel):
     """SVM list data envelope."""
 
-    items: List[SVM]
-    next_cursor: Optional[str] = None
+    items: list[SVM]
+    next_cursor: str | None = None
 
 
 class SVMListResponse(BaseModel):
@@ -171,7 +173,7 @@ class DirectoryCreate(StrictRequestModel):
     path: str = Field(
         ..., description=CSI_VOLUME_PATH_DESCRIPTION, min_length=1, max_length=64
     )
-    quota_bytes: Optional[PositiveBytes] = Field(
+    quota_bytes: PositiveBytes | None = Field(
         None, description="Optional quota/capacity in bytes"
     )
 
@@ -249,12 +251,12 @@ class VolumeQoSApply(StrictRequestModel):
     """Request model for applying QoS to a volume."""
 
     svm: str = Field(..., description="SVM name", min_length=1, max_length=64)
-    read_iops: Optional[PositiveQoSLimit] = Field(None, description="Read IOPS limit")
-    write_iops: Optional[PositiveQoSLimit] = Field(None, description="Write IOPS limit")
-    read_bps: Optional[PositiveQoSLimit] = Field(
+    read_iops: PositiveQoSLimit | None = Field(None, description="Read IOPS limit")
+    write_iops: PositiveQoSLimit | None = Field(None, description="Write IOPS limit")
+    read_bps: PositiveQoSLimit | None = Field(
         None, description="Read bandwidth limit (bytes/sec)"
     )
-    write_bps: Optional[PositiveQoSLimit] = Field(
+    write_bps: PositiveQoSLimit | None = Field(
         None, description="Write bandwidth limit (bytes/sec)"
     )
 
@@ -269,12 +271,12 @@ class VolumeQoS(BaseModel):
     svm: str
     volume: str
     qos_enabled: bool
-    device_id: Optional[str] = None
-    cgroup_path: Optional[str] = None
-    read_iops: Optional[int] = None
-    write_iops: Optional[int] = None
-    read_bps: Optional[int] = None
-    write_bps: Optional[int] = None
+    device_id: str | None = None
+    cgroup_path: str | None = None
+    read_iops: int | None = None
+    write_iops: int | None = None
+    read_bps: int | None = None
+    write_bps: int | None = None
 
 
 class VolumeQoSResponse(BaseModel):
@@ -293,10 +295,10 @@ class Volume(BaseModel):
     size_gib: int
     thin: bool
     fs_type: str
-    mount_path: Optional[str] = None
-    lv_path: Optional[str] = None
-    lv_name: Optional[str] = None
-    export_path: Optional[str] = None
+    mount_path: str | None = None
+    lv_path: str | None = None
+    lv_name: str | None = None
+    export_path: str | None = None
     status: VolumeStatus
     created_at: datetime
 
@@ -318,8 +320,8 @@ class VolumeResponse(BaseModel):
 class VolumeListData(BaseModel):
     """Volume list data envelope."""
 
-    items: List[Volume]
-    next_cursor: Optional[str] = None
+    items: list[Volume]
+    next_cursor: str | None = None
 
 
 class VolumeListResponse(BaseModel):
@@ -355,7 +357,7 @@ class VolumeCloneCreate(StrictRequestModel):
     snapshot: str = Field(
         ..., description="Source snapshot name", min_length=1, max_length=64
     )
-    size_gib: Optional[PositiveGiB] = Field(
+    size_gib: PositiveGiB | None = Field(
         None, description="Size in GiB (optional, defaults to snapshot size)"
     )
 
@@ -370,8 +372,8 @@ class Snapshot(BaseModel):
     name: str
     svm: str
     volume: str
-    lv_path: Optional[str] = None
-    lv_name: Optional[str] = None
+    lv_path: str | None = None
+    lv_name: str | None = None
     status: SnapshotStatus
     created_at: datetime
 
@@ -393,8 +395,8 @@ class SnapshotResponse(BaseModel):
 class SnapshotListData(BaseModel):
     """Snapshot list data envelope."""
 
-    items: List[Snapshot]
-    next_cursor: Optional[str] = None
+    items: list[Snapshot]
+    next_cursor: str | None = None
 
 
 class SnapshotListResponse(BaseModel):
@@ -416,7 +418,7 @@ class ExportCreate(StrictRequestModel):
     client: str = Field(..., description="Client CIDR (e.g., 10.0.0.0/24)")
     access: str = Field("rw", description="Access type: rw or ro")
     root_squash: bool = Field(True, description="Enable root squash")
-    sec: List[str] = Field(
+    sec: list[str] = Field(
         default_factory=lambda: ["sys"], description="Security types"
     )
 
@@ -435,7 +437,7 @@ class ExportCreate(StrictRequestModel):
         return normalize_nfs_client_cidr(v)
 
     @field_validator("sec")
-    def validate_sec(cls, v: List[str]) -> List[str]:
+    def validate_sec(cls, v: list[str]) -> list[str]:
         allowed = {"sys", "krb5", "krb5i", "krb5p"}
         values = [item.strip().lower() for item in v if item.strip()]
         if not values:
@@ -454,9 +456,9 @@ class Export(BaseModel):
     client: str
     access: str
     root_squash: bool
-    sec: List[str]
-    pseudo: Optional[str] = None
-    export_id: Optional[int] = None
+    sec: list[str]
+    pseudo: str | None = None
+    export_id: int | None = None
     status: ExportStatus
     created_at: datetime
 
@@ -478,8 +480,8 @@ class ExportResponse(BaseModel):
 class ExportListData(BaseModel):
     """Export list data envelope."""
 
-    items: List[Export]
-    next_cursor: Optional[str] = None
+    items: list[Export]
+    next_cursor: str | None = None
 
 
 class ExportListResponse(BaseModel):

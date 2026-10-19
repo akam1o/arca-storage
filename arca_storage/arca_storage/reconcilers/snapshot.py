@@ -7,7 +7,6 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 from math import ceil
-from typing import Optional
 
 from arca_storage.cli.lib.validators import (
     legacy_snapshot_lv_name,
@@ -29,7 +28,7 @@ logger = logging.getLogger(__name__)
 
 class SnapshotReconciler:
     def __init__(
-        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+        self, db: StateDB, adapters: Adapters, *, config: dict | None = None
     ) -> None:
         self.db = db
         self.adapters = adapters
@@ -93,7 +92,7 @@ class SnapshotReconciler:
                 if created_snap_lv:
                     self._delete_created_snapshot_lv(vg_name, snap_lv)
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Clean up and persist any create failure.
                 if created_snap_lv:
                     self._delete_created_snapshot_lv(vg_name, snap_lv)
                     snapshot.status.lv_created = False
@@ -120,7 +119,7 @@ class SnapshotReconciler:
         if snapshot.status.size_gib is None:
             try:
                 snapshot.status.size_gib = self._snapshot_lv_size_gib(vg_name, snap_lv)
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Persist failed creation for any size error.
                 snapshot.status.phase = Phase.FAILED
                 expected_owner = create_owner
                 clear_create_lease(snapshot.status)
@@ -166,7 +165,7 @@ class SnapshotReconciler:
             self.db.log_operation(
                 "Snapshot", snapshot.metadata.id, "delete", "completed"
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Persist any backend deletion failure.
             snapshot.status.phase = Phase.FAILED
             snapshot.status.message = f"Delete failed: {e}"
             self._persist(snapshot, snapshot.status.message)
@@ -177,7 +176,7 @@ class SnapshotReconciler:
         snapshot: Snapshot,
         detail: str,
         *,
-        expected_create_owner: Optional[str] = None,
+        expected_create_owner: str | None = None,
         require_ready_volume: bool = False,
     ) -> None:
         if not self.db.upsert_snapshot(
@@ -204,7 +203,7 @@ class SnapshotReconciler:
 
     def _snapshot_lv_size_gib(self, vg_name: str, snap_lv: str) -> int:
         try:
-            return int(ceil(float(self.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
+            return ceil(float(self.adapters.lvm.get_lv_size_gib(vg_name, snap_lv)))
         except Exception as e:
             logger.warning(
                 "Failed to read snapshot size for %s/%s: %s", vg_name, snap_lv, e
@@ -227,7 +226,7 @@ class SnapshotReconciler:
         try:
             self.adapters.lvm.delete_lv(vg_name, snap_lv)
             return True
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Cleanup must not mask the original failure.
             logger.warning(
                 "Failed to delete unrecorded snapshot LV %s/%s: %s", vg_name, snap_lv, e
             )
@@ -244,7 +243,7 @@ class SnapshotReconciler:
                 snapshot.spec.name,
                 cleanup_owner,
             )
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Keep the LV when cleanup ownership is unknown.
             logger.warning(
                 "Skipping snapshot LV cleanup after lost lease for %s/%s: %s",
                 vg_name,
@@ -269,7 +268,7 @@ class SnapshotReconciler:
                     snapshot.spec.name,
                     cleanup_owner,
                 )
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Reservation release is best-effort cleanup.
                 logger.warning(
                     "Failed to release snapshot LV cleanup reservation for %s/%s: %s",
                     vg_name,

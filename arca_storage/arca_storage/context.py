@@ -9,7 +9,6 @@ manually everywhere.
 from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
-from typing import Optional
 
 from arca_storage.adapters.ganesha import SubprocessGaneshaAdapter
 from arca_storage.adapters.lvm import SubprocessLVMAdapter
@@ -29,7 +28,7 @@ from arca_storage.reconcilers.volume import VolumeReconciler
 class AppContext:
     """Singleton-ish container for all application dependencies."""
 
-    def __init__(self, settings: Optional[ArcaSettings] = None) -> None:
+    def __init__(self, settings: ArcaSettings | None = None) -> None:
         self.settings = settings or load_settings()
         self.db = StateDB(self.settings.state.db_path)
         self._prune_operation_log()
@@ -64,7 +63,7 @@ class AppContext:
 
 
 # Module-level lazy singleton
-_ctx: Optional[AppContext] = None
+_ctx: AppContext | None = None
 
 
 def get_context() -> AppContext:
@@ -74,7 +73,7 @@ def get_context() -> AppContext:
     return _ctx
 
 
-def reset_context(ctx: Optional[AppContext] = None) -> None:
+def reset_context(ctx: AppContext | None = None) -> None:
     """Replace the global context (useful for testing)."""
     global _ctx
     old_ctx = _ctx

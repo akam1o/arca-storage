@@ -399,13 +399,15 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_utils.get_mount_point_for_svm.return_value = mount_point
         mock_utils.is_mounted.return_value = False
 
-        with patch.object(arca_driver.LOG, "info") as mock_info:
-            with patch.object(arca_driver.LOG, "debug") as mock_debug:
-                with patch.object(arca_driver.LOG, "warning") as mock_warning:
-                    self.driver.delete_volume(volume)
-                    self.driver.extend_volume(volume, 20)
-                    self.driver.initialize_connection(volume, {"host": "compute-1"})
-                    self.driver.terminate_connection(volume, {"host": "compute-1"})
+        with (
+            patch.object(arca_driver.LOG, "info") as mock_info,
+            patch.object(arca_driver.LOG, "debug") as mock_debug,
+            patch.object(arca_driver.LOG, "warning") as mock_warning,
+        ):
+            self.driver.delete_volume(volume)
+            self.driver.extend_volume(volume, 20)
+            self.driver.initialize_connection(volume, {"host": "compute-1"})
+            self.driver.terminate_connection(volume, {"host": "compute-1"})
 
         rendered_calls = self._render_log_calls(mock_info, mock_debug, mock_warning)
         self.assertNotIn("secret-vol-id", rendered_calls)
@@ -963,18 +965,20 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         snapshot = self._create_mock_snapshot("snap/../../escape", "source-vol-id")
         self.driver.db.volume_get.return_value = source_volume
 
-        with patch.object(
-            self.driver,
-            "_mount_svm_export",
-            return_value=(
-                "192.168.100.5:/exports/test-svm",
-                "/var/lib/cinder/mnt/svm_test-svm",
+        with (
+            patch.object(
+                self.driver,
+                "_mount_svm_export",
+                return_value=(
+                    "192.168.100.5:/exports/test-svm",
+                    "/var/lib/cinder/mnt/svm_test-svm",
+                ),
+            ),
+            pytest.raises(
+                exception.VolumeBackendAPIException, match="Invalid volume file name"
             ),
         ):
-            with pytest.raises(
-                exception.VolumeBackendAPIException, match="Invalid volume file name"
-            ):
-                self.driver.create_snapshot(snapshot)
+            self.driver.create_snapshot(snapshot)
 
         mock_copy.assert_not_called()
 
@@ -1408,12 +1412,14 @@ class TestArcaStorageNFSDriver(unittest.TestCase):
         mock_utils.get_mount_point_for_svm.return_value = mount_point
         mock_getsize.return_value = 10 * 1024**3
 
-        with patch.object(arca_driver.LOG, "info") as mock_info:
-            with patch.object(arca_driver.LOG, "warning") as mock_warning:
-                self.driver.create_snapshot(snapshot)
-                self.driver.delete_snapshot(snapshot)
-                self.driver.create_volume_from_snapshot(new_volume, snapshot)
-                self.driver.create_cloned_volume(clone_volume, source_volume)
+        with (
+            patch.object(arca_driver.LOG, "info") as mock_info,
+            patch.object(arca_driver.LOG, "warning") as mock_warning,
+        ):
+            self.driver.create_snapshot(snapshot)
+            self.driver.delete_snapshot(snapshot)
+            self.driver.create_volume_from_snapshot(new_volume, snapshot)
+            self.driver.create_cloned_volume(clone_volume, source_volume)
 
         rendered_calls = self._render_log_calls(mock_info, mock_warning)
         forbidden_values = [

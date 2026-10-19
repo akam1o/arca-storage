@@ -4,18 +4,18 @@ XFS filesystem management functions.
 
 import os
 import subprocess
-from typing import List, Optional
-
 
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 
 
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], *, check: bool = False, **kwargs
+) -> subprocess.CompletedProcess[str]:
     kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
-    return subprocess.run(cmd, **kwargs)
+    return subprocess.run(cmd, check=check, **kwargs)
 
 
-def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
+def format_xfs(device: str, options: list[str] | None = None) -> None:
     """
     Format a device with XFS filesystem.
 
