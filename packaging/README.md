@@ -23,6 +23,19 @@ System resources are installed to standard locations:
 - systemd units: `arca-storage-api.service`, `nfs-ganesha@.service`, `nfs-ganesha-host@.service`
 - Pacemaker RA: `/usr/lib/ocf/resource.d/local/NetnsVlan`
 
+## Runtime services
+
+The API manages host LVM volumes and mounts that NFS-Ganesha must see. Its unit
+runs in the host mount namespace and needs write access to LVM's metadata backup
+directories under `/etc/lvm`. Mount-namespace sandboxing such as `PrivateTmp`,
+`ProtectSystem`, `ProtectHome`, `ReadWritePaths`, or `ProtectKernelLogs` prevents
+these storage operations from working correctly. The unit retains its capability
+bounding set, `NoNewPrivileges`, and the other independent hardening settings.
+
+The host-namespace Ganesha unit requires `rpcbind.service`, including for NFSv4-only
+exports, because Ganesha registers its RQUOTA service at startup. Install rpcbind
+on package-managed hosts; the Ansible NFS-Ganesha role includes it by default.
+
 ## Wheelhouse requirement
 
 The build uses an offline wheelhouse containing runtime dependencies.

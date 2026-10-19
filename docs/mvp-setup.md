@@ -176,7 +176,7 @@ sudo arca bootstrap render-env
    sudo mkfs.xfs -b size=4096 \
      -m crc=1,finobt=1 \
      -i size=512,maxpct=25 \
-     -d agcount=32,su=256k,sw=1 \
+     -d su=256k,sw=1 \
      /dev/vg_pool_01/vol_tenant_a
    ```
 
@@ -258,7 +258,7 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
      op monitor interval=60s
 
    # Verify STONITH devices
-   sudo pcs stonith show
+   sudo pcs stonith config
    sudo pcs stonith status
    ```
 
@@ -269,11 +269,11 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
    ```bash
    sudo pcs resource create p_drbd_r0 ocf:linbit:drbd \
      drbd_resource=r0 \
-     op monitor interval=15s role=Master
+     op monitor interval=15s role=Promoted
    
-   sudo pcs resource master ms_drbd_r0 p_drbd_r0 \
-     master-max=1 \
-     master-node-max=1 \
+   sudo pcs resource promotable p_drbd_r0 ms_drbd_r0 meta \
+     promoted-max=1 \
+     promoted-node-max=1 \
      clone-max=2 \
      clone-node-max=1
    ```
@@ -350,10 +350,10 @@ sudo /usr/lib/ocf/resource.d/local/NetnsVlan meta-data
 
    ```bash
    # Ensure DRBD is primary before filesystem
-   sudo pcs constraint order ms_drbd_r0:promote fs_tenant_a:start
+   sudo pcs constraint order promote ms_drbd_r0 then start fs_tenant_a
    
    # Colocate SVM resources with DRBD
-   sudo pcs constraint colocation add g_svm_tenant_a with ms_drbd_r0:Master
+   sudo pcs constraint colocation add g_svm_tenant_a with Promoted ms_drbd_r0
    ```
 
 ## Step 7: Configure NFS-Ganesha
