@@ -15,8 +15,10 @@ NFS_CORE_PARAM {
 }
 
 EXPORT_DEFAULTS {
-    Access_Type = RW;
+    Access_Type = None;
     Squash = Root_Squash;
+    Anonymous_uid = 65534;
+    Anonymous_gid = 65534;
 }
 
 {% for exp in exports %}
@@ -25,11 +27,12 @@ EXPORT {
     Path = "{{ exp.path }}";
     Pseudo = "{{ exp.pseudo }}";
     Protocols = {{ protocols }};
-    Access_Type = {{ exp.access }};
+    Access_Type = None;
     Squash = {{ exp.squash }};
     SecType = {{ exp.sec_render }};
     CLIENT {
         Clients = {{ exp.client }};
+        Access_Type = {{ exp.access }};
     }
     FSAL {
         Name = VFS;
