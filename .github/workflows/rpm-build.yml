@@ -2,7 +2,17 @@ name: RPM Build
 
 on:
   workflow_call:
+    inputs:
+      version:
+        required: false
+        type: string
+        default: "0.0.0"
   workflow_dispatch:
+    inputs:
+      version:
+        description: Package version
+        required: false
+        default: "0.0.0"
 
 permissions:
   contents: read
@@ -15,20 +25,56 @@ jobs:
     steps:
       - uses: actions/checkout@v4
 
+      - name: Prepare dependency cache
+        id: cache-week
+        run: |
+          echo "week=$(date -u +%G-W%V)" >> "$GITHUB_OUTPUT"
+          mkdir -p "$RUNNER_TEMP/arca-rpm-deps/dnf" "$RUNNER_TEMP/arca-rpm-deps/pip"
+
+      - name: Restore RPM build downloads
+        id: rpm-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: ${{ runner.temp }}/arca-rpm-deps
+          key: rpm-deps-v1-${{ runner.os }}-${{ runner.arch }}-el10-py3.12-${{ steps.cache-week.outputs.week }}-${{ hashFiles('arca_storage/requirements.txt', 'arca_storage/pyproject.toml', 'packaging/vendor-wheels.sh', '.github/workflows/rpm-build.yml') }}
+          restore-keys: |
+            rpm-deps-v1-${{ runner.os }}-${{ runner.arch }}-el10-py3.12-${{ steps.cache-week.outputs.week }}-
+            rpm-deps-v1-${{ runner.os }}-${{ runner.arch }}-el10-py3.12-
+
       - name: Build rpms (EL10)
         run: |
           docker run --rm \
-            -e "ARCA_VERSION=0.0.0" \
+            -e "ARCA_VERSION=${{ inputs.version }}" \
+            -e PIP_CACHE_DIR=/root/.cache/pip \
             -v "$GITHUB_WORKSPACE:/workspace" \
+            -v "$RUNNER_TEMP/arca-rpm-deps/dnf:/var/cache/dnf" \
+            -v "$RUNNER_TEMP/arca-rpm-deps/pip:/root/.cache/pip" \
             -w /workspace \
             rockylinux/rockylinux:10 \
             bash -lc '
-              dnf -y install git tar gzip rsync rpm-build python3 python3-pip &&
+              chown -R 0:0 /var/cache/dnf /root/.cache/pip &&
+              dnf -y --refresh --setopt=keepcache=True install git tar gzip rsync rpm-build python3 python3-pip &&
               git config --global --add safe.directory /workspace &&
               rm -rf packaging/wheelhouse packaging/out/rpm &&
               bash ./packaging/vendor-wheels.sh &&
               bash ./packaging/build-rpm.sh
             '
+
+      - name: Restore cache ownership for the runner
+        if: always()
+        run: |
+          if [ -d "$RUNNER_TEMP/arca-rpm-deps" ]; then
+            sudo chown -R "$(id -u):$(id -g)" "$RUNNER_TEMP/arca-rpm-deps"
+          fi
+
+      # Main-branch builds seed the cache reused by subsequent CI and releases.
+      # PRs only restore downloads; package resolution and Arca builds always run.
+      - name: Save RPM build downloads
+        if: success() && github.event_name != 'pull_request' && steps.rpm-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: ${{ runner.temp }}/arca-rpm-deps
+          key: ${{ steps.rpm-cache.outputs.cache-primary-key }}
 
       - name: Upload rpm artifacts
         uses: actions/upload-artifact@v4
