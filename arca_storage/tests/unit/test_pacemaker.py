@@ -970,7 +970,7 @@ def test_subprocess_adapter_creates_host_group_with_pcs_012_commands(mock_subpro
         "tenant_a",
         "/exports/tenant_a",
         vlan_id=None,
-        ip="172.20.26.16",
+        ip="192.0.2.16",
         prefix=24,
         gw=None,
         parent_if="ens18",
@@ -1037,8 +1037,9 @@ def test_subprocess_adapter_creates_host_group_with_pcs_012_commands(mock_subpro
 
 @pytest.mark.unit
 @pytest.mark.parametrize("target_action", ["start ", ""])
+@pytest.mark.parametrize("group_role", ["Started ", ""])
 def test_subprocess_adapter_existing_pcs_012_config_is_idempotent(
-    mock_subprocess, target_action
+    mock_subprocess, target_action, group_role
 ):
     # pcs resource config describes resources even when maintenance mode keeps
     # them stopped. Its multiline attributes and constraint sentences differ
@@ -1058,7 +1059,7 @@ Group: g_svm_tenant_a
         f"  promote resource 'ms_drbd_r0' then {target_action}resource 'fs_tenant_a' "
         "(id: order-drbd-fs)\n"
         "Colocation Constraints:\n"
-        "  resource 'g_svm_tenant_a' with Promoted resource 'ms_drbd_r0' "
+        f"  {group_role}resource 'g_svm_tenant_a' with Promoted resource 'ms_drbd_r0' "
         "(id: coloc-svm-drbd)\n"
         "    score=INFINITY\n"
     )
@@ -1076,7 +1077,7 @@ Group: g_svm_tenant_a
         "tenant_a",
         "/exports/tenant_a",
         vlan_id=None,
-        ip="172.20.26.16",
+        ip="192.0.2.16",
         prefix=24,
         gw=None,
         parent_if="ens18",
@@ -1085,14 +1086,77 @@ Group: g_svm_tenant_a
 
 
 @pytest.mark.unit
-def test_subprocess_adapter_does_not_accept_wrong_constraint_roles(mock_subprocess):
+@pytest.mark.parametrize("target_action", ["start ", ""])
+@pytest.mark.parametrize("role", ["Promoted", "Master"])
+def test_subprocess_adapter_existing_legacy_constraints_are_idempotent(
+    mock_subprocess, target_action, role
+):
     mock_subprocess.return_value = MagicMock(
         returncode=0,
         stdout=(
             "Order Constraints:\n"
-            "  start resource 'ms_drbd_r0' then start resource 'fs_tenant_a'\n"
+            f"  promote ms_drbd_r0 then {target_action}fs_tenant_a "
+            "(kind:Mandatory) (id:order-drbd-fs)\n"
             "Colocation Constraints:\n"
-            "  resource 'g_svm_tenant_a' with Unpromoted resource 'ms_drbd_r0'\n"
+            "  g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) "
+            f"(with-rsc-role:{role}) (id:coloc-svm-drbd)\n"
+        ),
+        stderr="",
+    )
+
+    adapter = SubprocessPacemakerAdapter()
+    adapter._ensure_order("ms_drbd_r0", "fs_tenant_a")
+    adapter._ensure_colocation("g_svm_tenant_a", "ms_drbd_r0")
+
+    assert [call.args[0] for call in mock_subprocess.call_args_list] == [
+        ["pcs", "constraint", "config", "--full"],
+        ["pcs", "constraint", "config", "--full"],
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("order", "colocation"),
+    [
+        (
+            "start resource 'ms_drbd_r0' then start resource 'fs_tenant_a'",
+            "resource 'g_svm_tenant_a' with Unpromoted resource 'ms_drbd_r0'",
+        ),
+        (
+            "start ms_drbd_r0 then start fs_tenant_a (kind:Mandatory)",
+            "g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Unpromoted)",
+        ),
+        (
+            "promote ms_drbd_r0 then stop fs_tenant_a (kind:Mandatory)",
+            "g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Slave)",
+        ),
+        (
+            "promote ms_drbd_r0 then start fs_tenant_a_other (kind:Mandatory)",
+            "g_svm_tenant_a with ms_drbd_r0_other (score:INFINITY) (with-rsc-role:Promoted)",
+        ),
+        (
+            "promote ms_drbd_r0_other then start fs_tenant_a (kind:Mandatory)",
+            "g_svm_tenant_a_other with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Promoted)",
+        ),
+        (
+            (
+                "promote ms_drbd_r0 then start fs_tenant_a_other\n"
+                "  start ms_drbd_r0 then start fs_tenant_a"
+            ),
+            (
+                "g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) (rsc-role:Promoted)\n"
+                "  g_svm_other with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Promoted)"
+            ),
+        ),
+    ],
+)
+def test_subprocess_adapter_does_not_accept_wrong_constraints(
+    mock_subprocess, order, colocation
+):
+    mock_subprocess.return_value = MagicMock(
+        returncode=0,
+        stdout=(
+            f"Order Constraints:\n  {order}\nColocation Constraints:\n  {colocation}\n"
         ),
         stderr="",
     )

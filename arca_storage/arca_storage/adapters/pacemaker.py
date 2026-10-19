@@ -281,12 +281,17 @@ class SubprocessPacemakerAdapter:
 
     def _ensure_order(self, master_name: str, target: str) -> None:
         constraints = self._constraints_text()
-        # pcs 0.12 renders configured constraints as human-readable sentences.
+        # pcs 0.12 quotes resource names; 0.10/0.11 print them directly.
         # An omitted target action has the same meaning as explicit "start".
+        master = re.escape(master_name)
+        target_name = re.escape(target)
+        pattern = (
+            rf"(?:promote resource '{master}' then (?:start )?resource '{target_name}'"
+            rf"|promote {master} then (?:start )?{target_name})"
+            r"(?: \([^()]*\))*"
+        )
         if any(
-            f"promote resource '{master_name}' then {action}resource '{target}'"
-            in constraints
-            for action in ("start ", "")
+            re.fullmatch(pattern, line.strip()) for line in constraints.splitlines()
         ):
             return
         run_cmd(
@@ -304,8 +309,18 @@ class SubprocessPacemakerAdapter:
         )
 
     def _ensure_colocation(self, group_name: str, master_name: str) -> None:
-        needle = f"resource '{group_name}' with Promoted resource '{master_name}'"
-        if needle in self._constraints_text():
+        group = re.escape(group_name)
+        master = re.escape(master_name)
+        pattern = (
+            rf"(?:(?:Started )?resource '{group}' with Promoted resource '{master}'"
+            rf"|{group} with {master}(?: \([^()]*\))*"
+            r" \(with-rsc-role:(?:Promoted|Master)\))"
+            r"(?: \([^()]*\))*"
+        )
+        if any(
+            re.fullmatch(pattern, line.strip())
+            for line in self._constraints_text().splitlines()
+        ):
             return
         run_cmd(
             [
