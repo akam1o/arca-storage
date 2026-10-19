@@ -14,43 +14,10 @@ jobs:
       version: ${{ github.event.release.tag_name }}
 
   el9:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-      - name: Build rpms (EL9)
-        run: |
-          docker run --rm \
-            -e "ARCA_VERSION=${{ github.event.release.tag_name }}" \
-            -e ARCA_BUILD_PYTHON=python3.11 \
-            -v "$GITHUB_WORKSPACE:/workspace" \
-            -w /workspace \
-            almalinux:9 \
-            bash -lc '
-              dnf -y install git tar gzip rsync rpm-build python3.11 python3.11-pip &&
-              git config --global --add safe.directory /workspace &&
-              rm -rf packaging/wheelhouse &&
-              bash ./packaging/vendor-wheels.sh &&
-              bash ./packaging/build-rpm.sh
-            '
-      - name: Install and smoke-test rpm (EL9)
-        run: |
-          for image in almalinux:9 rockylinux/rockylinux:9; do
-            docker run --rm \
-              -v "$GITHUB_WORKSPACE/packaging/out/rpm:/packages:ro" \
-              "$image" \
-              bash -euc '
-                dnf -y install /packages/arca-storage-*."$(uname -m)".rpm
-                /opt/arca-storage/venv/bin/python -c "import ssl, sqlite3, _ctypes, pydantic_core, yaml, uvloop, httptools, watchfiles"
-                /opt/arca-storage/venv/bin/python -m pip check
-                arca --help
-                arca-storage-api --help
-              '
-          done
-      - name: Upload rpm artifacts
-        uses: actions/upload-artifact@v4
-        with:
-          name: el9-rpms
-          path: packaging/out/rpm/*
+    uses: ./.github/workflows/rpm-build.yml
+    with:
+      el: "9"
+      version: ${{ github.event.release.tag_name }}
 
   el10:
     uses: ./.github/workflows/rpm-build.yml
