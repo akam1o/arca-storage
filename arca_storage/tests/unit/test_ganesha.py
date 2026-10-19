@@ -77,6 +77,32 @@ class TestRenderConfig:
         assert f"Clients = {expected};" in content
 
     @pytest.mark.unit
+    @pytest.mark.parametrize("access", ["RW", "RO"])
+    def test_export_access_is_granted_only_to_matching_clients(self, access):
+        path = render_config(
+            "tenant_a",
+            [
+                {
+                    "export_id": 101,
+                    "path": "/exports/tenant_a/vol1",
+                    "pseudo": "/exports/tenant_a/vol1",
+                    "client": "172.20.26.0/23",
+                    "access": access,
+                }
+            ],
+        )
+        content = Path(path).read_text(encoding="utf-8")
+        defaults, export = content.split("\nEXPORT {", 1)
+        export_options, client_and_fsal = export.split("CLIENT {", 1)
+        client = client_and_fsal.split("}", 1)[0]
+        assert "Access_Type = None;" in defaults
+        assert "Access_Type = None;" in export_options
+        assert f"Access_Type = {access};" in client
+        assert "Clients = 172.20.26.0/23;" in client
+        assert "Anonymous_uid = 65534;" in defaults
+        assert "Anonymous_gid = 65534;" in defaults
+
+    @pytest.mark.unit
     @pytest.mark.parametrize(
         "client",
         [

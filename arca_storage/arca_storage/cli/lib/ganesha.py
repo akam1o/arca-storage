@@ -19,7 +19,7 @@ from arca_storage.cli.lib.state import get_state_dir
 from arca_storage.cli.lib.validators import normalize_nfs_client_cidr, validate_name
 from arca_storage.config import ArcaSettings, load_settings
 
-TEMPLATE_VERSION = "1.1.1"
+TEMPLATE_VERSION = "1.1.2"
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 _GANESHA_SEC_TYPES = {"sys", "krb5", "krb5i", "krb5p"}
 _GANESHA_ACCESS_TYPES = {"RW", "RO"}
