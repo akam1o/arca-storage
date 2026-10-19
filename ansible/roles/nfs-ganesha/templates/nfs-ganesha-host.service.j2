@@ -1,7 +1,8 @@
 # Managed by Ansible
 [Unit]
 Description=NFS-Ganesha Service for SVM %i (host namespace)
-After=network.target
+Requires=rpcbind.service
+After=network.target rpcbind.service
 
 [Service]
 Type=forking

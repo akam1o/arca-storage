@@ -91,7 +91,7 @@ def test_format_formats_device_without_existing_signature(monkeypatch):
             "-i",
             "size=512,maxpct=25",
             "-d",
-            "agcount=32,su=256k,sw=1",
+            "su=256k,sw=1",
             "/dev/vg_pool_01/vol1",
         ],
     ]

@@ -39,7 +39,7 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
             return
         raise RuntimeError("Device already contains a non-XFS filesystem")
 
-    # Default XFS format options from SPEC.md
+    # Let mkfs choose the AG count so small volumes can fit the internal log.
     cmd = [
         "mkfs.xfs",
         "-b",
@@ -49,7 +49,7 @@ def format_xfs(device: str, options: Optional[List[str]] = None) -> None:
         "-i",
         "size=512,maxpct=25",
         "-d",
-        "agcount=32,su=256k,sw=1",
+        "su=256k,sw=1",
     ]
 
     if options:

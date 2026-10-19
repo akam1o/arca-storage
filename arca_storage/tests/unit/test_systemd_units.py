@@ -23,26 +23,33 @@ def test_api_unit_has_baseline_hardening(repo_root):
 
     for directive in [
         "NoNewPrivileges=true",
-        "PrivateTmp=true",
-        "ProtectSystem=full",
-        "ProtectHome=true",
         "LockPersonality=true",
         "RestrictRealtime=true",
         "RestrictSUIDSGID=true",
         "ProtectClock=true",
         "ProtectHostname=true",
-        "ProtectKernelLogs=true",
         "SystemCallArchitectures=native",
     ]:
         assert directive in content
 
-    assert (
-        "ReadWritePaths=/etc/arca-storage /etc/ganesha /var/lib/arca-storage /run /var/run /exports"
-        in content
-    )
     assert "CapabilityBoundingSet=" in content
     assert "CAP_SYS_ADMIN" in content
     assert "CAP_NET_ADMIN" in content
+
+
+def test_api_unit_keeps_host_mount_namespace(repo_root):
+    content = _api_service_file(repo_root).read_text(encoding="utf-8")
+
+    # These directives isolate API-created mounts from the Ganesha service.
+    for directive in [
+        "PrivateTmp=",
+        "PrivateMounts=",
+        "ProtectSystem=",
+        "ProtectHome=",
+        "ReadWritePaths=",
+        "ProtectKernelLogs=",
+    ]:
+        assert directive not in content
 
 
 def test_api_unit_uses_packaged_config_for_server_settings(repo_root):
@@ -60,6 +67,19 @@ def test_ganesha_units_pass_configured_pid_file(repo_root):
 
         assert "PIDFile=/var/run/ganesha.%i.pid" in content
         assert "-p /var/run/ganesha.%i.pid" in content
+
+
+def test_host_ganesha_units_start_after_rpcbind(repo_root):
+    for service_file in [
+        repo_root
+        / "arca_storage/arca_storage/resources/systemd/nfs-ganesha-host@.service",
+        repo_root / "ansible/roles/nfs-ganesha/templates/nfs-ganesha-host.service.j2",
+    ]:
+        content = service_file.read_text(encoding="utf-8")
+
+        # Ganesha registers RQUOTA even with NFSv4-only exports.
+        assert "Requires=rpcbind.service" in content
+        assert "After=network.target rpcbind.service" in content
 
 
 def test_ganesha_units_use_configured_config_dir(repo_root):

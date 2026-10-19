@@ -44,6 +44,7 @@ class SubprocessXFSAdapter:
                 "Device already contains a non-XFS filesystem",
                 {"resource": "Device"},
             )
+        # Let mkfs choose the AG count so small volumes can fit the internal log.
         run_cmd(
             [
                 "mkfs.xfs",
@@ -54,7 +55,7 @@ class SubprocessXFSAdapter:
                 "-i",
                 "size=512,maxpct=25",
                 "-d",
-                "agcount=32,su=256k,sw=1",
+                "su=256k,sw=1",
                 device,
             ],
             timeout=self._timeout,
