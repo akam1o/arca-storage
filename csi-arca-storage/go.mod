@@ -1,6 +1,6 @@
 module github.com/akam1o/csi-arca-storage
 
-go 1.26.9
+go 1.27.2
 
 require (
 	github.com/container-storage-interface/spec v1.12.0
