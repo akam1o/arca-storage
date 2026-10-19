@@ -27,3 +27,8 @@ jobs:
 
   rpm-build:
     uses: ./.github/workflows/rpm-build.yml
+
+  rpm-build-el9:
+    uses: ./.github/workflows/rpm-build.yml
+    with:
+      el: "9"
