@@ -33,7 +33,7 @@ ARCA Storage 向けの Kubernetes CSI (Container Storage Interface) ドライバ
 
 ## ビルド
 
-`go.mod` の `go` version に合わせ、Go 1.26.3 を使用してください。
+`go.mod` の `go` version に合わせ、Go 1.26.9 を使用してください。
 
 ```bash
 go mod download
