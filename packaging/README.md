@@ -23,6 +23,19 @@ System resources are installed to standard locations:
 - systemd units: `arca-storage-api.service`, `nfs-ganesha@.service`, `nfs-ganesha-host@.service`
 - Pacemaker RA: `/usr/lib/ocf/resource.d/local/NetnsVlan`
 
+## Runtime services
+
+The API manages host LVM volumes and mounts that NFS-Ganesha must see. Its unit
+runs in the host mount namespace and needs write access to LVM's metadata backup
+directories under `/etc/lvm`. Mount-namespace sandboxing such as `PrivateTmp`,
+`ProtectSystem`, `ProtectHome`, `ReadWritePaths`, or `ProtectKernelLogs` prevents
+these storage operations from working correctly. The unit retains its capability
+bounding set, `NoNewPrivileges`, and the other independent hardening settings.
+
+The host-namespace Ganesha unit requires `rpcbind.service`, including for NFSv4-only
+exports, because Ganesha registers its RQUOTA service at startup. Install rpcbind
+on package-managed hosts; the Ansible NFS-Ganesha role includes it by default.
+
 ## Wheelhouse requirement
 
 The build uses an offline wheelhouse containing runtime dependencies.
@@ -57,6 +70,12 @@ bash ./packaging/build-rpm.sh
 
 - These scripts are intended for CI/container builds. Host tooling requirements vary.
 - If `packaging/wheelhouse/` is missing, the build scripts will run `./packaging/vendor-wheels.sh` automatically.
+- After changing source or `ARCA_VERSION`, regenerate the wheelhouse with the same
+  `ARCA_VERSION` used for the package build. Existing wheelhouses are reused for
+  offline builds; the embedded Arca wheel must match the requested package
+  version. A version mismatch now fails the build instead of silently installing
+  older code under a new package version. Source changes that retain the same
+  version still require explicitly regenerating the wheelhouse.
 - Package versions are derived from the release tag (e.g. `v0.2.2`). Override with `ARCA_VERSION=0.2.2`.
 - deb builds append a distro suffix (e.g. `0.2.2-1.debian12`, `0.2.2-1.ubuntu24.04`) so Debian/Ubuntu artifacts don't overwrite each other.
 - Packages do not auto-enable services by default. Configure the API token

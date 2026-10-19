@@ -40,7 +40,7 @@ class TestFormatXfs:
                 "-i",
                 "size=512,maxpct=25",
                 "-d",
-                "agcount=32,su=256k,sw=1",
+                "su=256k,sw=1",
                 "/dev/vg_pool_01/vol1",
             ],
             capture_output=True,

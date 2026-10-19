@@ -20,11 +20,12 @@ nfs_ganesha_nlm_port: 32768
 nfs_ganesha_base_packages:
   - nfs-ganesha
   - nfs-ganesha-utils
-
-nfs_ganesha_v3_packages:
+  # Required for RQUOTA registration even with NFSv4-only exports.
   - rpcbind
 
-# Conditional package list (includes rpcbind when v3 enabled)
+nfs_ganesha_v3_packages: []
+
+# Include any additional packages configured for NFSv3.
 nfs_ganesha_packages: "{{ nfs_ganesha_base_packages + (nfs_ganesha_enable_v3 | bool | ternary(nfs_ganesha_v3_packages, [])) }}"
 
 # Export configuration defaults

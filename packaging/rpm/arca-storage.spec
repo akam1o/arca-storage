@@ -37,7 +37,7 @@ rm -rf %{buildroot}
 install -d %{buildroot}/opt/arca-storage
 python3 -m venv --copies %{buildroot}/opt/arca-storage/venv
 tar -C %{_builddir}/%{name} -xzf %{SOURCE1}
-%{buildroot}/opt/arca-storage/venv/bin/pip install --no-index --find-links %{_builddir}/%{name}/packaging/wheelhouse arca-storage
+%{buildroot}/opt/arca-storage/venv/bin/pip install --no-index --find-links %{_builddir}/%{name}/packaging/wheelhouse "arca-storage==%{version}"
 
 # RPM forbids references to the buildroot path in packaged files.
 # venv-generated scripts embed the absolute venv path, so rewrite it to the

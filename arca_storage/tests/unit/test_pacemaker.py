@@ -15,6 +15,7 @@ from arca_storage.cli.lib.pacemaker import (
     create_group,
     _parse_group_members as parse_cli_group_members,
 )
+from arca_storage.errors import SubprocessError
 
 
 def _assert_redacted(error: BaseException, *values: str) -> None:
@@ -542,19 +543,19 @@ def test_create_group_reorders_first_member_when_group_exists(mock_subprocess):
 @pytest.mark.unit
 def test_subprocess_adapter_uses_configured_filesystem_lv_name(mock_subprocess):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=1),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=1),  # pcs resource config fs_tenant_a
         MagicMock(returncode=0),  # pcs resource create fs_tenant_a
-        MagicMock(returncode=1),  # pcs resource show ip_tenant_a
+        MagicMock(returncode=1),  # pcs resource config ip_tenant_a
         MagicMock(returncode=0),  # pcs resource create ip_tenant_a
-        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=1),  # pcs resource config ganesha_tenant_a
         MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
         MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint order ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint colocation add ...
     ]
 
@@ -583,24 +584,24 @@ def test_subprocess_adapter_uses_configured_filesystem_lv_name(mock_subprocess):
 @pytest.mark.unit
 def test_subprocess_adapter_updates_existing_filesystem_device(mock_subprocess):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config fs_tenant_a
         MagicMock(
             returncode=0,
             stdout="Attributes: device=/dev/vg_pool_01/vol_tenant_a directory=/exports/tenant_a fstype=xfs",
             stderr="",
         ),  # pcs resource config fs_tenant_a
         MagicMock(returncode=0),  # pcs resource update fs_tenant_a ...
-        MagicMock(returncode=1),  # pcs resource show ip_tenant_a
+        MagicMock(returncode=1),  # pcs resource config ip_tenant_a
         MagicMock(returncode=0),  # pcs resource create ip_tenant_a
-        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=1),  # pcs resource config ganesha_tenant_a
         MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
         MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint order ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint colocation add ...
     ]
 
@@ -660,18 +661,18 @@ def test_fake_adapter_updates_existing_filesystem_device():
 @pytest.mark.unit
 def test_subprocess_adapter_includes_existing_filesystem_on_retry(mock_subprocess):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=1),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
-        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=1),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource config netns_tenant_a
         MagicMock(returncode=0),  # pcs resource create netns_tenant_a
-        MagicMock(returncode=1),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=1),  # pcs resource config ganesha_tenant_a
         MagicMock(returncode=0),  # pcs resource create ganesha_tenant_a
         MagicMock(returncode=0),  # pcs resource group add g_svm_tenant_a ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint order ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint colocation add ...
     ]
 
@@ -705,28 +706,31 @@ def test_subprocess_adapter_includes_existing_filesystem_on_retry(mock_subproces
         "pcs",
         "constraint",
         "order",
-        "ms_drbd_r0:promote",
-        "fs_tenant_a:start",
+        "promote",
+        "ms_drbd_r0",
+        "then",
+        "start",
+        "fs_tenant_a",
     ] in calls
 
 
 @pytest.mark.unit
 def test_subprocess_adapter_repairs_constraints_when_group_exists(mock_subprocess):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
-        MagicMock(returncode=0),  # pcs resource show netns_tenant_a
-        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=0),  # pcs resource config netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource config ganesha_tenant_a
         MagicMock(
             returncode=0,
             stdout="g_svm_tenant_a: fs_tenant_a netns_tenant_a ganesha_tenant_a\n",
             stderr="",
         ),
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint order ...
-        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint show --full
+        MagicMock(returncode=0, stdout="", stderr=""),  # pcs constraint config --full
         MagicMock(returncode=0),  # pcs constraint colocation add ...
     ]
 
@@ -748,8 +752,11 @@ def test_subprocess_adapter_repairs_constraints_when_group_exists(mock_subproces
         "pcs",
         "constraint",
         "order",
-        "ms_drbd_r0:promote",
-        "fs_tenant_a:start",
+        "promote",
+        "ms_drbd_r0",
+        "then",
+        "start",
+        "fs_tenant_a",
     ] in calls
     assert [
         "pcs",
@@ -758,20 +765,21 @@ def test_subprocess_adapter_repairs_constraints_when_group_exists(mock_subproces
         "add",
         "g_svm_tenant_a",
         "with",
-        "ms_drbd_r0:Master",
+        "Promoted",
+        "ms_drbd_r0",
     ] in calls
 
 
 @pytest.mark.unit
 def test_subprocess_adapter_repairs_missing_members_when_group_exists(mock_subprocess):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
-        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource config netns_tenant_a
         MagicMock(returncode=0),  # pcs resource create netns_tenant_a
-        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource config ganesha_tenant_a
         MagicMock(
             returncode=0,
             stdout="g_svm_tenant_a: fs_tenant_a ganesha_tenant_a\n",
@@ -782,12 +790,12 @@ def test_subprocess_adapter_repairs_missing_members_when_group_exists(mock_subpr
         ),  # pcs resource group add g_svm_tenant_a netns_tenant_a --before ganesha_tenant_a
         MagicMock(
             returncode=0,
-            stdout="order ms_drbd_r0:promote fs_tenant_a:start\n",
+            stdout="Order Constraints:\n  promote resource 'ms_drbd_r0' then start resource 'fs_tenant_a' (id: order-drbd-fs)\n",
             stderr="",
         ),
         MagicMock(
             returncode=0,
-            stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n",
+            stdout="Colocation Constraints:\n  resource 'g_svm_tenant_a' with Promoted resource 'ms_drbd_r0' (id: coloc-svm-drbd)\n    score=INFINITY\n",
             stderr="",
         ),
     ]
@@ -827,12 +835,12 @@ def test_subprocess_adapter_reorders_existing_members_when_group_exists(
     mock_subprocess,
 ):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
-        MagicMock(returncode=0),  # pcs resource show netns_tenant_a
-        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=0),  # pcs resource config netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource config ganesha_tenant_a
         MagicMock(
             returncode=0,
             stdout="g_svm_tenant_a: ganesha_tenant_a fs_tenant_a netns_tenant_a\n",
@@ -843,12 +851,12 @@ def test_subprocess_adapter_reorders_existing_members_when_group_exists(
         ),  # pcs resource group add g_svm_tenant_a ganesha_tenant_a --after netns_tenant_a
         MagicMock(
             returncode=0,
-            stdout="order ms_drbd_r0:promote fs_tenant_a:start\n",
+            stdout="Order Constraints:\n  promote resource 'ms_drbd_r0' then start resource 'fs_tenant_a' (id: order-drbd-fs)\n",
             stderr="",
         ),
         MagicMock(
             returncode=0,
-            stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n",
+            stdout="Colocation Constraints:\n  resource 'g_svm_tenant_a' with Promoted resource 'ms_drbd_r0' (id: coloc-svm-drbd)\n    score=INFINITY\n",
             stderr="",
         ),
     ]
@@ -881,13 +889,13 @@ def test_subprocess_adapter_reorders_existing_members_when_group_exists(
 @pytest.mark.unit
 def test_subprocess_adapter_reorders_first_member_when_group_exists(mock_subprocess):
     mock_subprocess.side_effect = [
-        MagicMock(returncode=0),  # pcs resource show g_svm_tenant_a
-        MagicMock(returncode=0),  # pcs resource show p_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show ms_drbd_r0
-        MagicMock(returncode=0),  # pcs resource show fs_tenant_a
-        MagicMock(returncode=1),  # pcs resource show netns_tenant_a
+        MagicMock(returncode=0),  # pcs resource config g_svm_tenant_a
+        MagicMock(returncode=0),  # pcs resource config p_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config ms_drbd_r0
+        MagicMock(returncode=0),  # pcs resource config fs_tenant_a
+        MagicMock(returncode=1),  # pcs resource config netns_tenant_a
         MagicMock(returncode=0),  # pcs resource create netns_tenant_a
-        MagicMock(returncode=0),  # pcs resource show ganesha_tenant_a
+        MagicMock(returncode=0),  # pcs resource config ganesha_tenant_a
         MagicMock(
             returncode=0,
             stdout="g_svm_tenant_a: ganesha_tenant_a fs_tenant_a\n",
@@ -901,12 +909,12 @@ def test_subprocess_adapter_reorders_first_member_when_group_exists(mock_subproc
         ),  # pcs resource group add g_svm_tenant_a netns_tenant_a --before ganesha_tenant_a
         MagicMock(
             returncode=0,
-            stdout="order ms_drbd_r0:promote fs_tenant_a:start\n",
+            stdout="Order Constraints:\n  promote resource 'ms_drbd_r0' then start resource 'fs_tenant_a' (id: order-drbd-fs)\n",
             stderr="",
         ),
         MagicMock(
             returncode=0,
-            stdout="colocation g_svm_tenant_a with ms_drbd_r0:Master\n",
+            stdout="Colocation Constraints:\n  resource 'g_svm_tenant_a' with Promoted resource 'ms_drbd_r0' (id: coloc-svm-drbd)\n    score=INFINITY\n",
             stderr="",
         ),
     ]
@@ -947,3 +955,243 @@ def test_subprocess_adapter_reorders_first_member_when_group_exists(mock_subproc
     assert fs_repair in calls
     assert netns_repair in calls
     assert calls.index(fs_repair) < calls.index(netns_repair)
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_creates_host_group_with_pcs_012_commands(mock_subprocess):
+    def run(command, **kwargs):
+        if command[:3] == ["pcs", "resource", "config"]:
+            return MagicMock(returncode=1, stdout="", stderr="Resource not found")
+        return MagicMock(returncode=0, stdout="", stderr="")
+
+    mock_subprocess.side_effect = run
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=None,
+        ip="192.0.2.16",
+        prefix=24,
+        gw=None,
+        parent_if="ens18",
+        create_filesystem=False,
+    )
+
+    calls = [call.args[0] for call in mock_subprocess.call_args_list]
+    assert [
+        "pcs",
+        "resource",
+        "create",
+        "p_drbd_r0",
+        "ocf:linbit:drbd",
+        "drbd_resource=r0",
+        "op",
+        "monitor",
+        "interval=15s",
+        "role=Promoted",
+    ] in calls
+    assert [
+        "pcs",
+        "resource",
+        "promotable",
+        "p_drbd_r0",
+        "ms_drbd_r0",
+        "meta",
+        "promoted-max=1",
+        "promoted-node-max=1",
+        "clone-max=2",
+        "clone-node-max=1",
+    ] in calls
+    assert [
+        "pcs",
+        "constraint",
+        "order",
+        "promote",
+        "ms_drbd_r0",
+        "then",
+        "start",
+        "ip_tenant_a",
+    ] in calls
+    assert [
+        "pcs",
+        "constraint",
+        "colocation",
+        "add",
+        "g_svm_tenant_a",
+        "with",
+        "Promoted",
+        "ms_drbd_r0",
+    ] in calls
+    assert [
+        "pcs",
+        "resource",
+        "create",
+        "ganesha_tenant_a",
+        "systemd:nfs-ganesha-host@tenant_a",
+        "op",
+        "monitor",
+        "interval=10s",
+    ] in calls
+    assert not any("show" in command or "master" in command for command in calls)
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target_action", ["start ", ""])
+@pytest.mark.parametrize("group_role", ["Started ", ""])
+def test_subprocess_adapter_existing_pcs_012_config_is_idempotent(
+    mock_subprocess, target_action, group_role
+):
+    # pcs resource config describes resources even when maintenance mode keeps
+    # them stopped. Its multiline attributes and constraint sentences differ
+    # from the legacy output fixtures.
+    group_config = """
+Group: g_svm_tenant_a
+  Resource: fs_tenant_a (class=ocf provider=heartbeat type=Filesystem)
+    Attributes: fs_tenant_a-instance_attributes
+      device=/dev/vg_pool_01/svmroot-tenant_a-abc123
+      directory=/exports/tenant_a
+      fstype=xfs
+  Resource: ip_tenant_a (class=ocf provider=heartbeat type=IPaddr2)
+  Resource: ganesha_tenant_a (class=systemd type=nfs-ganesha-host@tenant_a)
+"""
+    constraints = (
+        "Order Constraints:\n"
+        f"  promote resource 'ms_drbd_r0' then {target_action}resource 'fs_tenant_a' "
+        "(id: order-drbd-fs)\n"
+        "Colocation Constraints:\n"
+        f"  {group_role}resource 'g_svm_tenant_a' with Promoted resource 'ms_drbd_r0' "
+        "(id: coloc-svm-drbd)\n"
+        "    score=INFINITY\n"
+    )
+
+    def run(command, **kwargs):
+        if command[:3] == ["pcs", "resource", "config"]:
+            return MagicMock(returncode=0, stdout=group_config, stderr="")
+        if command == ["pcs", "constraint", "config", "--full"]:
+            return MagicMock(returncode=0, stdout=constraints, stderr="")
+        pytest.fail(f"Existing configuration should not be mutated: {command}")
+
+    mock_subprocess.side_effect = run
+
+    SubprocessPacemakerAdapter().create_group(
+        "tenant_a",
+        "/exports/tenant_a",
+        vlan_id=None,
+        ip="192.0.2.16",
+        prefix=24,
+        gw=None,
+        parent_if="ens18",
+        filesystem_lv_name="svmroot-tenant_a-abc123",
+    )
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize("target_action", ["start ", ""])
+@pytest.mark.parametrize("role", ["Promoted", "Master"])
+def test_subprocess_adapter_existing_legacy_constraints_are_idempotent(
+    mock_subprocess, target_action, role
+):
+    mock_subprocess.return_value = MagicMock(
+        returncode=0,
+        stdout=(
+            "Order Constraints:\n"
+            f"  promote ms_drbd_r0 then {target_action}fs_tenant_a "
+            "(kind:Mandatory) (id:order-drbd-fs)\n"
+            "Colocation Constraints:\n"
+            "  g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) "
+            f"(with-rsc-role:{role}) (id:coloc-svm-drbd)\n"
+        ),
+        stderr="",
+    )
+
+    adapter = SubprocessPacemakerAdapter()
+    adapter._ensure_order("ms_drbd_r0", "fs_tenant_a")
+    adapter._ensure_colocation("g_svm_tenant_a", "ms_drbd_r0")
+
+    assert [call.args[0] for call in mock_subprocess.call_args_list] == [
+        ["pcs", "constraint", "config", "--full"],
+        ["pcs", "constraint", "config", "--full"],
+    ]
+
+
+@pytest.mark.unit
+@pytest.mark.parametrize(
+    ("order", "colocation"),
+    [
+        (
+            "start resource 'ms_drbd_r0' then start resource 'fs_tenant_a'",
+            "resource 'g_svm_tenant_a' with Unpromoted resource 'ms_drbd_r0'",
+        ),
+        (
+            "start ms_drbd_r0 then start fs_tenant_a (kind:Mandatory)",
+            "g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Unpromoted)",
+        ),
+        (
+            "promote ms_drbd_r0 then stop fs_tenant_a (kind:Mandatory)",
+            "g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Slave)",
+        ),
+        (
+            "promote ms_drbd_r0 then start fs_tenant_a_other (kind:Mandatory)",
+            "g_svm_tenant_a with ms_drbd_r0_other (score:INFINITY) (with-rsc-role:Promoted)",
+        ),
+        (
+            "promote ms_drbd_r0_other then start fs_tenant_a (kind:Mandatory)",
+            "g_svm_tenant_a_other with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Promoted)",
+        ),
+        (
+            (
+                "promote ms_drbd_r0 then start fs_tenant_a_other\n"
+                "  start ms_drbd_r0 then start fs_tenant_a"
+            ),
+            (
+                "g_svm_tenant_a with ms_drbd_r0 (score:INFINITY) (rsc-role:Promoted)\n"
+                "  g_svm_other with ms_drbd_r0 (score:INFINITY) (with-rsc-role:Promoted)"
+            ),
+        ),
+    ],
+)
+def test_subprocess_adapter_does_not_accept_wrong_constraints(
+    mock_subprocess, order, colocation
+):
+    mock_subprocess.return_value = MagicMock(
+        returncode=0,
+        stdout=(
+            f"Order Constraints:\n  {order}\nColocation Constraints:\n  {colocation}\n"
+        ),
+        stderr="",
+    )
+    adapter = SubprocessPacemakerAdapter()
+    adapter._ensure_order("ms_drbd_r0", "fs_tenant_a")
+    adapter._ensure_colocation("g_svm_tenant_a", "ms_drbd_r0")
+
+    calls = [call.args[0] for call in mock_subprocess.call_args_list]
+    assert [
+        "pcs",
+        "constraint",
+        "order",
+        "promote",
+        "ms_drbd_r0",
+        "then",
+        "start",
+        "fs_tenant_a",
+    ] in calls
+    assert [
+        "pcs",
+        "constraint",
+        "colocation",
+        "add",
+        "g_svm_tenant_a",
+        "with",
+        "Promoted",
+        "ms_drbd_r0",
+    ] in calls
+
+
+@pytest.mark.unit
+def test_subprocess_adapter_aborts_when_constraint_discovery_fails(mock_subprocess):
+    mock_subprocess.return_value = MagicMock(
+        returncode=1, stdout="", stderr="Unable to query cluster"
+    )
+    with pytest.raises(SubprocessError):
+        SubprocessPacemakerAdapter()._ensure_order("ms_drbd_r0", "fs_tenant_a")
+    assert mock_subprocess.call_count == 1

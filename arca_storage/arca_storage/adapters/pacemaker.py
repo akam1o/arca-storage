@@ -49,7 +49,7 @@ class SubprocessPacemakerAdapter:
 
     def resource_exists(self, name: str) -> bool:
         result = run_cmd(
-            ["pcs", "resource", "show", name], timeout=self._timeout, check=False
+            ["pcs", "resource", "config", name], timeout=self._timeout, check=False
         )
         return result.returncode == 0
 
@@ -219,7 +219,7 @@ class SubprocessPacemakerAdapter:
                     "op",
                     "monitor",
                     "interval=15s",
-                    "role=Master",
+                    "role=Promoted",
                 ],
                 timeout=self._timeout,
             )
@@ -228,11 +228,12 @@ class SubprocessPacemakerAdapter:
                 [
                     "pcs",
                     "resource",
-                    "master",
-                    master,
+                    "promotable",
                     primitive,
-                    "master-max=1",
-                    "master-node-max=1",
+                    master,
+                    "meta",
+                    "promoted-max=1",
+                    "promoted-node-max=1",
                     "clone-max=2",
                     "clone-node-max=1",
                 ],
@@ -242,35 +243,20 @@ class SubprocessPacemakerAdapter:
 
     def _constraints_text(self) -> str:
         result = run_cmd(
-            ["pcs", "constraint", "show", "--full"], timeout=self._timeout, check=False
+            ["pcs", "constraint", "config", "--full"], timeout=self._timeout
         )
-        return (result.stdout or "") + "\n" + (result.stderr or "")
+        return result.stdout or ""
 
     def _group_members(self, group_name: str) -> list[str]:
         result = run_cmd(
             ["pcs", "resource", "config", group_name],
             timeout=self._timeout,
-            check=False,
         )
-        if result.returncode != 0:
-            result = run_cmd(
-                ["pcs", "resource", "show", group_name],
-                timeout=self._timeout,
-                check=False,
-            )
-        return _parse_group_members(
-            group_name, (result.stdout or "") + "\n" + (result.stderr or "")
-        )
+        return _parse_group_members(group_name, result.stdout or "")
 
     def _resource_text(self, name: str) -> str:
-        result = run_cmd(
-            ["pcs", "resource", "config", name], timeout=self._timeout, check=False
-        )
-        if result.returncode != 0:
-            result = run_cmd(
-                ["pcs", "resource", "show", name], timeout=self._timeout, check=False
-            )
-        return (result.stdout or "") + "\n" + (result.stderr or "")
+        result = run_cmd(["pcs", "resource", "config", name], timeout=self._timeout)
+        return result.stdout or ""
 
     def _ensure_resource_attribute(self, resource: str, name: str, value: str) -> None:
         if _parse_resource_attribute(self._resource_text(resource), name) == value:
@@ -294,17 +280,47 @@ class SubprocessPacemakerAdapter:
             )
 
     def _ensure_order(self, master_name: str, target: str) -> None:
-        needle = f"order {master_name}:promote {target}:start"
-        if needle in self._constraints_text():
+        constraints = self._constraints_text()
+        # pcs 0.12 quotes resource names; 0.10/0.11 print them directly.
+        # An omitted target action has the same meaning as explicit "start".
+        master = re.escape(master_name)
+        target_name = re.escape(target)
+        pattern = (
+            rf"(?:promote resource '{master}' then (?:start )?resource '{target_name}'"
+            rf"|promote {master} then (?:start )?{target_name})"
+            r"(?: \([^()]*\))*"
+        )
+        if any(
+            re.fullmatch(pattern, line.strip()) for line in constraints.splitlines()
+        ):
             return
         run_cmd(
-            ["pcs", "constraint", "order", f"{master_name}:promote", f"{target}:start"],
+            [
+                "pcs",
+                "constraint",
+                "order",
+                "promote",
+                master_name,
+                "then",
+                "start",
+                target,
+            ],
             timeout=self._timeout,
         )
 
     def _ensure_colocation(self, group_name: str, master_name: str) -> None:
-        needle = f"colocation {group_name} with {master_name}:Master"
-        if needle in self._constraints_text():
+        group = re.escape(group_name)
+        master = re.escape(master_name)
+        pattern = (
+            rf"(?:(?:Started )?resource '{group}' with Promoted resource '{master}'"
+            rf"|{group} with {master}(?: \([^()]*\))*"
+            r" \(with-rsc-role:(?:Promoted|Master)\))"
+            r"(?: \([^()]*\))*"
+        )
+        if any(
+            re.fullmatch(pattern, line.strip())
+            for line in self._constraints_text().splitlines()
+        ):
             return
         run_cmd(
             [
@@ -314,7 +330,8 @@ class SubprocessPacemakerAdapter:
                 "add",
                 group_name,
                 "with",
-                f"{master_name}:Master",
+                "Promoted",
+                master_name,
             ],
             timeout=self._timeout,
         )

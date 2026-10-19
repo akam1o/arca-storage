@@ -21,6 +21,7 @@ export SETUPTOOLS_SCM_PRETEND_VERSION="$PKG_VERSION"
 # Build arca-storage wheel
 rm -rf "$ROOT/arca_storage/dist"
 (cd "$ROOT/arca_storage" && "$VENV/bin/python" -m build --wheel)
+rm -f "$WHEELHOUSE"/arca_storage-*.whl
 cp -f "$ROOT/arca_storage/dist/"*.whl "$WHEELHOUSE/"
 
 # Build wheels for runtime deps (avoid sdists at install time).
