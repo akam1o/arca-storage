@@ -1,7 +1,7 @@
 from __future__ import annotations
 
-import os
 import logging
+import os
 import stat
 import subprocess
 from types import SimpleNamespace

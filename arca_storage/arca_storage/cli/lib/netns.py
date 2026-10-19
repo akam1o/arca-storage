@@ -5,16 +5,16 @@ Network Namespace management functions.
 import hashlib
 import re
 import subprocess
-from typing import Optional
-
 
 CHARS = "0123456789abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"
 _DEFAULT_COMMAND_TIMEOUT_SECONDS = 30
 
 
-def _run(cmd: list[str], **kwargs) -> subprocess.CompletedProcess[str]:
+def _run(
+    cmd: list[str], *, check: bool = False, **kwargs
+) -> subprocess.CompletedProcess[str]:
     kwargs.setdefault("timeout", _DEFAULT_COMMAND_TIMEOUT_SECONDS)
-    return subprocess.run(cmd, **kwargs)
+    return subprocess.run(cmd, check=check, **kwargs)
 
 
 def _parse_netns_names(output: str) -> set[str]:
@@ -51,7 +51,7 @@ def make_vlan_ifname(svm_name: str, vlan_id: int, *, attempt: int = 0) -> str:
 
     # Keep only alphanumerics for portability, and lowercase for consistency.
     safe = re.sub(r"[^a-zA-Z0-9]+", "", svm_name).lower() or "svm"
-    seed = f"{svm_name}:{attempt}".encode("utf-8")
+    seed = f"{svm_name}:{attempt}".encode()
     digest = _hash2_base62_sha256(seed)
 
     # Always reserve the hash suffix to avoid collisions when the shortened
@@ -126,9 +126,9 @@ def attach_vlan(
     parent_if: str,
     vlan_id: int,
     ip_cidr: str,
-    gateway: Optional[str] = None,
+    gateway: str | None = None,
     mtu: int = 1500,
-    ifname: Optional[str] = None,
+    ifname: str | None = None,
 ) -> None:
     """
     Create a VLAN interface and attach it to a namespace.
@@ -194,7 +194,7 @@ def attach_vlan(
 
 
 def _configure_ip(
-    namespace: str, interface: str, ip_cidr: str, gateway: Optional[str], mtu: int
+    namespace: str, interface: str, ip_cidr: str, gateway: str | None, mtu: int
 ) -> None:
     """Configure IP address and gateway in namespace."""
     # Set MTU if not default

@@ -118,14 +118,16 @@ class TestArcaStorageManilaDriverSharedStrategy:
         drv.configuration = mock_manila_driver_config
         drv.configuration.arca_storage_allow_insecure_api_token_transport = False
 
-        with patch(
-            "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
-        ) as mock_client_class:
-            with pytest.raises(
+        with (
+            patch(
+                "arca_storage.openstack.manila.driver.arca_client.ArcaManilaClient"
+            ) as mock_client_class,
+            pytest.raises(
                 manila_driver.manila_exception.ManilaException,
                 match="remote plain HTTP",
-            ):
-                drv.do_setup(Mock())
+            ),
+        ):
+            drv.do_setup(Mock())
 
         mock_client_class.assert_not_called()
 
@@ -208,9 +210,11 @@ class TestArcaStorageManilaDriverSharedStrategy:
             "export_path": "192.168.100.5:/exports/test-svm/share-share-secret-token",
         }
 
-        with patch.object(manila_driver.LOG, "info") as mock_info:
-            with patch.object(manila_driver.LOG, "debug") as mock_debug:
-                driver.create_share(Mock(), mock_manila_share, None)
+        with (
+            patch.object(manila_driver.LOG, "info") as mock_info,
+            patch.object(manila_driver.LOG, "debug") as mock_debug,
+        ):
+            driver.create_share(Mock(), mock_manila_share, None)
 
         rendered_calls = self._render_log_calls(mock_info, mock_debug)
         assert "share-secret-token" not in rendered_calls
@@ -459,11 +463,13 @@ class TestArcaStorageManilaDriverSharedStrategy:
             "metadata": {},
         }
 
-        with patch.object(manila_driver.LOG, "info") as mock_info:
-            with patch.object(manila_driver.LOG, "debug") as mock_debug:
-                driver.create_share_from_snapshot(
-                    Mock(), new_share, mock_manila_snapshot, None
-                )
+        with (
+            patch.object(manila_driver.LOG, "info") as mock_info,
+            patch.object(manila_driver.LOG, "debug") as mock_debug,
+        ):
+            driver.create_share_from_snapshot(
+                Mock(), new_share, mock_manila_snapshot, None
+            )
 
         rendered_calls = self._render_log_calls(mock_info, mock_debug)
         assert "share-secret-token" not in rendered_calls
@@ -606,20 +612,20 @@ class TestArcaStorageManilaDriverSharedStrategy:
             "Authorization: Bearer secret-token password=hunter2"
         )
 
-        with patch.object(manila_driver.LOG, "info") as mock_info:
-            with patch.object(manila_driver.LOG, "warning") as mock_warning:
-                with patch.object(manila_driver.LOG, "debug") as mock_debug:
-                    with pytest.raises(
-                        manila_driver.manila_exception.ShareBackendException
-                    ):
-                        driver.update_access(
-                            Mock(),
-                            mock_manila_share,
-                            [],
-                            add_rules=mock_access_rules,
-                            delete_rules=[],
-                            share_server=None,
-                        )
+        with (
+            patch.object(manila_driver.LOG, "info") as mock_info,
+            patch.object(manila_driver.LOG, "warning") as mock_warning,
+            patch.object(manila_driver.LOG, "debug") as mock_debug,
+            pytest.raises(manila_driver.manila_exception.ShareBackendException),
+        ):
+            driver.update_access(
+                Mock(),
+                mock_manila_share,
+                [],
+                add_rules=mock_access_rules,
+                delete_rules=[],
+                share_server=None,
+            )
 
         rendered_calls = self._render_log_calls(mock_info, mock_warning, mock_debug)
         assert "share-secret-token" not in rendered_calls

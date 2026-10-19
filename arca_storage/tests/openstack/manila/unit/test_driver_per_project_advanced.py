@@ -152,9 +152,11 @@ class TestPerProjectNetworkConflictRetry:
             svm_name="manila_project-secret-token"
         )
 
-        with patch.object(manila_driver.LOG, "info") as mock_info:
-            with patch.object(manila_driver.LOG, "error") as mock_error:
-                result = driver._allocate_per_project_svm("project-secret-token")
+        with (
+            patch.object(manila_driver.LOG, "info") as mock_info,
+            patch.object(manila_driver.LOG, "error") as mock_error,
+        ):
+            result = driver._allocate_per_project_svm("project-secret-token")
 
         assert result == "manila_project-secret-token"
         rendered_calls = self._render_log_calls(mock_info, mock_error)
@@ -193,12 +195,14 @@ class TestPerProjectNetworkConflictRetry:
             details="Authorization: Bearer secret-token password=hunter2"
         )
 
-        with patch.object(manila_driver.LOG, "warning") as mock_warning:
-            with patch.object(manila_driver.LOG, "info") as mock_info:
-                with pytest.raises(
-                    manila_driver.manila_exception.ShareBackendException
-                ) as exc_info:
-                    driver._allocate_per_project_svm("test-project-id")
+        with (
+            patch.object(manila_driver.LOG, "warning") as mock_warning,
+            patch.object(manila_driver.LOG, "info") as mock_info,
+            pytest.raises(
+                manila_driver.manila_exception.ShareBackendException
+            ) as exc_info,
+        ):
+            driver._allocate_per_project_svm("test-project-id")
 
         assert mock_arca_client.create_svm.call_count == 3
         assert "secret-token" not in str(exc_info.value)
@@ -231,11 +235,13 @@ class TestPerProjectNetworkConflictRetry:
         )
         mock_arca_client.get_svm.side_effect = get_svm_side_effect
 
-        with patch.object(manila_driver.LOG, "error") as mock_error:
-            with pytest.raises(
+        with (
+            patch.object(manila_driver.LOG, "error") as mock_error,
+            pytest.raises(
                 manila_driver.manila_exception.ShareBackendException
-            ) as exc_info:
-                driver._allocate_per_project_svm("test-project-id")
+            ) as exc_info,
+        ):
+            driver._allocate_per_project_svm("test-project-id")
 
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)
@@ -272,12 +278,14 @@ class TestPerProjectNetworkConflictRetry:
             "Authorization: Bearer secret-token password=hunter2"
         )
 
-        with patch.object(manila_driver.LOG, "error") as mock_error:
-            with patch.object(manila_driver.LOG, "info") as mock_info:
-                with pytest.raises(
-                    manila_driver.manila_exception.ShareBackendException
-                ) as exc_info:
-                    driver._allocate_per_project_svm("test-project-id")
+        with (
+            patch.object(manila_driver.LOG, "error") as mock_error,
+            patch.object(manila_driver.LOG, "info") as mock_info,
+            pytest.raises(
+                manila_driver.manila_exception.ShareBackendException
+            ) as exc_info,
+        ):
+            driver._allocate_per_project_svm("test-project-id")
 
         assert "secret-token" not in str(exc_info.value)
         assert "hunter2" not in str(exc_info.value)

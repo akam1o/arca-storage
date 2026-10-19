@@ -5,7 +5,6 @@ Uvicorn server entrypoint for Arca Storage API.
 from __future__ import annotations
 
 import argparse
-from typing import Optional
 
 import uvicorn
 
@@ -59,14 +58,14 @@ def _validate_auth_for_bind(parser: argparse.ArgumentParser, host: str) -> None:
 
 
 def _validate_transport_for_bind(
-    parser: argparse.ArgumentParser, host: str, ssl_certfile: Optional[str]
+    parser: argparse.ArgumentParser, host: str, ssl_certfile: str | None
 ) -> None:
     if is_loopback_bind_host(host) or ssl_certfile or insecure_remote_api_allowed():
         return
     parser.error(REMOTE_API_TLS_REQUIRED_MESSAGE)
 
 
-def main(argv: Optional[list[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
     cfg = load_settings()

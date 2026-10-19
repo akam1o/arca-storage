@@ -6,6 +6,7 @@ from unittest.mock import MagicMock, patch
 
 import pytest
 
+from arca_storage.adapters.netns import FakeNetNSAdapter, SubprocessNetNSAdapter
 from arca_storage.cli.lib import netns as legacy_netns
 from arca_storage.cli.lib.netns import (
     attach_vlan,
@@ -13,7 +14,6 @@ from arca_storage.cli.lib.netns import (
     delete_namespace,
     make_vlan_ifname,
 )
-from arca_storage.adapters.netns import FakeNetNSAdapter, SubprocessNetNSAdapter
 
 
 def _assert_redacted(error: BaseException, *values: str) -> None:

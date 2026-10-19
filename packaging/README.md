@@ -40,12 +40,23 @@ on package-managed hosts; the Ansible NFS-Ganesha role includes it by default.
 
 The build uses an offline wheelhouse containing runtime dependencies.
 
-Because Python versions differ by distro (EL9: 3.9, EL10: 3.12, Ubuntu 24.04: 3.12, Debian bookworm: 3.11), generate the wheelhouse with the same Python version that will build the package (typically inside the target container/CI job).
+Arca Storage requires Python 3.10 or newer. Packages use Python 3.11 on EL9,
+3.12 on EL10 and Ubuntu 24.04, and 3.11 on Debian bookworm. Generate the
+wheelhouse with the same interpreter that will build the package, typically
+inside the target container/CI job.
 
 Create wheelhouse:
 
 ```bash
 bash ./packaging/vendor-wheels.sh
+```
+
+On EL9, install `python3.11` and `python3.11-pip`, then select Python 3.11
+explicitly because the system `python3` is still Python 3.9:
+
+```bash
+sudo dnf install -y python3.11 python3.11-pip
+ARCA_BUILD_PYTHON=python3.11 bash ./packaging/vendor-wheels.sh
 ```
 
 It produces:
@@ -70,6 +81,7 @@ bash ./packaging/build-rpm.sh
 
 - These scripts are intended for CI/container builds. Host tooling requirements vary.
 - If `packaging/wheelhouse/` is missing, the build scripts will run `./packaging/vendor-wheels.sh` automatically.
+  The RPM build selects Python 3.11 on EL9 and system `python3` on EL10.
 - After changing source or `ARCA_VERSION`, regenerate the wheelhouse with the same
   `ARCA_VERSION` used for the package build. Existing wheelhouses are reused for
   offline builds; the embedded Arca wheel must match the requested package

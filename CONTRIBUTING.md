@@ -16,6 +16,9 @@ This repository contains multiple components (Python package, Ansible, packaging
 
 ### Python (CLI / API)
 
+Use Python 3.10 or newer. On EL9, install `python3.11` and `python3.11-pip`,
+and use `python3.11 -m venv .venv` to create the virtual environment.
+
 ```bash
 cd arca_storage
 python -m venv .venv
@@ -51,6 +54,9 @@ ansible-playbook -i inventory.ini site.yml --syntax-check
 ## Packaging (rpm/deb)
 
 Packaging helpers live under `packaging/`.
+
+See [the packaging guide](packaging/README.md) for the required build interpreter
+and wheelhouse setup, including Python 3.11 on EL9.
 
 - Debian/Ubuntu: `packaging/vendor-wheels.sh`, `packaging/build-deb.sh`
 - EL9/EL10: `packaging/vendor-wheels.sh`, `packaging/build-rpm.sh`

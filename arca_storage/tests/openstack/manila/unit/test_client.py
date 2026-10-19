@@ -178,11 +178,11 @@ class TestArcaManilaClientMakeRequest:
         resp.json.return_value = {"detail": resp.text}
         mock_request.return_value = resp
 
-        with patch.object(manila_client.LOG, "warning") as mock_warning:
-            with pytest.raises(exceptions.ArcaShareNotFound):
-                client._make_request(
-                    "GET", "/v1/volumes/share-private-id?password=hunter2"
-                )
+        with (
+            patch.object(manila_client.LOG, "warning") as mock_warning,
+            pytest.raises(exceptions.ArcaShareNotFound),
+        ):
+            client._make_request("GET", "/v1/volumes/share-private-id?password=hunter2")
 
         rendered_calls = self._render_log_calls(mock_warning)
         assert "share-private-id" not in rendered_calls
@@ -228,9 +228,11 @@ class TestArcaManilaClientMakeRequest:
         resp.json.return_value = {"detail": resp.text}
         mock_request.return_value = resp
 
-        with patch.object(manila_client.LOG, "error") as mock_error:
-            with pytest.raises(exceptions.ArcaManilaAPIError):
-                client._make_request("POST", "/v1/svms/svm-private-id?password=hunter2")
+        with (
+            patch.object(manila_client.LOG, "error") as mock_error,
+            pytest.raises(exceptions.ArcaManilaAPIError),
+        ):
+            client._make_request("POST", "/v1/svms/svm-private-id?password=hunter2")
 
         rendered_calls = self._render_log_calls(mock_error)
         assert "svm-private-id" not in rendered_calls
@@ -297,16 +299,18 @@ class TestArcaManilaClientOperations:
     def test_delete_volume_timeout_log_redacts_resource_identifiers(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.side_effect = exceptions.ArcaAPITimeout(timeout=30)
-            with patch.object(
-                client,
-                "get_volume",
-                side_effect=exceptions.ArcaShareNotFound(share_id="share-secret-token"),
+            with (
+                patch.object(
+                    client,
+                    "get_volume",
+                    side_effect=exceptions.ArcaShareNotFound(
+                        share_id="share-secret-token"
+                    ),
+                ),
+                patch.object(manila_client.LOG, "warning") as mock_warning,
+                patch.object(manila_client.LOG, "info") as mock_info,
             ):
-                with patch.object(manila_client.LOG, "warning") as mock_warning:
-                    with patch.object(manila_client.LOG, "info") as mock_info:
-                        client.delete_volume(
-                            name="share-secret-token", svm="svm-private-id"
-                        )
+                client.delete_volume(name="share-secret-token", svm="svm-private-id")
 
         rendered_calls = self._render_log_calls(mock_warning, mock_info)
         assert "share-secret-token" not in rendered_calls
@@ -334,21 +338,23 @@ class TestArcaManilaClientOperations:
     def test_create_snapshot_timeout_log_redacts_identifiers_and_errors(self, client):
         with patch.object(client, "_make_request") as mock_make:
             mock_make.side_effect = exceptions.ArcaAPITimeout(timeout=30)
-            with patch.object(
-                client,
-                "list_snapshots",
-                side_effect=RuntimeError(
-                    "Authorization: Bearer secret-token password=hunter2"
+            with (
+                patch.object(
+                    client,
+                    "list_snapshots",
+                    side_effect=RuntimeError(
+                        "Authorization: Bearer secret-token password=hunter2"
+                    ),
                 ),
+                patch.object(manila_client.LOG, "warning") as mock_warning,
+                patch.object(manila_client.LOG, "error") as mock_error,
+                pytest.raises(exceptions.ArcaAPITimeout),
             ):
-                with patch.object(manila_client.LOG, "warning") as mock_warning:
-                    with patch.object(manila_client.LOG, "error") as mock_error:
-                        with pytest.raises(exceptions.ArcaAPITimeout):
-                            client.create_snapshot(
-                                name="snapshot-secret-token",
-                                svm="svm-private-id",
-                                volume="share-private-id",
-                            )
+                client.create_snapshot(
+                    name="snapshot-secret-token",
+                    svm="svm-private-id",
+                    volume="share-private-id",
+                )
 
         rendered_calls = self._render_log_calls(mock_warning, mock_error)
         assert "snapshot-secret-token" not in rendered_calls

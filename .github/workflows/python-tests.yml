@@ -18,10 +18,10 @@ jobs:
           # setuptools-scm derives versions from Git tags (e.g. v0.2.7).
           fetch-depth: 0
 
-      - name: Set up Python 3.9
+      - name: Set up Python 3.10
         uses: actions/setup-python@v5
         with:
-          python-version: '3.9'
+          python-version: '3.10'
           cache: 'pip'
           cache-dependency-path: |
             arca_storage/pyproject.toml
@@ -81,7 +81,6 @@ jobs:
       fail-fast: false
       matrix:
         python-version:
-          - '3.9'
           - '3.10'
           - '3.11'
           - '3.12'
@@ -155,7 +154,7 @@ jobs:
           cp coverage.xml $GITHUB_WORKSPACE/arca_storage/
 
       - name: Upload coverage reports
-        if: matrix.python-version == '3.9'
+        if: matrix.python-version == '3.10'
         uses: codecov/codecov-action@v4
         with:
           file: ./arca_storage/coverage.xml

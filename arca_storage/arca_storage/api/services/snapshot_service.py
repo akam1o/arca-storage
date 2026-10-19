@@ -7,9 +7,19 @@ Delegates to the Snapshot reconciler for idempotent, step-tracked operations.
 from __future__ import annotations
 
 from math import ceil
-from typing import Any, Dict, Optional
+from typing import Any
 
 from arca_storage.api.models import SnapshotCreate, VolumeCloneCreate
+from arca_storage.api.services.volume_service import (
+    build_volume_export_path,
+    require_volume_ready_record,
+)
+from arca_storage.cli.lib.validators import (
+    legacy_snapshot_lv_name,
+    snapshot_lv_name,
+    validate_name,
+    volume_lv_name,
+)
 from arca_storage.context import get_context
 from arca_storage.create_resume import (
     ACTIVE_CREATE_PHASES,
@@ -32,20 +42,10 @@ from arca_storage.errors import (
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.snapshot import Snapshot, SnapshotSpec
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import (
-    legacy_snapshot_lv_name,
-    snapshot_lv_name,
-    validate_name,
-    volume_lv_name,
-)
-from arca_storage.api.services.volume_service import (
-    build_volume_export_path,
-    require_volume_ready_record,
-)
 from arca_storage.reconcilers.lvm_resume import create_snapshot_lv_or_accept_existing
 
 
-def create_snapshot(snapshot_data: SnapshotCreate) -> Dict[str, Any]:
+def create_snapshot(snapshot_data: SnapshotCreate) -> dict[str, Any]:
     """Create a snapshot via the reconciler."""
     validate_name(snapshot_data.name)
     validate_name(snapshot_data.svm)
@@ -139,7 +139,7 @@ def _cleanup_expired_snapshot_reservation(
     vg_name = cfg.get("vg_name", "vg_pool_01")
     snap_lv = snapshot_lv_name(spec.svm, spec.volume, spec.name)
     legacy_snap_lv = legacy_snapshot_lv_name(spec.svm, spec.volume, spec.name)
-    cleanup_error: Optional[Exception] = None
+    cleanup_error: Exception | None = None
     try:
         ctx.adapters.lvm.delete_lv(vg_name, snap_lv)
         if legacy_snap_lv != snap_lv:
@@ -191,7 +191,7 @@ def delete_snapshot(name: str, svm: str, volume: str, force: bool = False) -> No
 
 def clone_volume_from_snapshot(
     source_volume: str, clone_data: VolumeCloneCreate
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create a new volume from a snapshot (clone)."""
     validate_name(source_volume)
     validate_name(clone_data.name)
@@ -232,7 +232,7 @@ def _clone_volume_from_reserved_snapshot(
     snapshot_size_gib: int,
     snapshot_lv: str,
     owner: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     target_size_gib = max(clone_data.size_gib or snapshot_size_gib, snapshot_size_gib)
     requested_spec = VolumeSpec(
         name=clone_data.name,
@@ -286,12 +286,12 @@ def _clone_volume_from_reserved_snapshot(
 
 
 def list_snapshots(
-    svm: Optional[str] = None,
-    volume: Optional[str] = None,
-    name: Optional[str] = None,
+    svm: str | None = None,
+    volume: str | None = None,
+    name: str | None = None,
     limit: int = 100,
-    cursor: Optional[str] = None,
-) -> Dict[str, Any]:
+    cursor: str | None = None,
+) -> dict[str, Any]:
     """List snapshots from the database."""
     ctx = get_context()
     try:
@@ -309,7 +309,7 @@ def list_snapshots(
     return {"items": items, "next_cursor": next_cursor}
 
 
-def _snapshot_to_dict(snap: Snapshot) -> Dict[str, Any]:
+def _snapshot_to_dict(snap: Snapshot) -> dict[str, Any]:
     return {
         "name": snap.spec.name,
         "svm": snap.spec.svm,
@@ -321,7 +321,7 @@ def _snapshot_to_dict(snap: Snapshot) -> Dict[str, Any]:
     }
 
 
-def _snapshot_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+def _snapshot_record_to_dict(record: dict[str, Any]) -> dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     return {
@@ -335,11 +335,11 @@ def _snapshot_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _meta_from_record(record: Dict[str, Any]) -> Any:
+def _meta_from_record(record: dict[str, Any]) -> Any:
     return resource_meta_from_record(record)
 
 
-def _parse_status(record: Dict[str, Any]) -> Any:
+def _parse_status(record: dict[str, Any]) -> Any:
     from arca_storage.models.snapshot import SnapshotStatus
 
     return SnapshotStatus.model_validate(record["status"])
@@ -350,7 +350,7 @@ def _clone_snapshot_size_gib(
     source_volume: str,
     clone_data: VolumeCloneCreate,
     *,
-    snapshot_record: Optional[Dict[str, Any]] = None,
+    snapshot_record: dict[str, Any] | None = None,
 ) -> int:
     if snapshot_record is None:
         snapshots = ctx.db.list_snapshots(
@@ -385,7 +385,7 @@ def _clone_snapshot_size_gib(
         snapshot_record, clone_data.svm, source_volume, clone_data.snapshot
     )
     try:
-        return int(ceil(float(ctx.adapters.lvm.get_lv_size_gib(vg_name, snap_lv))))
+        return ceil(float(ctx.adapters.lvm.get_lv_size_gib(vg_name, snap_lv)))
     except Exception as e:
         raise PreconditionFailedError(
             f"Snapshot '{clone_data.svm}/{source_volume}/{clone_data.snapshot}' size is unavailable",
@@ -398,7 +398,7 @@ def _clone_snapshot_size_gib(
 
 
 def _require_snapshot_ready_record(
-    record: Dict[str, Any], svm: str, volume: str, name: str
+    record: dict[str, Any], svm: str, volume: str, name: str
 ) -> None:
     status = record.get("status", {})
     phase = str(status.get("phase") or "")
@@ -417,7 +417,7 @@ def _require_snapshot_ready_record(
 
 
 def _snapshot_record_lv_name(
-    record: Dict[str, Any], svm: str, volume: str, name: str
+    record: dict[str, Any], svm: str, volume: str, name: str
 ) -> str:
     return str(
         record.get("status", {}).get("lv_name")
@@ -425,7 +425,7 @@ def _snapshot_record_lv_name(
     )
 
 
-def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
+def _clone_volume_to_dict(vol: Volume, ctx: Any) -> dict[str, Any]:
     return {
         "name": vol.spec.name,
         "svm": vol.spec.svm,
@@ -444,10 +444,10 @@ def _clone_volume_to_dict(vol: Volume, ctx: Any) -> Dict[str, Any]:
 
 
 def _can_resume_clone_volume(
-    record: Optional[Dict[str, Any]],
+    record: dict[str, Any] | None,
     requested_spec: VolumeSpec,
     *,
-    owner: Optional[str] = None,
+    owner: str | None = None,
 ) -> bool:
     if not record:
         return False
@@ -464,7 +464,7 @@ def _can_resume_clone_volume(
     return _has_pending_clone_create_step(status)
 
 
-def _has_pending_clone_create_step(status: Dict[str, Any]) -> bool:
+def _has_pending_clone_create_step(status: dict[str, Any]) -> bool:
     return any(
         not status.get(field, False)
         for field in ("lv_created", "fs_formatted", "mounted")
@@ -473,13 +473,13 @@ def _has_pending_clone_create_step(status: Dict[str, Any]) -> bool:
 
 def _resume_clone_volume_from_snapshot(
     ctx: Any,
-    record: Dict[str, Any],
+    record: dict[str, Any],
     owner: str,
     source_volume: str,
     snapshot_name: str,
     snapshot_size_gib: int,
     snapshot_lv: str,
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
         spec=VolumeSpec.model_validate(record["spec"]),
@@ -503,7 +503,7 @@ def _resume_clone_volume_from_snapshot(
     return _clone_volume_to_dict(volume, ctx)
 
 
-def _parse_volume_status(record: Dict[str, Any]) -> Any:
+def _parse_volume_status(record: dict[str, Any]) -> Any:
     from arca_storage.models.volume import VolumeStatus
 
     return VolumeStatus.model_validate(record["status"])
@@ -610,7 +610,7 @@ def _run_clone_volume_steps(
         return volume
     except CreateLeaseLostError:
         raise
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - Clean up and persist any clone failure.
         cleanup_errors = _cleanup_failed_clone_volume(
             ctx, volume, vg_name, new_lv, mount_path
         )
@@ -632,7 +632,7 @@ def _cleanup_failed_clone_volume(
     cleanup_errors: list[str] = []
     try:
         mounted = volume.status.mounted or ctx.adapters.xfs.is_mounted(mount_path)
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - Retain recorded mount state if probing fails.
         cleanup_errors.append(f"check mount {mount_path}: {e}")
         mounted = volume.status.mounted
 
@@ -641,7 +641,7 @@ def _cleanup_failed_clone_volume(
             ctx.adapters.xfs.umount(mount_path)
             volume.status.mounted = False
             volume.status.mount_path = None
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Preserve the LV if unmounting fails.
             volume.status.mounted = True
             volume.status.mount_path = mount_path
             cleanup_errors.append(f"unmount {mount_path}: {e}")
@@ -654,7 +654,7 @@ def _cleanup_failed_clone_volume(
             volume.status.lv_path = None
             volume.status.lv_name = None
             volume.status.fs_formatted = False
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Retain LV state for incomplete cleanup.
             volume.status.lv_created = True
             volume.status.lv_path = volume.status.lv_path or f"/dev/{vg_name}/{lv_name}"
             volume.status.lv_name = volume.status.lv_name or lv_name
@@ -671,7 +671,7 @@ def _persist_clone_volume(
     volume: Volume,
     detail: str,
     *,
-    expected_create_owner: Optional[str] = None,
+    expected_create_owner: str | None = None,
 ) -> None:
     if not ctx.db.upsert_volume(volume, expected_create_owner=expected_create_owner):
         raise CreateLeaseLostError("Volume", f"{volume.spec.svm}/{volume.spec.name}")
@@ -681,10 +681,10 @@ def _persist_clone_volume(
 
 
 def _can_resume_create(
-    record: Optional[Dict[str, Any]],
+    record: dict[str, Any] | None,
     requested_spec: SnapshotSpec,
     *,
-    owner: Optional[str] = None,
+    owner: str | None = None,
 ) -> bool:
     if not record:
         return False
@@ -701,13 +701,13 @@ def _can_resume_create(
     return not status.get("lv_created", False)
 
 
-def _is_failed_delete(status: Dict[str, Any]) -> bool:
+def _is_failed_delete(status: dict[str, Any]) -> bool:
     return str(status.get("message") or "").startswith("Delete failed:")
 
 
 def _resume_snapshot_create(
-    ctx: Any, record: Dict[str, Any], owner: str
-) -> Dict[str, Any]:
+    ctx: Any, record: dict[str, Any], owner: str
+) -> dict[str, Any]:
     snapshot = Snapshot(
         metadata=_meta_from_record(record),
         spec=SnapshotSpec.model_validate(record["spec"]),

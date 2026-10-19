@@ -328,19 +328,7 @@ def test_load_settings_rejects_invalid_operation_log_retention(monkeypatch, temp
 def test_reconciler_config_is_derived_from_toml(monkeypatch, temp_dir):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
-        "\n".join(
-            [
-                "[storage]",
-                'vg_name = "vg_data"',
-                'thinpool_name = "thin_data"',
-                "[network]",
-                'parent_interface = "ens192"',
-                "[cluster]",
-                'drbd_resource = "arca-r1"',
-                "[ganesha]",
-                'export_dir = "/srv/exports"',
-            ]
-        ),
+        '[storage]\nvg_name = "vg_data"\nthinpool_name = "thin_data"\n[network]\nparent_interface = "ens192"\n[cluster]\ndrbd_resource = "arca-r1"\n[ganesha]\nexport_dir = "/srv/exports"',
         encoding="utf-8",
     )
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))
@@ -378,13 +366,7 @@ def test_reconciler_config_type_contract():
 def test_systemd_env_only_exports_values_consumed_by_units(monkeypatch, temp_dir):
     config_path = temp_dir / "config.toml"
     config_path.write_text(
-        "\n".join(
-            [
-                "[ganesha]",
-                'config_dir = "/srv/ganesha"',
-                'export_dir = "/srv/exports"',
-            ]
-        ),
+        '[ganesha]\nconfig_dir = "/srv/ganesha"\nexport_dir = "/srv/exports"',
         encoding="utf-8",
     )
     monkeypatch.setenv("ARCA_CONFIG_PATH", str(config_path))

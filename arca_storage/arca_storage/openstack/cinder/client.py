@@ -1,20 +1,25 @@
 """REST API client for ARCA Storage."""
 
 import ipaddress
-from typing import Any, Dict, List, Optional
+from types import ModuleType
+from typing import Any, cast
 from urllib.parse import quote, urlparse
 
 from arca_storage.openstack.http_errors import response_error_message, safe_error_detail
 
 try:
-    import requests  # type: ignore[import-untyped]
-    from requests.adapters import HTTPAdapter  # type: ignore[import-untyped]
-    from urllib3.util.retry import Retry
+    import requests as _requests  # type: ignore[import-untyped]
+    from requests.adapters import HTTPAdapter as _HTTPAdapter  # type: ignore[import-untyped]
+    from urllib3.util.retry import Retry as _Retry
 except ImportError:
     # requests is an optional dependency for OpenStack integration
     requests = None
     HTTPAdapter = None
-    Retry = None  # type: ignore[assignment,misc]
+    Retry = None
+else:
+    requests = _requests
+    HTTPAdapter = _HTTPAdapter
+    Retry = _Retry
 
 from .exceptions import (
     ArcaAPIConnectionError,
@@ -31,7 +36,7 @@ def _quote_path_segment(value: str) -> str:
     return quote(str(value), safe="")
 
 
-def _is_loopback_hostname(hostname: Optional[str]) -> bool:
+def _is_loopback_hostname(hostname: str | None) -> bool:
     if not hostname:
         return False
     if hostname.lower() == "localhost":
@@ -44,7 +49,7 @@ def _is_loopback_hostname(hostname: Optional[str]) -> bool:
 
 def validate_token_transport(
     api_endpoint: str,
-    auth_type: Optional[str],
+    auth_type: str | None,
     allow_insecure_token_transport: bool = False,
 ) -> None:
     """Reject bearer tokens over remote plain HTTP unless explicitly allowed."""
@@ -72,9 +77,9 @@ class ArcaStorageClient:
         timeout: int = 30,
         retry_count: int = 3,
         verify_ssl: bool = True,
-        auth_type: Optional[str] = None,
-        api_token: Optional[str] = None,
-        ca_bundle: Optional[str] = None,
+        auth_type: str | None = None,
+        api_token: str | None = None,
+        ca_bundle: str | None = None,
         allow_insecure_token_transport: bool = False,
     ):
         """Initialize ARCA Storage API client.
@@ -139,9 +144,9 @@ class ArcaStorageClient:
         self,
         method: str,
         path: str,
-        json_data: Optional[Dict[str, Any]] = None,
-        params: Optional[Dict[str, Any]] = None,
-    ) -> Dict[str, Any]:
+        json_data: dict[str, Any] | None = None,
+        params: dict[str, Any] | None = None,
+    ) -> dict[str, Any]:
         """Make HTTP request to ARCA Storage API.
 
         Args:
@@ -163,6 +168,8 @@ class ArcaStorageClient:
         else:
             url = f"{self.base_url}/{path}"
 
+        # Construction requires requests; retain the optional import for standalone use.
+        requests_module = cast(ModuleType, requests)
         try:
             response = self.session.request(
                 method=method,
@@ -195,26 +202,26 @@ class ArcaStorageClient:
                     status_code=response.status_code,
                 ) from e
 
-        except requests.exceptions.Timeout as e:
+        except requests_module.exceptions.Timeout as e:
             raise ArcaAPITimeout(
                 f"API request timed out after {self.timeout}s: {safe_error_detail(e)}"
             )
-        except requests.exceptions.ConnectionError as e:
+        except requests_module.exceptions.ConnectionError as e:
             raise ArcaAPIConnectionError(
                 f"Failed to connect to ARCA Storage API: {safe_error_detail(e)}"
             )
-        except requests.exceptions.RequestException as e:
+        except requests_module.exceptions.RequestException as e:
             raise ArcaAPIError(f"API request failed: {safe_error_detail(e)}")
 
     def _list_paginated(
         self,
         path: str,
-        params: Optional[Dict[str, Any]] = None,
+        params: dict[str, Any] | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
         """Return all list items by following ARCA cursor pagination."""
-        items: List[Dict[str, Any]] = []
+        items: list[dict[str, Any]] = []
         next_cursor = cursor
         seen_cursors: set[str] = set()
         if next_cursor:
@@ -245,7 +252,7 @@ class ArcaStorageClient:
         size_gib: int,
         thin: bool = True,
         fs_type: str = "xfs",
-    ) -> Dict[str, Any]:
+    ) -> dict[str, Any]:
         """Create a volume on ARCA Storage.
 
         Args:
@@ -309,7 +316,7 @@ class ArcaStorageClient:
                 raise ArcaVolumeNotFound(f"Volume {name} not found in SVM {svm}")
             raise
 
-    def resize_volume(self, name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
+    def resize_volume(self, name: str, svm: str, new_size_gib: int) -> dict[str, Any]:
         """Resize a volume.
 
         Args:
@@ -339,11 +346,11 @@ class ArcaStorageClient:
 
     def list_volumes(
         self,
-        svm: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
         """List volumes.
 
         Args:
@@ -355,7 +362,7 @@ class ArcaStorageClient:
         Returns:
             List of volume information dictionaries
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if svm:
             params["svm"] = svm
         if name:
@@ -364,7 +371,7 @@ class ArcaStorageClient:
             "/v1/volumes", params=params, limit=limit, cursor=cursor
         )
 
-    def get_volume(self, name: str, svm: str) -> Dict[str, Any]:
+    def get_volume(self, name: str, svm: str) -> dict[str, Any]:
         """Get volume information.
 
         Args:
@@ -391,8 +398,8 @@ class ArcaStorageClient:
         client: str,
         access: str = "rw",
         root_squash: bool = True,
-        sec: Optional[List[str]] = None,
-    ) -> Dict[str, Any]:
+        sec: list[str] | None = None,
+    ) -> dict[str, Any]:
         """Create an NFS export.
 
         Args:
@@ -449,12 +456,12 @@ class ArcaStorageClient:
 
     def list_exports(
         self,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        client: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        client: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
         """List NFS exports.
 
         Args:
@@ -467,7 +474,7 @@ class ArcaStorageClient:
         Returns:
             List of export information dictionaries
         """
-        params: Dict[str, Any] = {}
+        params: dict[str, Any] = {}
         if svm:
             params["svm"] = svm
         if volume:
@@ -490,10 +497,10 @@ class ArcaStorageClient:
 
     def list_svms(
         self,
-        name: Optional[str] = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
-    ) -> List[Dict[str, Any]]:
+        cursor: str | None = None,
+    ) -> list[dict[str, Any]]:
         """List SVMs.
 
         Args:
@@ -511,7 +518,7 @@ class ArcaStorageClient:
             "/v1/svms", params=params, limit=limit, cursor=cursor
         )
 
-    def get_svm(self, name: str) -> Dict[str, Any]:
+    def get_svm(self, name: str) -> dict[str, Any]:
         """Get SVM information.
 
         Args:
@@ -528,7 +535,7 @@ class ArcaStorageClient:
             raise ArcaSVMNotFound(f"SVM {name} not found")
         return svms[0]
 
-    def get_svm_capacity(self, svm: str) -> Dict[str, Any]:
+    def get_svm_capacity(self, svm: str) -> dict[str, Any]:
         """Get SVM capacity statistics."""
         response = self._make_request(
             "GET", f"/v1/svms/{_quote_path_segment(svm)}/capacity"
@@ -541,11 +548,11 @@ class ArcaStorageClient:
         self,
         volume: str,
         svm: str,
-        read_iops: Optional[int] = None,
-        write_iops: Optional[int] = None,
-        read_bps: Optional[int] = None,
-        write_bps: Optional[int] = None,
-    ) -> Dict[str, Any]:
+        read_iops: int | None = None,
+        write_iops: int | None = None,
+        read_bps: int | None = None,
+        write_bps: int | None = None,
+    ) -> dict[str, Any]:
         """Apply QoS limits to a volume.
 
         Args:
@@ -563,7 +570,7 @@ class ArcaStorageClient:
             ArcaVolumeNotFound: Volume not found
             ArcaAPIError: API error
         """
-        data: Dict[str, Any] = {"svm": svm}
+        data: dict[str, Any] = {"svm": svm}
 
         if read_iops is not None:
             data["read_iops"] = read_iops
@@ -610,7 +617,7 @@ class ArcaStorageClient:
             if e.status_code != 404:  # Ignore if volume doesn't exist
                 raise
 
-    def get_qos(self, volume: str, svm: str) -> Dict[str, Any]:
+    def get_qos(self, volume: str, svm: str) -> dict[str, Any]:
         """Get QoS settings for a volume.
 
         Args:

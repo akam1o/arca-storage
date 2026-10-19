@@ -3,7 +3,6 @@ Integration tests for CSI compatibility endpoints.
 """
 
 import pytest
-
 from fastapi.testclient import TestClient
 
 from arca_storage.api.main import app

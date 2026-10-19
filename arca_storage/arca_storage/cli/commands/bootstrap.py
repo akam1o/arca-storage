@@ -13,7 +13,6 @@ import subprocess
 import tempfile
 from decimal import Decimal, InvalidOperation
 from pathlib import Path, PurePosixPath
-from typing import Optional
 
 import typer
 
@@ -55,7 +54,7 @@ def _run(
     cmd: list[str],
     *,
     check: bool = True,
-    input: Optional[str] = None,
+    input: str | None = None,
     timeout: int = _DEFAULT_COMMAND_TIMEOUT_SECONDS,
 ) -> subprocess.CompletedProcess[str]:
     try:
@@ -408,7 +407,7 @@ def install(
         typer.echo("Installed bootstrap resources successfully")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command("render-env")
@@ -429,7 +428,7 @@ def render_env():
         )
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -701,7 +700,7 @@ def pacemaker_cluster(
         typer.echo("Pacemaker cluster bootstrap completed")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -751,16 +750,16 @@ def drbd_config(
             typer.echo("Applied DRBD configuration")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def lvm_thinpool(
     pv: str = typer.Option("/dev/drbd0", help="PV device path (default: /dev/drbd0)"),
-    vg: Optional[str] = typer.Option(
+    vg: str | None = typer.Option(
         None, help="Volume group name (default: from config or vg_pool_01)"
     ),
-    thinpool: Optional[str] = typer.Option(
+    thinpool: str | None = typer.Option(
         None, help="Thin pool LV name (default: from config or pool)"
     ),
     size: str = typer.Option(
@@ -825,4 +824,4 @@ def lvm_thinpool(
         typer.echo("LVM thin pool bootstrap completed")
     except Exception as e:
         typer.echo(f"Error: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e

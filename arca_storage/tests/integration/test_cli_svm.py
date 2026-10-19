@@ -10,6 +10,7 @@ from typer.testing import CliRunner
 from arca_storage.cli.cli import app
 from arca_storage.models.base import Phase
 from arca_storage.models.svm import SVM, SVMSpec
+
 from .helpers import cli_output
 
 

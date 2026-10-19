@@ -5,6 +5,6 @@ This package provides network allocation strategies for per_project SVM mode:
 - NeutronAllocator: Neutron port-based allocation (new)
 """
 
-from .base import NetworkAllocator, NetworkAllocation
+from .base import NetworkAllocation, NetworkAllocator
 
-__all__ = ["NetworkAllocator", "NetworkAllocation"]
+__all__ = ["NetworkAllocation", "NetworkAllocator"]

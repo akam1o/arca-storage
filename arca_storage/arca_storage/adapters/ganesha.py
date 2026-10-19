@@ -4,7 +4,7 @@ NFS-Ganesha configuration adapter.
 
 from __future__ import annotations
 
-from typing import Dict, List, Optional, Protocol, runtime_checkable
+from typing import Protocol, runtime_checkable
 
 from arca_storage.adapters._subprocess import run_cmd
 from arca_storage.cli.lib.ganesha import render_config as _legacy_render_config
@@ -16,9 +16,9 @@ class GaneshaAdapter(Protocol):
     def render_config(
         self,
         svm_name: str,
-        exports: List[Dict],
+        exports: list[dict],
         *,
-        bind_addr: Optional[str] = None,
+        bind_addr: str | None = None,
         host_network: bool = False,
     ) -> str: ...
     def reload(self, svm_name: str, *, host_network: bool = False) -> None: ...
@@ -27,18 +27,16 @@ class GaneshaAdapter(Protocol):
 class SubprocessGaneshaAdapter:
     """Production adapter — renders config and reloads via systemctl."""
 
-    def __init__(
-        self, timeout: int = 30, settings: Optional[ArcaSettings] = None
-    ) -> None:
+    def __init__(self, timeout: int = 30, settings: ArcaSettings | None = None) -> None:
         self._timeout = timeout
         self._settings = settings
 
     def render_config(
         self,
         svm_name: str,
-        exports: List[Dict],
+        exports: list[dict],
         *,
-        bind_addr: Optional[str] = None,
+        bind_addr: str | None = None,
         host_network: bool = False,
     ) -> str:
         return _legacy_render_config(
@@ -58,8 +56,8 @@ class FakeGaneshaAdapter:
 
     def __init__(self, *, fail_count: int = 0) -> None:
         self.configs: dict[str, str] = {}
-        self.exports: dict[str, List[Dict]] = {}
-        self.bind_addrs: dict[str, Optional[str]] = {}
+        self.exports: dict[str, list[dict]] = {}
+        self.bind_addrs: dict[str, str | None] = {}
         self.host_network: dict[str, bool] = {}
         self.reload_count: int = 0
         self._fail_count = fail_count
@@ -68,9 +66,9 @@ class FakeGaneshaAdapter:
     def render_config(
         self,
         svm_name: str,
-        exports: List[Dict],
+        exports: list[dict],
         *,
-        bind_addr: Optional[str] = None,
+        bind_addr: str | None = None,
         host_network: bool = False,
     ) -> str:
         self._maybe_fail()

@@ -5,13 +5,13 @@ Delegates mutating operations to API services.
 """
 
 import json
-from typing import Literal, Optional
+from typing import Literal
 
 import typer
 
 from arca_storage.api.models import SVMCreate
 from arca_storage.api.services import svm_service
-from arca_storage.db import encode_cursor
+from arca_storage.cli.commands._pagination import list_all_svms
 from arca_storage.cli.lib.validators import (
     infer_gateway_from_ip_cidr,
     validate_ipv4,
@@ -19,8 +19,8 @@ from arca_storage.cli.lib.validators import (
     validate_svm_ip_cidr,
     validate_vlan,
 )
-from arca_storage.cli.commands._pagination import list_all_svms
 from arca_storage.context import get_context
+from arca_storage.db import encode_cursor
 
 app = typer.Typer(help="SVM management commands")
 
@@ -28,17 +28,17 @@ app = typer.Typer(help="SVM management commands")
 @app.command()
 def create(
     name: str = typer.Argument(..., help="SVM name"),
-    vlan_id: Optional[int] = typer.Option(
+    vlan_id: int | None = typer.Option(
         None, "--vlan", help="Optional VLAN ID (1-4094)"
     ),
     ip: str = typer.Option(
         ..., "--ip", help="IP address with CIDR (e.g., 192.168.10.5/24)"
     ),
-    gateway: Optional[str] = typer.Option(
+    gateway: str | None = typer.Option(
         None, "--gateway", help="Gateway IP (optional; inferred if omitted)"
     ),
     mtu: int = typer.Option(1500, "--mtu", help="MTU size (default: 1500)"),
-    root_size: Optional[int] = typer.Option(
+    root_size: int | None = typer.Option(
         None, "--root-size", help="Create root LV size in GiB (optional)"
     ),
 ):
@@ -74,7 +74,7 @@ def create(
         raise
     except Exception as e:
         typer.echo(f"Error creating SVM: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
@@ -100,16 +100,14 @@ def delete(
         raise
     except Exception as e:
         typer.echo(f"Error deleting SVM: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e
 
 
 @app.command()
 def list(
-    name: Optional[str] = typer.Option(None, "--name", help="Filter by SVM name"),
-    limit: Optional[int] = typer.Option(
-        None, "--limit", help="Maximum number of results"
-    ),
-    cursor: Optional[str] = typer.Option(None, "--cursor", help="Pagination cursor"),
+    name: str | None = typer.Option(None, "--name", help="Filter by SVM name"),
+    limit: int | None = typer.Option(None, "--limit", help="Maximum number of results"),
+    cursor: str | None = typer.Option(None, "--cursor", help="Pagination cursor"),
     output_format: Literal["text", "json"] = typer.Option(
         "text",
         "--format",
@@ -157,4 +155,4 @@ def list(
             typer.echo(f"next_cursor={next_cursor}")
     except Exception as e:
         typer.echo(f"Error listing SVMs: {e}", err=True)
-        raise typer.Exit(1)
+        raise typer.Exit(1) from e

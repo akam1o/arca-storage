@@ -15,11 +15,20 @@ Source1:        %{name}-wheelhouse.tar.gz
 # these vendored artifacts is not useful and may fail (e.g. empty debugsource
 # file lists). Disable automatic debug subpackages.
 %global debug_package %{nil}
+# The copied venv interpreter shares a build ID with the system Python RPM.
+# Keep its private binaries from creating conflicting global build-ID links.
+%global _build_id_links none
 
-BuildRequires:  python3
-BuildRequires:  python3-pip
+%if 0%{?rhel} == 9
+%global arca_python python3.11
+%else
+%global arca_python python3
+%endif
 
-Requires:       python3
+BuildRequires:  %{arca_python} >= 3.10
+BuildRequires:  %{arca_python}-pip
+
+Requires:       %{arca_python} >= 3.10
 
 %description
 Software-defined storage control-plane with Pacemaker/DRBD/NFS-Ganesha integration.
@@ -35,7 +44,7 @@ rm -rf %{buildroot}
 
 # Embedded venv
 install -d %{buildroot}/opt/arca-storage
-python3 -m venv --copies %{buildroot}/opt/arca-storage/venv
+%{arca_python} -m venv --copies %{buildroot}/opt/arca-storage/venv
 tar -C %{_builddir}/%{name} -xzf %{SOURCE1}
 %{buildroot}/opt/arca-storage/venv/bin/pip install --no-index --find-links %{_builddir}/%{name}/packaging/wheelhouse "arca-storage==%{version}"
 

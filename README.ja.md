@@ -45,6 +45,7 @@ Python コードベースは **宣言的リコンシリエーション** アー�
 ### 前提条件
 
 - RHEL/Alma/Rocky Linux 8/9, Debian, または Ubuntu
+- Python 3.10 以上（EL9 の RPM パッケージは Python 3.11 を使用）
 - Pacemaker/Corosync/pcs, NFS-Ganesha, LVM2, DRBD がインストール済み
 - 2ノードクラスター構成
 
@@ -303,6 +304,9 @@ arca-storage/
 ## 開発
 
 ### 開発環境のセットアップ
+
+Python 3.10 以上を使用してください。EL9 では `python3.11` と `python3.11-pip`
+をインストールし、以下の `python3` を `python3.11` に置き換えます。
 
 ```bash
 # リポジトリのクローン

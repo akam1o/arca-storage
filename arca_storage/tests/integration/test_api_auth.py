@@ -34,12 +34,14 @@ def test_api_auth_allows_loopback_without_token_when_explicitly_enabled(monkeypa
     monkeypatch.delenv("ARCA_AUTH_TOKEN", raising=False)
     monkeypatch.setenv("ARCA_ALLOW_UNAUTHENTICATED_LOOPBACK", "true")
 
-    with patch(
-        "arca_storage.api.services.svm_service.list_svms",
-        return_value={"items": [], "next_cursor": None},
+    with (
+        patch(
+            "arca_storage.api.services.svm_service.list_svms",
+            return_value={"items": [], "next_cursor": None},
+        ),
+        TestClient(app, base_url="http://127.0.0.1:8080") as client,
     ):
-        with TestClient(app, base_url="http://127.0.0.1:8080") as client:
-            response = client.get("/v1/svms")
+        response = client.get("/v1/svms")
 
     assert response.status_code == 200
 
@@ -60,14 +62,16 @@ def test_api_auth_rejects_missing_bearer_token(monkeypatch):
 def test_api_auth_accepts_configured_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", "secret-token")
 
-    with patch(
-        "arca_storage.api.services.svm_service.list_svms",
-        return_value={"items": [], "next_cursor": None},
+    with (
+        patch(
+            "arca_storage.api.services.svm_service.list_svms",
+            return_value={"items": [], "next_cursor": None},
+        ),
+        TestClient(app) as client,
     ):
-        with TestClient(app) as client:
-            response = client.get(
-                "/v1/svms", headers={"Authorization": "Bearer secret-token"}
-            )
+        response = client.get(
+            "/v1/svms", headers={"Authorization": "Bearer secret-token"}
+        )
 
     assert response.status_code == 200
 
@@ -94,14 +98,16 @@ def test_api_auth_rejects_blank_configured_token(monkeypatch):
 def test_api_auth_accepts_trimmed_configured_bearer_token(monkeypatch):
     monkeypatch.setenv("ARCA_API_TOKEN", " secret-token \n")
 
-    with patch(
-        "arca_storage.api.services.svm_service.list_svms",
-        return_value={"items": [], "next_cursor": None},
+    with (
+        patch(
+            "arca_storage.api.services.svm_service.list_svms",
+            return_value={"items": [], "next_cursor": None},
+        ),
+        TestClient(app) as client,
     ):
-        with TestClient(app) as client:
-            response = client.get(
-                "/v1/svms", headers={"Authorization": "Bearer secret-token"}
-            )
+        response = client.get(
+            "/v1/svms", headers={"Authorization": "Bearer secret-token"}
+        )
 
     assert response.status_code == 200
 

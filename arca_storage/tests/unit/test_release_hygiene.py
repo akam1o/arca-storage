@@ -104,8 +104,8 @@ def test_csi_builder_image_matches_go_mod_toolchain(repo_root):
     dockerfile = (repo_root / "csi-arca-storage/Dockerfile").read_text(encoding="utf-8")
     go_mod = (repo_root / "csi-arca-storage/go.mod").read_text(encoding="utf-8")
 
-    assert "go 1.26.3" in go_mod
-    assert "FROM golang:1.26.3-alpine AS builder" in dockerfile
+    assert "go 1.27.2" in go_mod
+    assert "FROM golang:1.27.2-alpine AS builder" in dockerfile
     assert "FROM golang:1.25-alpine" not in dockerfile
 
 

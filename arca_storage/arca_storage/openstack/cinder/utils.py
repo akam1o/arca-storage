@@ -5,10 +5,9 @@ import errno
 import hashlib
 import os
 import platform
-import subprocess
 import stat
+import subprocess
 import sys
-from typing import Optional
 
 from arca_storage.cli.lib.validators import validate_name
 
@@ -229,16 +228,17 @@ def is_mounted(mount_point: str) -> bool:
                 if len(parts) >= 2 and parts[1] == mount_point:
                     return True
         return False
-    except Exception:
+    except Exception:  # noqa: BLE001 - A failed procfs probe must use the command fallback.
         # Fallback to mountpoint command
         try:
             result = subprocess.run(
                 ["mountpoint", "-q", mount_point],
                 capture_output=True,
                 timeout=5,
+                check=False,
             )
             return result.returncode == 0
-        except Exception:
+        except Exception:  # noqa: BLE001 - An unavailable mount probe is reported as False.
             return False
 
 
@@ -249,16 +249,18 @@ def cleanup_mount_point(mount_point: str) -> None:
         mount_point: Path to mount point
     """
     try:
-        if os.path.exists(mount_point) and os.path.isdir(mount_point):
-            # Check if empty
-            if not os.listdir(mount_point):
-                os.rmdir(mount_point)
+        if (
+            os.path.exists(mount_point)
+            and os.path.isdir(mount_point)
+            and not os.listdir(mount_point)
+        ):
+            os.rmdir(mount_point)
     except OSError:
         # Ignore errors during cleanup
         pass
 
 
-def get_nfs_share_info(mount_point: str) -> Optional[dict]:
+def get_nfs_share_info(mount_point: str) -> dict | None:
     """Get information about mounted NFS share.
 
     Args:
@@ -279,7 +281,7 @@ def get_nfs_share_info(mount_point: str) -> Optional[dict]:
                         "options": parts[3],
                     }
         return None
-    except Exception:
+    except Exception:  # noqa: BLE001 - Optional mount information is unavailable on probe failure.
         return None
 
 
@@ -310,17 +312,18 @@ def validate_nfs_export_accessible(export_path: str, timeout: int = 10) -> bool:
             capture_output=True,
             text=True,
             timeout=timeout,
+            check=False,
         )
 
         return result.returncode == 0
     except (FileNotFoundError, subprocess.TimeoutExpired):
         # showmount not available or timed out - not necessarily an error
         return False
-    except Exception:
+    except Exception:  # noqa: BLE001 - This optional accessibility probe is best-effort.
         return False
 
 
-def get_volume_usage(mount_point: str) -> Optional[dict]:
+def get_volume_usage(mount_point: str) -> dict | None:
     """Get disk usage for mounted volume.
 
     Args:
@@ -339,7 +342,7 @@ def get_volume_usage(mount_point: str) -> Optional[dict]:
             "free_bytes": usage.free,
             "used_percent": (usage.used / usage.total * 100) if usage.total > 0 else 0,
         }
-    except Exception:
+    except Exception:  # noqa: BLE001 - Optional usage information is unavailable on probe failure.
         return None
 
 

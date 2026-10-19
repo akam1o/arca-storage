@@ -11,10 +11,11 @@ import base64
 import json
 import sqlite3
 import threading
+from collections.abc import Callable, Generator
 from contextlib import contextmanager
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Any, Callable, Generator, Optional, Union
+from typing import Any
 
 from arca_storage.cli.lib.validators import (
     legacy_snapshot_lv_name,
@@ -38,7 +39,6 @@ from arca_storage.errors import (
 )
 from arca_storage.models.base import Phase
 from arca_storage.models.volume import QoSStatus
-
 
 _SCHEMA_VERSION = 4
 _SNAPSHOT_CLEANUP_RESERVATION_DURATION = timedelta(minutes=5)
@@ -264,11 +264,11 @@ def _ensure_indexes(conn: sqlite3.Connection) -> None:
 
 def _register_backend_lv_conn(
     conn: sqlite3.Connection,
-    lv_name: Optional[str],
+    lv_name: str | None,
     resource_kind: str,
     resource_key: str,
     *,
-    now: Optional[str] = None,
+    now: str | None = None,
 ) -> None:
     if not lv_name:
         return
@@ -445,7 +445,7 @@ def _now_iso() -> str:
 
 def _svm_network_key(
     spec: dict[str, Any], *, strict: bool = False
-) -> Optional[tuple[Optional[int], str]]:
+) -> tuple[int | None, str] | None:
     ip_cidr = str(spec.get("ip_cidr") or "")
     if not ip_cidr:
         return None
@@ -464,7 +464,7 @@ def _svm_network_key(
 
 def _svm_network_columns(
     spec: dict[str, Any], *, strict: bool = False
-) -> tuple[Optional[int], Optional[str], Optional[str]]:
+) -> tuple[int | None, str | None, str | None]:
     key = _svm_network_key(spec, strict=strict)
     if key is None:
         return None, None, None
@@ -479,7 +479,7 @@ def encode_cursor(values: list[str]) -> str:
     return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
 
 
-def _decode_cursor(cursor: Optional[str], expected_parts: int) -> Optional[list[str]]:
+def _decode_cursor(cursor: str | None, expected_parts: int) -> list[str] | None:
     if not cursor:
         return None
 
@@ -502,7 +502,7 @@ def _decode_cursor(cursor: Optional[str], expected_parts: int) -> Optional[list[
 class StateDB:
     """Thread-safe SQLite state store with WAL journaling."""
 
-    def __init__(self, db_path: Union[Path, str]) -> None:
+    def __init__(self, db_path: Path | str) -> None:
         self._db_path = str(db_path)
         Path(self._db_path).parent.mkdir(parents=True, exist_ok=True)
         self._local = threading.local()
@@ -631,9 +631,7 @@ class StateDB:
         except sqlite3.IntegrityError as e:
             raise AlreadyExistsError("SVM", svm.spec.name) from e
 
-    def upsert_svm(
-        self, svm: Any, *, expected_create_owner: Optional[str] = None
-    ) -> bool:
+    def upsert_svm(self, svm: Any, *, expected_create_owner: str | None = None) -> bool:
         """Insert or update an SVM record."""
         now = _now_iso()
         with self.transaction(immediate=True) as conn:
@@ -645,7 +643,7 @@ class StateDB:
             return True
 
     def _upsert_svm_conn(
-        self, conn: sqlite3.Connection, svm: Any, *, now: Optional[str] = None
+        self, conn: sqlite3.Connection, svm: Any, *, now: str | None = None
     ) -> None:
         now = now or _now_iso()
         lv_name = self._ensure_svm_backend_lv_name(svm)
@@ -689,7 +687,7 @@ class StateDB:
             ),
         )
 
-    def get_svm(self, name: str) -> Optional[dict[str, Any]]:
+    def get_svm(self, name: str) -> dict[str, Any] | None:
         conn = self._conn()
         return self._get_svm_conn(conn, name)
 
@@ -698,9 +696,9 @@ class StateDB:
         name: str,
         owner: str,
         *,
-        expected_spec: Optional[dict[str, Any]] = None,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return self._acquire_create_lease(
             "svms",
             {"name": name},
@@ -714,9 +712,9 @@ class StateDB:
 
     def list_svms(
         self,
-        name: Optional[str] = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         cursor_values = _decode_cursor(cursor, 1)
@@ -756,7 +754,7 @@ class StateDB:
         *,
         force: bool = False,
         delete_volumes: bool = False,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Atomically mark an SVM deleting after validating dependent resources."""
         cascade_volumes = delete_volumes or force
         with self.transaction(immediate=True) as conn:
@@ -931,7 +929,7 @@ class StateDB:
             ) from e
 
     def upsert_volume(
-        self, volume: Any, *, expected_create_owner: Optional[str] = None
+        self, volume: Any, *, expected_create_owner: str | None = None
     ) -> bool:
         now = _now_iso()
         key = {"svm": volume.spec.svm, "name": volume.spec.name}
@@ -944,7 +942,7 @@ class StateDB:
             return True
 
     def _upsert_volume_conn(
-        self, conn: sqlite3.Connection, volume: Any, *, now: Optional[str] = None
+        self, conn: sqlite3.Connection, volume: Any, *, now: str | None = None
     ) -> None:
         now = now or _now_iso()
         lv_name = self._ensure_volume_backend_lv_name(volume)
@@ -1005,7 +1003,7 @@ class StateDB:
         name: str,
         owner: str,
         target_size_gib: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Atomically reserve a READY volume for resize."""
         with self.transaction(immediate=True) as conn:
             if self._get_volume_conn(conn, svm, name) is None:
@@ -1103,7 +1101,7 @@ class StateDB:
         name: str,
         owner: str,
         recovered_size_gib: int,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Recover DB volume size after the backend LV was already extended."""
         now = _now_iso()
         with self.transaction(immediate=True) as conn:
@@ -1165,9 +1163,7 @@ class StateDB:
                 conn, "volumes", {"svm": svm, "name": name}, status
             )
 
-    def set_volume_qos(
-        self, svm: str, name: str, qos: Optional[dict[str, Any]]
-    ) -> bool:
+    def set_volume_qos(self, svm: str, name: str, qos: dict[str, Any] | None) -> bool:
         """Persist or clear QoS settings in the volume status."""
         with self.transaction(immediate=True) as conn:
             record = self._get_volume_conn(conn, svm, name)
@@ -1185,7 +1181,7 @@ class StateDB:
             )
             return True
 
-    def get_volume(self, svm: str, name: str) -> Optional[dict[str, Any]]:
+    def get_volume(self, svm: str, name: str) -> dict[str, Any] | None:
         conn = self._conn()
         return self._get_volume_conn(conn, svm, name)
 
@@ -1195,10 +1191,10 @@ class StateDB:
         name: str,
         owner: str,
         *,
-        expected_spec: Optional[dict[str, Any]] = None,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
         require_ready_svm: bool = False,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return self._acquire_create_lease(
             "volumes",
             {"svm": svm, "name": name},
@@ -1229,10 +1225,10 @@ class StateDB:
 
     def list_volumes(
         self,
-        svm: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         return self._list_volumes_conn(
@@ -1240,7 +1236,7 @@ class StateDB:
         )
 
     def list_all_volumes(
-        self, svm: Optional[str] = None, name: Optional[str] = None
+        self, svm: str | None = None, name: str | None = None
     ) -> list[dict[str, Any]]:
         with self._read_transaction() as conn:
             return self._list_all_volumes_conn(conn, svm=svm, name=name)
@@ -1248,8 +1244,8 @@ class StateDB:
     def _list_all_volumes_conn(
         self,
         conn: sqlite3.Connection,
-        svm: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        name: str | None = None,
     ) -> list[dict[str, Any]]:
         return self._list_all_pages_conn(
             lambda cursor: self._list_volumes_conn(
@@ -1261,10 +1257,10 @@ class StateDB:
     def _list_volumes_conn(
         self,
         conn: sqlite3.Connection,
-        svm: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM volumes WHERE 1=1"
         params: list[Any] = []
@@ -1298,7 +1294,7 @@ class StateDB:
 
     def reserve_volume_delete(
         self, svm: str, name: str, *, force: bool = False
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Atomically mark a volume deleting after validating snapshot preconditions."""
         with self.transaction(immediate=True) as conn:
             record = self._get_volume_conn(conn, svm, name)
@@ -1452,7 +1448,7 @@ class StateDB:
         self,
         snapshot: Any,
         *,
-        expected_create_owner: Optional[str] = None,
+        expected_create_owner: str | None = None,
         require_ready_volume: bool = False,
         require_ready_svm: bool = False,
     ) -> bool:
@@ -1492,7 +1488,7 @@ class StateDB:
             return True
 
     def _upsert_snapshot_conn(
-        self, conn: sqlite3.Connection, snapshot: Any, *, now: Optional[str] = None
+        self, conn: sqlite3.Connection, snapshot: Any, *, now: str | None = None
     ) -> None:
         now = now or _now_iso()
         lv_name = self._ensure_snapshot_backend_lv_name(snapshot)
@@ -1532,11 +1528,11 @@ class StateDB:
         name: str,
         owner: str,
         *,
-        expected_spec: Optional[dict[str, Any]] = None,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
         require_ready_volume: bool = False,
         require_ready_svm: bool = False,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return self._acquire_create_lease(
             "snapshots",
             {"svm": svm, "volume": volume, "name": name},
@@ -1585,11 +1581,11 @@ class StateDB:
 
     def list_snapshots(
         self,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         return self._list_snapshots_conn(
@@ -1598,9 +1594,9 @@ class StateDB:
 
     def list_all_snapshots(
         self,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        name: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._read_transaction() as conn:
             return self._list_all_snapshots_conn(
@@ -1610,9 +1606,9 @@ class StateDB:
     def _list_all_snapshots_conn(
         self,
         conn: sqlite3.Connection,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        name: str | None = None,
     ) -> list[dict[str, Any]]:
         return self._list_all_pages_conn(
             lambda cursor: self._list_snapshots_conn(
@@ -1633,11 +1629,11 @@ class StateDB:
     def _list_snapshots_conn(
         self,
         conn: sqlite3.Connection,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        name: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        name: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM snapshots WHERE 1=1"
         params: list[Any] = []
@@ -1691,7 +1687,7 @@ class StateDB:
         volume: str,
         name: str,
         owner: str,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Reserve a READY snapshot so delete cannot remove it during clone."""
         key = {"svm": svm, "volume": volume, "name": name}
         with self.transaction(immediate=True) as conn:
@@ -1759,7 +1755,7 @@ class StateDB:
         name: str,
         *,
         force: bool = False,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Atomically mark a snapshot deleting after validating clone preconditions."""
         key = {"svm": svm, "volume": volume, "name": name}
         with self.transaction(immediate=True) as conn:
@@ -1858,7 +1854,7 @@ class StateDB:
         self,
         export: Any,
         *,
-        expected_create_owner: Optional[str] = None,
+        expected_create_owner: str | None = None,
         require_ready_volume: bool = False,
         require_ready_svm: bool = False,
         allow_missing_create_owner: bool = True,
@@ -1880,8 +1876,8 @@ class StateDB:
         conn: sqlite3.Connection,
         export: Any,
         *,
-        now: Optional[str] = None,
-        expected_create_owner: Optional[str] = None,
+        now: str | None = None,
+        expected_create_owner: str | None = None,
         require_ready_volume: bool = False,
         require_ready_svm: bool = False,
         allow_missing_create_owner: bool = True,
@@ -1934,12 +1930,12 @@ class StateDB:
 
     def list_exports(
         self,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        client: Optional[str] = None,
-        owner: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        client: str | None = None,
+        owner: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         return self.list_exports_conn(
@@ -1954,25 +1950,23 @@ class StateDB:
 
     def list_all_exports(
         self,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        client: Optional[str] = None,
-        owner: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        client: str | None = None,
+        owner: str | None = None,
     ) -> list[dict[str, Any]]:
         with self._read_transaction() as conn:
             return self.list_all_exports_conn(
                 conn, svm=svm, volume=volume, client=client, owner=owner
             )
 
-    def get_export(
-        self, svm: str, volume: str, client: str
-    ) -> Optional[dict[str, Any]]:
+    def get_export(self, svm: str, volume: str, client: str) -> dict[str, Any] | None:
         conn = self._conn()
         return self.get_export_conn(conn, svm, volume, client)
 
     def reserve_export_delete(
         self, svm: str, volume: str, client: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         """Atomically mark an export deleting after validating create state."""
         key = {"svm": svm, "volume": volume, "client": client}
         with self.transaction(immediate=True) as conn:
@@ -2000,10 +1994,10 @@ class StateDB:
         client: str,
         owner: str,
         *,
-        expected_spec: Optional[dict[str, Any]] = None,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
         require_ready_svm: bool = False,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         return self._acquire_create_lease(
             "exports",
             {"svm": svm, "volume": volume, "client": client},
@@ -2039,7 +2033,7 @@ class StateDB:
         svm: str,
         volume: str,
         client: str,
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         cur = conn.execute(
             "SELECT * FROM exports WHERE svm = ? AND volume = ? AND client = ?",
             (svm, volume, client),
@@ -2052,12 +2046,12 @@ class StateDB:
     def list_exports_conn(
         self,
         conn: sqlite3.Connection,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        client: Optional[str] = None,
-        owner: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        client: str | None = None,
+        owner: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         sql = "SELECT * FROM exports WHERE 1=1"
         params: list[Any] = []
@@ -2098,10 +2092,10 @@ class StateDB:
     def list_all_exports_conn(
         self,
         conn: sqlite3.Connection,
-        svm: Optional[str] = None,
-        volume: Optional[str] = None,
-        client: Optional[str] = None,
-        owner: Optional[str] = None,
+        svm: str | None = None,
+        volume: str | None = None,
+        client: str | None = None,
+        owner: str | None = None,
     ) -> list[dict[str, Any]]:
         return self._list_all_pages_conn(
             lambda cursor: self.list_exports_conn(
@@ -2150,11 +2144,11 @@ class StateDB:
 
     def list_operation_log(
         self,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        operation: Optional[str] = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        operation: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         conn = self._conn()
         return self._list_operation_log_conn(
@@ -2169,11 +2163,11 @@ class StateDB:
     def _list_operation_log_conn(
         self,
         conn: sqlite3.Connection,
-        resource_type: Optional[str] = None,
-        resource_id: Optional[str] = None,
-        operation: Optional[str] = None,
+        resource_type: str | None = None,
+        resource_id: str | None = None,
+        operation: str | None = None,
         limit: int = 100,
-        cursor: Optional[str] = None,
+        cursor: str | None = None,
     ) -> list[dict[str, Any]]:
         if limit < 1:
             raise ValueError("Operation log limit must be positive")
@@ -2202,7 +2196,7 @@ class StateDB:
         cur = conn.execute(sql, params)
         return [dict(row) for row in cur.fetchall()]
 
-    def prune_operation_log(self, before: Union[datetime, str]) -> int:
+    def prune_operation_log(self, before: datetime | str) -> int:
         cutoff = before.isoformat() if isinstance(before, datetime) else str(before)
         with self.transaction(immediate=True) as conn:
             cur = conn.execute(
@@ -2229,7 +2223,7 @@ class StateDB:
     # ---- helpers ----
 
     @staticmethod
-    def _ensure_svm_backend_lv_name(svm: Any) -> Optional[str]:
+    def _ensure_svm_backend_lv_name(svm: Any) -> str | None:
         has_root_lv = bool(getattr(svm.spec, "root_volume_size_gib", None)) or bool(
             getattr(svm.status, "lv_created", False)
         )
@@ -2260,10 +2254,10 @@ class StateDB:
         key: dict[str, str],
         owner: str,
         *,
-        expected_spec: Optional[dict[str, Any]] = None,
+        expected_spec: dict[str, Any] | None = None,
         allow_failed: bool = False,
-        precondition: Optional[Callable[[sqlite3.Connection], Any]] = None,
-    ) -> Optional[dict[str, Any]]:
+        precondition: Callable[[sqlite3.Connection], Any] | None = None,
+    ) -> dict[str, Any] | None:
         with self.transaction(immediate=True) as conn:
             if precondition is not None:
                 precondition(conn)
@@ -2291,7 +2285,7 @@ class StateDB:
         conn: sqlite3.Connection,
         table: str,
         key: dict[str, str],
-        expected_owner: Optional[str],
+        expected_owner: str | None,
         *,
         allow_missing: bool = False,
     ) -> bool:
@@ -2308,7 +2302,7 @@ class StateDB:
         key: dict[str, str],
         owner: str,
         *,
-        precondition: Optional[Callable[[sqlite3.Connection], Any]] = None,
+        precondition: Callable[[sqlite3.Connection], Any] | None = None,
     ) -> bool:
         with self.transaction(immediate=True) as conn:
             if precondition is not None:
@@ -2355,7 +2349,7 @@ class StateDB:
         conn: sqlite3.Connection,
         table: str,
         key: dict[str, str],
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         where = " AND ".join(f"{column} = ?" for column in key)
         cur = conn.execute(f"SELECT * FROM {table} WHERE {where}", tuple(key.values()))
         row = cur.fetchone()
@@ -2365,7 +2359,7 @@ class StateDB:
 
     def _get_svm_conn(
         self, conn: sqlite3.Connection, name: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         cur = conn.execute("SELECT * FROM svms WHERE name = ?", (name,))
         row = cur.fetchone()
         if row is None:
@@ -2374,7 +2368,7 @@ class StateDB:
 
     def _get_volume_conn(
         self, conn: sqlite3.Connection, svm: str, name: str
-    ) -> Optional[dict[str, Any]]:
+    ) -> dict[str, Any] | None:
         cur = conn.execute(
             "SELECT * FROM volumes WHERE svm = ? AND name = ?", (svm, name)
         )
@@ -2536,11 +2530,11 @@ class StateDB:
 
     def _list_all_pages_conn(
         self,
-        fetch_page: Callable[[Optional[str]], list[dict[str, Any]]],
+        fetch_page: Callable[[str | None], list[dict[str, Any]]],
         cursor_values: Callable[[dict[str, Any]], list[str]],
     ) -> list[dict[str, Any]]:
         records: list[dict[str, Any]] = []
-        cursor: Optional[str] = None
+        cursor: str | None = None
         seen_cursors: set[str] = set()
 
         while True:

@@ -1,6 +1,6 @@
 """Custom exceptions for ARCA Storage Cinder Driver."""
 
-from typing import Any, Optional
+from typing import Any
 
 
 class ArcaStorageException(Exception):
@@ -14,13 +14,9 @@ class ArcaStorageException(Exception):
 class ArcaAPIConnectionError(ArcaStorageException):
     """Failed to connect to ARCA Storage API."""
 
-    pass
-
 
 class ArcaAPITimeout(ArcaStorageException):
     """API request timed out."""
-
-    pass
 
 
 class ArcaAPIError(ArcaStorageException):
@@ -29,8 +25,8 @@ class ArcaAPIError(ArcaStorageException):
     def __init__(
         self,
         message: str,
-        status_code: Optional[int] = None,
-        response_data: Optional[dict[str, Any]] = None,
+        status_code: int | None = None,
+        response_data: dict[str, Any] | None = None,
     ):
         super().__init__(message)
         self.status_code = status_code
@@ -40,34 +36,22 @@ class ArcaAPIError(ArcaStorageException):
 class ArcaVolumeNotFound(ArcaStorageException):
     """Volume not found."""
 
-    pass
-
 
 class ArcaVolumeAlreadyExists(ArcaStorageException):
     """Volume already exists."""
-
-    pass
 
 
 class ArcaSVMNotFound(ArcaStorageException):
     """SVM not found."""
 
-    pass
-
 
 class ArcaExportError(ArcaStorageException):
     """Error managing NFS exports."""
-
-    pass
 
 
 class ArcaSnapshotNotFound(ArcaStorageException):
     """Snapshot not found."""
 
-    pass
-
 
 class ArcaSnapshotAlreadyExists(ArcaStorageException):
     """Snapshot already exists."""
-
-    pass

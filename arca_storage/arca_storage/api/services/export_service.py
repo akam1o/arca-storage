@@ -6,9 +6,16 @@ Delegates to the Export reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from arca_storage.api.models import ExportCreate
+from arca_storage.api.services.svm_service import require_svm_ready_record
+from arca_storage.api.services.volume_service import require_volume_ready_record
+from arca_storage.cli.lib.validators import (
+    normalize_ip_cidr,
+    normalize_nfs_client_cidr,
+    validate_name,
+)
 from arca_storage.context import get_context
 from arca_storage.create_resume import (
     ACTIVE_CREATE_PHASES,
@@ -27,16 +34,9 @@ from arca_storage.errors import (
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.export import Export, ExportSpec, ExportStatus
-from arca_storage.cli.lib.validators import (
-    normalize_ip_cidr,
-    normalize_nfs_client_cidr,
-    validate_name,
-)
-from arca_storage.api.services.svm_service import require_svm_ready_record
-from arca_storage.api.services.volume_service import require_volume_ready_record
 
 
-def add_export(export_data: ExportCreate) -> Dict[str, Any]:
+def add_export(export_data: ExportCreate) -> dict[str, Any]:
     """Add an NFS export via the reconciler."""
     validate_name(export_data.svm)
     validate_name(export_data.volume)
@@ -112,9 +112,9 @@ def ensure_internal_export(
     pseudo: str,
     access: str = "rw",
     root_squash: bool = False,
-    sec: Optional[list[str]] = None,
+    sec: list[str] | None = None,
     owner: str = "internal",
-) -> Dict[str, Any]:
+) -> dict[str, Any]:
     """Create or update an internal export whose path is not derived from volume."""
     validate_name(svm)
     client = normalize_ip_cidr(client)
@@ -169,12 +169,12 @@ def _remove_export_by_key(svm: str, volume: str, client: str) -> None:
 
 
 def list_exports(
-    svm: Optional[str] = None,
-    volume: Optional[str] = None,
-    client: Optional[str] = None,
+    svm: str | None = None,
+    volume: str | None = None,
+    client: str | None = None,
     limit: int = 100,
-    cursor: Optional[str] = None,
-) -> Dict[str, Any]:
+    cursor: str | None = None,
+) -> dict[str, Any]:
     """List exports from the database."""
     ctx = get_context()
     if client:
@@ -194,7 +194,7 @@ def list_exports(
     return {"items": items, "next_cursor": next_cursor}
 
 
-def _export_to_dict(export: Export) -> Dict[str, Any]:
+def _export_to_dict(export: Export) -> dict[str, Any]:
     return {
         "svm": export.spec.svm,
         "volume": export.spec.volume,
@@ -209,7 +209,7 @@ def _export_to_dict(export: Export) -> Dict[str, Any]:
     }
 
 
-def _export_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
+def _export_record_to_dict(record: dict[str, Any]) -> dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     return {
@@ -226,12 +226,12 @@ def _export_record_to_dict(record: Dict[str, Any]) -> Dict[str, Any]:
     }
 
 
-def _meta_from_record(record: Dict[str, Any]) -> Any:
+def _meta_from_record(record: dict[str, Any]) -> Any:
     return resource_meta_from_record(record)
 
 
 def _can_resume_create(
-    record: Dict[str, Any], requested_spec: ExportSpec, *, owner: Optional[str] = None
+    record: dict[str, Any], requested_spec: ExportSpec, *, owner: str | None = None
 ) -> bool:
     if not record:
         return False
@@ -248,19 +248,19 @@ def _can_resume_create(
     return _has_pending_create_step(status)
 
 
-def _is_failed_delete(status: Dict[str, Any]) -> bool:
+def _is_failed_delete(status: dict[str, Any]) -> bool:
     return str(status.get("message") or "").startswith("Delete failed:")
 
 
-def _has_pending_create_step(status: Dict[str, Any]) -> bool:
+def _has_pending_create_step(status: dict[str, Any]) -> bool:
     return not status.get("ganesha_configured", False) or not status.get(
         "service_reloaded", False
     )
 
 
 def _resume_export_create(
-    ctx: Any, record: Dict[str, Any], owner: str
-) -> Dict[str, Any]:
+    ctx: Any, record: dict[str, Any], owner: str
+) -> dict[str, Any]:
     export = Export(
         metadata=_meta_from_record(record),
         spec=ExportSpec.model_validate(record["spec"]),

@@ -71,7 +71,9 @@ jobs:
 
       - name: Run gosec
         run: |
-          go install github.com/securego/gosec/v2/cmd/gosec@latest
+          # v2.29.0 cannot read Go 1.27.2 export data; pin the upstream fix until its next release.
+          # https://github.com/securego/gosec/issues/1771
+          go install github.com/securego/gosec/v2/cmd/gosec@7b1b5cebe007d62fb58eacb90fc571112939ec30
           "$(go env GOPATH)/bin/gosec" -exclude-dir=.gomodcache ./...
 
       - name: Build CSI image

@@ -6,10 +6,9 @@ from __future__ import annotations
 
 import logging
 from datetime import datetime, timezone
-from typing import Optional
 
-from arca_storage.create_resume import clear_create_lease
 from arca_storage.cli.lib.validators import legacy_volume_lv_name, volume_lv_name
+from arca_storage.create_resume import clear_create_lease
 from arca_storage.db import StateDB
 from arca_storage.errors import CreateLeaseLostError
 from arca_storage.models.base import Phase
@@ -22,7 +21,7 @@ logger = logging.getLogger(__name__)
 
 class VolumeReconciler:
     def __init__(
-        self, db: StateDB, adapters: Adapters, *, config: Optional[dict] = None
+        self, db: StateDB, adapters: Adapters, *, config: dict | None = None
     ) -> None:
         self.db = db
         self.adapters = adapters
@@ -96,7 +95,7 @@ class VolumeReconciler:
                 )
             except CreateLeaseLostError:
                 raise
-            except Exception as e:
+            except Exception as e:  # noqa: BLE001 - Persist any backend create failure.
                 volume.status.phase = Phase.FAILED
                 expected_owner = create_owner
                 clear_create_lease(volume.status)
@@ -127,7 +126,7 @@ class VolumeReconciler:
         vg_name: str,
         lv_name: str,
         mount_path: str,
-        create_owner: Optional[str],
+        create_owner: str | None,
     ) -> None:
         changed = False
         if volume.status.lv_created and not self.adapters.lvm.lv_exists(
@@ -143,7 +142,7 @@ class VolumeReconciler:
         if volume.status.mounted:
             try:
                 mounted = self.adapters.xfs.is_mounted(mount_path)
-            except Exception:
+            except Exception:  # noqa: BLE001 - Keep mount state when the probe is inconclusive.
                 mounted = True
             if not mounted:
                 volume.status.mounted = False
@@ -168,7 +167,7 @@ class VolumeReconciler:
             self.adapters.lvm.delete_lv(vg_name, lv_name)
             self.db.delete_volume(spec.svm, spec.name)
             self.db.log_operation("Volume", volume.metadata.id, "delete", "completed")
-        except Exception as e:
+        except Exception as e:  # noqa: BLE001 - Persist any backend deletion failure.
             volume.status.phase = Phase.FAILED
             volume.status.message = f"Delete failed: {e}"
             self._persist(volume, volume.status.message)
@@ -180,7 +179,7 @@ class VolumeReconciler:
         volume: Volume,
         detail: str,
         *,
-        expected_create_owner: Optional[str] = None,
+        expected_create_owner: str | None = None,
     ) -> None:
         if not self.db.upsert_volume(
             volume, expected_create_owner=expected_create_owner

@@ -9,8 +9,9 @@ import json
 import os
 import re
 import tempfile
+from collections.abc import Sequence
+from contextlib import suppress
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
 
 from jinja2 import Template
 
@@ -31,7 +32,7 @@ def _template_path() -> Path:
     return Path(__file__).resolve().parents[2] / "templates" / "ganesha.conf.j2"
 
 
-def _config_snapshot_dir(settings: Optional[ArcaSettings] = None) -> Path:
+def _config_snapshot_dir(settings: ArcaSettings | None = None) -> Path:
     # Keep snapshots under the same persistent state directory as exports.*.json.
     if settings is not None:
         return Path(settings.state.runtime_dir) / "config"
@@ -59,7 +60,7 @@ def _safe_snapshot_version(config_version: str, *, allow_latest: bool = False) -
 
 
 def _snapshot_path(
-    svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None
+    svm_name: str, config_version: str, snapshot_dir: Path | None = None
 ) -> Path:
     svm_name = _safe_resource_name(svm_name)
     config_version = _safe_snapshot_version(config_version)
@@ -69,7 +70,7 @@ def _snapshot_path(
 
 
 def _snapshot_meta_path(
-    svm_name: str, config_version: str, snapshot_dir: Optional[Path] = None
+    svm_name: str, config_version: str, snapshot_dir: Path | None = None
 ) -> Path:
     svm_name = _safe_resource_name(svm_name)
     config_version = _safe_snapshot_version(config_version)
@@ -118,11 +119,11 @@ def _ganesha_token(value: object, field: str, allowed: set[str]) -> str:
 def _stable_config_version(
     *,
     svm_name: str,
-    bind_addr: Optional[str],
+    bind_addr: str | None,
     protocols: str,
     mountd_port: int,
     nlm_port: int,
-    exports: Sequence[Dict],
+    exports: Sequence[dict],
 ) -> str:
     payload = {
         "svm": svm_name,
@@ -151,13 +152,10 @@ def _stable_config_version(
 
 def _write_if_changed(path: Path, content: str) -> None:
     if path.exists():
-        try:
-            with open(path, "r", encoding="utf-8") as f:
-                if f.read() == content:
-                    return
-        except Exception:
-            # If we can't read, fall back to writing.
-            pass
+        # An unreadable or invalid UTF-8 file is replaced by the write below.
+        with suppress(OSError, UnicodeError), open(path, "r", encoding="utf-8") as f:
+            if f.read() == content:
+                return
 
     path.parent.mkdir(parents=True, exist_ok=True)
     tmp_fd, tmp_path = tempfile.mkstemp(prefix=f".{path.name}.", dir=str(path.parent))
@@ -193,10 +191,10 @@ def _write_json_if_changed(path: Path, data: object) -> None:
 
 def render_config(
     svm_name: str,
-    exports: List[Dict],
+    exports: list[dict],
     *,
-    bind_addr: Optional[str] = None,
-    settings: Optional[ArcaSettings] = None,
+    bind_addr: str | None = None,
+    settings: ArcaSettings | None = None,
 ) -> str:
     """
     Render ganesha.conf configuration file.
@@ -224,7 +222,7 @@ def render_config(
 
     # Stable ordering for deterministic output.
     exports_sorted = sorted(
-        list(exports),
+        exports,
         key=lambda e: (
             int(e.get("export_id") or 0),
             str(e.get("path") or ""),
@@ -232,7 +230,7 @@ def render_config(
         ),
     )
 
-    exports_render: List[Dict] = []
+    exports_render: list[dict] = []
     for e in exports_sorted:
         sec = e.get("sec", ["sys"])
         exports_render.append(
@@ -343,7 +341,7 @@ def add_export(
     client: str,
     access: str = "rw",
     root_squash: bool = True,
-    sec: Optional[List[str]] = None,
+    sec: list[str] | None = None,
 ) -> None:
     """
     Add an export to the ganesha configuration.
@@ -428,7 +426,7 @@ def remove_export(svm_name: str, volume_name: str, client: str) -> None:
     reload(svm_name)
 
 
-def _load_exports(svm_name: str) -> List[Dict]:
+def _load_exports(svm_name: str) -> list[dict]:
     """Load exports from state file."""
     svm_name = _safe_resource_name(svm_name)
     state_dir = get_state_dir()
@@ -443,7 +441,7 @@ def _load_exports(svm_name: str) -> List[Dict]:
     return []
 
 
-def _save_exports(svm_name: str, exports: List[Dict]) -> None:
+def _save_exports(svm_name: str, exports: list[dict]) -> None:
     """Save exports to state file."""
     svm_name = _safe_resource_name(svm_name)
     state_dir = get_state_dir()
@@ -467,8 +465,8 @@ def _save_exports(svm_name: str, exports: List[Dict]) -> None:
 
 
 def list_exports(
-    svm_name: Optional[str] = None, volume_name: Optional[str] = None
-) -> List[Dict]:
+    svm_name: str | None = None, volume_name: str | None = None
+) -> list[dict]:
     """
     List exports from state files.
     """
@@ -481,7 +479,7 @@ def list_exports(
     if not state_dir.exists():
         return []
 
-    exports: List[Dict] = []
+    exports: list[dict] = []
     if svm_name:
         per_svm = _load_exports(svm_name)
         for e in per_svm:
@@ -515,7 +513,7 @@ def sync(svm_name: str) -> str:
     return path
 
 
-def list_config_snapshots(svm_name: str) -> List[Dict]:
+def list_config_snapshots(svm_name: str) -> list[dict]:
     """
     List saved ganesha.conf snapshots for a given SVM.
     """
@@ -524,7 +522,7 @@ def list_config_snapshots(svm_name: str) -> List[Dict]:
     if not snapshot_dir.exists():
         return []
 
-    results: List[Dict] = []
+    results: list[dict] = []
     prefix = f"ganesha.{svm_name}."
     suffix = ".conf"
     for p in snapshot_dir.glob(f"{prefix}*{suffix}"):
@@ -535,7 +533,7 @@ def list_config_snapshots(svm_name: str) -> List[Dict]:
             continue
         try:
             mtime = p.stat().st_mtime
-        except Exception:
+        except OSError:
             mtime = 0.0
         results.append({"config_version": version, "path": str(p), "mtime": mtime})
 
@@ -575,7 +573,7 @@ def rollback_config(
     return str(config_path)
 
 
-def read_config_snapshot_meta(svm_name: str, config_version: str) -> Dict:
+def read_config_snapshot_meta(svm_name: str, config_version: str) -> dict:
     svm_name = _safe_resource_name(svm_name)
     config_version = _safe_snapshot_version(config_version, allow_latest=True)
     snapshot_dir = _config_snapshot_dir()

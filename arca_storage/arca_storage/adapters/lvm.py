@@ -14,7 +14,6 @@ from arca_storage.errors import (
     PreconditionFailedError,
 )
 
-
 _LOGICAL_VOLUME_REF = "<logical-volume>"
 _SNAPSHOT_REF = "<snapshot>"
 

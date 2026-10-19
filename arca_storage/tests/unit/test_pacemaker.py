@@ -9,11 +9,15 @@ import pytest
 from arca_storage.adapters.pacemaker import (
     FakePacemakerAdapter,
     SubprocessPacemakerAdapter,
+)
+from arca_storage.adapters.pacemaker import (
     _parse_group_members as parse_adapter_group_members,
 )
 from arca_storage.cli.lib.pacemaker import (
-    create_group,
     _parse_group_members as parse_cli_group_members,
+)
+from arca_storage.cli.lib.pacemaker import (
+    create_group,
 )
 from arca_storage.errors import SubprocessError
 

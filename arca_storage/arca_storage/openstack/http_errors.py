@@ -64,5 +64,5 @@ def response_error_message(response: Any) -> tuple[str, Any | None]:
         if not error_msg:
             error_msg = getattr(response, "text", "")
         return safe_error_detail(error_msg), error_data
-    except Exception:
+    except Exception:  # noqa: BLE001 - Any response parsing failure uses sanitized text.
         return safe_error_detail(getattr(response, "text", "")), None

@@ -6,7 +6,7 @@ Now delegates to the SVM reconciler for idempotent, step-tracked operations.
 
 from __future__ import annotations
 
-from typing import Any, Dict, Optional
+from typing import Any
 
 from arca_storage.api.models import SVMCreate
 from arca_storage.cli.lib.validators import (
@@ -39,7 +39,7 @@ from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.svm import SVM, SVMSpec
 
 
-def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
+def create_svm(svm_data: SVMCreate) -> dict[str, Any]:
     """Create a new SVM via the reconciler."""
     validate_name(svm_data.name)
     if svm_data.vlan_id is not None:
@@ -94,8 +94,8 @@ def create_svm(svm_data: SVMCreate) -> Dict[str, Any]:
 
 
 def list_svms(
-    name: Optional[str] = None, limit: int = 100, cursor: Optional[str] = None
-) -> Dict[str, Any]:
+    name: str | None = None, limit: int = 100, cursor: str | None = None
+) -> dict[str, Any]:
     """List SVMs from the database."""
     ctx = get_context()
     try:
@@ -110,7 +110,7 @@ def list_svms(
     return {"items": items, "next_cursor": next_cursor}
 
 
-def get_svm(name: str) -> Dict[str, Any]:
+def get_svm(name: str) -> dict[str, Any]:
     """Get a single SVM by name."""
     validate_name(name)
     ctx = get_context()
@@ -120,7 +120,7 @@ def get_svm(name: str) -> Dict[str, Any]:
     return _svm_record_to_dict(record, ctx)
 
 
-def get_svm_capacity(name: str) -> Dict[str, Any]:
+def get_svm_capacity(name: str) -> dict[str, Any]:
     """Return capacity statistics for one SVM."""
     validate_name(name)
     ctx = get_context()
@@ -148,7 +148,7 @@ def get_svm_capacity(name: str) -> Dict[str, Any]:
     }
 
 
-def require_svm_ready_record(record: Dict[str, Any], name: str) -> None:
+def require_svm_ready_record(record: dict[str, Any], name: str) -> None:
     """Reject dependent operations until the SVM reconciler has completed."""
     phase = str(record.get("status", {}).get("phase") or "")
     if phase == Phase.READY.value:
@@ -201,7 +201,7 @@ def delete_svm(name: str, force: bool = False, delete_volumes: bool = False) -> 
         )
 
 
-def _svm_to_dict(svm: SVM, ctx: Optional[Any] = None) -> Dict[str, Any]:
+def _svm_to_dict(svm: SVM, ctx: Any | None = None) -> dict[str, Any]:
     vip = _vip_from_ip_cidr(svm.spec.ip_cidr)
     return {
         "name": svm.spec.name,
@@ -219,8 +219,8 @@ def _svm_to_dict(svm: SVM, ctx: Optional[Any] = None) -> Dict[str, Any]:
 
 
 def _svm_record_to_dict(
-    record: Dict[str, Any], ctx: Optional[Any] = None
-) -> Dict[str, Any]:
+    record: dict[str, Any], ctx: Any | None = None
+) -> dict[str, Any]:
     spec = record.get("spec", {})
     status = record.get("status", {})
     ip_cidr = str(spec.get("ip_cidr") or "")
@@ -248,7 +248,7 @@ def _vip_from_ip_cidr(ip_cidr: str) -> str:
     return vip
 
 
-def _export_root(svm_name: str, ctx: Optional[Any] = None) -> str:
+def _export_root(svm_name: str, ctx: Any | None = None) -> str:
     ctx = ctx or get_context()
     export_dir = _safe_export_dir(ctx)
     if not svm_name:
@@ -275,21 +275,21 @@ def _safe_export_dir(ctx: Any) -> str:
     return "/" + "/".join(parts)
 
 
-def _meta_from_record(record: Dict[str, Any]) -> Any:
+def _meta_from_record(record: dict[str, Any]) -> Any:
     return resource_meta_from_record(record)
 
 
-def _parse_status(record: Dict[str, Any], kind: str) -> Any:
+def _parse_status(record: dict[str, Any], kind: str) -> Any:
     from arca_storage.models.svm import SVMStatus
 
     return SVMStatus.model_validate(record["status"])
 
 
 def _can_resume_create(
-    record: Optional[Dict[str, Any]],
+    record: dict[str, Any] | None,
     requested_spec: SVMSpec,
     *,
-    owner: Optional[str] = None,
+    owner: str | None = None,
 ) -> bool:
     if not record:
         return False
@@ -307,18 +307,18 @@ def _can_resume_create(
     return _has_pending_create_step(spec, status)
 
 
-def _is_failed_delete(status: Dict[str, Any]) -> bool:
+def _is_failed_delete(status: dict[str, Any]) -> bool:
     return str(status.get("message") or "").startswith("Delete failed:")
 
 
-def _has_pending_create_step(spec: SVMSpec, status: Dict[str, Any]) -> bool:
+def _has_pending_create_step(spec: SVMSpec, status: dict[str, Any]) -> bool:
     fields = ["ganesha_configured", "pacemaker_group_created"]
     if spec.root_volume_size_gib:
         fields.extend(["lv_created", "fs_formatted"])
     return any(not status.get(field, False) for field in fields)
 
 
-def _resume_svm_create(ctx: Any, record: Dict[str, Any], owner: str) -> Dict[str, Any]:
+def _resume_svm_create(ctx: Any, record: dict[str, Any], owner: str) -> dict[str, Any]:
     svm = SVM(
         metadata=_meta_from_record(record),
         spec=SVMSpec.model_validate(record["spec"]),
@@ -393,7 +393,7 @@ def _cleanup_or_reject_remaining_dependents(
                 )
 
 
-def _mark_svm_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:
+def _mark_svm_delete_failed(ctx: Any, record: dict[str, Any], message: str) -> None:
     svm = SVM(
         metadata=_meta_from_record(record),
         spec=SVMSpec.model_validate(record["spec"]),
@@ -404,16 +404,16 @@ def _mark_svm_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> N
     ctx.db.upsert_svm(svm)
 
 
-def _volume_ref(volume: Dict[str, Any]) -> str:
+def _volume_ref(volume: dict[str, Any]) -> str:
     spec = volume.get("spec", {})
     return f"{spec.get('svm')}/{spec.get('name')}"
 
 
-def _snapshot_ref(snapshot: Dict[str, Any]) -> str:
+def _snapshot_ref(snapshot: dict[str, Any]) -> str:
     spec = snapshot.get("spec", {})
     return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('name')}"
 
 
-def _export_ref(export: Dict[str, Any]) -> str:
+def _export_ref(export: dict[str, Any]) -> str:
     spec = export.get("spec", {})
     return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('client')}"

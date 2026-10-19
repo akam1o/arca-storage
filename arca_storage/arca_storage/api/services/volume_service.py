@@ -7,9 +7,15 @@ Delegates to the Volume reconciler for idempotent, step-tracked operations.
 from __future__ import annotations
 
 from math import ceil
-from typing import Any, Dict, Optional
+from typing import Any
 
 from arca_storage.api.models import VolumeCreate
+from arca_storage.api.services.svm_service import require_svm_ready_record
+from arca_storage.cli.lib.validators import (
+    validate_name,
+    validate_svm_ip_cidr,
+    volume_lv_name,
+)
 from arca_storage.context import get_context
 from arca_storage.create_resume import (
     ACTIVE_CREATE_PHASES,
@@ -30,17 +36,11 @@ from arca_storage.errors import (
 )
 from arca_storage.models.base import Phase, resource_meta_from_record
 from arca_storage.models.volume import Volume, VolumeSpec
-from arca_storage.cli.lib.validators import (
-    validate_name,
-    validate_svm_ip_cidr,
-    volume_lv_name,
-)
-from arca_storage.api.services.svm_service import require_svm_ready_record
 
 _CSI_ROOT_EXPORT_VOLUME = "__csi_root__"
 
 
-def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
+def create_volume(volume_data: VolumeCreate) -> dict[str, Any]:
     """Create a new volume via the reconciler."""
     validate_name(volume_data.name)
     validate_name(volume_data.svm)
@@ -88,7 +88,7 @@ def create_volume(volume_data: VolumeCreate) -> Dict[str, Any]:
     return _volume_to_dict(volume, ctx)
 
 
-def resize_volume(name: str, svm: str, new_size_gib: int) -> Dict[str, Any]:
+def resize_volume(name: str, svm: str, new_size_gib: int) -> dict[str, Any]:
     """Resize a volume (LV extend + XFS grow)."""
     validate_name(name)
     validate_name(svm)
@@ -225,11 +225,11 @@ def delete_volume(name: str, svm: str, force: bool = False) -> None:
 
 
 def list_volumes(
-    svm: Optional[str] = None,
-    name: Optional[str] = None,
+    svm: str | None = None,
+    name: str | None = None,
     limit: int = 100,
-    cursor: Optional[str] = None,
-) -> Dict[str, Any]:
+    cursor: str | None = None,
+) -> dict[str, Any]:
     """List volumes from the database."""
     ctx = get_context()
     try:
@@ -243,7 +243,7 @@ def list_volumes(
         spec = records[limit - 1]["spec"]
         next_cursor = encode_cursor([spec["svm"], spec["name"]])
         records = records[:limit]
-    svm_records: dict[str, Optional[dict[str, Any]]] = {}
+    svm_records: dict[str, dict[str, Any] | None] = {}
     items = [
         _volume_record_to_dict(record, ctx, svm_records=svm_records)
         for record in records
@@ -251,7 +251,7 @@ def list_volumes(
     return {"items": items, "next_cursor": next_cursor}
 
 
-def _volume_to_dict(vol: Volume, ctx: Optional[Any] = None) -> Dict[str, Any]:
+def _volume_to_dict(vol: Volume, ctx: Any | None = None) -> dict[str, Any]:
     ctx = ctx or get_context()
     return {
         "name": vol.spec.name,
@@ -271,10 +271,10 @@ def _volume_to_dict(vol: Volume, ctx: Optional[Any] = None) -> Dict[str, Any]:
 
 
 def _volume_record_to_dict(
-    record: Dict[str, Any],
-    ctx: Optional[Any] = None,
-    svm_records: Optional[dict[str, Optional[dict[str, Any]]]] = None,
-) -> Dict[str, Any]:
+    record: dict[str, Any],
+    ctx: Any | None = None,
+    svm_records: dict[str, dict[str, Any] | None] | None = None,
+) -> dict[str, Any]:
     ctx = ctx or get_context()
     spec = record.get("spec", {})
     status = record.get("status", {})
@@ -300,14 +300,14 @@ def _recoverable_backend_resize_size(
     error: PreconditionFailedError,
     db_size_gib: int,
     requested_size_gib: int,
-) -> Optional[int]:
+) -> int | None:
     if error.details.get("resource") != "LogicalVolume":
         return None
     raw_size = error.details.get("current_size_gib")
     if raw_size is None:
         return None
     try:
-        backend_size_gib = int(ceil(float(raw_size)))
+        backend_size_gib = ceil(float(raw_size))
     except (TypeError, ValueError):
         return None
     if backend_size_gib <= db_size_gib or backend_size_gib <= requested_size_gib:
@@ -317,11 +317,11 @@ def _recoverable_backend_resize_size(
 
 def build_volume_export_path(
     ctx: Any,
-    svm: Optional[str],
-    mount_path: Optional[str],
-    volume: Optional[str] = None,
-    svm_records: Optional[dict[str, Optional[dict[str, Any]]]] = None,
-) -> Optional[str]:
+    svm: str | None,
+    mount_path: str | None,
+    volume: str | None = None,
+    svm_records: dict[str, dict[str, Any] | None] | None = None,
+) -> str | None:
     """Return the NFS export location for a mounted volume."""
     if not svm or not mount_path:
         return None
@@ -349,7 +349,7 @@ def build_volume_export_path(
     return f"{vip}:{safe_mount_path}"
 
 
-def _vip_from_svm_record(record: Dict[str, Any]) -> Optional[str]:
+def _vip_from_svm_record(record: dict[str, Any]) -> str | None:
     ip_cidr = str(record.get("spec", {}).get("ip_cidr") or "")
     try:
         vip, _prefix = validate_svm_ip_cidr(ip_cidr)
@@ -358,7 +358,7 @@ def _vip_from_svm_record(record: Dict[str, Any]) -> Optional[str]:
     return vip
 
 
-def _safe_resource_name(value: Any) -> Optional[str]:
+def _safe_resource_name(value: Any) -> str | None:
     name = str(value or "")
     try:
         validate_name(name)
@@ -368,8 +368,8 @@ def _safe_resource_name(value: Any) -> Optional[str]:
 
 
 def _safe_volume_mount_path(
-    svm: str, volume: Optional[str], mount_path: Any
-) -> Optional[str]:
+    svm: str, volume: str | None, mount_path: Any
+) -> str | None:
     safe_mount_path = _normalize_absolute_volume_path(mount_path)
     if not safe_mount_path:
         return None
@@ -387,7 +387,7 @@ def _safe_volume_mount_path(
     return safe_mount_path
 
 
-def _normalize_absolute_volume_path(value: Any) -> Optional[str]:
+def _normalize_absolute_volume_path(value: Any) -> str | None:
     raw = str(value or "").strip()
     if not raw or not raw.startswith("/"):
         return None
@@ -400,7 +400,7 @@ def _normalize_absolute_volume_path(value: Any) -> Optional[str]:
     return "/" + "/".join(parts)
 
 
-def require_volume_ready_record(record: Dict[str, Any], svm: str, name: str) -> None:
+def require_volume_ready_record(record: dict[str, Any], svm: str, name: str) -> None:
     """Reject dependent operations until the volume reconciler has completed."""
     phase = str(record.get("status", {}).get("phase") or "")
     if phase == Phase.READY.value:
@@ -415,21 +415,21 @@ def require_volume_ready_record(record: Dict[str, Any], svm: str, name: str) -> 
     )
 
 
-def _meta_from_record(record: Dict[str, Any]) -> Any:
+def _meta_from_record(record: dict[str, Any]) -> Any:
     return resource_meta_from_record(record)
 
 
-def _parse_status(record: Dict[str, Any]) -> Any:
+def _parse_status(record: dict[str, Any]) -> Any:
     from arca_storage.models.volume import VolumeStatus
 
     return VolumeStatus.model_validate(record["status"])
 
 
 def _can_resume_create(
-    record: Optional[Dict[str, Any]],
+    record: dict[str, Any] | None,
     requested_spec: VolumeSpec,
     *,
-    owner: Optional[str] = None,
+    owner: str | None = None,
 ) -> bool:
     if not record:
         return False
@@ -446,11 +446,11 @@ def _can_resume_create(
     return _has_pending_create_step(status)
 
 
-def _is_failed_delete(status: Dict[str, Any]) -> bool:
+def _is_failed_delete(status: dict[str, Any]) -> bool:
     return str(status.get("message") or "").startswith("Delete failed:")
 
 
-def _has_pending_create_step(status: Dict[str, Any]) -> bool:
+def _has_pending_create_step(status: dict[str, Any]) -> bool:
     return any(
         not status.get(field, False)
         for field in ("lv_created", "fs_formatted", "mounted")
@@ -458,8 +458,8 @@ def _has_pending_create_step(status: Dict[str, Any]) -> bool:
 
 
 def _resume_volume_create(
-    ctx: Any, record: Dict[str, Any], owner: str
-) -> Dict[str, Any]:
+    ctx: Any, record: dict[str, Any], owner: str
+) -> dict[str, Any]:
     volume = Volume(
         metadata=_meta_from_record(record),
         spec=VolumeSpec.model_validate(record["spec"]),
@@ -519,7 +519,7 @@ def _remove_ganesha_exports_for_volume(ctx: Any, svm: str, volume: str) -> None:
                 )
 
 
-def _mark_volume_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -> None:
+def _mark_volume_delete_failed(ctx: Any, record: dict[str, Any], message: str) -> None:
     volume = Volume(
         metadata=_meta_from_record(record),
         spec=VolumeSpec.model_validate(record["spec"]),
@@ -530,6 +530,6 @@ def _mark_volume_delete_failed(ctx: Any, record: Dict[str, Any], message: str) -
     ctx.db.upsert_volume(volume)
 
 
-def _snapshot_ref(snapshot: Dict[str, Any]) -> str:
+def _snapshot_ref(snapshot: dict[str, Any]) -> str:
     spec = snapshot.get("spec", {})
     return f"{spec.get('svm')}/{spec.get('volume')}/{spec.get('name')}"

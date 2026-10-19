@@ -8,18 +8,18 @@ import ipaddress
 import os
 import random
 import time
-from typing import Any, Dict, List, Set
+from typing import Any
 
 from oslo_log import log as logging  # type: ignore[import-untyped]
 
 from arca_storage.openstack.http_errors import safe_error_detail
 
 from ..exceptions import (
-    ArcaNetworkConflict,
     ArcaNetworkConfigurationError,
+    ArcaNetworkConflict,
     ArcaNetworkPoolExhausted,
 )
-from .base import NetworkAllocator, NetworkAllocation
+from .base import NetworkAllocation, NetworkAllocator
 
 LOG = logging.getLogger(__name__)
 
@@ -136,7 +136,9 @@ class StandaloneAllocator(NetworkAllocator):
             # Unknown error - treat as retryable conflict
             details = safe_error_detail(e)
             LOG.error("Failed to allocate standalone network")
-            raise ArcaNetworkConflict(details=f"Network allocation failed: {details}")
+            raise ArcaNetworkConflict(
+                details=f"Network allocation failed: {details}"
+            ) from e
 
     def deallocate(self, allocation_id: str) -> None:
         """Deallocate network resources.
@@ -147,9 +149,9 @@ class StandaloneAllocator(NetworkAllocator):
         Args:
             allocation_id: Allocation ID (unused)
         """
-        pass  # No cleanup needed - IPs are reused automatically
+        # No cleanup needed - IPs are reused automatically
 
-    def _parse_ip_vlan_pools(self, pool_configs: List[str]) -> List[Dict[str, Any]]:
+    def _parse_ip_vlan_pools(self, pool_configs: list[str]) -> list[dict[str, Any]]:
         """Parse and validate IP/VLAN pool configuration.
 
         Args:
@@ -210,7 +212,7 @@ class StandaloneAllocator(NetworkAllocator):
 
                 # Validate IPv4 only
                 if not isinstance(ip_network, ipaddress.IPv4Network):
-                    raise ValueError(
+                    raise ValueError(  # noqa: TRY004 - Invalid configuration is translated from ValueError.
                         f"Only IPv4 pools are supported, got IPv{ip_network.version} "
                         f"in '{pool_config}'"
                     )
@@ -233,9 +235,9 @@ class StandaloneAllocator(NetworkAllocator):
 
                 # Validate IPs are IPv4
                 if not isinstance(start_ip, ipaddress.IPv4Address):
-                    raise ValueError("Only IPv4 addresses are supported in range")
+                    raise ValueError("Only IPv4 addresses are supported in range")  # noqa: TRY004 - Preserve configuration error translation.
                 if not isinstance(end_ip, ipaddress.IPv4Address):
-                    raise ValueError("Only IPv4 addresses are supported in range")
+                    raise ValueError("Only IPv4 addresses are supported in range")  # noqa: TRY004 - Preserve configuration error translation.
 
                 # Validate IPs are within CIDR
                 if start_ip not in ip_network:
@@ -366,7 +368,7 @@ class StandaloneAllocator(NetworkAllocator):
                 pool_exhaustion_errors.append(str(e))
                 LOG.debug("Standalone network pool %d exhausted", pool_idx)
                 continue
-            except Exception:
+            except Exception:  # noqa: BLE001 - A failed pool must not block trying the remaining pools.
                 # Unknown error in this pool - log and try next pool
                 LOG.warning(
                     "Standalone network pool allocation failed with unexpected error"
@@ -381,7 +383,7 @@ class StandaloneAllocator(NetworkAllocator):
             )
         )
 
-    def _get_used_ips_in_vlan(self, vlan_id: int) -> Set[ipaddress.IPv4Address]:
+    def _get_used_ips_in_vlan(self, vlan_id: int) -> set[ipaddress.IPv4Address]:
         """Get set of all currently used IP addresses in a specific VLAN.
 
         This method scans ALL SVMs (not just prefix-filtered ones) to detect
@@ -394,7 +396,7 @@ class StandaloneAllocator(NetworkAllocator):
         Returns:
             Set of used IP addresses (as ipaddress.IPv4Address objects)
         """
-        used_ips: Set[ipaddress.IPv4Address] = set()
+        used_ips: set[ipaddress.IPv4Address] = set()
 
         try:
             svms = self.arca_client.list_svms()
@@ -441,14 +443,14 @@ class StandaloneAllocator(NetworkAllocator):
                         except ValueError:
                             LOG.warning("Invalid ip_cidr format in SVM metadata")
 
-        except Exception:
+        except Exception:  # noqa: BLE001 - Advisory lookup falls back to backend conflict detection.
             LOG.warning("Failed to get used IPs for standalone allocation")
             # Return empty set and let allocation proceed
             # (will rely on backend to detect conflicts)
 
         return used_ips
 
-    def _find_free_slot_in_pool(self, pool: Dict[str, Any], attempt: int = 0) -> tuple:
+    def _find_free_slot_in_pool(self, pool: dict[str, Any], attempt: int = 0) -> tuple:
         """Find first free IP slot in a pool.
 
         Args:
@@ -503,5 +505,3 @@ class PoolExhaustedException(Exception):
     This exception is used internally to distinguish pool exhaustion from
     other failures, allowing proper error classification at the allocator level.
     """
-
-    pass

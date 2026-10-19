@@ -6,10 +6,10 @@ integration with OpenStack Neutron for IP/VLAN allocation.
 
 import threading
 
-from neutronclient.v2_0 import client as neutron_client  # type: ignore[import-untyped]
-from neutronclient.common import exceptions as neutron_exceptions  # type: ignore[import-untyped]
-from keystoneauth1 import loading as ks_loading
 from keystoneauth1 import exceptions as ks_exceptions
+from keystoneauth1 import loading as ks_loading
+from neutronclient.common import exceptions as neutron_exceptions  # type: ignore[import-untyped]
+from neutronclient.v2_0 import client as neutron_client  # type: ignore[import-untyped]
 from oslo_config import cfg  # type: ignore[import-untyped]
 from oslo_log import log as logging  # type: ignore[import-untyped]
 
@@ -17,11 +17,11 @@ from arca_storage.openstack.http_errors import safe_error_detail
 
 from ..exceptions import (
     ArcaNetworkConflict,
-    ArcaNeutronError,
     ArcaNeutronAuthenticationError,
+    ArcaNeutronError,
     ArcaNeutronPortCreationFailed,
 )
-from .base import NetworkAllocator, NetworkAllocation
+from .base import NetworkAllocation, NetworkAllocator
 
 LOG = logging.getLogger(__name__)
 
@@ -101,7 +101,7 @@ class NeutronAllocator(NetworkAllocator):
                 "Neutron tag extension: %s",
                 "available" if self._supports_tags else "not available",
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - Optional feature discovery must not block setup.
             self._supports_tags = False
 
         LOG.info(
@@ -161,7 +161,7 @@ class NeutronAllocator(NetworkAllocator):
             port_body["port"]["binding:vnic_type"] = (
                 self.configuration.arca_storage_neutron_vnic_type
             )
-        except Exception:
+        except Exception:  # noqa: BLE001 - Optional config lookup falls back to Neutron's default.
             LOG.debug("binding:vnic_type not supported, using default")
 
         # Add tags if supported (best-effort)
@@ -222,7 +222,9 @@ class NeutronAllocator(NetworkAllocator):
             # Unknown error - treat as retryable but log as error
             details = safe_error_detail(e)
             LOG.error("Unexpected error creating Neutron port")
-            raise ArcaNetworkConflict(details=f"Failed to create port: {details}")
+            raise ArcaNetworkConflict(
+                details=f"Failed to create port: {details}"
+            ) from e
 
         # Check for duplicate ports (race condition detection)
         all_ports = self._neutron_client.list_ports(
@@ -264,7 +266,7 @@ class NeutronAllocator(NetworkAllocator):
         try:
             self._neutron_client.delete_port(allocation_id)
             LOG.info("Deleted Neutron port")
-        except Exception:
+        except Exception:  # noqa: BLE001 - Deallocation is best-effort cleanup.
             LOG.warning("Failed to delete Neutron port")
 
     def _consolidate_duplicate_ports(self, ports, newly_created_port_id=None):
@@ -300,7 +302,7 @@ class NeutronAllocator(NetworkAllocator):
             try:
                 self._neutron_client.delete_port(duplicate_port["id"])
                 LOG.info("Deleted duplicate Neutron port")
-            except Exception:
+            except Exception:  # noqa: BLE001 - Keep the selected port despite cleanup failures.
                 LOG.error("Failed to delete duplicate Neutron port")
 
         return [port_to_keep]
@@ -338,7 +340,7 @@ class NeutronAllocator(NetworkAllocator):
 
             return ports[0] if ports else None
 
-        except Exception:
+        except Exception:  # noqa: BLE001 - Failed discovery preserves the allocation fallback.
             LOG.warning("Failed to query existing Neutron ports")
         return None
 

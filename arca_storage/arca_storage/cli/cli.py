@@ -1,4 +1,3 @@
-#!/usr/bin/env python3
 """
 Main CLI entry point using Typer.
 """
@@ -6,12 +5,10 @@ Main CLI entry point using Typer.
 import os
 import sys
 import traceback
-from typing import List, Optional
 
 import typer
 
-from arca_storage.cli.commands import export, svm, volume
-from arca_storage.cli.commands import bootstrap
+from arca_storage.cli.commands import bootstrap, export, svm, volume
 
 app = typer.Typer(
     name="arca",
@@ -40,7 +37,7 @@ def global_options(
     _VERBOSE_ERRORS = verbose
 
 
-def _debug_tracebacks_enabled(argv: Optional[List[str]]) -> bool:
+def _debug_tracebacks_enabled(argv: list[str] | None) -> bool:
     args = sys.argv[1:] if argv is None else argv
     env_value = os.environ.get("ARCA_CLI_DEBUG", "")
     return (
@@ -51,7 +48,7 @@ def _debug_tracebacks_enabled(argv: Optional[List[str]]) -> bool:
     )
 
 
-def main(argv: Optional[List[str]] = None) -> int:
+def main(argv: list[str] | None = None) -> int:
     """Main entry point."""
     global _VERBOSE_ERRORS
     _VERBOSE_ERRORS = False
@@ -64,7 +61,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     except KeyboardInterrupt:
         typer.echo("\nOperation cancelled by user", err=True)
         return 130
-    except Exception as e:
+    except Exception as e:  # noqa: BLE001 - CLI boundary returns a status without a default traceback.
         typer.echo(f"Error: {e}", err=True)
         if _debug_tracebacks_enabled(argv):
             traceback.print_exception(type(e), e, e.__traceback__, file=sys.stderr)
