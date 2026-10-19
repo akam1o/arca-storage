@@ -42,9 +42,11 @@ jobs:
             rpm-deps-v1-${{ runner.os }}-${{ runner.arch }}-el10-py3.12-
 
       - name: Build rpms (EL10)
+        env:
+          ARCA_VERSION: ${{ inputs.version }}
         run: |
           docker run --rm \
-            -e "ARCA_VERSION=${{ inputs.version }}" \
+            -e ARCA_VERSION \
             -e PIP_CACHE_DIR=/root/.cache/pip \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -v "$RUNNER_TEMP/arca-rpm-deps/dnf:/var/cache/dnf" \
