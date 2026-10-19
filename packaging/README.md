@@ -10,6 +10,10 @@ CI and release builds cover all four Debian/Ubuntu targets. Each build installs
 its package in a fresh container and checks both CLI and API entrypoints before
 uploading artifacts.
 
+EL9/EL10 RPMs are built on AlmaLinux. Before uploading artifacts, each RPM is
+installed in fresh AlmaLinux and Rocky Linux containers of the same major version
+to check Python imports, dependency consistency, and both CLI and API entrypoints.
+
 ## Strategy
 
 To avoid relying on distribution Python dependencies (FastAPI/Uvicorn/Typer, etc.), packages install a dedicated virtualenv:

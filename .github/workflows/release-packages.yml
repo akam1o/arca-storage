@@ -24,7 +24,7 @@ jobs:
             -e ARCA_BUILD_PYTHON=python3.11 \
             -v "$GITHUB_WORKSPACE:/workspace" \
             -w /workspace \
-            rockylinux:9 \
+            almalinux:9 \
             bash -lc '
               dnf -y install git tar gzip rsync rpm-build python3.11 python3.11-pip &&
               git config --global --add safe.directory /workspace &&
@@ -32,6 +32,20 @@ jobs:
               bash ./packaging/vendor-wheels.sh &&
               bash ./packaging/build-rpm.sh
             '
+      - name: Install and smoke-test rpm (EL9)
+        run: |
+          for image in almalinux:9 rockylinux/rockylinux:9; do
+            docker run --rm \
+              -v "$GITHUB_WORKSPACE/packaging/out/rpm:/packages:ro" \
+              "$image" \
+              bash -euc '
+                dnf -y install /packages/arca-storage-*."$(uname -m)".rpm
+                /opt/arca-storage/venv/bin/python -c "import ssl, sqlite3, _ctypes, pydantic_core, yaml, uvloop, httptools, watchfiles"
+                /opt/arca-storage/venv/bin/python -m pip check
+                arca --help
+                arca-storage-api --help
+              '
+          done
       - name: Upload rpm artifacts
         uses: actions/upload-artifact@v4
         with:
