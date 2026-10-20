@@ -1,4 +1,8 @@
 ---
+- name: Preserve externally managed VIPs on networkd interfaces
+  ansible.builtin.import_tasks: networkd-vip.yml
+  tags: [networkd_vip]
+
 - name: Install common packages
   ansible.builtin.package:
     name: "{{ common_packages }}"

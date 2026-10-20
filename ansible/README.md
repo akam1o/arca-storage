@@ -42,6 +42,42 @@ ansible-playbook -i inventory.ini site.yml
 - Adjust NFS-Ganesha exports according to your requirements.
 - This playbook is intended for initial bootstrap; runtime operations (creating SVMs/volumes/exports and Pacemaker resources) should be handled by `arca` by default.
 
+### Preserve host VIPs with systemd-networkd
+
+On interfaces managed by systemd-networkd, a restart (including one triggered
+by an unattended OS update) can remove VIPs added by `IPaddr2` or `ip addr add`.
+NFS clients then block even though the storage and NFS processes are healthy.
+
+On **both storage nodes**, run `networkctl status <VIP interface>` and find
+the `Network File` entry. Set its basename in the host or group variables:
+
+```yaml
+# Example for /run/systemd/network/10-netplan-eth0.network
+common_networkd_vip_network_files:
+  - 10-netplan-eth0.network
+```
+
+The common role writes a persistent drop-in under
+`/etc/systemd/network/<basename>.d/90-arca-vip.conf` with
+`[Network] KeepConfiguration=static`, then runs `networkctl reload` when it
+changes. Netplan-generated files are not modified. Leave the list empty
+(the default) for interfaces managed by NetworkManager or another service.
+Verify that the installed systemd version supports `KeepConfiguration=static`.
+
+To apply just this setting to an existing deployment:
+
+```bash
+ansible-playbook -i inventory.ini site.yml --tags networkd_vip
+```
+
+Confirm the drop-in is listed by `networkctl status <VIP interface>` and that
+the VIP remains on the active node after a controlled networkd restart.
+This preserves an existing VIP; it does not restore a missing VIP, assign it at
+boot, or implement failover. Restore a missing VIP only on the verified active
+storage node after checking for duplicate ownership. Do not add the VIP as a
+permanent address on both nodes. Pacemaker or the manual switchover procedure
+continues to control ownership.
+
 ### Bootstrap-only Defaults
 
 To avoid runtime drift, these are disabled by default in `group_vars/all.yml`:

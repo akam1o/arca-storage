@@ -1,0 +1,29 @@
+---
+- name: Validate networkd file basenames
+  ansible.builtin.assert:
+    that:
+      - item is match('^[A-Za-z0-9_-][A-Za-z0-9_.-]*[.]network$')
+    fail_msg: "Use the .network file basename from networkctl status, not a path."
+  loop: "{{ common_networkd_vip_network_files }}"
+
+- name: Create networkd VIP drop-in directories
+  ansible.builtin.file:
+    path: "/etc/systemd/network/{{ item }}.d"
+    state: directory
+    owner: root
+    group: root
+    mode: "0755"
+  loop: "{{ common_networkd_vip_network_files }}"
+
+- name: Preserve Arca VIP addresses across networkd restarts
+  ansible.builtin.copy:
+    dest: "/etc/systemd/network/{{ item }}.d/90-arca-vip.conf"
+    owner: root
+    group: root
+    mode: "0644"
+    content: |
+      [Network]
+      # Arca owns the floating NFS/API address; preserve it across networkd reloads.
+      KeepConfiguration=static
+  loop: "{{ common_networkd_vip_network_files }}"
+  notify: Reload networkd configuration
