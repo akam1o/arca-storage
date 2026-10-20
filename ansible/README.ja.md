@@ -42,6 +42,40 @@ ansible-playbook -i inventory.ini site.yml
 - NFS-Ganeshaのエクスポートは要件に合わせて調整してください。
 - このプレイブックは初期ブートストラップ用途を想定しています。SVM/Volume/Export の作成や Pacemaker リソース作成などのランタイム操作は、デフォルトでは `arca` 側で実施してください。
 
+### systemd-networkd によるホスト VIP の削除を防ぐ
+
+systemd-networkd が管理するインターフェイスでは、OS の自動更新などに伴う
+再起動で、`IPaddr2` や `ip addr add` が追加した VIP が削除されることがあります。
+この場合、ストレージや NFS プロセスが正常でも NFS クライアントが応答待ちになります。
+
+**両ストレージノード**で `networkctl status <VIP のインターフェイス>` を実行し、
+`Network File` に表示されるファイルの basename をホスト変数またはグループ変数に指定します。
+
+```yaml
+# /run/systemd/network/10-netplan-eth0.network の場合
+common_networkd_vip_network_files:
+  - 10-netplan-eth0.network
+```
+
+common ロールが `/etc/systemd/network/<basename>.d/90-arca-vip.conf` に
+`[Network] KeepConfiguration=static` を設定し、変更時に `networkctl reload` を実行します。
+Netplan の生成ファイルは編集しません。NetworkManager などが管理する場合は、
+デフォルトの空リストのままにしてください。導入済みの systemd が
+`KeepConfiguration=static` に対応していることも確認してください。
+
+既存環境にこの設定だけを適用する場合：
+
+```bash
+ansible-playbook -i inventory.ini site.yml --tags networkd_vip
+```
+
+`networkctl status <VIP のインターフェイス>` に drop-in が表示されることと、
+計画的な networkd 再起動後も稼働系の VIP が保持されることを確認します。
+この設定は既存 VIP の保持のみを行い、消失した VIP の復元、OS 起動時の割り当て、
+自動フェイルオーバーは行いません。消失時は重複所有がないことを確認し、
+確認済みの稼働系にだけ VIP を復元してください。両台に VIP を固定設定しないでください。
+VIP の所有権は引き続き Pacemaker または手動切り替え手順で管理します。
+
 ### ブートストラップ向けのデフォルト
 
 ランタイムでのドリフトを避けるため、`group_vars/all.yml` ではデフォルトで以下を無効化しています：

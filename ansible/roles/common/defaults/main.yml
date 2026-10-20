@@ -1,0 +1,4 @@
+---
+# Basenames reported as "Network File" by networkctl status <VIP interface>.
+# Leave empty on hosts that do not use systemd-networkd for the VIP interface.
+common_networkd_vip_network_files: []
